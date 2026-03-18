@@ -14,6 +14,8 @@ services:
 
   db:
     image: postgres:16-alpine
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     environment:
@@ -29,6 +31,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
     healthcheck:

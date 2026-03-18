@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
@@ -50,7 +51,13 @@ async def register(
         password_hash=hash_password(body.password),
     )
     db.add(user)
-    await db.flush()
+
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
+        ) from exc
 
     # Auto-create a system for the user
     system = System(user_id=user.id, name="My System")

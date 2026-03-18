@@ -118,6 +118,7 @@ async def delete_field(
     if field is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
     await db.delete(field)
+    await db.flush()
 
 
 # --- Field values on members ---

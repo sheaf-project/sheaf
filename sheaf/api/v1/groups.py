@@ -98,6 +98,7 @@ async def delete_group(
     system = await _get_user_system(user, db)
     group = await _get_own_group(group_id, system, db)
     await db.delete(group)
+    await db.flush()
 
 
 @router.get("/{group_id}/members", response_model=list[MemberRead])

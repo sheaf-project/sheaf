@@ -98,3 +98,4 @@ async def delete_tag(
     if tag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
     await db.delete(tag)
+    await db.flush()

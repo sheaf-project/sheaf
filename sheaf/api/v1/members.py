@@ -93,3 +93,4 @@ async def delete_member(
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
     await db.delete(member)
+    await db.flush()

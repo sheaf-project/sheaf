@@ -153,3 +153,4 @@ async def delete_front(
     if front is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Front not found")
     await db.delete(front)
+    await db.flush()

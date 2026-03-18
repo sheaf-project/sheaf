@@ -1,23 +1,29 @@
-import asyncio
-from collections.abc import AsyncGenerator
+import os
+import uuid
+from collections.abc import Generator
 
+import httpx
 import pytest
-from httpx import ASGITransport, AsyncClient
 
-from sheaf.main import app
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
 
 
 @pytest.fixture
-async def client() -> AsyncGenerator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as ac:
-        yield ac
+def client() -> Generator[httpx.Client]:
+    with httpx.Client(base_url=BASE_URL) as c:
+        yield c
+
+
+@pytest.fixture
+def auth_client() -> Generator[httpx.Client]:
+    """Authenticated client — registers a unique user per test."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = f"test-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        token = resp.json()["access_token"]
+        c.headers["Authorization"] = f"Bearer {token}"
+        yield c

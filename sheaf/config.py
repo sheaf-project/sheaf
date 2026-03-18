@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def get_encryption_key(self) -> bytes:
         """Get or auto-generate the Fernet encryption key."""
