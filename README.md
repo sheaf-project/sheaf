@@ -41,7 +41,7 @@ The API is available at `http://localhost:8000` with interactive docs at `http:/
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 # Encryption key (optional — auto-generated on first start if not set)
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 > **Important:** If you let Sheaf auto-generate the encryption key, it's saved to `data/encryption.key` inside the Docker volume. **Back this up.** If you lose it, all encrypted data (emails, TOTP secrets) is unrecoverable.

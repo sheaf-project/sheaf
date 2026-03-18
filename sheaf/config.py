@@ -3,7 +3,6 @@ import sys
 from enum import StrEnum
 from pathlib import Path
 
-from cryptography.fernet import Fernet
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("sheaf")
@@ -57,7 +56,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def get_encryption_key(self) -> bytes:
-        """Get or auto-generate the Fernet encryption key."""
+        """Get or auto-generate the encryption key (32 bytes, hex-encoded on disk)."""
         if self.sheaf_encryption_key:
             return self.sheaf_encryption_key.encode()
 
@@ -66,9 +65,11 @@ class Settings(BaseSettings):
         if key_path.exists():
             return key_path.read_bytes().strip()
 
-        # Auto-generate and persist
+        # Auto-generate 32 random bytes, hex-encode for storage
+        import secrets
+
         self.sheaf_data_dir.mkdir(parents=True, exist_ok=True)
-        key = Fernet.generate_key()
+        key = secrets.token_hex(32).encode()
         key_path.write_bytes(key)
         key_path.chmod(0o600)
 
