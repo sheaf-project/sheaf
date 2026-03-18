@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
@@ -33,25 +33,36 @@ function SystemSettings() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["system", "me"] }),
   });
 
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [tag, setTag] = useState("");
-  const [color, setColor] = useState("");
-  const [privacy, setPrivacy] = useState<PrivacyLevel>("private");
+  if (!system) return null;
 
-  useEffect(() => {
-    if (system) {
-      setName(system.name);
-      setDescription(system.description ?? "");
-      setTag(system.tag ?? "");
-      setColor(system.color ?? "");
-      setPrivacy(system.privacy);
-    }
-  }, [system]);
+  return (
+    <SystemSettingsForm
+      key={system.id}
+      initial={system}
+      onSubmit={(data) => update.mutate(data)}
+      loading={update.isPending}
+    />
+  );
+}
+
+function SystemSettingsForm({
+  initial,
+  onSubmit,
+  loading,
+}: {
+  initial: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel };
+  onSubmit: (data: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel }) => void;
+  loading: boolean;
+}) {
+  const [name, setName] = useState(initial.name);
+  const [description, setDescription] = useState(initial.description ?? "");
+  const [tag, setTag] = useState(initial.tag ?? "");
+  const [color, setColor] = useState(initial.color ?? "");
+  const [privacy, setPrivacy] = useState<PrivacyLevel>(initial.privacy);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    update.mutate({
+    onSubmit({
       name,
       description: description || null,
       tag: tag || null,
@@ -119,8 +130,8 @@ function SystemSettings() {
               </SelectContent>
             </Select>
           </div>
-          <Button type="submit" disabled={update.isPending}>
-            {update.isPending ? "Saving..." : "Save"}
+          <Button type="submit" disabled={loading}>
+            {loading ? "Saving..." : "Save"}
           </Button>
         </form>
       </CardContent>

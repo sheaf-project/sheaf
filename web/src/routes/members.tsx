@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { PageHeader } from "@/components/page-header";
@@ -130,29 +130,30 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(memberId);
   const setValues = useSetMemberFieldValues();
-  const [localValues, setLocalValues] = useState<Record<string, string>>({});
-  const [dirty, setDirty] = useState(false);
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
 
-  useEffect(() => {
+  const serverValues = useMemo(() => {
+    const map: Record<string, string> = {};
     if (values) {
-      const map: Record<string, string> = {};
       for (const v of values) {
         map[v.field_id] = typeof v.value === "object" && v.value !== null
           ? ((v.value as Record<string, unknown>).v as string ?? "")
           : String(v.value ?? "");
       }
-      setLocalValues(map);
-      setDirty(false);
     }
+    return map;
   }, [values]);
+
+  const dirty = Object.keys(overrides).length > 0;
 
   if (!fields || fields.length === 0) return null;
 
   function handleSave() {
+    const merged = { ...serverValues, ...overrides };
     const payload: CustomFieldValueSet[] = fields!
-      .filter((f) => localValues[f.id] !== undefined && localValues[f.id] !== "")
-      .map((f) => ({ field_id: f.id, value: { v: localValues[f.id] } }));
-    setValues.mutate({ memberId, values: payload }, { onSuccess: () => setDirty(false) });
+      .filter((f) => merged[f.id] !== undefined && merged[f.id] !== "")
+      .map((f) => ({ field_id: f.id, value: { v: merged[f.id] } }));
+    setValues.mutate({ memberId, values: payload }, { onSuccess: () => setOverrides({}) });
   }
 
   return (
@@ -162,10 +163,9 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
         <div key={f.id} className="space-y-1">
           <Label className="text-xs">{f.name}</Label>
           <Input
-            value={localValues[f.id] ?? ""}
+            value={overrides[f.id] ?? serverValues[f.id] ?? ""}
             onChange={(e) => {
-              setLocalValues((prev) => ({ ...prev, [f.id]: e.target.value }));
-              setDirty(true);
+              setOverrides((prev) => ({ ...prev, [f.id]: e.target.value }));
             }}
             placeholder={f.field_type}
           />

@@ -12,6 +12,7 @@ import { Sun, Moon } from "lucide-react";
 
 export function LoginPage() {
   const { user, loading, login, register } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -40,8 +41,6 @@ export function LoginPage() {
       setSubmitting(false);
     }
   }
-
-  const { theme, toggleTheme } = useTheme();
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
