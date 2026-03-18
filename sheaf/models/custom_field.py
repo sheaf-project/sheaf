@@ -1,0 +1,66 @@
+import enum
+import uuid
+
+from sqlalchemy import Enum, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from sheaf.models.base import Base, TimestampMixin, UUIDMixin
+from sheaf.models.system import PrivacyLevel
+
+
+class FieldType(enum.StrEnum):
+    TEXT = "text"
+    NUMBER = "number"
+    DATE = "date"
+    BOOLEAN = "boolean"
+    SELECT = "select"
+    MULTISELECT = "multiselect"
+
+
+class CustomFieldDefinition(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "custom_field_definitions"
+
+    system_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("systems.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    field_type: Mapped[FieldType] = mapped_column(Enum(FieldType), nullable=False)
+    options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    privacy: Mapped[PrivacyLevel] = mapped_column(
+        Enum(PrivacyLevel),
+        default=PrivacyLevel.PRIVATE,
+        nullable=False,
+    )
+
+    # Relationships
+    system: Mapped["System"] = relationship(back_populates="custom_field_definitions")
+    values: Mapped[list["CustomFieldValue"]] = relationship(
+        back_populates="field_definition", cascade="all, delete-orphan"
+    )
+
+
+class CustomFieldValue(UUIDMixin, Base):
+    __tablename__ = "custom_field_values"
+
+    field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("custom_field_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    member_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("members.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Relationships
+    field_definition: Mapped["CustomFieldDefinition"] = relationship(back_populates="values")
+    member: Mapped["Member"] = relationship(back_populates="custom_field_values")

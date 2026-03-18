@@ -1,0 +1,43 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${SHEAF_PORT:-8000}:8000"
+    env_file: .env
+    volumes:
+      - appdata:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: sheaf
+      POSTGRES_USER: sheaf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-in-production}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sheaf"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
+  appdata:

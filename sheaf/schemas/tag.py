@@ -1,0 +1,25 @@
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class TagCreate(BaseModel):
+    name: str = Field(max_length=50)
+    color: str | None = Field(default=None, max_length=7)
+
+
+class TagUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=50)
+    color: str | None = Field(default=None, max_length=7)
+
+
+class TagRead(BaseModel):
+    id: uuid.UUID
+    system_id: uuid.UUID
+    name: str
+    color: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
