@@ -1,10 +1,11 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from sheaf.api.v1.router import v1_router
-from sheaf.config import _validate_settings, settings
+from sheaf.config import SheafMode, _validate_settings, settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,13 +14,45 @@ logging.basicConfig(
 logger = logging.getLogger("sheaf")
 
 
+async def _retention_loop() -> None:
+    """Periodically prune free-tier front history in aaS mode."""
+    from sheaf.database import async_session_factory
+    from sheaf.services.front_retention import prune_free_tier_fronts
+
+    interval = settings.retention_check_interval_hours * 3600
+    logger.info("Retention task started — checking every %dh", settings.retention_check_interval_hours)
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with async_session_factory() as session:
+                count = await prune_free_tier_fronts(session)
+                await session.commit()
+                if count > 0:
+                    logger.info("Retention task pruned %d fronts", count)
+        except Exception:
+            logger.exception("Retention task failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_settings()
     # Eagerly initialise encryption key so we get the warning at startup
     settings.get_encryption_key()
     logger.info("Sheaf %s starting in %s mode", "0.1.0", settings.sheaf_mode.value)
+
+    retention_task = None
+    if settings.sheaf_mode == SheafMode.SAAS:
+        retention_task = asyncio.create_task(_retention_loop())
+
     yield
+
+    if retention_task is not None:
+        retention_task.cancel()
+        try:
+            await retention_task
+        except asyncio.CancelledError:
+            pass
     logger.info("Sheaf shutting down")
 
 

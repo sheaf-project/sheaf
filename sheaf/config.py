@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     # aaS settings
     free_tier_front_retention_days: int = 30
+    retention_check_interval_hours: int = 6
 
     # Server
     sheaf_port: int = 8000
