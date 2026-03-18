@@ -23,3 +23,6 @@ venv/
 # Frontend
 web/node_modules/
 web/dist/
+
+# internal project notes
+notes/

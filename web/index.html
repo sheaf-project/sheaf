@@ -1,9 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark" style="color-scheme: dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="darkreader-lock" />
+    <meta name="color-scheme" content="dark light" />
     <title>Sheaf</title>
+    <script>
+      // Apply saved theme before first paint to avoid flash
+      (function() {
+        var t = localStorage.getItem("sheaf_theme") || "dark";
+        document.documentElement.classList.toggle("dark", t === "dark");
+        document.documentElement.style.colorScheme = t;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

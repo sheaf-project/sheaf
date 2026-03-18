@@ -1,0 +1,42 @@
+import abc
+import logging
+
+logger = logging.getLogger("sheaf.storage")
+
+_backend: "StorageBackend | None" = None
+
+
+class StorageBackend(abc.ABC):
+    @abc.abstractmethod
+    async def put(self, key: str, data: bytes, content_type: str) -> str:
+        """Store a file. Returns the public URL."""
+
+    @abc.abstractmethod
+    async def get(self, key: str) -> bytes | None:
+        """Retrieve a file by key. Returns None if not found."""
+
+    @abc.abstractmethod
+    async def delete(self, key: str) -> None:
+        """Delete a file by key."""
+
+    @abc.abstractmethod
+    async def exists(self, key: str) -> bool:
+        """Check if a file exists."""
+
+
+def get_storage() -> "StorageBackend":
+    global _backend
+    if _backend is None:
+        from sheaf.config import settings
+
+        if settings.storage_backend == "s3":
+            from sheaf.storage.s3 import S3Storage
+
+            _backend = S3Storage()
+            logger.info("Using S3 storage backend (bucket: %s)", settings.s3_bucket)
+        else:
+            from sheaf.storage.filesystem import FilesystemStorage
+
+            _backend = FilesystemStorage()
+            logger.info("Using filesystem storage backend (%s)", settings.storage_path)
+    return _backend

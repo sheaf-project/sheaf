@@ -6,6 +6,7 @@ import { MembersPage } from "./members";
 import { FrontsPage } from "./fronts";
 import { GroupsPage } from "./groups";
 import { SettingsPage } from "./settings";
+import { ImportPage } from "./import";
 
 export const router = createBrowserRouter([
   {
@@ -20,6 +21,7 @@ export const router = createBrowserRouter([
       { path: "fronts", element: <FrontsPage /> },
       { path: "groups", element: <GroupsPage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "import", element: <ImportPage /> },
     ],
   },
 ]);

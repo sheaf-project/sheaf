@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     free_tier_front_retention_days: int = 30
     retention_check_interval_hours: int = 6
 
+    # File storage
+    storage_backend: str = "filesystem"  # "filesystem" or "s3"
+    storage_path: Path = Path("data/files")
+    s3_bucket: str = ""
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_region: str = "us-east-1"
+    s3_endpoint: str = ""  # For MinIO/R2 compatibility
+    s3_public_url: str = ""  # CDN URL prefix, if any
+    max_upload_size_mb: int = 5
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

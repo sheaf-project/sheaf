@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,8 @@ async def _retention_loop() -> None:
     from sheaf.services.front_retention import prune_free_tier_fronts
 
     interval = settings.retention_check_interval_hours * 3600
-    logger.info("Retention task started — checking every %dh", settings.retention_check_interval_hours)
+    hours = settings.retention_check_interval_hours
+    logger.info("Retention task started — checking every %dh", hours)
 
     while True:
         await asyncio.sleep(interval)
@@ -49,10 +51,8 @@ async def lifespan(app: FastAPI):
 
     if retention_task is not None:
         retention_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await retention_task
-        except asyncio.CancelledError:
-            pass
     logger.info("Sheaf shutting down")
 
 

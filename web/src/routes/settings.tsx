@@ -1,7 +1,9 @@
 import { type FormEvent, useEffect, useState } from "react";
+import { Link } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useTags, useCreateTag, useUpdateTag, useDeleteTag } from "@/hooks/use-tags";
+import { useCustomFields, useCreateField, useUpdateField, useDeleteField } from "@/hooks/use-custom-fields";
 import { getMySystem, updateMySystem, exportData } from "@/lib/systems";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
@@ -18,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { PrivacyLevel } from "@/types/api";
+import type { FieldType, PrivacyLevel } from "@/types/api";
 
 function SystemSettings() {
   const qc = useQueryClient();
@@ -237,6 +239,127 @@ function TagsManager() {
   );
 }
 
+function CustomFieldsManager() {
+  const { data: fields } = useCustomFields();
+  const createField = useCreateField();
+  const updateField = useUpdateField();
+  const deleteField = useDeleteField();
+  const [newName, setNewName] = useState("");
+  const [newType, setNewType] = useState<FieldType>("text");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+
+  function handleCreate(e: FormEvent) {
+    e.preventDefault();
+    if (!newName) return;
+    createField.mutate(
+      { name: newName, field_type: newType },
+      { onSuccess: () => { setNewName(""); setNewType("text"); } },
+    );
+  }
+
+  function startEdit(field: { id: string; name: string }) {
+    setEditingId(field.id);
+    setEditName(field.name);
+  }
+
+  function handleUpdate(e: FormEvent) {
+    e.preventDefault();
+    if (!editingId) return;
+    updateField.mutate(
+      { id: editingId, data: { name: editName } },
+      { onSuccess: () => setEditingId(null) },
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Custom fields</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <form onSubmit={handleCreate} className="flex items-end gap-2">
+          <div className="flex-1 space-y-1">
+            <Label className="text-xs">Field name</Label>
+            <Input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="e.g. Species, Role"
+            />
+          </div>
+          <Select value={newType} onValueChange={(v) => setNewType(v as FieldType)}>
+            <SelectTrigger className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="text">Text</SelectItem>
+              <SelectItem value="number">Number</SelectItem>
+              <SelectItem value="date">Date</SelectItem>
+              <SelectItem value="boolean">Yes/No</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button type="submit" size="sm" disabled={createField.isPending || !newName}>
+            Add
+          </Button>
+        </form>
+
+        <div className="space-y-2">
+          {fields?.map((f) =>
+            editingId === f.id ? (
+              <form
+                key={f.id}
+                onSubmit={handleUpdate}
+                className="flex items-center gap-2"
+              >
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="h-8 flex-1 text-sm"
+                />
+                <Button type="submit" size="sm" variant="ghost" className="h-8 px-2 text-xs">
+                  Save
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 px-2 text-xs"
+                  onClick={() => setEditingId(null)}
+                >
+                  Cancel
+                </Button>
+              </form>
+            ) : (
+              <div
+                key={f.id}
+                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+              >
+                <span className="cursor-pointer" onClick={() => startEdit(f)}>
+                  {f.name}
+                  <span className="ml-2 text-xs text-muted-foreground">{f.field_type}</span>
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+                  onClick={() => deleteField.mutate(f.id)}
+                >
+                  Delete
+                </Button>
+              </div>
+            ),
+          )}
+        </div>
+        {fields && fields.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Click a field name to rename it. Values are set per-member in the member editor.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function DataExport() {
   const [exporting, setExporting] = useState(false);
 
@@ -306,9 +429,23 @@ export function SettingsPage() {
       <div className="grid gap-6 max-w-2xl">
         <SystemSettings />
         <TagsManager />
+        <CustomFieldsManager />
         <Separator />
         <AccountInfo />
         <DataExport />
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Import data</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground mb-3">
+              Import your data from SimplyPlural or other sources.
+            </p>
+            <Link to="/import">
+              <Button variant="outline">Import from SimplyPlural</Button>
+            </Link>
+          </CardContent>
+        </Card>
       </div>
     </>
   );

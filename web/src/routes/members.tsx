@@ -1,5 +1,6 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
+import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -15,7 +16,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { Member, MemberCreate, MemberUpdate } from "@/types/api";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { Member, MemberCreate, MemberUpdate, PrivacyLevel, CustomFieldValueSet } from "@/types/api";
 
 function MemberForm({
   initial,
@@ -23,7 +31,7 @@ function MemberForm({
   loading,
   submitLabel,
 }: {
-  initial?: Partial<MemberCreate>;
+  initial?: Partial<MemberCreate> & { privacy?: PrivacyLevel };
   onSubmit: (data: MemberCreate | MemberUpdate) => void;
   loading: boolean;
   submitLabel: string;
@@ -32,6 +40,8 @@ function MemberForm({
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? "");
   const [color, setColor] = useState(initial?.color ?? "#6366f1");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [birthday, setBirthday] = useState(initial?.birthday ?? "");
+  const [privacy, setPrivacy] = useState<PrivacyLevel>(initial?.privacy ?? "private");
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -40,6 +50,8 @@ function MemberForm({
       pronouns: pronouns || null,
       color: color || null,
       description: description || null,
+      birthday: birthday || null,
+      privacy,
     });
   }
 
@@ -57,20 +69,30 @@ function MemberForm({
           placeholder="e.g. she/her"
         />
       </div>
-      <div className="space-y-2">
-        <Label>Color</Label>
-        <div className="flex items-center gap-2">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label>Color</Label>
+          <div className="flex items-center gap-2">
+            <Input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="h-10 w-14 p-1"
+            />
+            <Input
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              placeholder="#000000"
+              className="flex-1"
+            />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label>Birthday</Label>
           <Input
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="h-10 w-14 p-1"
-          />
-          <Input
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            placeholder="#000000"
-            className="flex-1"
+            value={birthday}
+            onChange={(e) => setBirthday(e.target.value)}
+            placeholder="MM-DD or YYYY-MM-DD"
           />
         </div>
       </div>
@@ -82,12 +104,84 @@ function MemberForm({
           placeholder="Optional"
         />
       </div>
+      <div className="space-y-2">
+        <Label>Privacy</Label>
+        <Select value={privacy} onValueChange={(v) => setPrivacy(v as PrivacyLevel)}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="private">Private</SelectItem>
+            <SelectItem value="friends">Friends only</SelectItem>
+            <SelectItem value="public">Public</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       <DialogFooter>
         <Button type="submit" disabled={loading || !name}>
           {loading ? "Saving..." : submitLabel}
         </Button>
       </DialogFooter>
     </form>
+  );
+}
+
+function MemberFieldValues({ memberId }: { memberId: string }) {
+  const { data: fields } = useCustomFields();
+  const { data: values } = useMemberFieldValues(memberId);
+  const setValues = useSetMemberFieldValues();
+  const [localValues, setLocalValues] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (values) {
+      const map: Record<string, string> = {};
+      for (const v of values) {
+        map[v.field_id] = typeof v.value === "object" && v.value !== null
+          ? ((v.value as Record<string, unknown>).v as string ?? "")
+          : String(v.value ?? "");
+      }
+      setLocalValues(map);
+      setDirty(false);
+    }
+  }, [values]);
+
+  if (!fields || fields.length === 0) return null;
+
+  function handleSave() {
+    const payload: CustomFieldValueSet[] = fields!
+      .filter((f) => localValues[f.id] !== undefined && localValues[f.id] !== "")
+      .map((f) => ({ field_id: f.id, value: { v: localValues[f.id] } }));
+    setValues.mutate({ memberId, values: payload }, { onSuccess: () => setDirty(false) });
+  }
+
+  return (
+    <div className="space-y-3 border-t pt-3">
+      <p className="text-sm font-medium text-muted-foreground">Custom fields</p>
+      {fields.map((f) => (
+        <div key={f.id} className="space-y-1">
+          <Label className="text-xs">{f.name}</Label>
+          <Input
+            value={localValues[f.id] ?? ""}
+            onChange={(e) => {
+              setLocalValues((prev) => ({ ...prev, [f.id]: e.target.value }));
+              setDirty(true);
+            }}
+            placeholder={f.field_type}
+          />
+        </div>
+      ))}
+      {dirty && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleSave}
+          disabled={setValues.isPending}
+        >
+          {setValues.isPending ? "Saving..." : "Save fields"}
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -175,6 +269,7 @@ export function MembersPage() {
                 loading={updateMember.isPending}
                 submitLabel="Save"
               />
+              <MemberFieldValues memberId={editing.id} />
               <Button
                 variant="destructive"
                 size="sm"

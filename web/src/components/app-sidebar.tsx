@@ -1,5 +1,6 @@
 import { NavLink } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
+import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -9,6 +10,8 @@ import {
   FolderOpen,
   Settings,
   LogOut,
+  Sun,
+  Moon,
 } from "lucide-react";
 
 const navItems = [
@@ -21,11 +24,25 @@ const navItems = [
 
 export function AppSidebar() {
   const { logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
 
   return (
     <aside className="flex h-screen w-56 flex-col border-r bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 items-center border-b px-4">
+      <div className="flex h-14 items-center justify-between border-b px-4">
         <span className="text-lg font-semibold tracking-tight">Sheaf</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-sidebar-foreground/70"
+          onClick={toggleTheme}
+          aria-label="Toggle theme"
+        >
+          {theme === "dark" ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+        </Button>
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {navItems.map((item) => (

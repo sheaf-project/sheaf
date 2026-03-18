@@ -134,3 +134,43 @@ export interface TagUpdate {
   name?: string;
   color?: string | null;
 }
+
+export type FieldType = "text" | "number" | "date" | "boolean" | "select" | "multiselect";
+
+export interface CustomField {
+  id: string;
+  system_id: string;
+  name: string;
+  field_type: FieldType;
+  options: Record<string, unknown> | null;
+  order: number;
+  privacy: PrivacyLevel;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomFieldCreate {
+  name: string;
+  field_type: FieldType;
+  options?: Record<string, unknown> | null;
+  order?: number;
+  privacy?: PrivacyLevel;
+}
+
+export interface CustomFieldUpdate {
+  name?: string;
+  options?: Record<string, unknown> | null;
+  order?: number;
+  privacy?: PrivacyLevel;
+}
+
+export interface CustomFieldValue {
+  field_id: string;
+  member_id: string;
+  value: unknown;
+}
+
+export interface CustomFieldValueSet {
+  field_id: string;
+  value: unknown;
+}
