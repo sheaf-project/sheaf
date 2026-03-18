@@ -19,3 +19,7 @@ venv/
 
 *.db
 *.sqlite3
+
+# Frontend
+web/node_modules/
+web/dist/
