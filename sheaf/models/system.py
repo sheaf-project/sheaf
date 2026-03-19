@@ -14,6 +14,13 @@ class PrivacyLevel(enum.StrEnum):
     PRIVATE = "private"
 
 
+class DeleteConfirmation(enum.StrEnum):
+    NONE = "none"
+    PASSWORD = "password"
+    TOTP = "totp"
+    BOTH = "both"
+
+
 class System(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "systems"
 
@@ -30,8 +37,13 @@ class System(UUIDMixin, TimestampMixin, Base):
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     privacy: Mapped[PrivacyLevel] = mapped_column(
-        Enum(PrivacyLevel),
+        Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,
+        nullable=False,
+    )
+    delete_confirmation: Mapped[DeleteConfirmation] = mapped_column(
+        Enum(DeleteConfirmation, values_callable=lambda e: [m.value for m in e]),
+        default=DeleteConfirmation.NONE,
         nullable=False,
     )
 

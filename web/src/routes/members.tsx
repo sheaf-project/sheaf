@@ -1,9 +1,10 @@
 import { type FormEvent, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
+import { getMySystem } from "@/lib/systems";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
-import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -23,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { Member, MemberCreate, MemberUpdate, PrivacyLevel, CustomFieldValueSet } from "@/types/api";
+import type { Member, MemberCreate, MemberUpdate, PrivacyLevel, DeleteConfirmation, CustomFieldValueSet } from "@/types/api";
 
 function MemberForm({
   initial,
@@ -185,11 +187,102 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
   );
 }
 
+function DeleteMemberDialog({
+  member,
+  level,
+  onOpenChange,
+  onDeleted,
+}: {
+  member: Member;
+  level: DeleteConfirmation;
+  onOpenChange: (open: boolean) => void;
+  onDeleted: () => void;
+}) {
+  const deleteMember = useDeleteMember();
+  const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [error, setError] = useState("");
+
+  const needsPassword = level === "password" || level === "both";
+  const needsTotp = level === "totp" || level === "both";
+
+  function handleDelete() {
+    setError("");
+    const confirm: { password?: string; totp_code?: string } = {};
+    if (needsPassword) confirm.password = password;
+    if (needsTotp) confirm.totp_code = totpCode;
+
+    deleteMember.mutate(
+      { id: member.id, confirm: Object.keys(confirm).length > 0 ? confirm : undefined },
+      {
+        onSuccess: () => onDeleted(),
+        onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+      },
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete member</DialogTitle>
+          <DialogDescription>
+            Are you sure you want to delete &quot;{member.name}&quot;? This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        {(needsPassword || needsTotp) && (
+          <div className="space-y-3">
+            {needsPassword && (
+              <div className="space-y-1">
+                <Label className="text-sm">Password</Label>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter your password"
+                />
+              </div>
+            )}
+            {needsTotp && (
+              <div className="space-y-1">
+                <Label className="text-sm">TOTP code</Label>
+                <Input
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value)}
+                  placeholder="6-digit code"
+                  maxLength={6}
+                />
+              </div>
+            )}
+          </div>
+        )}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={
+              deleteMember.isPending ||
+              (needsPassword && !password) ||
+              (needsTotp && !totpCode)
+            }
+          >
+            {deleteMember.isPending ? "Deleting..." : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function MembersPage() {
   const { data: members, isLoading } = useMembers();
+  const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
   const createMember = useCreateMember();
   const updateMember = useUpdateMember();
-  const deleteMember = useDeleteMember();
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Member | null>(null);
   const [deleting, setDeleting] = useState<Member | null>(null);
@@ -287,19 +380,14 @@ export function MembersPage() {
       </Dialog>
 
       {/* Delete confirm */}
-      <ConfirmDialog
-        open={!!deleting}
-        onOpenChange={(open) => !open && setDeleting(null)}
-        title="Delete member"
-        description={`Are you sure you want to delete "${deleting?.name}"? This cannot be undone.`}
-        onConfirm={() =>
-          deleting &&
-          deleteMember.mutate(deleting.id, {
-            onSuccess: () => setDeleting(null),
-          })
-        }
-        loading={deleteMember.isPending}
-      />
+      {deleting && (
+        <DeleteMemberDialog
+          member={deleting}
+          level={system?.delete_confirmation ?? "none"}
+          onOpenChange={(open) => !open && setDeleting(null)}
+          onDeleted={() => setDeleting(null)}
+        />
+      )}
     </>
   );
 }

@@ -5,11 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.passwords import verify_password
+from sheaf.auth.totp import verify_code
+from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.models.member import Member
-from sheaf.models.system import System
+from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.user import User
-from sheaf.schemas.member import MemberCreate, MemberRead, MemberUpdate
+from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
 
 router = APIRouter(prefix="/members", tags=["members"])
 
@@ -87,10 +90,37 @@ async def update_member(
 @router.delete("/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_member(
     member_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
+    level = system.delete_confirmation
+
+    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH) and (
+        not body or not body.password or not verify_password(body.password, user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Password required to delete member",
+        )
+
+    if level in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH):
+        if not user.totp_enabled:
+            pass  # TOTP not configured, skip
+        elif not body or not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="TOTP code required to delete member",
+            )
+        else:
+            secret = decrypt(user.totp_secret)
+            if not verify_code(secret, body.totp_code):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid TOTP code",
+                )
+
     member = await _get_own_member(member_id, system, db)
     await db.delete(member)
     await db.flush()

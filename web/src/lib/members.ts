@@ -23,6 +23,12 @@ export function updateMember(id: string, data: MemberUpdate) {
   });
 }
 
-export function deleteMember(id: string) {
-  return apiFetch<void>(`/v1/members/${id}`, { method: "DELETE" });
+export function deleteMember(
+  id: string,
+  confirm?: { password?: string; totp_code?: string },
+) {
+  return apiFetch<void>(`/v1/members/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }

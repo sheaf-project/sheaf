@@ -28,6 +28,11 @@ class MemberUpdate(BaseModel):
     privacy: PrivacyLevel | None = None
 
 
+class MemberDeleteConfirm(BaseModel):
+    password: str | None = None
+    totp_code: str | None = None
+
+
 class MemberRead(BaseModel):
     id: uuid.UUID
     system_id: uuid.UUID

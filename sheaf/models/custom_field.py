@@ -29,11 +29,14 @@ class CustomFieldDefinition(UUIDMixin, TimestampMixin, Base):
     )
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    field_type: Mapped[FieldType] = mapped_column(Enum(FieldType), nullable=False)
+    field_type: Mapped[FieldType] = mapped_column(
+        Enum(FieldType, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
     options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     privacy: Mapped[PrivacyLevel] = mapped_column(
-        Enum(PrivacyLevel),
+        Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,
         nullable=False,
     )

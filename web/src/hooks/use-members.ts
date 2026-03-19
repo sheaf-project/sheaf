@@ -44,7 +44,13 @@ export function useUpdateMember() {
 export function useDeleteMember() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteMember(id),
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: { password?: string; totp_code?: string };
+    }) => api.deleteMember(id, confirm),
     onSuccess: () => qc.invalidateQueries({ queryKey: memberKeys.all }),
   });
 }

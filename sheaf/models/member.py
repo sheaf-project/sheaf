@@ -69,7 +69,7 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # Stored as "MM-DD" or "YYYY-MM-DD" to support year-optional birthdays
     birthday: Mapped[str | None] = mapped_column(String(10), nullable=True)
     privacy: Mapped[PrivacyLevel] = mapped_column(
-        Enum(PrivacyLevel),
+        Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,
         nullable=False,
     )

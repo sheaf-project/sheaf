@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useTags, useCreateTag, useUpdateTag, useDeleteTag } from "@/hooks/use-tags";
 import { useCustomFields, useCreateField, useUpdateField, useDeleteField } from "@/hooks/use-custom-fields";
-import { getMySystem, updateMySystem, exportData } from "@/lib/systems";
+import { getMySystem, updateMySystem, updateDeleteConfirmation, exportData } from "@/lib/systems";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { FieldType, PrivacyLevel } from "@/types/api";
+import type { DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 
 function SystemSettings() {
   const qc = useQueryClient();
@@ -371,6 +371,121 @@ function CustomFieldsManager() {
   );
 }
 
+function DeleteConfirmationSetting() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
+  const mutation = useMutation({
+    mutationFn: updateDeleteConfirmation,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["system", "me"] }),
+  });
+
+  const [pending, setPending] = useState<DeleteConfirmation | null>(null);
+  const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [error, setError] = useState("");
+
+  if (!system) return null;
+
+  function handleChange(value: DeleteConfirmation) {
+    if (value === system!.delete_confirmation) return;
+    setPending(value);
+    setPassword("");
+    setTotpCode("");
+    setError("");
+  }
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!pending) return;
+    setError("");
+    mutation.mutate(
+      { level: pending, password, totp_code: totpCode || undefined },
+      {
+        onSuccess: () => setPending(null),
+        onError: (err) => setError(err instanceof Error ? err.message : "Failed"),
+      },
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Delete confirmation</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Require extra verification before deleting a member.
+        </p>
+        <Select
+          value={pending ?? system.delete_confirmation}
+          onValueChange={(v) => handleChange(v as DeleteConfirmation)}
+        >
+          <SelectTrigger className="w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No confirmation</SelectItem>
+            <SelectItem value="password">Require password</SelectItem>
+            {user?.totp_enabled && (
+              <SelectItem value="totp">Require TOTP</SelectItem>
+            )}
+            {user?.totp_enabled && (
+              <SelectItem value="both">Password + TOTP</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+
+        {pending && (
+          <form onSubmit={handleSubmit} className="space-y-3 border-t pt-3">
+            <p className="text-sm text-muted-foreground">
+              Confirm your identity to change this setting.
+            </p>
+            <div className="space-y-1">
+              <Label className="text-sm">Password</Label>
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            {user?.totp_enabled && (
+              <div className="space-y-1">
+                <Label className="text-sm">TOTP code</Label>
+                <Input
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value)}
+                  placeholder="6-digit code"
+                  maxLength={6}
+                  required
+                />
+              </div>
+            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <div className="flex gap-2">
+              <Button type="submit" size="sm" disabled={mutation.isPending}>
+                {mutation.isPending ? "Saving..." : "Confirm"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setPending(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function DataExport() {
   const [exporting, setExporting] = useState(false);
 
@@ -441,6 +556,7 @@ export function SettingsPage() {
         <SystemSettings />
         <TagsManager />
         <CustomFieldsManager />
+        <DeleteConfirmationSetting />
         <Separator />
         <AccountInfo />
         <DataExport />

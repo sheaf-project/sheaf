@@ -1,4 +1,5 @@
 export type PrivacyLevel = "public" | "friends" | "private";
+export type DeleteConfirmation = "none" | "password" | "totp" | "both";
 
 export interface TokenResponse {
   access_token: string;
@@ -23,6 +24,7 @@ export interface System {
   avatar_url: string | null;
   color: string | null;
   privacy: PrivacyLevel;
+  delete_confirmation: DeleteConfirmation;
   created_at: string;
   updated_at: string;
 }

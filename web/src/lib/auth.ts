@@ -8,10 +8,10 @@ export function register(email: string, password: string) {
   });
 }
 
-export function login(email: string, password: string) {
+export function login(email: string, password: string, totp_code?: string) {
   return apiFetch<TokenResponse>("/v1/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(totp_code ? { totp_code } : {}) }),
   });
 }
 

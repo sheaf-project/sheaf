@@ -32,7 +32,7 @@ class User(UUIDMixin, TimestampMixin, Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     tier: Mapped[UserTier] = mapped_column(
-        Enum(UserTier),
+        Enum(UserTier, values_callable=lambda e: [m.value for m in e]),
         default=UserTier.SELF_HOSTED,
         nullable=False,
     )

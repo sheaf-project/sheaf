@@ -15,6 +15,8 @@ export function LoginPage() {
   const { theme, toggleTheme } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [needs2FA, setNeeds2FA] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -27,13 +29,17 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       if (action === "login") {
-        await login(email, password);
+        await login(email, password, totpCode || undefined);
       } else {
         await register(email, password);
       }
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        if (err.detail === "TOTP code required" && !needs2FA) {
+          setNeeds2FA(true);
+        } else {
+          setError(err.detail);
+        }
       } else {
         setError("Something went wrong");
       }
@@ -95,6 +101,18 @@ export function LoginPage() {
                     required
                   />
                 </div>
+                {needs2FA && (
+                  <div className="space-y-2">
+                    <Label htmlFor="login-totp">2FA code</Label>
+                    <Input
+                      id="login-totp"
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value)}
+                      placeholder="6-digit code or recovery code"
+                      autoFocus
+                    />
+                  </div>
+                )}
                 {error && (
                   <p className="text-sm text-destructive-foreground">{error}</p>
                 )}

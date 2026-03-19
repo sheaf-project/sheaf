@@ -1,5 +1,7 @@
 # Sheaf
 
+> *noun*: a bundle; in mathematics, a structure that describes how local pieces fit together into a coherent whole.
+
 Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
 
 ## Why
@@ -153,15 +155,14 @@ pytest
 ```
 
 ## Roadmap
-
+- [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
 - [ ] Front change notifications (WebSocket push)
 - [ ] Journals/notes (per-member, encrypted at rest)
 - [ ] PluralKit bidirectional sync
 - [ ] Friend/trust system (cross-system visibility controls)
-- [ ] Configurable delete confirmation (password/TOTP requirement)
 - [ ] Per-field-per-member privacy overrides
 - [ ] Storage quotas (account-wide budget)
-- [ ] iOS app (API-first — OpenAPI spec available for client generation)
+- [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
 - [ ] Terraform module for cloud deployment
 
 ## License

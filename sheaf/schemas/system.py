@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from sheaf.models.system import PrivacyLevel
+from sheaf.models.system import DeleteConfirmation, PrivacyLevel
 
 
 class SystemCreate(BaseModel):
@@ -32,7 +32,14 @@ class SystemRead(BaseModel):
     avatar_url: str | None
     color: str | None
     privacy: PrivacyLevel
+    delete_confirmation: DeleteConfirmation
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DeleteConfirmationUpdate(BaseModel):
+    level: DeleteConfirmation
+    password: str
+    totp_code: str | None = None
