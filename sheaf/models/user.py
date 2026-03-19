@@ -26,6 +26,10 @@ class User(UUIDMixin, TimestampMixin, Base):
     # TOTP 2FA — encrypted at application level
     totp_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Recovery codes — encrypted JSON array of hashed codes
+    recovery_codes: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     tier: Mapped[UserTier] = mapped_column(
         Enum(UserTier),

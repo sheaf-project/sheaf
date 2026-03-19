@@ -12,6 +12,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    totp_code: str | None = None
 
 
 class TokenResponse(BaseModel):
@@ -21,7 +22,7 @@ class TokenResponse(BaseModel):
 
 
 class TokenRefresh(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class UserRead(BaseModel):

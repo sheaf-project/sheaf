@@ -48,8 +48,15 @@ async def serve_file(path: str):
     if settings.storage_backend != "filesystem":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
+    # Reject path traversal at the API layer
+    if ".." in path or path.startswith("/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
     storage = get_storage()
-    data = await storage.get(path)
+    try:
+        data = await storage.get(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST) from exc
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 

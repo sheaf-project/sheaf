@@ -9,29 +9,28 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+/**
+ * Refresh the access token using the HttpOnly refresh cookie.
+ * The cookie is sent automatically by the browser — no localStorage involved.
+ */
 async function refreshAccessToken(): Promise<string | null> {
-  const refreshToken = localStorage.getItem("sheaf_refresh_token");
-  if (!refreshToken) return null;
-
   try {
     const resp = await fetch("/v1/auth/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: JSON.stringify({}),
+      credentials: "same-origin",
     });
 
     if (!resp.ok) {
-      localStorage.removeItem("sheaf_refresh_token");
       accessToken = null;
       return null;
     }
 
     const data = await resp.json();
     accessToken = data.access_token;
-    localStorage.setItem("sheaf_refresh_token", data.refresh_token);
     return accessToken;
   } catch {
-    localStorage.removeItem("sheaf_refresh_token");
     accessToken = null;
     return null;
   }
@@ -62,10 +61,10 @@ export async function apiFetch<T>(
     headers["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  let resp = await fetch(path, { ...options, headers });
+  let resp = await fetch(path, { ...options, headers, credentials: "same-origin" });
 
-  // Auto-refresh on 401
-  if (resp.status === 401 && localStorage.getItem("sheaf_refresh_token")) {
+  // Auto-refresh on 401 using HttpOnly cookie
+  if (resp.status === 401) {
     if (!refreshPromise) {
       refreshPromise = refreshAccessToken();
     }
@@ -74,7 +73,7 @@ export async function apiFetch<T>(
 
     if (newToken) {
       headers["Authorization"] = `Bearer ${newToken}`;
-      resp = await fetch(path, { ...options, headers });
+      resp = await fetch(path, { ...options, headers, credentials: "same-origin" });
     }
   }
 

@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import UTC, datetime
 
 import jwt
@@ -16,6 +18,7 @@ from sheaf.auth.totp import (
     get_provisioning_uri,
     verify_code,
 )
+from sheaf.config import settings
 from sheaf.crypto import blind_index, decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.system import System
@@ -31,6 +34,33 @@ from sheaf.schemas.user import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _hash_recovery_code(code: str) -> str:
+    """Hash a recovery code for storage."""
+    return hashlib.sha256(code.strip().lower().encode()).hexdigest()
+
+
+def _store_recovery_codes(user: User, codes: list[str]) -> None:
+    """Hash and store recovery codes as encrypted JSON."""
+    hashed = [_hash_recovery_code(c) for c in codes]
+    user.recovery_codes = encrypt(json.dumps(hashed))
+
+
+def _check_recovery_code(user: User, code: str) -> bool:
+    """Check a recovery code and consume it if valid."""
+    if not user.recovery_codes:
+        return False
+    try:
+        hashed_codes = json.loads(decrypt(user.recovery_codes))
+    except Exception:
+        return False
+    code_hash = _hash_recovery_code(code)
+    if code_hash in hashed_codes:
+        hashed_codes.remove(code_hash)
+        user.recovery_codes = encrypt(json.dumps(hashed_codes))
+        return True
+    return False
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -73,9 +103,20 @@ async def register(
         samesite="lax",
     )
 
+    refresh_token = create_token(user.id, TokenType.REFRESH)
+    response.set_cookie(
+        key="sheaf_refresh",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        path="/v1/auth",
+    )
+
     return TokenResponse(
         access_token=create_token(user.id, TokenType.ACCESS),
-        refresh_token=create_token(user.id, TokenType.REFRESH),
+        refresh_token=refresh_token,
     )
 
 
@@ -95,6 +136,23 @@ async def login(
             detail="Invalid email or password",
         )
 
+    # Enforce TOTP if enabled
+    if user.totp_enabled:
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="TOTP code required",
+                headers={"X-Sheaf-2FA": "required"},
+            )
+        secret = decrypt(user.totp_secret)
+        if not verify_code(secret, body.totp_code) and not _check_recovery_code(
+            user, body.totp_code
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid TOTP code",
+            )
+
     # Rehash if argon2 params have been upgraded
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
@@ -111,9 +169,20 @@ async def login(
         samesite="lax",
     )
 
+    refresh_token = create_token(user.id, TokenType.REFRESH)
+    response.set_cookie(
+        key="sheaf_refresh",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        path="/v1/auth",
+    )
+
     return TokenResponse(
         access_token=create_token(user.id, TokenType.ACCESS),
-        refresh_token=create_token(user.id, TokenType.REFRESH),
+        refresh_token=refresh_token,
     )
 
 
@@ -125,12 +194,25 @@ async def logout(
     if session_id:
         await delete_session(session_id)
     response.delete_cookie("sheaf_session")
+    response.delete_cookie("sheaf_refresh", path="/v1/auth")
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(body: TokenRefresh):
+async def refresh(
+    response: Response,
+    body: TokenRefresh | None = None,
+    refresh_cookie: str | None = Cookie(default=None, alias="sheaf_refresh"),
+):
+    # Accept refresh token from body (API clients) or HttpOnly cookie (web)
+    token = (body.refresh_token if body and body.refresh_token else None) or refresh_cookie
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No refresh token provided",
+        )
+
     try:
-        payload = decode_token(body.refresh_token)
+        payload = decode_token(token)
         if payload.get("type") != TokenType.REFRESH.value:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -145,9 +227,20 @@ async def refresh(body: TokenRefresh):
             detail="Invalid or expired refresh token",
         ) from exc
 
+    new_refresh = create_token(user_id, TokenType.REFRESH)
+    response.set_cookie(
+        key="sheaf_refresh",
+        value=new_refresh,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        path="/v1/auth",
+    )
+
     return TokenResponse(
         access_token=create_token(user_id, TokenType.ACCESS),
-        refresh_token=create_token(user_id, TokenType.REFRESH),
+        refresh_token=new_refresh,
     )
 
 
@@ -179,8 +272,9 @@ async def totp_setup(
     uri = get_provisioning_uri(secret, email)
     recovery_codes = generate_recovery_codes()
 
-    # Store encrypted secret (not yet enabled — needs verification)
+    # Store encrypted secret and recovery codes (not yet enabled — needs verification)
     user.totp_secret = encrypt(secret)
+    _store_recovery_codes(user, recovery_codes)
 
     return TOTPSetupResponse(
         secret=secret,
@@ -209,3 +303,42 @@ async def totp_verify(
         )
 
     user.totp_enabled = True
+
+
+@router.post("/totp/disable", status_code=status.HTTP_204_NO_CONTENT)
+async def totp_disable(
+    body: UserLogin,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable TOTP. Requires password + current TOTP code for confirmation."""
+    if not user.totp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="2FA is not enabled",
+        )
+
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid password",
+        )
+
+    if not body.totp_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="TOTP code required to disable 2FA",
+        )
+
+    secret = decrypt(user.totp_secret)
+    if not verify_code(secret, body.totp_code) and not _check_recovery_code(
+        user, body.totp_code
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid TOTP code",
+        )
+
+    user.totp_enabled = False
+    user.totp_secret = None
+    user.recovery_codes = None

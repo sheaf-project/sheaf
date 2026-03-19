@@ -17,29 +17,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Try silent refresh on mount
+  // Try silent refresh on mount using HttpOnly cookie
   useEffect(() => {
-    const refreshToken = localStorage.getItem("sheaf_refresh_token");
-    if (!refreshToken) {
-      setLoading(false);
-      return;
-    }
-
     fetch("/v1/auth/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: JSON.stringify({}),
+      credentials: "same-origin",
     })
       .then(async (resp) => {
         if (!resp.ok) throw new Error("refresh failed");
         const data = await resp.json();
         setAccessToken(data.access_token);
-        localStorage.setItem("sheaf_refresh_token", data.refresh_token);
         const me = await authApi.getMe();
         setUser(me);
       })
       .catch(() => {
-        localStorage.removeItem("sheaf_refresh_token");
         setAccessToken(null);
       })
       .finally(() => setLoading(false));
@@ -48,7 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     const tokens = await authApi.login(email, password);
     setAccessToken(tokens.access_token);
-    localStorage.setItem("sheaf_refresh_token", tokens.refresh_token);
+    // Refresh token is set as HttpOnly cookie by the server
     const me = await authApi.getMe();
     setUser(me);
   }, []);
@@ -56,7 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = useCallback(async (email: string, password: string) => {
     const tokens = await authApi.register(email, password);
     setAccessToken(tokens.access_token);
-    localStorage.setItem("sheaf_refresh_token", tokens.refresh_token);
+    // Refresh token is set as HttpOnly cookie by the server
     const me = await authApi.getMe();
     setUser(me);
   }, []);
@@ -66,7 +59,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await authApi.logout();
     } finally {
       setAccessToken(null);
-      localStorage.removeItem("sheaf_refresh_token");
       setUser(null);
     }
   }, []);

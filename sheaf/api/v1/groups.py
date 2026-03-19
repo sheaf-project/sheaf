@@ -84,6 +84,34 @@ async def update_group(
     system = await _get_user_system(user, db)
     group = await _get_own_group(group_id, system, db)
     update_data = body.model_dump(exclude_unset=True)
+
+    # Validate parent_id if being changed
+    if "parent_id" in update_data:
+        new_parent_id = update_data["parent_id"]
+        if new_parent_id is not None:
+            if new_parent_id == group.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A group cannot be its own parent",
+                )
+            # Verify parent belongs to same system
+            await _get_own_group(new_parent_id, system, db)
+            # Check for cycles: walk up from the proposed parent
+            current = new_parent_id
+            visited = {group.id}
+            while current is not None:
+                if current in visited:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Circular parent reference",
+                    )
+                visited.add(current)
+                parent_result = await db.execute(
+                    select(Group).where(Group.id == current, Group.system_id == system.id)
+                )
+                parent = parent_result.scalar_one_or_none()
+                current = parent.parent_id if parent else None
+
     for key, value in update_data.items():
         setattr(group, key, value)
     return group
