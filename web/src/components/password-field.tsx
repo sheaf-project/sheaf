@@ -67,7 +67,7 @@ export function PasswordField({
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>Password</Label>
-      <div className="relative">
+      <div className="flex gap-2">
         <Input
           id={id}
           type={visible ? "text" : "password"}
@@ -75,13 +75,14 @@ export function PasswordField({
           onChange={(e) => onChange(e.target.value)}
           required
           minLength={8}
-          className="pr-10"
+          className="flex-1"
+          autoComplete="new-password"
         />
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:text-foreground"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
           onClick={handleToggle}
           tabIndex={-1}
         >
