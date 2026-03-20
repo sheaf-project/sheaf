@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from sheaf.models.base import Base, TimestampMixin, UUIDMixin
@@ -30,6 +30,10 @@ class User(UUIDMixin, TimestampMixin, Base):
     recovery_codes: Mapped[str | None] = mapped_column(String, nullable=True)
 
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    storage_used_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, nullable=False
+    )
 
     tier: Mapped[UserTier] = mapped_column(
         Enum(UserTier, values_callable=lambda e: [m.value for m in e]),

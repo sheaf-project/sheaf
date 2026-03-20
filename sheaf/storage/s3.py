@@ -58,3 +58,21 @@ class S3Storage(StorageBackend):
             return True
         except ClientError:
             return False
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix)
+        for page in pages:
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+        return keys
+
+    async def size(self, key: str) -> int:
+        try:
+            resp = await self._run(
+                self.client.head_object, Bucket=self.bucket, Key=key
+            )
+            return resp.get("ContentLength", 0)
+        except ClientError:
+            return 0

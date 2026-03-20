@@ -41,3 +41,19 @@ class FilesystemStorage(StorageBackend):
             return self._safe_path(key).exists()
         except ValueError:
             return False
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        base = self._safe_path(prefix)
+        if not base.exists():
+            return []
+        keys = []
+        for path in base.rglob("*"):
+            if path.is_file():
+                keys.append(str(path.relative_to(self.root)))
+        return keys
+
+    async def size(self, key: str) -> int:
+        path = self._safe_path(key)
+        if not path.exists():
+            return 0
+        return path.stat().st_size

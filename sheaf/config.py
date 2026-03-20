@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     s3_endpoint: str = ""  # For MinIO/R2 compatibility
     s3_public_url: str = ""  # CDN URL prefix, if any
     max_upload_size_mb: int = 5
+    # Storage quotas per tier (MB). 0 = unlimited.
+    storage_quota_free_mb: int = 50
+    storage_quota_plus_mb: int = 500
+    storage_quota_selfhosted_mb: int = 0  # unlimited
 
     # Server
     sheaf_port: int = 8000

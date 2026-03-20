@@ -165,8 +165,8 @@ pytest
 - [ ] PluralKit bidirectional sync
 - [ ] Friend/trust system (cross-system visibility controls)
 - [ ] Per-field-per-member privacy overrides
-- [ ] Storage quotas (account-wide budget)
-- [ ] Orphaned file cleanup (images uploaded but never attached to a member/system)
+- [x] Storage quotas (per-tier account-wide budget)
+- [x] Orphaned file cleanup (images uploaded but never attached to a member/system)
 - [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
 - [ ] Prometheus-compatible /metrics endpoint
 - [ ] Terraform module for cloud deployment

@@ -23,6 +23,14 @@ class StorageBackend(abc.ABC):
     async def exists(self, key: str) -> bool:
         """Check if a file exists."""
 
+    @abc.abstractmethod
+    async def list_keys(self, prefix: str) -> list[str]:
+        """List all keys under a prefix."""
+
+    @abc.abstractmethod
+    async def size(self, key: str) -> int:
+        """Return the size of a file in bytes. 0 if not found."""
+
 
 def get_storage() -> "StorageBackend":
     global _backend
