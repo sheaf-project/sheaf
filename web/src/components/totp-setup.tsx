@@ -1,0 +1,213 @@
+import { type FormEvent, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
+import { useAuth } from "@/hooks/use-auth";
+import { totpSetup, totpVerify, totpDisable, type TOTPSetupResponse } from "@/lib/auth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
+type Step = "idle" | "qr" | "recovery" | "done";
+
+export function TOTPSetup() {
+  const { user, refreshUser } = useAuth();
+  const [step, setStep] = useState<Step>("idle");
+  const [setup, setSetup] = useState<TOTPSetupResponse | null>(null);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleBeginSetup() {
+    setError("");
+    setLoading(true);
+    try {
+      const data = await totpSetup();
+      setSetup(data);
+      setStep("qr");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Setup failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerify(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await totpVerify(code);
+      setStep("recovery");
+      await refreshUser();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Verification failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (user?.totp_enabled && step === "idle") {
+    return <TOTPDisable />;
+  }
+
+  if (step === "idle") {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          Add an extra layer of security with a TOTP authenticator app.
+        </p>
+        <Button onClick={handleBeginSetup} disabled={loading}>
+          {loading ? "Setting up..." : "Enable 2FA"}
+        </Button>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+      </div>
+    );
+  }
+
+  if (step === "qr" && setup) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Scan this QR code with your authenticator app, then enter the 6-digit code to confirm.
+        </p>
+        <div className="flex justify-center rounded-lg bg-white p-4 w-fit mx-auto">
+          <QRCodeSVG value={setup.provisioning_uri} size={200} />
+        </div>
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground">
+            Can't scan? Enter manually
+          </summary>
+          <code className="mt-1 block break-all rounded bg-muted p-2 text-xs">
+            {setup.secret}
+          </code>
+        </details>
+        <form onSubmit={handleVerify} className="space-y-2">
+          <Label>Verification code</Label>
+          <div className="flex gap-2">
+            <Input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="000000"
+              maxLength={6}
+              pattern="[0-9]{6}"
+              required
+              className="w-32"
+              autoFocus
+            />
+            <Button type="submit" disabled={loading || code.length !== 6}>
+              {loading ? "Verifying..." : "Verify"}
+            </Button>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </form>
+      </div>
+    );
+  }
+
+  if (step === "recovery" && setup) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm font-medium text-green-600">
+          2FA is now enabled.
+        </p>
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Save these recovery codes somewhere safe. Each code can only be used once.
+            If you lose access to your authenticator, these are the only way to regain access.
+          </p>
+          <div className="grid grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-3">
+            {setup.recovery_codes.map((c) => (
+              <code key={c} className="text-sm font-mono">{c}</code>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              navigator.clipboard.writeText(setup.recovery_codes.join("\n"));
+            }}
+          >
+            Copy to clipboard
+          </Button>
+        </div>
+        <Button onClick={() => { setStep("idle"); setSetup(null); setCode(""); }}>
+          Done
+        </Button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function TOTPDisable() {
+  const { user, refreshUser } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleDisable(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await totpDisable(user!.email, password, totpCode);
+      await refreshUser();
+      setConfirming(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disable 2FA");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!confirming) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          2FA is enabled. Your account is protected with a TOTP authenticator.
+        </p>
+        <Button variant="outline" onClick={() => setConfirming(true)}>
+          Disable 2FA
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={handleDisable} className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        Enter your password and a current TOTP code to disable 2FA.
+      </p>
+      <div className="space-y-1">
+        <Label className="text-sm">Password</Label>
+        <Input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+        />
+      </div>
+      <div className="space-y-1">
+        <Label className="text-sm">TOTP code</Label>
+        <Input
+          value={totpCode}
+          onChange={(e) => setTotpCode(e.target.value)}
+          placeholder="000000"
+          maxLength={6}
+          required
+        />
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <div className="flex gap-2">
+        <Button type="submit" variant="destructive" disabled={loading}>
+          {loading ? "Disabling..." : "Disable 2FA"}
+        </Button>
+        <Button type="button" variant="outline" onClick={() => setConfirming(false)}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}

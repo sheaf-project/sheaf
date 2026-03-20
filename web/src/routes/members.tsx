@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
+import { AvatarUpload } from "@/components/avatar-upload";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
-import { ColorDot } from "@/components/color-dot";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -40,6 +41,7 @@ function MemberForm({
   submitLabel: string;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
+  const [avatarUrl, setAvatarUrl] = useState(initial?.avatar_url ?? null);
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? "");
   const [color, setColor] = useState(initial?.color ?? "#6366f1");
   const [description, setDescription] = useState(initial?.description ?? "");
@@ -50,6 +52,7 @@ function MemberForm({
     e.preventDefault();
     onSubmit({
       name,
+      avatar_url: avatarUrl,
       pronouns: pronouns || null,
       color: color || null,
       description: description || null,
@@ -60,6 +63,12 @@ function MemberForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      <AvatarUpload
+        url={avatarUrl}
+        fallback={name.charAt(0).toUpperCase() || "?"}
+        onUpload={setAvatarUrl}
+        onRemove={() => setAvatarUrl(null)}
+      />
       <div className="space-y-2">
         <Label>Name</Label>
         <Input value={name} onChange={(e) => setName(e.target.value)} required />
@@ -309,7 +318,14 @@ export function MembersPage() {
               onClick={() => setEditing(m)}
             >
               <CardContent className="flex items-center gap-3 p-4">
-                <ColorDot color={m.color} className="h-4 w-4" />
+                <Avatar>
+                  {m.avatar_url && <AvatarImage src={m.avatar_url} />}
+                  <AvatarFallback
+                    style={m.color ? { backgroundColor: m.color, color: "#fff" } : undefined}
+                  >
+                    {m.name.charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
                 <div className="min-w-0 flex-1">
                   <p className="font-medium truncate">{m.name}</p>
                   {m.pronouns && (

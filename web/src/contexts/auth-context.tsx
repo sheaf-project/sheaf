@@ -9,6 +9,7 @@ interface AuthState {
   login: (email: string, password: string, totp_code?: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthState | null>(null);
@@ -54,6 +55,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(me);
   }, []);
 
+  const refreshUser = useCallback(async () => {
+    const me = await authApi.getMe();
+    setUser(me);
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await authApi.logout();
@@ -64,7 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

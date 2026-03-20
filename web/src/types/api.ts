@@ -38,6 +38,7 @@ export interface SystemUpdate {
   avatar_url?: string | null;
   color?: string | null;
   privacy?: PrivacyLevel;
+  date_format?: DateFormat;
 }
 
 export interface Member {

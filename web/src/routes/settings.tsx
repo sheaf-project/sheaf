@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useTags, useCreateTag, useUpdateTag, useDeleteTag } from "@/hooks/use-tags";
 import { useCustomFields, useCreateField, useUpdateField, useDeleteField } from "@/hooks/use-custom-fields";
 import { getMySystem, updateMySystem, updateDeleteConfirmation, exportData } from "@/lib/systems";
+import { AvatarUpload } from "@/components/avatar-upload";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { dateFormatLabels } from "@/lib/date-format";
+import { TOTPSetup } from "@/components/totp-setup";
 import type { DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 
 function SystemSettings() {
@@ -51,21 +53,23 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat };
-  onSubmit: (data: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat }) => void;
+  initial: { name: string; description: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat };
+  onSubmit: (data: { name: string; description: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
+  const [avatarUrl, setAvatarUrl] = useState(initial.avatar_url);
   const [description, setDescription] = useState(initial.description ?? "");
   const [tag, setTag] = useState(initial.tag ?? "");
   const [color, setColor] = useState(initial.color ?? "");
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial.privacy);
-  const [dateFormat, setDateFormat] = useState<DateFormat>(initial.date_format);
+  const [dateFormat, setDateFormat] = useState<DateFormat>(initial.date_format ?? "ymd");
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     onSubmit({
       name,
+      avatar_url: avatarUrl,
       description: description || null,
       tag: tag || null,
       color: color || null,
@@ -81,6 +85,12 @@ function SystemSettingsForm({
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
+          <AvatarUpload
+            url={avatarUrl}
+            fallback={name.charAt(0).toUpperCase() || "?"}
+            onUpload={setAvatarUrl}
+            onRemove={() => setAvatarUrl(null)}
+          />
           <div className="space-y-2">
             <Label>Name</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} required />
@@ -547,17 +557,20 @@ function AccountInfo() {
       <CardHeader>
         <CardTitle className="text-base">Account</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2 text-sm">
-        <div>
-          <span className="text-muted-foreground">Email:</span> {user?.email}
+      <CardContent className="space-y-4 text-sm">
+        <div className="space-y-2">
+          <div>
+            <span className="text-muted-foreground">Email:</span> {user?.email}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Tier:</span>{" "}
+            <Badge variant="outline">{user?.tier}</Badge>
+          </div>
         </div>
-        <div>
-          <span className="text-muted-foreground">2FA:</span>{" "}
-          {user?.totp_enabled ? "Enabled" : "Disabled"}
-        </div>
-        <div>
-          <span className="text-muted-foreground">Tier:</span>{" "}
-          <Badge variant="outline">{user?.tier}</Badge>
+        <Separator />
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Two-factor authentication</p>
+          <TOTPSetup />
         </div>
       </CardContent>
     </Card>

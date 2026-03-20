@@ -87,7 +87,7 @@ export function DatePicker({
           onChange={(e) => setYearOptional(e.target.checked)}
           className="rounded"
         />
-        Year optional
+        No birth year
       </label>
     </div>
   );
