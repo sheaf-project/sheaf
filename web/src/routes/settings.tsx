@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useTags, useCreateTag, useUpdateTag, useDeleteTag } from "@/hooks/use-tags";
 import { useCustomFields, useCreateField, useUpdateField, useDeleteField } from "@/hooks/use-custom-fields";
 import { getMySystem, updateMySystem, updateDeleteConfirmation, exportData } from "@/lib/systems";
+import { getStorageUsage, cleanupFiles } from "@/lib/files";
 import { AvatarUpload } from "@/components/avatar-upload";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
@@ -578,6 +579,80 @@ function AccountInfo() {
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function StorageUsageCard() {
+  const qc = useQueryClient();
+  const { data: usage } = useQuery({
+    queryKey: ["storage", "usage"],
+    queryFn: getStorageUsage,
+  });
+  const cleanup = useMutation({
+    mutationFn: cleanupFiles,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["storage", "usage"] }),
+  });
+
+  if (!usage) return null;
+
+  const unlimited = usage.quota_bytes === 0;
+  const percent = unlimited ? 0 : Math.round((usage.used_bytes / usage.quota_bytes) * 100);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Storage</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <div className="flex justify-between text-sm">
+            <span>{formatBytes(usage.used_bytes)} used</span>
+            <span className="text-muted-foreground">
+              {unlimited ? "Unlimited" : formatBytes(usage.quota_bytes)}
+            </span>
+          </div>
+          {!unlimited && (
+            <div className="h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  percent > 90 ? "bg-red-500" : percent > 70 ? "bg-yellow-500" : "bg-green-500"
+                }`}
+                style={{ width: `${Math.min(percent, 100)}%` }}
+              />
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            Remove unused uploaded images to free space
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => cleanup.mutate()}
+            disabled={cleanup.isPending}
+          >
+            {cleanup.isPending ? "Cleaning..." : "Clean up"}
+          </Button>
+        </div>
+        {cleanup.data && cleanup.data.orphaned > 0 && (
+          <p className="text-xs text-green-600">
+            Removed {cleanup.data.orphaned} file{cleanup.data.orphaned !== 1 ? "s" : ""}, freed {formatBytes(cleanup.data.freed_bytes)}
+          </p>
+        )}
+        {cleanup.data && cleanup.data.orphaned === 0 && (
+          <p className="text-xs text-muted-foreground">No orphaned files found</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function DisplayPreferences() {
   const [showBadges, setShowBadges] = useShowImageBadges();
 
@@ -619,6 +694,7 @@ export function SettingsPage() {
         <DisplayPreferences />
         <Separator />
         <AccountInfo />
+        <StorageUsageCard />
         <DataExport />
         <Card>
           <CardHeader>

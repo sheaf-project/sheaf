@@ -5,7 +5,7 @@ import { uploadFile } from "@/lib/files";
 import { useShowImageBadges } from "@/hooks/use-preferences";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ImagePlus, Bold, Italic, Link, Code, Tag, TagOff } from "lucide-react";
+import { ImagePlus, Bold, Italic, Link, Code, Tags, Tag } from "lucide-react";
 
 function isHostedImage(src: string) {
   return src.startsWith("/v1/files/");
@@ -209,7 +209,7 @@ export function BioEditor({
                 onClick={() => setShowBadges(!showBadges)}
                 title={showBadges ? "Hide image source badges" : "Show image source badges"}
               >
-                {showBadges ? <TagOff className="h-3 w-3" /> : <Tag className="h-3 w-3" />}
+                {showBadges ? <Tags className="h-3 w-3" /> : <Tag className="h-3 w-3" />}
                 {showBadges ? "Hide badges" : "Show badges"}
               </Button>
             </div>
