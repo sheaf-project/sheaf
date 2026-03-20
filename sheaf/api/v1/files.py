@@ -102,7 +102,7 @@ async def cleanup_dry_run(
     return result
 
 
-@router.get("/{path:path}")
+@router.get("/serve/{path:path}")
 async def serve_file(path: str):
     """Serve files from filesystem storage. Not used when S3 backend is active."""
     if settings.storage_backend != "filesystem":
