@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { uploadFile } from "@/lib/files";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Camera, X } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Camera, X, Link } from "lucide-react";
 
 export function AvatarUpload({
   url,
@@ -18,6 +19,8 @@ export function AvatarUpload({
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlValue, setUrlValue] = useState("");
 
   async function handleFile(file: File) {
     setError("");
@@ -42,6 +45,15 @@ export function AvatarUpload({
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file && file.type.startsWith("image/")) handleFile(file);
+  }
+
+  function handleUrlSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (urlValue.trim()) {
+      onUpload(urlValue.trim());
+      setUrlValue("");
+      setShowUrlInput(false);
+    }
   }
 
   return (
@@ -78,6 +90,15 @@ export function AvatarUpload({
           >
             {uploading ? "Uploading..." : "Upload"}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowUrlInput(!showUrlInput)}
+            title="Use image URL"
+          >
+            <Link className="h-3 w-3" />
+          </Button>
           {url && onRemove && (
             <Button
               type="button"
@@ -89,6 +110,21 @@ export function AvatarUpload({
             </Button>
           )}
         </div>
+        {showUrlInput && (
+          <form onSubmit={handleUrlSubmit} className="flex gap-1">
+            <Input
+              value={urlValue}
+              onChange={(e) => setUrlValue(e.target.value)}
+              placeholder="https://..."
+              className="h-7 text-xs"
+              type="url"
+              autoFocus
+            />
+            <Button type="submit" size="sm" variant="ghost" className="h-7 px-2 text-xs">
+              Set
+            </Button>
+          </form>
+        )}
         {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
     </div>

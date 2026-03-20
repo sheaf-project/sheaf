@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     storage_quota_free_mb: int = 50
     storage_quota_plus_mb: int = 500
     storage_quota_selfhosted_mb: int = 0  # unlimited
+    # Member limits per tier. 0 = unlimited.
+    member_limit_free: int = 512
+    member_limit_plus: int = 0  # unlimited
+    member_limit_selfhosted: int = 0  # unlimited
 
     # Server
     sheaf_port: int = 8000

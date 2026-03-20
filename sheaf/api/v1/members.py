@@ -1,17 +1,18 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import verify_code
+from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.models.member import Member
 from sheaf.models.system import DeleteConfirmation, System
-from sheaf.models.user import User
+from sheaf.models.user import User, UserTier
 from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
 
 router = APIRouter(prefix="/members", tags=["members"])
@@ -49,6 +50,20 @@ async def list_members(
     return result.scalars().all()
 
 
+_MEMBER_LIMIT_MAP = {
+    UserTier.FREE: lambda: settings.member_limit_free,
+    UserTier.PLUS: lambda: settings.member_limit_plus,
+    UserTier.SELF_HOSTED: lambda: settings.member_limit_selfhosted,
+}
+
+
+def _get_member_limit(user: User) -> int:
+    """Return the member limit for a user. 0 means unlimited."""
+    if user.member_limit is not None:
+        return user.member_limit
+    return _MEMBER_LIMIT_MAP.get(user.tier, lambda: 0)()
+
+
 @router.post("", response_model=MemberRead, status_code=status.HTTP_201_CREATED)
 async def create_member(
     body: MemberCreate,
@@ -56,6 +71,19 @@ async def create_member(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
+
+    limit = _get_member_limit(user)
+    if limit > 0:
+        result = await db.execute(
+            select(func.count()).where(Member.system_id == system.id)
+        )
+        count = result.scalar_one()
+        if count >= limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Member limit reached ({limit}). Contact support for an increase.",
+            )
+
     member = Member(system_id=system.id, **body.model_dump())
     db.add(member)
     await db.flush()

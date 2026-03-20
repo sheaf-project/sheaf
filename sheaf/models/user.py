@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from sheaf.models.base import Base, TimestampMixin, UUIDMixin
@@ -34,6 +34,9 @@ class User(UUIDMixin, TimestampMixin, Base):
     storage_used_bytes: Mapped[int] = mapped_column(
         BigInteger, default=0, nullable=False
     )
+
+    # Nullable = use tier default. Set by admin to override (support request).
+    member_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     tier: Mapped[UserTier] = mapped_column(
         Enum(UserTier, values_callable=lambda e: [m.value for m in e]),

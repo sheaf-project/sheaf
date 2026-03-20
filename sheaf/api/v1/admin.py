@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,4 +47,30 @@ async def run_cleanup(
         "users_checked": len(user_ids),
         "total_orphaned": total_orphaned,
         "total_freed_bytes": total_freed,
+    }
+
+
+class MemberLimitOverride(BaseModel):
+    member_limit: int | None = None  # null = reset to tier default
+
+
+@router.put("/users/{user_id}/member-limit")
+async def set_member_limit(
+    user_id: uuid.UUID,
+    body: MemberLimitOverride,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set or reset a user's member limit override. Admin only."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    target.member_limit = body.member_limit
+    return {
+        "user_id": str(user_id),
+        "member_limit": target.member_limit,
+        "note": "null means tier default applies",
     }
