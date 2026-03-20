@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from sheaf.models.system import DeleteConfirmation, PrivacyLevel
+from sheaf.models.system import DateFormat, DeleteConfirmation, PrivacyLevel
 
 
 class SystemCreate(BaseModel):
@@ -22,6 +22,7 @@ class SystemUpdate(BaseModel):
     avatar_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     privacy: PrivacyLevel | None = None
+    date_format: DateFormat | None = None
 
 
 class SystemRead(BaseModel):
@@ -33,6 +34,7 @@ class SystemRead(BaseModel):
     color: str | None
     privacy: PrivacyLevel
     delete_confirmation: DeleteConfirmation
+    date_format: DateFormat
     created_at: datetime
     updated_at: datetime
 

@@ -14,6 +14,12 @@ class PrivacyLevel(enum.StrEnum):
     PRIVATE = "private"
 
 
+class DateFormat(enum.StrEnum):
+    DMY = "dmy"  # 19/03/2026
+    MDY = "mdy"  # 03/19/2026
+    YMD = "ymd"  # 2026-03-19
+
+
 class DeleteConfirmation(enum.StrEnum):
     NONE = "none"
     PASSWORD = "password"
@@ -44,6 +50,11 @@ class System(UUIDMixin, TimestampMixin, Base):
     delete_confirmation: Mapped[DeleteConfirmation] = mapped_column(
         Enum(DeleteConfirmation, values_callable=lambda e: [m.value for m in e]),
         default=DeleteConfirmation.NONE,
+        nullable=False,
+    )
+    date_format: Mapped[DateFormat] = mapped_column(
+        Enum(DateFormat, values_callable=lambda e: [m.value for m in e]),
+        default=DateFormat.YMD,
         nullable=False,
     )
 

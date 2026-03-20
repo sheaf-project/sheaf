@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PasswordField } from "@/components/password-field";
 import { ApiError } from "@/lib/api-client";
 import { Sun, Moon } from "lucide-react";
 
@@ -136,20 +137,11 @@ export function LoginPage() {
                     required
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="reg-password">Password</Label>
-                  <Input
-                    id="reg-password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    minLength={8}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Minimum 8 characters
-                  </p>
-                </div>
+                <PasswordField
+                  id="reg-password"
+                  value={password}
+                  onChange={setPassword}
+                />
                 {error && (
                   <p className="text-sm text-destructive-foreground">{error}</p>
                 )}

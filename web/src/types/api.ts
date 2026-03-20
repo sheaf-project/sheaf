@@ -1,5 +1,6 @@
 export type PrivacyLevel = "public" | "friends" | "private";
 export type DeleteConfirmation = "none" | "password" | "totp" | "both";
+export type DateFormat = "dmy" | "mdy" | "ymd";
 
 export interface TokenResponse {
   access_token: string;
@@ -25,6 +26,7 @@ export interface System {
   color: string | null;
   privacy: PrivacyLevel;
   delete_confirmation: DeleteConfirmation;
+  date_format: DateFormat;
   created_at: string;
   updated_at: string;
 }

@@ -20,7 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
+import { dateFormatLabels } from "@/lib/date-format";
+import type { DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 
 function SystemSettings() {
   const qc = useQueryClient();
@@ -50,8 +51,8 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel };
-  onSubmit: (data: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel }) => void;
+  initial: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat };
+  onSubmit: (data: { name: string; description: string | null; tag: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
@@ -59,6 +60,7 @@ function SystemSettingsForm({
   const [tag, setTag] = useState(initial.tag ?? "");
   const [color, setColor] = useState(initial.color ?? "");
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial.privacy);
+  const [dateFormat, setDateFormat] = useState<DateFormat>(initial.date_format);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -68,6 +70,7 @@ function SystemSettingsForm({
       tag: tag || null,
       color: color || null,
       privacy,
+      date_format: dateFormat,
     });
   }
 
@@ -127,6 +130,19 @@ function SystemSettingsForm({
                 <SelectItem value="private">Private</SelectItem>
                 <SelectItem value="friends">Friends only</SelectItem>
                 <SelectItem value="public">Public</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Date format</Label>
+            <Select value={dateFormat} onValueChange={(v) => setDateFormat(v as DateFormat)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.entries(dateFormatLabels) as [DateFormat, string][]).map(([k, v]) => (
+                  <SelectItem key={k} value={k}>{v}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

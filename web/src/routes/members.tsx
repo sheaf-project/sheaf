@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
+import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { Button } from "@/components/ui/button";
@@ -91,10 +92,10 @@ function MemberForm({
         </div>
         <div className="space-y-2">
           <Label>Birthday</Label>
-          <Input
+          <DatePicker
             value={birthday}
-            onChange={(e) => setBirthday(e.target.value)}
-            placeholder="MM-DD or YYYY-MM-DD"
+            onChange={setBirthday}
+            placeholder="Birthday"
           />
         </div>
       </div>
