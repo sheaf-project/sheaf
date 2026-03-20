@@ -92,10 +92,12 @@ async def register(
     # Auto-create a system for the user
     system = System(user_id=user.id, name="My System")
     db.add(system)
+
+    # Create session before committing so a Redis failure rolls back the DB
+    session_id = await create_session(user.id)
+
     await db.commit()
 
-    # Create session cookie
-    session_id = await create_session(user.id)
     response.set_cookie(
         key="sheaf_session",
         value=session_id,
@@ -159,10 +161,12 @@ async def login(
         user.password_hash = hash_password(body.password)
 
     user.last_login_at = datetime.now(UTC)
+
+    # Create session before committing so a Redis failure rolls back the DB
+    session_id = await create_session(user.id)
+
     await db.commit()
 
-    # Create session cookie
-    session_id = await create_session(user.id)
     response.set_cookie(
         key="sheaf_session",
         value=session_id,

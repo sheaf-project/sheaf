@@ -1,10 +1,12 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, lazy, Suspense, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { AvatarUpload } from "@/components/avatar-upload";
-import { BioEditor, MarkdownPreview } from "@/components/bio-editor";
+
+const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
+const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
@@ -112,7 +114,9 @@ function MemberForm({
       </div>
       <div className="space-y-2">
         <Label>Bio</Label>
-        <BioEditor value={description} onChange={setDescription} />
+        <Suspense fallback={<div className="h-[120px] rounded-md border border-input" />}>
+          <BioEditor value={description} onChange={setDescription} />
+        </Suspense>
       </div>
       <div className="space-y-2">
         <Label>Privacy</Label>
@@ -349,7 +353,9 @@ function MemberView({
           {/* Bio */}
           {member.description && (
             <div className="rounded-md border bg-muted/30 px-3 py-2">
-              <MarkdownPreview content={member.description} />
+              <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
+                <MarkdownPreview content={member.description} />
+              </Suspense>
             </div>
           )}
 

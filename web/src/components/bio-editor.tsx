@@ -107,13 +107,16 @@ export function BioEditor({
     });
   }
 
+  const [uploadError, setUploadError] = useState("");
+
   async function handleImageUpload(file: File) {
+    setUploadError("");
     setUploading(true);
     try {
       const res = await uploadFile(file);
       insertAtCursor(`![image](${res.url})`);
-    } catch {
-      // Silently fail — user can retry
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
     }
@@ -189,7 +192,7 @@ export function BioEditor({
             </div>
           )}
         </div>
-        <TabsContent value="write" className="mt-1">
+        <TabsContent value="write" className="mt-1 space-y-1">
           <textarea
             ref={textareaRef}
             value={value}
@@ -197,6 +200,9 @@ export function BioEditor({
             className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-y"
             placeholder="Write a bio... (supports markdown)"
           />
+          {uploadError && (
+            <p className="text-xs text-destructive">{uploadError}</p>
+          )}
         </TabsContent>
         <TabsContent value="preview" className="mt-1">
           <div className="min-h-[120px] rounded-md border border-input bg-background px-3 py-2">

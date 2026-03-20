@@ -30,7 +30,7 @@ export function DatePicker({
   includeYear?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [yearOptional, setYearOptional] = useState(!includeYear || (value && !value.includes("-", 3)));
+  const [yearOptional, setYearOptional] = useState(!includeYear || !!(value && !value.includes("-", 3)));
 
   const date = parseValue(value);
 
