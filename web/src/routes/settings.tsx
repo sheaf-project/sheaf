@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { dateFormatLabels } from "@/lib/date-format";
+import { useShowImageBadges } from "@/hooks/use-preferences";
 import { TOTPSetup } from "@/components/totp-setup";
 import type { DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 
@@ -577,6 +578,35 @@ function AccountInfo() {
   );
 }
 
+function DisplayPreferences() {
+  const [showBadges, setShowBadges] = useShowImageBadges();
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Display</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">Image source badges</p>
+            <p className="text-xs text-muted-foreground">
+              Show hosted/external labels on images in bios
+            </p>
+          </div>
+          <Button
+            variant={showBadges ? "default" : "outline"}
+            size="sm"
+            onClick={() => setShowBadges(!showBadges)}
+          >
+            {showBadges ? "On" : "Off"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   return (
     <>
@@ -586,6 +616,7 @@ export function SettingsPage() {
         <TagsManager />
         <CustomFieldsManager />
         <DeleteConfirmationSetting />
+        <DisplayPreferences />
         <Separator />
         <AccountInfo />
         <DataExport />

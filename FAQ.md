@@ -96,6 +96,10 @@ It's on the roadmap. Bidirectional sync (pushing switches to PK and/or pulling f
 
 Yes! See [CONTRIBUTING.md](CONTRIBUTING.md). We welcome code contributions, bug reports, feature suggestions, and documentation improvements.
 
+### What contributions are you most interested in receiving?
+
+At this time, probably the web UI and Android app, although PRs are welcome for all aspects.
+
 ## Terminology
 
 ### What does "system" mean?

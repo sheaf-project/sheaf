@@ -26,6 +26,10 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **2FA** — Optional TOTP
 - **Eye-friendly** — Default dark, with Dark Reader compatibility and a clear light toggle
 
+## FAQ
+
+See [FAQ.md](FAQ.md)
+
 ## Quick Start
 
 ```bash
@@ -162,11 +166,13 @@ pytest
 - [ ] Friend/trust system (cross-system visibility controls)
 - [ ] Per-field-per-member privacy overrides
 - [ ] Storage quotas (account-wide budget)
+- [ ] Orphaned file cleanup (images uploaded but never attached to a member/system)
 - [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
+- [ ] Prometheus-compatible /metrics endpoint
 - [ ] Terraform module for cloud deployment
 
 ## License
 
-[AGPL-3.0-or-later](AGPL-3.0.txt)
+[AGPL-3.0-or-later](LICENSE)
 
 This means: you can self-host, modify, and run Sheaf however you want. If you run a modified version as a public service, you must share your modifications under the same license.

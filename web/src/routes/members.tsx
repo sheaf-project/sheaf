@@ -4,9 +4,11 @@ import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { AvatarUpload } from "@/components/avatar-upload";
+import { BioEditor, MarkdownPreview } from "@/components/bio-editor";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
+import { Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -109,12 +111,8 @@ function MemberForm({
         </div>
       </div>
       <div className="space-y-2">
-        <Label>Description</Label>
-        <Input
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Optional"
-        />
+        <Label>Bio</Label>
+        <BioEditor value={description} onChange={setDescription} />
       </div>
       <div className="space-y-2">
         <Label>Privacy</Label>
@@ -288,12 +286,97 @@ function DeleteMemberDialog({
   );
 }
 
+function MemberView({
+  member,
+  onEdit,
+  onClose,
+}: {
+  member: Member;
+  onEdit: () => void;
+  onClose: () => void;
+}) {
+  const { data: fields } = useCustomFields();
+  const { data: values } = useMemberFieldValues(member.id);
+
+  const fieldDisplay = useMemo(() => {
+    if (!fields || !values) return [];
+    const valMap: Record<string, string> = {};
+    for (const v of values) {
+      valMap[v.field_id] = typeof v.value === "object" && v.value !== null
+        ? ((v.value as Record<string, unknown>).v as string ?? "")
+        : String(v.value ?? "");
+    }
+    return fields
+      .filter((f) => valMap[f.id])
+      .map((f) => ({ name: f.name, value: valMap[f.id] }));
+  }, [fields, values]);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <div className="flex items-center justify-between">
+            <DialogTitle className="sr-only">{member.name}</DialogTitle>
+            <Button variant="ghost" size="sm" onClick={onEdit}>
+              <Pencil className="h-3.5 w-3.5 mr-1" />
+              Edit
+            </Button>
+          </div>
+        </DialogHeader>
+        <div className="space-y-4">
+          {/* Header: avatar + name + pronouns */}
+          <div className="flex items-center gap-4">
+            <Avatar className="size-16">
+              {member.avatar_url && <AvatarImage src={member.avatar_url} />}
+              <AvatarFallback
+                className="text-xl"
+                style={member.color ? { backgroundColor: member.color, color: "#fff" } : undefined}
+              >
+                {member.name.charAt(0).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="text-lg font-semibold">{member.name}</p>
+              {member.pronouns && (
+                <p className="text-sm text-muted-foreground">{member.pronouns}</p>
+              )}
+              {member.birthday && (
+                <p className="text-sm text-muted-foreground">{member.birthday}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Bio */}
+          {member.description && (
+            <div className="rounded-md border bg-muted/30 px-3 py-2">
+              <MarkdownPreview content={member.description} />
+            </div>
+          )}
+
+          {/* Custom fields */}
+          {fieldDisplay.length > 0 && (
+            <div className="space-y-1">
+              {fieldDisplay.map((f) => (
+                <div key={f.name} className="flex gap-2 text-sm">
+                  <span className="text-muted-foreground">{f.name}:</span>
+                  <span>{f.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function MembersPage() {
   const { data: members, isLoading } = useMembers();
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
   const createMember = useCreateMember();
   const updateMember = useUpdateMember();
   const [showCreate, setShowCreate] = useState(false);
+  const [viewing, setViewing] = useState<Member | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
   const [deleting, setDeleting] = useState<Member | null>(null);
 
@@ -315,7 +398,7 @@ export function MembersPage() {
             <Card
               key={m.id}
               className="cursor-pointer transition-colors hover:bg-accent/50"
-              onClick={() => setEditing(m)}
+              onClick={() => setViewing(m)}
             >
               <CardContent className="flex items-center gap-3 p-4">
                 <Avatar>
@@ -340,6 +423,18 @@ export function MembersPage() {
         <p className="text-muted-foreground">
           No members yet. Create your first member to get started.
         </p>
+      )}
+
+      {/* View dialog */}
+      {viewing && (
+        <MemberView
+          member={viewing}
+          onEdit={() => {
+            setEditing(viewing);
+            setViewing(null);
+          }}
+          onClose={() => setViewing(null)}
+        />
       )}
 
       {/* Create dialog */}
@@ -373,7 +468,12 @@ export function MembersPage() {
                 onSubmit={(data) =>
                   updateMember.mutate(
                     { id: editing.id, data },
-                    { onSuccess: () => setEditing(null) },
+                    {
+                      onSuccess: (updated) => {
+                        setEditing(null);
+                        setViewing(updated);
+                      },
+                    },
                   )
                 }
                 loading={updateMember.isPending}
