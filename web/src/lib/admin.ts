@@ -51,5 +51,5 @@ export function runCleanup() {
 }
 
 export function runStorageAudit() {
-  return apiFetch<{ message: string; users_audited: number; corrected: number }>("/v1/admin/storage/audit", { method: "POST" });
+  return apiFetch<{ users_checked: number; users_corrected: number }>("/v1/admin/storage/audit", { method: "POST" });
 }

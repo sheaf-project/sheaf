@@ -61,7 +61,7 @@ export function AdminDashboard() {
   });
   const audit = useMutation({
     mutationFn: runStorageAudit,
-    onSuccess: (d) => setAuditResult(`Audited ${d.users_audited} user(s), corrected ${d.corrected}`),
+    onSuccess: (d) => setAuditResult(`Audited ${d.users_checked} user(s), corrected ${d.users_corrected}`),
   });
 
   return (
