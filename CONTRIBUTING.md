@@ -40,12 +40,21 @@ The API runs on `http://localhost:8000` (docs at `/v1/docs`), and the web UI on 
 
 ### Running tests
 
-Tests are integration tests that need the server running:
+Tests are integration tests that hit a running server. Start the server first, then run pytest:
 
 ```bash
-# Start the server first, then:
+uvicorn sheaf.main:app --reload &
 pytest -v
 ```
+
+If you're running tests **outside Docker** (e.g. `uvicorn` on your host machine connecting to `docker compose up db redis -d`), you also need `SHEAF_TEST_DB_URL` so the `admin_client` test fixture can directly promote a test user to admin in the DB. The default `DATABASE_URL` uses Docker's internal `db` hostname, which isn't reachable from your host:
+
+```bash
+export SHEAF_TEST_DB_URL="postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/sheaf"
+pytest -v
+```
+
+Replace `<POSTGRES_PASSWORD>` with the value from your `.env`. If you run the full stack inside Docker (`docker compose up -d`), the server manages all DB access internally and `SHEAF_TEST_DB_URL` is not needed — but tests must be run inside the container in that case.
 
 ### Linting
 

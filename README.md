@@ -91,7 +91,9 @@ sheaf/
 
 All endpoints are under `/v1/`. The OpenAPI spec is auto-generated at `/v1/openapi.json`.
 
-**Auth:** JWT bearer tokens (15min access + 30d refresh) for API/mobile clients. The `Authorization: Bearer <token>` header is used for all authenticated requests.
+**Auth:** Two methods are supported:
+- **JWT bearer tokens** (15min access + 30d refresh) — for interactive clients. `POST /v1/auth/login` returns tokens; pass as `Authorization: Bearer <token>`.
+- **API keys** (`sk_…` prefixed) — for scripts and integrations. Create in Settings; pass as `Authorization: Bearer sk_…`. Keys are scoped (e.g. `members:read`, `members:write`) and never expose the plaintext after creation.
 
 Key endpoints:
 
@@ -99,6 +101,9 @@ Key endpoints:
 |----------|-------------|
 | `POST /v1/auth/register` | Create account |
 | `POST /v1/auth/login` | Login, get tokens |
+| `GET /v1/auth/me` | Current user info |
+| `GET/POST /v1/auth/keys` | List/create API keys |
+| `DELETE /v1/auth/keys/{id}` | Revoke API key |
 | `GET /v1/systems/me` | Your system profile |
 | `GET/POST /v1/members` | List/create members |
 | `GET/POST /v1/fronts` | Front history |
@@ -119,9 +124,19 @@ Full interactive docs: `http://your-instance/v1/docs`
 - Docker and Docker Compose
 - ~512MB RAM minimum
 
+### Admin access
+
+To grant admin access, set `SHEAF_ADMIN_EMAILS` to a comma-separated list of email addresses. These accounts are automatically promoted to admin on startup:
+
+```env
+SHEAF_ADMIN_EMAILS=you@example.com,colleague@example.com
+```
+
+Admins gain access to the `/admin` section of the web UI (user management, maintenance operations) and can create `admin:read`/`admin:write` scoped API keys.
+
 ### File Storage
 
-Avatars can be stored locally (default) or on any S3-compatible service (AWS S3, MinIO, Cloudflare R2, BackBlaze B2, etc)
+Avatars can be stored locally (default) or on any S3-compatible service (AWS S3, MinIO, Cloudflare R2, BackBlaze B2, etc).
 
 ```env
 # Local filesystem (default)
@@ -135,8 +150,15 @@ S3_ACCESS_KEY=...
 S3_SECRET_KEY=...
 S3_REGION=us-east-1
 S3_ENDPOINT=https://your-minio.example.com  # For MinIO/R2
-S3_PUBLIC_URL=https://cdn.example.com        # Optional CDN prefix
 ```
+
+**Hotlink protection:** By default, avatar URLs are HMAC-signed with a short expiry window (`IMAGE_SERVING=signed`). This prevents your S3 bucket being used as free image hosting. Three modes are available:
+
+| Mode | How it works |
+|------|--------------|
+| `IMAGE_SERVING=signed` (default) | Signed URLs with window-based expiry. S3: redirects to a presigned S3 URL (private bucket). Filesystem: HMAC token verified on every request. |
+| `IMAGE_SERVING=unsigned` | No token required — anyone with the URL can access the file. Suitable if you control hotlinking via a CDN (see below). |
+| `S3_PUBLIC_URL=https://cdn.example.com` | Bypass the serve endpoint entirely; avatar URLs resolve directly to your CDN. Best combined with Cloudflare hotlink protection rules. |
 
 ### Reverse Proxy
 
@@ -167,6 +189,9 @@ pytest
 - [ ] Per-field-per-member privacy overrides
 - [x] Storage quotas (per-tier account-wide budget)
 - [x] Orphaned file cleanup (images uploaded but never attached to a member/system)
+- [x] API keys with granular scopes (for scripts and integrations)
+- [x] Admin UI (user management, maintenance operations)
+- [x] Signed image URLs with S3 presign support (hotlink protection)
 - [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
 - [ ] Prometheus-compatible /metrics endpoint
 - [ ] Terraform module for cloud deployment
