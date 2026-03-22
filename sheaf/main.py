@@ -3,7 +3,8 @@ import contextlib
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from sheaf.api.v1.router import v1_router
 from sheaf.config import SheafMode, _validate_settings, settings
@@ -88,6 +89,15 @@ app = FastAPI(
     redoc_url="/v1/redoc",
     openapi_url="/v1/openapi.json",
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception(
+        "Unhandled exception on %s %s", request.method, request.url.path
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
 
 app.include_router(v1_router)
 
