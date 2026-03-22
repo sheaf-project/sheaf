@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_admin_user
 from sheaf.database import get_db
 from sheaf.models.user import User
-from sheaf.services.file_cleanup import cleanup_orphaned_files
+from sheaf.services.file_cleanup import audit_all_storage, cleanup_orphaned_files
 from sheaf.services.front_retention import prune_free_tier_fronts
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -48,6 +48,15 @@ async def run_cleanup(
         "total_orphaned": total_orphaned,
         "total_freed_bytes": total_freed,
     }
+
+
+@router.post("/storage/audit")
+async def run_storage_audit(
+    user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Audit and correct storage usage counters for all users. Admin only."""
+    return await audit_all_storage(db)
 
 
 class MemberLimitOverride(BaseModel):

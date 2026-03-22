@@ -1,7 +1,8 @@
-"""Orphaned file cleanup.
+"""Orphaned file cleanup and storage auditing.
 
 Finds uploaded files that are no longer referenced by any avatar_url
 or bio image, and deletes them. Adjusts storage_used_bytes accordingly.
+Also provides storage usage auditing to fix counter drift.
 """
 
 import logging
@@ -118,4 +119,59 @@ async def cleanup_orphaned_files(
         "freed_bytes": freed_bytes,
         "dry_run": dry_run,
         "keys": orphaned if dry_run else [],
+    }
+
+
+async def audit_storage_usage(db: AsyncSession, user_id: str) -> dict:
+    """Recalculate a user's actual storage usage from disk/S3.
+
+    Compares actual usage with the tracked counter and corrects drift.
+    Returns old value, new value, and whether it was corrected.
+    """
+    storage = get_storage()
+    prefix = f"avatars/{user_id}/"
+    keys = await storage.list_keys(prefix)
+
+    actual_bytes = 0
+    for key in keys:
+        actual_bytes += await storage.size(key)
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        return {"error": "user not found"}
+
+    old_bytes = user.storage_used_bytes
+    corrected = old_bytes != actual_bytes
+
+    if corrected:
+        logger.info(
+            "Storage audit for %s: tracked=%d actual=%d (correcting)",
+            user_id, old_bytes, actual_bytes,
+        )
+        user.storage_used_bytes = actual_bytes
+
+    return {
+        "user_id": user_id,
+        "tracked_bytes": old_bytes,
+        "actual_bytes": actual_bytes,
+        "file_count": len(keys),
+        "corrected": corrected,
+    }
+
+
+async def audit_all_storage(db: AsyncSession) -> dict:
+    """Audit storage usage for all users. Returns summary stats."""
+    result = await db.execute(select(User.id))
+    user_ids = [str(uid) for (uid,) in result]
+
+    total_corrected = 0
+    for uid in user_ids:
+        audit = await audit_storage_usage(db, uid)
+        if audit.get("corrected"):
+            total_corrected += 1
+
+    return {
+        "users_checked": len(user_ids),
+        "users_corrected": total_corrected,
     }

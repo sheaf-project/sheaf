@@ -1,3 +1,4 @@
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -8,8 +9,12 @@ from sheaf.auth.dependencies import get_current_user
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.user import User, UserTier
-from sheaf.services.file_cleanup import cleanup_orphaned_files
+from sheaf.services.file_cleanup import audit_storage_usage, cleanup_orphaned_files
 from sheaf.storage import get_storage
+
+# Per-user audit cache: user_id -> (timestamp, result)
+_audit_cache: dict[str, tuple[float, dict]] = {}
+_AUDIT_TTL = 60  # seconds
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -68,17 +73,36 @@ async def upload_file(
 
     # Track usage
     user.storage_used_bytes += file_size
+    _audit_cache.pop(str(user.id), None)
 
     return {"url": url, "key": key, "size": file_size}
 
 
 @router.get("/usage")
-async def get_usage(user: User = Depends(get_current_user)):
-    """Return the user's current storage usage and quota."""
+async def get_usage(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the user's current storage usage and quota.
+
+    Audits actual disk/S3 usage and corrects the tracked counter if drifted.
+    Cached per-user for 60s to avoid hammering storage on repeated loads.
+    """
+    uid = str(user.id)
+    now = time.monotonic()
+    cached = _audit_cache.get(uid)
+
+    if cached and (now - cached[0]) < _AUDIT_TTL:
+        audit = cached[1]
+    else:
+        audit = await audit_storage_usage(db, uid)
+        _audit_cache[uid] = (now, audit)
+
     quota = _get_quota_bytes(user)
     return {
-        "used_bytes": user.storage_used_bytes,
+        "used_bytes": audit["actual_bytes"],
         "quota_bytes": quota,  # 0 = unlimited
+        "file_count": audit["file_count"],
     }
 
 
@@ -88,7 +112,9 @@ async def cleanup_files(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete orphaned files and reclaim storage quota."""
-    result = await cleanup_orphaned_files(db, str(user.id))
+    uid = str(user.id)
+    result = await cleanup_orphaned_files(db, uid)
+    _audit_cache.pop(uid, None)
     return result
 
 
