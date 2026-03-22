@@ -145,13 +145,11 @@ async def update_user(
         target.member_limit = body.member_limit
 
     # Get member count for response
-    member_count_sq = (
+    member_count = await db.scalar(
         select(func.count(Member.id))
         .join(System, System.id == Member.system_id)
         .where(System.user_id == user_id)
-        .scalar_subquery()
-    )
-    member_count = await db.scalar(member_count_sq) or 0
+    ) or 0
 
     try:
         email = decrypt(target.email)

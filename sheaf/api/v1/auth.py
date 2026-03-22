@@ -38,11 +38,11 @@ from sheaf.schemas.user import (
 
 _VALID_SCOPES = {
     "system:read", "system:write",
-    "members:read", "members:write",
-    "fronts:read", "fronts:write",
-    "groups:read", "groups:write",
-    "tags:read", "tags:write",
-    "fields:read", "fields:write",
+    "members:read", "members:write", "members:delete",
+    "fronts:read", "fronts:write", "fronts:delete",
+    "groups:read", "groups:write", "groups:delete",
+    "tags:read", "tags:write", "tags:delete",
+    "fields:read", "fields:write", "fields:delete",
     "export:read",
     "admin:read", "admin:write",
 }
@@ -292,6 +292,7 @@ async def get_me(user: User = Depends(get_current_user)):
         id=user.id,
         email=decrypt(user.email),
         totp_enabled=user.totp_enabled,
+        is_admin=user.is_admin,
         tier=user.tier.value,
         created_at=user.created_at,
         last_login_at=user.last_login_at,

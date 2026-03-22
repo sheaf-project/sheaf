@@ -134,10 +134,10 @@ def require_scope(scope: str) -> Callable:
         if scope in scopes:
             return user
 
-        # write implies read, but nothing implies delete
+        # write and delete both imply read; nothing implies delete
         if scope.endswith(":read"):
             resource = scope.split(":")[0]
-            if f"{resource}:write" in scopes:
+            if f"{resource}:write" in scopes or f"{resource}:delete" in scopes:
                 return user
 
         raise HTTPException(
