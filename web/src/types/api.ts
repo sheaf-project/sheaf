@@ -13,8 +13,22 @@ export interface User {
   email: string;
   totp_enabled: boolean;
   tier: string;
+  is_admin: boolean;
   created_at: string;
   last_login_at: string | null;
+}
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  scopes: string[];
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface ApiKeyCreated extends ApiKey {
+  key: string;
 }
 
 export interface System {

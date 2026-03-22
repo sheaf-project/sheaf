@@ -36,12 +36,35 @@ async def _retention_loop() -> None:
             logger.exception("Retention task failed")
 
 
+async def _promote_admin_emails() -> None:
+    """Promote configured admin emails to is_admin=True on startup."""
+    if not settings.admin_emails:
+        return
+    from sqlalchemy import select
+
+    from sheaf.crypto import blind_index
+    from sheaf.database import async_session_factory
+    from sheaf.models.user import User
+
+    async with async_session_factory() as db:
+        for email in settings.admin_emails:
+            email_hash = blind_index(email)
+            result = await db.execute(select(User).where(User.email_hash == email_hash))
+            user = result.scalar_one_or_none()
+            if user and not user.is_admin:
+                user.is_admin = True
+                logger.info("Promoted %s to admin", email)
+        await db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_settings()
     # Eagerly initialise encryption key so we get the warning at startup
     settings.get_encryption_key()
     logger.info("Sheaf %s starting in %s mode", "0.1.0", settings.sheaf_mode.value)
+
+    await _promote_admin_emails()
 
     retention_task = None
     if settings.sheaf_mode == SheafMode.SAAS:

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.user import User, UserTier
@@ -33,7 +33,7 @@ def _get_quota_bytes(user: User) -> int:
     return mb * 1024 * 1024 if mb > 0 else 0
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_scope("members:write"))])
 async def upload_file(
     file: UploadFile,
     user: User = Depends(get_current_user),

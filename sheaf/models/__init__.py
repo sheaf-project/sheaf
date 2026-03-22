@@ -1,3 +1,4 @@
+from sheaf.models.api_key import ApiKey
 from sheaf.models.base import Base
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
@@ -8,6 +9,7 @@ from sheaf.models.tag import Tag
 from sheaf.models.user import User, UserTier
 
 __all__ = [
+    "ApiKey",
     "Base",
     "CustomFieldDefinition",
     "CustomFieldValue",

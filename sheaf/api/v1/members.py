@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import verify_code
 from sheaf.config import settings
@@ -64,7 +64,12 @@ def _get_member_limit(user: User) -> int:
     return _MEMBER_LIMIT_MAP.get(user.tier, lambda: 0)()
 
 
-@router.post("", response_model=MemberRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=MemberRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_scope("members:write"))],
+)
 async def create_member(
     body: MemberCreate,
     user: User = Depends(get_current_user),
@@ -100,7 +105,11 @@ async def get_member(
     return await _get_own_member(member_id, system, db)
 
 
-@router.patch("/{member_id}", response_model=MemberRead)
+@router.patch(
+    "/{member_id}",
+    response_model=MemberRead,
+    dependencies=[Depends(require_scope("members:write"))],
+)
 async def update_member(
     member_id: uuid.UUID,
     body: MemberUpdate,
@@ -115,7 +124,11 @@ async def update_member(
     return member
 
 
-@router.delete("/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{member_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("members:delete"))],
+)
 async def delete_member(
     member_id: uuid.UUID,
     body: MemberDeleteConfirm | None = None,

@@ -29,6 +29,7 @@ class UserRead(BaseModel):
     id: uuid.UUID
     email: str
     totp_enabled: bool
+    is_admin: bool
     tier: str
     created_at: datetime
     last_login_at: datetime | None

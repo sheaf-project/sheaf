@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user, get_current_user_optional
+from sheaf.auth.dependencies import get_current_user, get_current_user_optional, require_scope
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import verify_code
 from sheaf.crypto import decrypt
@@ -30,7 +30,11 @@ async def get_own_system(
     return await _get_user_system(user, db)
 
 
-@router.patch("/me", response_model=SystemRead)
+@router.patch(
+    "/me",
+    response_model=SystemRead,
+    dependencies=[Depends(require_scope("system:write"))],
+)
 async def update_own_system(
     body: SystemUpdate,
     user: User = Depends(get_current_user),
@@ -43,7 +47,11 @@ async def update_own_system(
     return system
 
 
-@router.put("/me/delete-confirmation", response_model=SystemRead)
+@router.put(
+    "/me/delete-confirmation",
+    response_model=SystemRead,
+    dependencies=[Depends(require_scope("system:write"))],
+)
 async def update_delete_confirmation(
     body: DeleteConfirmationUpdate,
     user: User = Depends(get_current_user),

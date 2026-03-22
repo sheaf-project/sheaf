@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
@@ -34,7 +34,12 @@ async def list_tags(
     return result.scalars().all()
 
 
-@router.post("", response_model=TagRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=TagRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_scope("tags:write"))],
+)
 async def create_tag(
     body: TagCreate,
     user: User = Depends(get_current_user),
@@ -63,7 +68,11 @@ async def get_tag(
     return tag
 
 
-@router.patch("/{tag_id}", response_model=TagRead)
+@router.patch(
+    "/{tag_id}",
+    response_model=TagRead,
+    dependencies=[Depends(require_scope("tags:write"))],
+)
 async def update_tag(
     tag_id: uuid.UUID,
     body: TagUpdate,
@@ -84,7 +93,11 @@ async def update_tag(
     return tag
 
 
-@router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{tag_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("tags:delete"))],
+)
 async def delete_tag(
     tag_id: uuid.UUID,
     user: User = Depends(get_current_user),

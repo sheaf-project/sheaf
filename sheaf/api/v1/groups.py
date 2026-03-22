@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.group import Group
 from sheaf.models.member import Member
@@ -47,7 +47,12 @@ async def list_groups(
     return result.scalars().all()
 
 
-@router.post("", response_model=GroupRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=GroupRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_scope("groups:write"))],
+)
 async def create_group(
     body: GroupCreate,
     user: User = Depends(get_current_user),
@@ -74,7 +79,11 @@ async def get_group(
     return await _get_own_group(group_id, system, db)
 
 
-@router.patch("/{group_id}", response_model=GroupRead)
+@router.patch(
+    "/{group_id}",
+    response_model=GroupRead,
+    dependencies=[Depends(require_scope("groups:write"))],
+)
 async def update_group(
     group_id: uuid.UUID,
     body: GroupUpdate,
@@ -117,7 +126,11 @@ async def update_group(
     return group
 
 
-@router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{group_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("groups:delete"))],
+)
 async def delete_group(
     group_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -147,7 +160,11 @@ async def get_group_members(
     return group.members
 
 
-@router.put("/{group_id}/members", response_model=list[MemberRead])
+@router.put(
+    "/{group_id}/members",
+    response_model=list[MemberRead],
+    dependencies=[Depends(require_scope("groups:write"))],
+)
 async def set_group_members(
     group_id: uuid.UUID,
     body: GroupMemberUpdate,

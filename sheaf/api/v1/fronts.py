@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.front import Front
 from sheaf.models.member import Member
@@ -69,7 +69,12 @@ async def get_current_fronts(
     return [_front_to_read(f) for f in result.scalars().all()]
 
 
-@router.post("", response_model=FrontRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=FrontRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_scope("fronts:write"))],
+)
 async def create_front(
     body: FrontCreate,
     user: User = Depends(get_current_user),
@@ -101,7 +106,11 @@ async def create_front(
     return _front_to_read(front)
 
 
-@router.patch("/{front_id}", response_model=FrontRead)
+@router.patch(
+    "/{front_id}",
+    response_model=FrontRead,
+    dependencies=[Depends(require_scope("fronts:write"))],
+)
 async def update_front(
     front_id: uuid.UUID,
     body: FrontUpdate,
@@ -139,7 +148,11 @@ async def update_front(
     return _front_to_read(front)
 
 
-@router.delete("/{front_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{front_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("fronts:delete"))],
+)
 async def delete_front(
     front_id: uuid.UUID,
     user: User = Depends(get_current_user),

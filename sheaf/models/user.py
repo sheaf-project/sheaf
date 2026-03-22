@@ -51,3 +51,6 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     # Relationships
     system: Mapped["System"] = relationship(back_populates="user", uselist=False)
+    api_keys: Mapped[list["ApiKey"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )

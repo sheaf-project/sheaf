@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.member import Member
@@ -45,7 +45,12 @@ async def list_fields(
     return result.scalars().all()
 
 
-@router.post("/fields", response_model=CustomFieldRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/fields",
+    response_model=CustomFieldRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_scope("fields:write"))],
+)
 async def create_field(
     body: CustomFieldCreate,
     user: User = Depends(get_current_user),
@@ -77,7 +82,11 @@ async def get_field(
     return field
 
 
-@router.patch("/fields/{field_id}", response_model=CustomFieldRead)
+@router.patch(
+    "/fields/{field_id}",
+    response_model=CustomFieldRead,
+    dependencies=[Depends(require_scope("fields:write"))],
+)
 async def update_field(
     field_id: uuid.UUID,
     body: CustomFieldUpdate,
@@ -101,7 +110,11 @@ async def update_field(
     return field
 
 
-@router.delete("/fields/{field_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/fields/{field_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("fields:delete"))],
+)
 async def delete_field(
     field_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -144,7 +157,11 @@ async def get_member_field_values(
     return result.scalars().all()
 
 
-@router.put("/members/{member_id}/fields", response_model=list[CustomFieldValueRead])
+@router.put(
+    "/members/{member_id}/fields",
+    response_model=list[CustomFieldValueRead],
+    dependencies=[Depends(require_scope("fields:write"))],
+)
 async def set_member_field_values(
     member_id: uuid.UUID,
     body: list[CustomFieldValueSet],

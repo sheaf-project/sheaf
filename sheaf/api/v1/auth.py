@@ -1,9 +1,11 @@
 import hashlib
 import json
+import secrets
 from datetime import UTC, datetime
 
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +23,7 @@ from sheaf.auth.totp import (
 from sheaf.config import settings
 from sheaf.crypto import blind_index, decrypt, encrypt
 from sheaf.database import get_db
+from sheaf.models.api_key import ApiKey
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.user import (
@@ -32,6 +35,39 @@ from sheaf.schemas.user import (
     UserRead,
     UserRegister,
 )
+
+_VALID_SCOPES = {
+    "system:read", "system:write",
+    "members:read", "members:write",
+    "fronts:read", "fronts:write",
+    "groups:read", "groups:write",
+    "tags:read", "tags:write",
+    "fields:read", "fields:write",
+    "export:read",
+    "admin:read", "admin:write",
+}
+_ADMIN_SCOPES = {"admin:read", "admin:write"}
+
+
+class ApiKeyCreate(BaseModel):
+    name: str
+    scopes: list[str]
+    expires_at: datetime | None = None
+
+
+class ApiKeyRead(BaseModel):
+    id: str
+    name: str
+    scopes: list[str]
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ApiKeyCreated(ApiKeyRead):
+    key: str  # plaintext, returned once only
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -348,3 +384,85 @@ async def totp_disable(
     user.totp_enabled = False
     user.totp_secret = None
     user.recovery_codes = None
+
+
+@router.get("/keys", response_model=list[ApiKeyRead])
+async def list_api_keys(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the current user's API keys (never returns plaintext key)."""
+    result = await db.execute(select(ApiKey).where(ApiKey.user_id == user.id))
+    return [
+        ApiKeyRead(
+            id=str(k.id),
+            name=k.name,
+            scopes=k.scopes,
+            last_used_at=k.last_used_at,
+            expires_at=k.expires_at,
+            created_at=k.created_at,
+        )
+        for k in result.scalars()
+    ]
+
+
+@router.post("/keys", response_model=ApiKeyCreated, status_code=status.HTTP_201_CREATED)
+async def create_api_key(
+    body: ApiKeyCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new API key. The plaintext key is returned once — save it."""
+    unknown = set(body.scopes) - _VALID_SCOPES
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown scopes: {sorted(unknown)}",
+        )
+
+    # Non-admin users cannot request admin scopes
+    requested_admin = set(body.scopes) & _ADMIN_SCOPES
+    if requested_admin and not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin scopes require an admin account",
+        )
+
+    plaintext = "sk_" + secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
+
+    api_key = ApiKey(
+        user_id=user.id,
+        name=body.name,
+        key_hash=key_hash,
+        scopes=body.scopes,
+        expires_at=body.expires_at,
+    )
+    db.add(api_key)
+    await db.flush()
+
+    return ApiKeyCreated(
+        id=str(api_key.id),
+        name=api_key.name,
+        scopes=api_key.scopes,
+        last_used_at=None,
+        expires_at=api_key.expires_at,
+        created_at=api_key.created_at,
+        key=plaintext,
+    )
+
+
+@router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_api_key(
+    key_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke an API key. Only the owning user can revoke their own keys."""
+    result = await db.execute(
+        select(ApiKey).where(ApiKey.id == key_id, ApiKey.user_id == user.id)
+    )
+    api_key = result.scalar_one_or_none()
+    if api_key is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    await db.delete(api_key)

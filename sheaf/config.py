@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     member_limit_plus: int = 0  # unlimited
     member_limit_selfhosted: int = 0  # unlimited
 
+    # Admin bootstrap — comma-separated emails, auto-promoted to is_admin on startup
+    admin_emails: list[str] = []
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

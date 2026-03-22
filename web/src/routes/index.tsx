@@ -7,6 +7,9 @@ import { FrontsPage } from "./fronts";
 import { GroupsPage } from "./groups";
 import { SettingsPage } from "./settings";
 import { ImportPage } from "./import";
+import { AdminLayout } from "./admin/_layout";
+import { AdminDashboard } from "./admin/index";
+import { AdminUsersPage } from "./admin/users";
 
 export const router = createBrowserRouter([
   {
@@ -22,6 +25,14 @@ export const router = createBrowserRouter([
       { path: "groups", element: <GroupsPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "import", element: <ImportPage /> },
+      {
+        path: "admin",
+        element: <AdminLayout />,
+        children: [
+          { index: true, element: <AdminDashboard /> },
+          { path: "users", element: <AdminUsersPage /> },
+        ],
+      },
     ],
   },
 ]);

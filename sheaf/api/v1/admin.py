@@ -1,35 +1,193 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_admin_user
+from sheaf.auth.dependencies import get_admin_user, get_admin_write_user
+from sheaf.crypto import decrypt
 from sheaf.database import get_db
-from sheaf.models.user import User
+from sheaf.models.member import Member
+from sheaf.models.system import System
+from sheaf.models.user import User, UserTier
 from sheaf.services.file_cleanup import audit_all_storage, cleanup_orphaned_files
 from sheaf.services.front_retention import prune_free_tier_fronts
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.post("/retention/run")
-async def run_retention(
-    user: User = Depends(get_admin_user),
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
+
+@router.get("/stats")
+async def get_stats(
+    _: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger front history retention pruning. Admin only.
+    """Aggregate system stats. Requires admin:read scope or is_admin."""
+    total_users = await db.scalar(select(func.count(User.id)))
+    total_members = await db.scalar(select(func.count(Member.id)))
+    total_storage = await db.scalar(select(func.sum(User.storage_used_bytes))) or 0
 
-    Only prunes in aaS mode. Returns 0 in self-hosted mode.
-    """
+    # Users by tier
+    rows = await db.execute(
+        select(User.tier, func.count(User.id)).group_by(User.tier)
+    )
+    users_by_tier = {row.tier: row.count for row in rows}
+
+    return {
+        "total_users": total_users,
+        "total_members": total_members,
+        "total_storage_bytes": total_storage,
+        "users_by_tier": users_by_tier,
+    }
+
+
+# ---------------------------------------------------------------------------
+# User management
+# ---------------------------------------------------------------------------
+
+class AdminUserRead(BaseModel):
+    id: str
+    email: str
+    tier: str
+    is_admin: bool
+    member_limit: int | None
+    storage_used_bytes: int
+    member_count: int
+    created_at: datetime
+    last_login_at: datetime | None
+
+
+class AdminUserUpdate(BaseModel):
+    tier: UserTier | None = None
+    is_admin: bool | None = None
+    member_limit: int | None = None
+    clear_member_limit: bool = False  # set True to reset to tier default (null)
+
+
+@router.get("/users", response_model=list[AdminUserRead])
+async def list_users(
+    search: str = "",
+    page: int = 1,
+    limit: int = 50,
+    _: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all users with member counts. Requires admin:read scope or is_admin."""
+    offset = (page - 1) * limit
+
+    # Subquery: member count per user via system
+    member_count_sq = (
+        select(System.user_id, func.count(Member.id).label("member_count"))
+        .outerjoin(Member, Member.system_id == System.id)
+        .group_by(System.user_id)
+        .subquery()
+    )
+
+    query = (
+        select(User, func.coalesce(member_count_sq.c.member_count, 0).label("member_count"))
+        .outerjoin(member_count_sq, member_count_sq.c.user_id == User.id)
+        .order_by(User.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    rows = await db.execute(query)
+    result = []
+    for user, member_count in rows:
+        try:
+            email = decrypt(user.email)
+        except Exception:
+            email = "<encrypted>"
+
+        # Apply search filter after decryption
+        if search and search.lower() not in email.lower():
+            continue
+
+        result.append(AdminUserRead(
+            id=str(user.id),
+            email=email,
+            tier=user.tier,
+            is_admin=user.is_admin,
+            member_limit=user.member_limit,
+            storage_used_bytes=user.storage_used_bytes,
+            member_count=member_count,
+            created_at=user.created_at,
+            last_login_at=user.last_login_at,
+        ))
+    return result
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserRead)
+async def update_user(
+    user_id: uuid.UUID,
+    body: AdminUserUpdate,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a user's tier, is_admin, or member limit. Requires admin:write scope or is_admin."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if body.tier is not None:
+        target.tier = body.tier
+    if body.is_admin is not None:
+        target.is_admin = body.is_admin
+    if body.clear_member_limit:
+        target.member_limit = None
+    elif body.member_limit is not None:
+        target.member_limit = body.member_limit
+
+    # Get member count for response
+    member_count_sq = (
+        select(func.count(Member.id))
+        .join(System, System.id == Member.system_id)
+        .where(System.user_id == user_id)
+        .scalar_subquery()
+    )
+    member_count = await db.scalar(member_count_sq) or 0
+
+    try:
+        email = decrypt(target.email)
+    except Exception:
+        email = "<encrypted>"
+
+    return AdminUserRead(
+        id=str(target.id),
+        email=email,
+        tier=target.tier,
+        is_admin=target.is_admin,
+        member_limit=target.member_limit,
+        storage_used_bytes=target.storage_used_bytes,
+        member_count=member_count,
+        created_at=target.created_at,
+        last_login_at=target.last_login_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Maintenance operations (kept from before, now using get_admin_write_user)
+# ---------------------------------------------------------------------------
+
+@router.post("/retention/run")
+async def run_retention(
+    _: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger front history retention pruning. Admin only."""
     count = await prune_free_tier_fronts(db)
     return {"pruned": count}
 
 
 @router.post("/cleanup/run")
 async def run_cleanup(
-    user: User = Depends(get_admin_user),
+    _: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Clean up orphaned files for all users. Admin only."""
@@ -52,34 +210,29 @@ async def run_cleanup(
 
 @router.post("/storage/audit")
 async def run_storage_audit(
-    user: User = Depends(get_admin_user),
+    _: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Audit and correct storage usage counters for all users. Admin only."""
     return await audit_all_storage(db)
 
 
+# Legacy endpoint kept for backwards compatibility
 class MemberLimitOverride(BaseModel):
-    member_limit: int | None = None  # null = reset to tier default
+    member_limit: int | None = None
 
 
 @router.put("/users/{user_id}/member-limit")
 async def set_member_limit(
     user_id: uuid.UUID,
     body: MemberLimitOverride,
-    admin: User = Depends(get_admin_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Set or reset a user's member limit override. Admin only."""
     result = await db.execute(select(User).where(User.id == user_id))
     target = result.scalar_one_or_none()
     if target is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     target.member_limit = body.member_limit
-    return {
-        "user_id": str(user_id),
-        "member_limit": target.member_limit,
-        "note": "null means tier default applies",
-    }
+    return {"user_id": str(user_id), "member_limit": target.member_limit}
