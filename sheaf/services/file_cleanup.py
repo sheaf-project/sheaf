@@ -17,11 +17,11 @@ from sheaf.storage import get_storage
 
 logger = logging.getLogger("sheaf.cleanup")
 
-# Matches markdown image references: ![...](/v1/files/serve/...)
-_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((/v1/files/serve/[^)]+)\)")
+# Matches markdown image references: ![...](/v1/files/...)
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((/v1/files/[^)]+)\)")
 
 # All hosted file URLs start with this prefix
-_FILE_PREFIX = "/v1/files/serve/"
+_FILE_PREFIX = "/v1/files/"
 
 
 def _extract_keys_from_url(url: str | None) -> set[str]:

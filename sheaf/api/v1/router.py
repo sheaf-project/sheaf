@@ -27,3 +27,5 @@ v1_router.include_router(export.router)
 v1_router.include_router(files.router)
 v1_router.include_router(sp_import.router)
 v1_router.include_router(admin.router)
+# File serve catch-all MUST be last — {path:path} would shadow other routes
+v1_router.include_router(files.serve_router)

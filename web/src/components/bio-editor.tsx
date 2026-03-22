@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ImagePlus, Bold, Italic, Link, Code, Tags, Tag } from "lucide-react";
 
 function isHostedImage(src: string) {
-  return src.startsWith("/v1/files/serve/");
+  return src.startsWith("/v1/files/");
 }
 
 function MarkdownPreview({
