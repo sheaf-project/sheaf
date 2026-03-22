@@ -39,7 +39,8 @@ async def _retention_loop() -> None:
 
 async def _promote_admin_emails() -> None:
     """Promote configured admin emails to is_admin=True on startup."""
-    if not settings.admin_emails:
+    emails = settings.admin_email_list
+    if not emails:
         return
     from sqlalchemy import select
 
@@ -48,7 +49,7 @@ async def _promote_admin_emails() -> None:
     from sheaf.models.user import User
 
     async with async_session_factory() as db:
-        for email in settings.admin_emails:
+        for email in emails:
             email_hash = blind_index(email)
             result = await db.execute(select(User).where(User.email_hash == email_hash))
             user = result.scalar_one_or_none()

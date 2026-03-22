@@ -72,8 +72,16 @@ class Settings(BaseSettings):
     # Must be a clean divisor of a day (e.g. 3600). Default: 1 hour.
     file_url_expiry_seconds: int = 3600
 
-    # Admin bootstrap — comma-separated emails, auto-promoted to is_admin on startup
-    admin_emails: list[str] = []
+    # Admin bootstrap — comma-separated emails, auto-promoted to is_admin on startup.
+    # Stored as a raw string because pydantic-settings v2 JSON-parses list[str] fields
+    # before validators run, silently dropping plain comma-separated values.
+    # Env var: SHEAF_ADMIN_EMAILS=you@example.com,colleague@example.com
+    sheaf_admin_emails: str = ""
+
+    @property
+    def admin_email_list(self) -> list[str]:
+        """Return sheaf_admin_emails as a parsed list."""
+        return [e.strip() for e in self.sheaf_admin_emails.split(",") if e.strip()]
 
     # Server
     sheaf_port: int = 8000
