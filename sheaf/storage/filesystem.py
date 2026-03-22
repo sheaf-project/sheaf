@@ -22,7 +22,7 @@ class FilesystemStorage(StorageBackend):
         path.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(str(path), "wb") as f:
             await f.write(data)
-        return f"/v1/files/{key}"
+        return key
 
     async def get(self, key: str) -> bytes | None:
         path = self._safe_path(key)

@@ -57,6 +57,21 @@ class Settings(BaseSettings):
     member_limit_plus: int = 0  # unlimited
     member_limit_selfhosted: int = 0  # unlimited
 
+    # Image serving mode: "signed" (default) or "unsigned".
+    # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.
+    #   S3: private bucket; serve endpoint redirects to a presigned S3 URL.
+    #   Filesystem: HMAC token required on all serve requests.
+    # "unsigned": no token required — anyone with a URL can access files.
+    #   Easier to set up, but effectively provides free image hosting.
+    #   For S3: set S3_PUBLIC_URL to a Cloudflare-proxied domain and use
+    #   Cloudflare hotlink protection rules as the alternative mechanism.
+    image_serving: str = "signed"
+
+    # Signed URL expiry window in seconds. Window-based: all requests within
+    # the same window get the same URL, enabling browser image caching.
+    # Must be a clean divisor of a day (e.g. 3600). Default: 1 hour.
+    file_url_expiry_seconds: int = 3600
+
     # Admin bootstrap — comma-separated emails, auto-promoted to is_admin on startup
     admin_emails: list[str] = []
 
@@ -110,6 +125,17 @@ def _validate_settings() -> None:
         problems.append("JWT_SECRET_KEY is set to the default value")
     if "changeme" in settings.database_url:
         problems.append("DATABASE_URL contains default password")
+
+    if (
+        settings.image_serving == "unsigned"
+        and settings.storage_backend == "s3"
+        and not settings.s3_public_url
+    ):
+        logger.warning(
+            "IMAGE_SERVING=unsigned with S3 and no S3_PUBLIC_URL: files are publicly "
+            "accessible via direct S3 URLs. Set S3_PUBLIC_URL to a Cloudflare-proxied "
+            "domain with hotlink protection, or switch to IMAGE_SERVING=signed."
+        )
 
     if settings.sheaf_mode == SheafMode.SAAS and problems:
         logger.critical("REFUSING TO START IN SAAS MODE WITH INSECURE DEFAULTS:")

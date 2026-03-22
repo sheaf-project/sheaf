@@ -13,7 +13,7 @@ export function AvatarUpload({
 }: {
   url: string | null;
   fallback: string;
-  onUpload: (url: string) => void;
+  onUpload: (key: string) => void;
   onRemove?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -21,13 +21,16 @@ export function AvatarUpload({
   const [error, setError] = useState("");
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlValue, setUrlValue] = useState("");
+  // Signed preview URL after upload — separate from the stored key
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   async function handleFile(file: File) {
     setError("");
     setUploading(true);
     try {
       const res = await uploadFile(file);
-      onUpload(res.url);
+      setPreviewUrl(res.url); // show signed URL immediately
+      onUpload(res.key);      // store the key, not the expiring URL
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -65,7 +68,7 @@ export function AvatarUpload({
         onDragOver={(e) => e.preventDefault()}
       >
         <Avatar className="size-20">
-          {url && <AvatarImage src={url} />}
+          {(previewUrl ?? url) && <AvatarImage src={previewUrl ?? url ?? undefined} />}
           <AvatarFallback className="text-lg">{fallback}</AvatarFallback>
         </Avatar>
         <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
@@ -99,12 +102,12 @@ export function AvatarUpload({
           >
             <Link className="h-3 w-3" />
           </Button>
-          {url && onRemove && (
+          {(previewUrl ?? url) && onRemove && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={onRemove}
+              onClick={() => { setPreviewUrl(null); onRemove(); }}
             >
               <X className="h-3 w-3" />
             </Button>

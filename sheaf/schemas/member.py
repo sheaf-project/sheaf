@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
+from sheaf.files import resolve_avatar_url
 from sheaf.models.system import PrivacyLevel
 
 
@@ -48,3 +49,7 @@ class MemberRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("avatar_url")
+    def _sign_avatar_url(self, v: str | None) -> str | None:
+        return resolve_avatar_url(v)

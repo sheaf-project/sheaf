@@ -32,11 +32,16 @@ class S3Storage(StorageBackend):
             Body=data,
             ContentType=content_type,
         )
-        if settings.s3_public_url:
-            return f"{settings.s3_public_url}/{key}"
-        if settings.s3_endpoint:
-            return f"{settings.s3_endpoint}/{self.bucket}/{key}"
-        return f"https://{self.bucket}.s3.{settings.s3_region}.amazonaws.com/{key}"
+        return key
+
+    async def presign(self, key: str, expiry_seconds: int) -> str:
+        """Generate a presigned GET URL for a private S3 object."""
+        return await self._run(
+            self.client.generate_presigned_url,
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key},
+            ExpiresIn=expiry_seconds,
+        )
 
     async def get(self, key: str) -> bytes | None:
         try:

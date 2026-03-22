@@ -1,13 +1,15 @@
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
+from sheaf.files import resolve_avatar_url, verify_file_token
 from sheaf.models.user import User, UserTier
 from sheaf.services.file_cleanup import audit_storage_usage, cleanup_orphaned_files
 from sheaf.storage import get_storage
@@ -69,13 +71,13 @@ async def upload_file(
     key = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
 
     storage = get_storage()
-    url = await storage.put(key, data, file.content_type or "application/octet-stream")
+    await storage.put(key, data, file.content_type or "application/octet-stream")
 
     # Track usage
     user.storage_used_bytes += file_size
     _audit_cache.pop(str(user.id), None)
 
-    return {"url": url, "key": key, "size": file_size}
+    return {"url": resolve_avatar_url(key), "key": key, "size": file_size}
 
 
 @router.get("/usage")
@@ -130,18 +132,72 @@ async def cleanup_dry_run(
 
 serve_router = APIRouter(prefix="/files", tags=["files"])
 
+_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _s3_public_url(key: str) -> str:
+    """Construct the direct public S3 URL for a key (unsigned mode, no CDN)."""
+    if settings.s3_endpoint:
+        return f"{settings.s3_endpoint}/{settings.s3_bucket}/{key}"
+    return f"https://{settings.s3_bucket}.s3.{settings.s3_region}.amazonaws.com/{key}"
+
 
 @serve_router.get("/{path:path}")
-async def serve_file(path: str):
-    """Serve files from filesystem storage. Not used when S3 backend is active."""
-    if settings.storage_backend != "filesystem":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+async def serve_file(
+    path: str,
+    token: str | None = Query(default=None),
+    expires: str | None = Query(default=None),
+):
+    """Serve a file.
 
-    # Reject path traversal at the API layer
+    Signed mode (default): requires a valid HMAC token + expiry query params.
+      S3: redirects to a short-lived presigned URL (cached in Redis).
+      Filesystem: serves bytes directly after token validation.
+
+    Unsigned mode: no token required.
+      S3: redirects to the direct public S3 URL (bucket must be public).
+      Filesystem: serves bytes directly.
+
+    CDN mode (S3 + s3_public_url): URLs bypass this endpoint entirely —
+      resolve_avatar_url returns a CDN URL directly. This endpoint is not
+      reached in normal operation for that case.
+    """
     if ".." in path or path.startswith("/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
+    if settings.image_serving == "signed" and (
+        not token or not expires or not verify_file_token(path, token, expires)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or expired file URL",
+        )
+
     storage = get_storage()
+
+    if settings.storage_backend == "s3":
+        if settings.image_serving == "signed":
+            # Cache presigned URL in Redis, keyed by (path, expires) so it's
+            # stable within the signing window — allows CDN/browser caching.
+            redis_key = f"sheaf:file:presign:{path}:{expires}"
+            r = await get_redis()
+            presigned = await r.get(redis_key)
+            if presigned is None:
+                ttl = max(int(expires) - int(time.time()) - 60, 30)  # type: ignore[arg-type]
+                presigned = await storage.presign(path, ttl + 60)  # type: ignore[attr-defined]
+                await r.setex(redis_key, ttl, presigned)
+            return RedirectResponse(url=presigned, status_code=307)
+        else:
+            # Unsigned: redirect to the public S3 URL (bucket must be public)
+            return RedirectResponse(url=_s3_public_url(path), status_code=302)
+
+    # Filesystem: serve bytes directly
     try:
         data = await storage.get(path)
     except ValueError as exc:
@@ -149,15 +205,6 @@ async def serve_file(path: str):
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    # Infer content type from extension
-    content_type = "application/octet-stream"
-    if path.endswith(".jpg") or path.endswith(".jpeg"):
-        content_type = "image/jpeg"
-    elif path.endswith(".png"):
-        content_type = "image/png"
-    elif path.endswith(".gif"):
-        content_type = "image/gif"
-    elif path.endswith(".webp"):
-        content_type = "image/webp"
-
+    suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
     return Response(content=data, media_type=content_type)
