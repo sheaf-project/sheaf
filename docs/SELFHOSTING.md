@@ -79,6 +79,21 @@ If you set `SHEAF_ADMIN_EMAILS` before the account exists, nothing happens at th
 - Create `admin:read` / `admin:write` scoped API keys for scripted access
 - Trigger retention pruning and orphaned file cleanup across all users
 
+### Admin dashboard step-up authentication
+
+By default any admin session can access the dashboard immediately. For additional protection, require a re-authentication challenge on each new browser session:
+
+```env
+# none (default) — immediate access
+# password       — re-enter account password
+# totp           — enter TOTP code (account must have 2FA enabled)
+ADMIN_AUTH_LEVEL=totp
+```
+
+The challenge is stored in Redis and valid for 2 hours. Only applies to session (cookie) auth — JWT tokens and API keys with `admin:*` scope are unaffected.
+
+With `ADMIN_AUTH_LEVEL=totp`: if the admin account does not have TOTP enabled, access to the dashboard is blocked with an explanatory message until 2FA is set up in Settings.
+
 ---
 
 ## File storage

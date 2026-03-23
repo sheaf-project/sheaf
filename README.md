@@ -134,6 +134,15 @@ SHEAF_ADMIN_EMAILS=you@example.com,colleague@example.com
 
 Admins gain access to the `/admin` section of the web UI (user management, maintenance operations) and can create `admin:read`/`admin:write` scoped API keys.
 
+Optionally require a step-up challenge before the admin dashboard is accessible:
+
+```env
+# none (default) | password | totp
+ADMIN_AUTH_LEVEL=totp
+```
+
+With `totp`, the admin account must have 2FA enabled — if not, access is blocked until they enable it in Settings.
+
 ### File Storage
 
 Avatars can be stored locally (default) or on any S3-compatible service (AWS S3, MinIO, Cloudflare R2, BackBlaze B2, etc).
