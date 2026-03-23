@@ -1,0 +1,34 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sheaf:sheaftest@db:5432/sheaf
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: test-jwt-secret-not-for-production
+      SHEAF_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
+      ADMIN_AUTH_LEVEL: "${ADMIN_AUTH_LEVEL:-none}"
+      STORAGE_BACKEND: filesystem
+      IMAGE_SERVING: unsigned
+    volumes: []
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    ports:
+      - "5433:5432"
+    volumes: []
+    environment:
+      POSTGRES_DB: sheaf
+      POSTGRES_USER: sheaf
+      POSTGRES_PASSWORD: sheaftest
+
+  redis:
+    ports:
+      - "6380:6379"
+    volumes: []

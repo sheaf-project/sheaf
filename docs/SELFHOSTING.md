@@ -90,7 +90,7 @@ By default any admin session can access the dashboard immediately. For additiona
 ADMIN_AUTH_LEVEL=totp
 ```
 
-The challenge is stored in Redis and valid for 2 hours. Only applies to session (cookie) auth — JWT tokens and API keys with `admin:*` scope are unaffected.
+The challenge is stored in Redis per-user and valid for 2 hours. Applies to both session-cookie auth and JWT bearer token auth. API keys with `admin:*` scope are exempt and never require step-up.
 
 With `ADMIN_AUTH_LEVEL=totp`: if the admin account does not have TOTP enabled, access to the dashboard is blocked with an explanatory message until 2FA is set up in Settings.
 

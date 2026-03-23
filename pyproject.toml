@@ -50,3 +50,8 @@ ignore = ["B008"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
+markers = [
+    "admin_auth_password: requires server running with ADMIN_AUTH_LEVEL=password",
+    "admin_auth_totp: requires server running with ADMIN_AUTH_LEVEL=totp",
+    "saas: requires server running with SHEAF_MODE=saas",
+]

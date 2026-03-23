@@ -49,6 +49,7 @@ def test_member_limit_enforced(auth_client: httpx.Client):
 def test_member_count_in_list(auth_client: httpx.Client):
     """Verify member list reflects created members."""
     before = len(auth_client.get("/v1/members").json())
-    auth_client.post("/v1/members", json={"name": "Extra"})
+    resp = auth_client.post("/v1/members", json={"name": "Extra"})
+    assert resp.status_code == 201, f"Member creation failed: {resp.status_code} {resp.text}"
     after = len(auth_client.get("/v1/members").json())
     assert after == before + 1

@@ -40,21 +40,34 @@ The API runs on `http://localhost:8000` (docs at `/v1/docs`), and the web UI on 
 
 ### Running tests
 
-Tests are integration tests that hit a running server. Start the server first, then run pytest:
+#### Full test suite (recommended)
+
+Use `run_tests.sh` to spin up a dedicated isolated Docker stack, run tests against every server configuration in sequence, then tear everything down:
 
 ```bash
-uvicorn sheaf.main:app --reload &
-pytest -v
+./run_tests.sh
 ```
 
-If you're running tests **outside Docker** (e.g. `uvicorn` on your host machine connecting to `docker compose up db redis -d`), you also need `SHEAF_TEST_DB_URL` so the `admin_client` test fixture can directly promote a test user to admin in the DB. The default `DATABASE_URL` uses Docker's internal `db` hostname, which isn't reachable from your host:
+This tests four configurations: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, and saas mode. Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack.
 
 ```bash
+# Skip rebuilding the image if you haven't changed backend code:
+./run_tests.sh --no-build
+```
+
+#### Quick run against a local server
+
+Start a server first, then run pytest directly. You need `SHEAF_TEST_DB_URL` so the `admin_client` fixture can promote a test user to admin directly in the DB — the default `DATABASE_URL` uses Docker's internal `db` hostname, which isn't reachable from the host:
+
+```bash
+docker compose up db redis -d
+uvicorn sheaf.main:app --reload &
+
 export SHEAF_TEST_DB_URL="postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/sheaf"
 pytest -v
 ```
 
-Replace `<POSTGRES_PASSWORD>` with the value from your `.env`. If you run the full stack inside Docker (`docker compose up -d`), the server manages all DB access internally and `SHEAF_TEST_DB_URL` is not needed — but tests must be run inside the container in that case.
+Replace `<POSTGRES_PASSWORD>` with the value from your `.env`.
 
 ### Linting
 
@@ -91,7 +104,7 @@ If you're coming from SimplyPlural, we're especially interested in hearing about
 1. Fork the repo and create a feature branch from `main`
 2. Make your changes
 3. Ensure all linting passes (`ruff check sheaf/` and `cd web && npm run lint && npx tsc --noEmit`)
-4. Ensure tests pass (`pytest`)
+4. Ensure tests pass (`./run_tests.sh` for the full suite, or `pytest` against a local server)
 5. Open a PR with a clear description of what and why
 
 #### PR guidelines
@@ -119,7 +132,7 @@ Before making significant changes, it helps to understand a few design decisions
 - **All IDs are UUIDs.** No auto-increment.
 - **Enums use StrEnum with lowercase values.** SQLAlchemy Enum columns must use `values_callable=lambda e: [m.value for m in e]` to match.
 - **Encrypted fields** (email, totp_secret) use `crypto.encrypt()`/`crypto.decrypt()`. Lookups use blind indexes (`crypto.blind_index()`).
-- **Auth dependency:** Use `get_current_user` for authenticated endpoints, `get_admin_user` for admin-only, `get_current_user_optional` for public endpoints that optionally use auth.
+- **Auth dependency:** Use `get_current_user` for authenticated endpoints, `get_admin_user` for admin-only (requires `is_admin=True` or `admin:read` scope), `get_admin_write_user` for mutating admin endpoints, `get_current_user_optional` for public endpoints that optionally use auth.
 - **Database sessions:** `get_db` yields a session and commits on success. For endpoints where the client needs the data immediately after the response (register, login), explicitly `await db.commit()` before returning.
 - **API versioning:** All routes under `/v1/`. New versions get a new directory.
 - **Frontend API calls:** Use `apiFetch()` from `lib/api-client.ts`. It handles auth headers, token refresh, and error parsing. All fetch calls use `credentials: "same-origin"` for cookie-based auth.
@@ -136,6 +149,7 @@ This is not negotiable. Sheaf handles deeply personal identity data.
 - **No path traversal.** File paths must be validated with `resolve()` + `is_relative_to()`.
 - **Use parameterised queries only.** SQLAlchemy handles this — don't use raw SQL strings.
 - **Refresh tokens are HttpOnly cookies**, not stored in localStorage.
+- **API key plaintext is never stored.** Only the SHA-256 hash is persisted. Return the plaintext once on creation; never log it.
 
 ## License
 

@@ -185,11 +185,11 @@ uvicorn sheaf.main:app --reload
 # Frontend
 cd web && npm install && npm run dev
 
-# Tests (server must be running)
-pytest
+# Full test suite (spins up an isolated Docker stack, tests all server configs)
+./run_tests.sh
 
-# If running pytest from the host while the DB is inside Docker, set this so
-# the admin test fixture can reach Postgres directly (use your POSTGRES_PASSWORD):
+# Quick run against an already-running local server
+# SHEAF_TEST_DB_URL needed so the admin fixture can reach Postgres directly
 SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/sheaf pytest
 ```
 
