@@ -190,6 +190,7 @@ pytest
 ```
 
 ## Roadmap
+- [ ] Named fronts — save a named combination of members and make them searchable in the start front dialog
 - [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
 - [ ] Front change notifications (WebSocket push)
 - [ ] Journals/notes (per-member, encrypted at rest)

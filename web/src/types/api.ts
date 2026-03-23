@@ -41,6 +41,7 @@ export interface System {
   privacy: PrivacyLevel;
   delete_confirmation: DeleteConfirmation;
   date_format: DateFormat;
+  replace_fronts_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +54,7 @@ export interface SystemUpdate {
   color?: string | null;
   privacy?: PrivacyLevel;
   date_format?: DateFormat;
+  replace_fronts_default?: boolean;
 }
 
 export interface Member {
@@ -103,6 +105,7 @@ export interface Front {
 export interface FrontCreate {
   member_ids: string[];
   started_at?: string | null;
+  replace_fronts?: boolean;
 }
 
 export interface FrontUpdate {

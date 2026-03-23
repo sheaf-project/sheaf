@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   useCurrentFronts,
   useFronts,
@@ -14,6 +15,8 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -24,24 +27,36 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { formatDateTime } from "@/lib/utils";
+import { getMySystem } from "@/lib/systems";
 
 export function FrontsPage() {
   const { data: current, isLoading: currentLoading } = useCurrentFronts();
   const { data: history, isLoading: historyLoading } = useFronts();
   const { data: members } = useMembers();
+  const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
   const createFront = useCreateFront();
   const updateFront = useUpdateFront();
   const deleteFront = useDeleteFront();
   const [showStart, setShowStart] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [replaceFronts, setReplaceFronts] = useState<boolean | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const memberMap = new Map(members?.map((m) => [m.id, m]) ?? []);
 
+  // Initialise replaceFronts from system setting when dialog opens
+  const effectiveReplace = replaceFronts ?? (system?.replace_fronts_default ?? true);
+
+  function handleOpen() {
+    setReplaceFronts(null); // reset to system default each time
+    setSelectedMembers([]);
+    setShowStart(true);
+  }
+
   function handleStartFront() {
     if (selectedMembers.length === 0) return;
     createFront.mutate(
-      { member_ids: selectedMembers },
+      { member_ids: selectedMembers, replace_fronts: effectiveReplace },
       {
         onSuccess: () => {
           setShowStart(false);
@@ -70,7 +85,7 @@ export function FrontsPage() {
   return (
     <>
       <PageHeader title="Fronts">
-        <Button onClick={() => setShowStart(true)}>Start front</Button>
+        <Button onClick={handleOpen}>Start front</Button>
       </PageHeader>
 
       {/* Current */}
@@ -168,6 +183,16 @@ export function FrontsPage() {
             onChange={setSelectedMembers}
             className="py-2"
           />
+          <div className="flex items-center gap-2 pt-1">
+            <Checkbox
+              id="replace-fronts"
+              checked={effectiveReplace}
+              onCheckedChange={(v) => setReplaceFronts(v === true)}
+            />
+            <Label htmlFor="replace-fronts" className="text-sm font-normal cursor-pointer">
+              End all current fronts
+            </Label>
+          </div>
           <DialogFooter>
             <Button
               onClick={handleStartFront}

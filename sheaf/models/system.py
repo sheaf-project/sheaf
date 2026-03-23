@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -56,6 +56,10 @@ class System(UUIDMixin, TimestampMixin, Base):
         Enum(DateFormat, values_callable=lambda e: [m.value for m in e]),
         default=DateFormat.YMD,
         nullable=False,
+    )
+    # When True, creating a new front automatically ends all currently open fronts.
+    replace_fronts_default: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
     )
 
     # Relationships

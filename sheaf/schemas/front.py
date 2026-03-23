@@ -7,6 +7,7 @@ from pydantic import BaseModel
 class FrontCreate(BaseModel):
     member_ids: list[uuid.UUID]
     started_at: datetime | None = None
+    replace_fronts: bool | None = None  # None = use system's replace_fronts_default
 
 
 class FrontUpdate(BaseModel):

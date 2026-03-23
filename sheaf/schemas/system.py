@@ -24,6 +24,7 @@ class SystemUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=7)
     privacy: PrivacyLevel | None = None
     date_format: DateFormat | None = None
+    replace_fronts_default: bool | None = None
 
 
 class SystemRead(BaseModel):
@@ -36,6 +37,7 @@ class SystemRead(BaseModel):
     privacy: PrivacyLevel
     delete_confirmation: DeleteConfirmation
     date_format: DateFormat
+    replace_fronts_default: bool
     created_at: datetime
     updated_at: datetime
 

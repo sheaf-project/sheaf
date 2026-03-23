@@ -96,6 +96,19 @@ async def create_front(
             detail="One or more member IDs are invalid",
         )
 
+    # Resolve replace_fronts: explicit value beats system default
+    should_replace = (
+        body.replace_fronts if body.replace_fronts is not None else system.replace_fronts_default
+    )
+    if should_replace:
+        open_fronts = await db.execute(
+            select(Front)
+            .where(Front.system_id == system.id, Front.ended_at.is_(None))
+        )
+        now = datetime.now(UTC)
+        for f in open_fronts.scalars().all():
+            f.ended_at = now
+
     front = Front(
         system_id=system.id,
         started_at=body.started_at or datetime.now(UTC),
