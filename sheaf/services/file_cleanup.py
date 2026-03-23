@@ -25,21 +25,26 @@ _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((/v1/files/[^)]+)\)")
 _FILE_PREFIX = "/v1/files/"
 
 
-def _extract_keys_from_url(url: str | None) -> set[str]:
-    """Extract the storage key from a /v1/files/ URL."""
-    if url and url.startswith(_FILE_PREFIX):
-        return {url[len(_FILE_PREFIX):]}
+def _key_from_avatar(value: str | None) -> set[str]:
+    """Return the storage key from an avatar_url DB field.
+
+    avatar_url stores the storage key directly (e.g. avatars/user_id/uuid.png).
+    """
+    if value:
+        return {value}
     return set()
 
 
 def _extract_keys_from_markdown(text: str | None) -> set[str]:
-    """Extract all hosted image keys from markdown content."""
+    """Extract all hosted image keys from markdown image references."""
     if not text:
         return set()
     keys = set()
     for match in _MD_IMAGE_RE.finditer(text):
         url = match.group(1)
-        keys.update(_extract_keys_from_url(url))
+        # Markdown stores /v1/files/<key> URLs — strip the prefix to get the key
+        if url.startswith(_FILE_PREFIX):
+            keys.add(url[len(_FILE_PREFIX):])
     return keys
 
 
@@ -66,7 +71,7 @@ async def find_orphaned_files(
         select(System.avatar_url).join(User).where(User.id == user_id)
     )
     for (avatar_url,) in result:
-        referenced.update(_extract_keys_from_url(avatar_url))
+        referenced.update(_key_from_avatar(avatar_url))
 
     # Member avatars and bios
     result = await db.execute(
@@ -76,7 +81,7 @@ async def find_orphaned_files(
         .where(User.id == user_id)
     )
     for avatar_url, description in result:
-        referenced.update(_extract_keys_from_url(avatar_url))
+        referenced.update(_key_from_avatar(avatar_url))
         referenced.update(_extract_keys_from_markdown(description))
 
     orphaned = stored_keys - referenced
