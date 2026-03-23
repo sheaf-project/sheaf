@@ -43,11 +43,11 @@ export function updateAdminUser(id: string, patch: AdminUserPatch) {
 }
 
 export function runRetention() {
-  return apiFetch<{ message: string; deleted: number }>("/v1/admin/retention/run", { method: "POST" });
+  return apiFetch<{ pruned: number }>("/v1/admin/retention/run", { method: "POST" });
 }
 
 export function runCleanup() {
-  return apiFetch<{ message: string; deleted: number; freed_bytes: number }>("/v1/admin/cleanup/run", { method: "POST" });
+  return apiFetch<{ users_checked: number; total_orphaned: number; total_freed_bytes: number }>("/v1/admin/cleanup/run", { method: "POST" });
 }
 
 export function runStorageAudit() {

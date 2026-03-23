@@ -53,11 +53,11 @@ export function AdminDashboard() {
 
   const retention = useMutation({
     mutationFn: runRetention,
-    onSuccess: (d) => setRetentionResult(`Deleted ${d.deleted} front record(s)`),
+    onSuccess: (d) => setRetentionResult(`Pruned ${d.pruned} front record(s)`),
   });
   const cleanup = useMutation({
     mutationFn: runCleanup,
-    onSuccess: (d) => setCleanupResult(`Removed ${d.deleted} file(s), freed ${formatBytes(d.freed_bytes)}`),
+    onSuccess: (d) => setCleanupResult(`Removed ${d.total_orphaned} file(s), freed ${formatBytes(d.total_freed_bytes)}`),
   });
   const audit = useMutation({
     mutationFn: runStorageAudit,
