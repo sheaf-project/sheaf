@@ -104,12 +104,15 @@ export function AdminLayout() {
     queryKey: ["admin", "auth"],
     queryFn: getAdminAuthStatus,
     enabled: !!user?.is_admin,
+    retry: false,
   });
 
   if (loading || (user?.is_admin && authLoading)) return null;
   if (!user?.is_admin) return <Navigate to="/" replace />;
 
-  if (!authStatus) return null;
+  // If the status check fails (e.g. network error), fall through — API
+  // endpoints are still protected server-side regardless.
+  if (!authStatus) return <Outlet />;
 
   if (!authStatus.verified && authStatus.level !== "none") {
     return (
