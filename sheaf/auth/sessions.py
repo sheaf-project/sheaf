@@ -46,20 +46,20 @@ async def delete_session(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Admin step-up auth
+# Admin step-up auth (per-user, auth-method-agnostic)
 # ---------------------------------------------------------------------------
 
-def _step_up_key(session_id: str) -> str:
-    return f"sheaf:admin_step_up:{session_id}"
+def _step_up_key(user_id: uuid.UUID) -> str:
+    return f"sheaf:admin_step_up:{user_id}"
 
 
-async def set_admin_step_up(session_id: str, ttl: int = 7200) -> None:
-    """Mark a session as having completed admin step-up auth. TTL default: 2 hours."""
+async def set_admin_step_up(user_id: uuid.UUID, ttl: int = 7200) -> None:
+    """Mark a user as having completed admin step-up auth. TTL default: 2 hours."""
     r = await get_redis()
-    await r.setex(_step_up_key(session_id), ttl, "1")
+    await r.setex(_step_up_key(user_id), ttl, "1")
 
 
-async def check_admin_step_up(session_id: str) -> bool:
-    """Return True if the session has a valid admin step-up token."""
+async def check_admin_step_up(user_id: uuid.UUID) -> bool:
+    """Return True if the user has a valid admin step-up token."""
     r = await get_redis()
-    return await r.exists(_step_up_key(session_id)) == 1
+    return await r.exists(_step_up_key(user_id)) == 1

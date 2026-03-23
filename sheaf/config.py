@@ -73,10 +73,10 @@ class Settings(BaseSettings):
     file_url_expiry_seconds: int = 3600
 
     # Admin dashboard step-up authentication level.
-    # "none"     — any admin session can access the dashboard immediately.
-    # "password" — admin must re-enter their password on each new browser session.
+    # "none"     — any admin can access the dashboard immediately.
+    # "password" — admin must re-enter their password (valid for 2 hours).
     # "totp"     — admin must enter a TOTP code; requires TOTP to be enabled on the account.
-    # Only applies to session (cookie) auth. JWT and API-key auth are unaffected.
+    # Applies to session-cookie and JWT auth. API keys with admin:* scope are exempt.
     admin_auth_level: str = "none"
 
     # Admin bootstrap — comma-separated emails, auto-promoted to is_admin on startup.

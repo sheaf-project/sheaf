@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,21 +33,18 @@ class AdminStepUpVerify(BaseModel):
 async def get_admin_auth_status(
     request: Request,
     user: User = Depends(get_current_user),
-    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
 ):
-    """Return the configured step-up level and whether this session has completed it."""
+    """Return the configured step-up level and whether this user has completed it."""
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
     level = settings.admin_auth_level
     auth_method = getattr(request.state, "auth_method", None)
 
-    # API key auth never requires step-up. JWT and session-cookie auth both
-    # use the session cookie as the carrier for step-up state.
     if auth_method == "api_key" or level == "none":
         verified = True
     else:
-        verified = bool(session_id and await check_admin_step_up(session_id))
+        verified = await check_admin_step_up(user.id)
 
     return {
         "level": level,
@@ -59,19 +56,11 @@ async def get_admin_auth_status(
 @router.post("/auth")
 async def verify_admin_step_up(
     body: AdminStepUpVerify,
-    request: Request,
     user: User = Depends(get_current_user),
-    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
 ):
-    """Complete admin step-up authentication and mark the session as verified."""
+    """Complete admin step-up authentication for this user (any auth method)."""
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-
-    if not session_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No session cookie present — step-up auth requires a browser session",
-        )
 
     level = settings.admin_auth_level
 
@@ -103,7 +92,7 @@ async def verify_admin_step_up(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code"
             )
 
-    await set_admin_step_up(session_id)
+    await set_admin_step_up(user.id)
     return {"verified": True}
 
 
@@ -167,9 +156,8 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List all users with member counts. Requires admin:read scope or is_admin."""
-    offset = (page - 1) * limit
-
-    # Subquery: member count per user via system
+    # Email is encrypted — search must happen after decryption, so we fetch
+    # all rows (or all for the unfiltered case), decrypt, filter, then paginate.
     member_count_sq = (
         select(System.user_id, func.count(Member.id).label("member_count"))
         .outerjoin(Member, Member.system_id == System.id)
@@ -181,23 +169,20 @@ async def list_users(
         select(User, func.coalesce(member_count_sq.c.member_count, 0).label("member_count"))
         .outerjoin(member_count_sq, member_count_sq.c.user_id == User.id)
         .order_by(User.created_at.desc())
-        .offset(offset)
-        .limit(limit)
     )
 
     rows = await db.execute(query)
-    result = []
+    all_users = []
     for user, member_count in rows:
         try:
             email = decrypt(user.email)
         except Exception:
             email = "<encrypted>"
 
-        # Apply search filter after decryption
         if search and search.lower() not in email.lower():
             continue
 
-        result.append(AdminUserRead(
+        all_users.append(AdminUserRead(
             id=str(user.id),
             email=email,
             tier=user.tier,
@@ -208,7 +193,9 @@ async def list_users(
             created_at=user.created_at,
             last_login_at=user.last_login_at,
         ))
-    return result
+
+    offset = (page - 1) * limit
+    return all_users[offset : offset + limit]
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserRead)

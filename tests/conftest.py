@@ -59,6 +59,7 @@ def admin_client() -> Generator[httpx.Client]:
         async def _promote() -> None:
             from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
             from sqlalchemy.orm import sessionmaker
+            from sheaf.config import settings
 
             db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
             engine = create_async_engine(db_url)
