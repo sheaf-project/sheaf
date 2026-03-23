@@ -1,12 +1,14 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_admin_user, get_admin_write_user
+from sheaf.auth.dependencies import get_admin_user, get_admin_write_user, get_current_user
+from sheaf.auth.sessions import check_admin_step_up, set_admin_step_up
+from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.models.member import Member
@@ -16,6 +18,93 @@ from sheaf.services.file_cleanup import audit_all_storage, cleanup_orphaned_file
 from sheaf.services.front_retention import prune_free_tier_fronts
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+# ---------------------------------------------------------------------------
+# Admin step-up auth
+# ---------------------------------------------------------------------------
+
+class AdminStepUpVerify(BaseModel):
+    password: str | None = None
+    totp_code: str | None = None
+
+
+@router.get("/auth")
+async def get_admin_auth_status(
+    request: Request,
+    user: User = Depends(get_current_user),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Return the configured step-up level and whether this session has completed it."""
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    level = settings.admin_auth_level
+    auth_method = getattr(request.state, "auth_method", None)
+
+    # Non-session auth (JWT, API key) and level=none never require step-up
+    if auth_method != "session" or level == "none":
+        verified = True
+    else:
+        verified = bool(session_id and await check_admin_step_up(session_id))
+
+    return {
+        "level": level,
+        "verified": verified,
+        "totp_enabled": user.totp_enabled,
+    }
+
+
+@router.post("/auth")
+async def verify_admin_step_up(
+    body: AdminStepUpVerify,
+    request: Request,
+    user: User = Depends(get_current_user),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Complete admin step-up authentication and mark the session as verified."""
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method != "session" or not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Step-up auth only applies to session (cookie) auth",
+        )
+
+    level = settings.admin_auth_level
+
+    if level == "password":
+        if not body.password:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password required"
+            )
+        from sheaf.auth.passwords import verify_password
+        if not verify_password(body.password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password"
+            )
+
+    elif level == "totp":
+        if not user.totp_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TOTP must be enabled on your account to access the admin dashboard",
+            )
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="TOTP code required"
+            )
+        from sheaf.auth import totp
+        totp_secret = decrypt(user.totp_secret)
+        if not totp.verify_code(totp_secret, body.totp_code):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code"
+            )
+
+    await set_admin_step_up(session_id)
+    return {"verified": True}
 
 
 # ---------------------------------------------------------------------------

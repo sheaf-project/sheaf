@@ -43,3 +43,23 @@ async def get_session_user_id(session_id: str) -> uuid.UUID | None:
 async def delete_session(session_id: str) -> None:
     r = await get_redis()
     await r.delete(_session_key(session_id))
+
+
+# ---------------------------------------------------------------------------
+# Admin step-up auth
+# ---------------------------------------------------------------------------
+
+def _step_up_key(session_id: str) -> str:
+    return f"sheaf:admin_step_up:{session_id}"
+
+
+async def set_admin_step_up(session_id: str, ttl: int = 7200) -> None:
+    """Mark a session as having completed admin step-up auth. TTL default: 2 hours."""
+    r = await get_redis()
+    await r.setex(_step_up_key(session_id), ttl, "1")
+
+
+async def check_admin_step_up(session_id: str) -> bool:
+    """Return True if the session has a valid admin step-up token."""
+    r = await get_redis()
+    return await r.exists(_step_up_key(session_id)) == 1

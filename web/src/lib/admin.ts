@@ -25,6 +25,23 @@ export interface AdminUserPatch {
   member_limit?: number | null;
 }
 
+export interface AdminAuthStatus {
+  level: "none" | "password" | "totp";
+  verified: boolean;
+  totp_enabled: boolean;
+}
+
+export function getAdminAuthStatus() {
+  return apiFetch<AdminAuthStatus>("/v1/admin/auth");
+}
+
+export function verifyAdminStepUp(body: { password?: string; totp_code?: string }) {
+  return apiFetch<{ verified: boolean }>("/v1/admin/auth", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function getAdminStats() {
   return apiFetch<AdminStats>("/v1/admin/stats");
 }

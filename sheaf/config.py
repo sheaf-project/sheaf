@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # Must be a clean divisor of a day (e.g. 3600). Default: 1 hour.
     file_url_expiry_seconds: int = 3600
 
+    # Admin dashboard step-up authentication level.
+    # "none"     — any admin session can access the dashboard immediately.
+    # "password" — admin must re-enter their password on each new browser session.
+    # "totp"     — admin must enter a TOTP code; requires TOTP to be enabled on the account.
+    # Only applies to session (cookie) auth. JWT and API-key auth are unaffected.
+    admin_auth_level: str = "none"
+
     # Admin bootstrap — comma-separated emails, auto-promoted to is_admin on startup.
     # Stored as a raw string because pydantic-settings v2 JSON-parses list[str] fields
     # before validators run, silently dropping plain comma-separated values.

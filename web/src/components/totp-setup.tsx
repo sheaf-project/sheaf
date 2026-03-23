@@ -36,8 +36,8 @@ export function TOTPSetup() {
     setLoading(true);
     try {
       await totpVerify(code);
-      setStep("recovery");
       await refreshUser();
+      setStep("recovery");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
     } finally {

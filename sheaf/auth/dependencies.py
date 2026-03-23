@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.jwt import TokenType, decode_token
-from sheaf.auth.sessions import get_session_user_id
+from sheaf.auth.sessions import check_admin_step_up, get_session_user_id
 from sheaf.database import get_db
 from sheaf.models.user import User
 
@@ -68,6 +68,7 @@ async def get_current_user(
         # Store scopes on request state — used by require_scope()
         request.state.api_key_scopes = set(api_key.scopes)
         request.state.api_key_id = api_key.id
+        request.state.auth_method = "api_key"
 
         # Fire-and-forget last_used_at update
         from datetime import UTC, datetime
@@ -86,6 +87,7 @@ async def get_current_user(
                     detail="Invalid token type",
                 )
             user_id = uuid.UUID(payload["sub"])
+            request.state.auth_method = "jwt"
         except (jwt.PyJWTError, ValueError, KeyError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -95,6 +97,9 @@ async def get_current_user(
     # Fall back to session cookie
     if user_id is None and session_id is not None:
         user_id = await get_session_user_id(session_id)
+        if user_id is not None:
+            request.state.auth_method = "session"
+            request.state.session_id = session_id
 
     if user_id is None:
         raise HTTPException(
@@ -148,6 +153,22 @@ def require_scope(scope: str) -> Callable:
     return dep
 
 
+async def _check_admin_step_up(request: Request) -> None:
+    """Raise 403 if admin step-up auth is required but not completed for this session."""
+    from sheaf.config import settings
+
+    if settings.admin_auth_level == "none":
+        return
+    if getattr(request.state, "auth_method", None) != "session":
+        return  # JWT and API key auth skip step-up
+    session_id = getattr(request.state, "session_id", None)
+    if session_id is None or not await check_admin_step_up(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin_step_up_required",
+        )
+
+
 async def get_admin_user(
     request: Request,
     user: User = Depends(get_current_user),
@@ -165,6 +186,7 @@ async def get_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
+    await _check_admin_step_up(request)
     return user
 
 
@@ -185,6 +207,7 @@ async def get_admin_write_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
+    await _check_admin_step_up(request)
     return user
 
 
