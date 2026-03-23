@@ -99,7 +99,11 @@ async def get_current_user(
         user_id = await get_session_user_id(session_id)
         if user_id is not None:
             request.state.auth_method = "session"
-            request.state.session_id = session_id
+
+    # Always track session_id — used for admin step-up auth even when JWT is
+    # the primary auth method (both tokens come from the same browser session).
+    if session_id is not None:
+        request.state.session_id = session_id
 
     if user_id is None:
         raise HTTPException(
@@ -154,13 +158,18 @@ def require_scope(scope: str) -> Callable:
 
 
 async def _check_admin_step_up(request: Request) -> None:
-    """Raise 403 if admin step-up auth is required but not completed for this session."""
+    """Raise 403 if admin step-up auth is required but not completed for this session.
+
+    Step-up state is carried by the session cookie and applies to both JWT and
+    session-cookie auth (both originate from the same browser session). Only
+    API key auth is exempt — it represents explicit programmatic access.
+    """
     from sheaf.config import settings
 
     if settings.admin_auth_level == "none":
         return
-    if getattr(request.state, "auth_method", None) != "session":
-        return  # JWT and API key auth skip step-up
+    if getattr(request.state, "auth_method", None) == "api_key":
+        return
     session_id = getattr(request.state, "session_id", None)
     if session_id is None or not await check_admin_step_up(session_id):
         raise HTTPException(

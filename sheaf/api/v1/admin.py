@@ -42,8 +42,9 @@ async def get_admin_auth_status(
     level = settings.admin_auth_level
     auth_method = getattr(request.state, "auth_method", None)
 
-    # Non-session auth (JWT, API key) and level=none never require step-up
-    if auth_method != "session" or level == "none":
+    # API key auth never requires step-up. JWT and session-cookie auth both
+    # use the session cookie as the carrier for step-up state.
+    if auth_method == "api_key" or level == "none":
         verified = True
     else:
         verified = bool(session_id and await check_admin_step_up(session_id))
@@ -66,11 +67,10 @@ async def verify_admin_step_up(
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
-    auth_method = getattr(request.state, "auth_method", None)
-    if auth_method != "session" or not session_id:
+    if not session_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Step-up auth only applies to session (cookie) auth",
+            detail="No session cookie present — step-up auth requires a browser session",
         )
 
     level = settings.admin_auth_level
