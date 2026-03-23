@@ -52,7 +52,7 @@ export function MemberSelect({ selected, onChange, className }: Props) {
             onClick={() => toggle(m.id)}
           >
             <ColorDot color={m.color} />
-            {m.name}
+            {m.display_name || m.name}
           </Badge>
         ))}
         {filtered.length === 0 && (

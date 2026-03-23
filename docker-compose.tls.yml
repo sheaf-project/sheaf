@@ -1,0 +1,20 @@
+# Optional TLS overlay for mobile app development.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#
+# Requires TLS_CERT_DIR and TLS_HOSTNAME in .env (see .env.example).
+# The cert directory must contain cert.pem and key.pem.
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${TLS_PORT:-443}:443"
+    volumes:
+      - ./nginx/dev-tls.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${TLS_CERT_DIR:?Set TLS_CERT_DIR in .env}:/etc/nginx/certs:ro
+    environment:
+      TLS_HOSTNAME: ${TLS_HOSTNAME:-localhost}
+    depends_on:
+      - app

@@ -45,6 +45,7 @@ function MemberForm({
   submitLabel: string;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
+  const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
   const [avatarUrl, setAvatarUrl] = useState(initial?.avatar_url ?? null);
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? "");
   const [color, setColor] = useState(initial?.color ?? "#6366f1");
@@ -56,6 +57,7 @@ function MemberForm({
     e.preventDefault();
     onSubmit({
       name,
+      display_name: displayName || null,
       avatar_url: avatarUrl,
       pronouns: pronouns || null,
       color: color || null,
@@ -76,6 +78,14 @@ function MemberForm({
       <div className="space-y-2">
         <Label>Name</Label>
         <Input value={name} onChange={(e) => setName(e.target.value)} required />
+      </div>
+      <div className="space-y-2">
+        <Label>Display name</Label>
+        <Input
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="Optional — shown instead of name if set"
+        />
       </div>
       <div className="space-y-2">
         <Label>Pronouns</Label>
@@ -340,7 +350,10 @@ function MemberView({
               </AvatarFallback>
             </Avatar>
             <div>
-              <p className="text-lg font-semibold">{member.name}</p>
+              <p className="text-lg font-semibold">{member.display_name || member.name}</p>
+              {member.display_name && (
+                <p className="text-sm text-muted-foreground">{member.name}</p>
+              )}
               {member.pronouns && (
                 <p className="text-sm text-muted-foreground">{member.pronouns}</p>
               )}
@@ -416,7 +429,10 @@ export function MembersPage() {
                   </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium truncate">{m.name}</p>
+                  <p className="font-medium truncate">{m.display_name || m.name}</p>
+                  {m.display_name && (
+                    <p className="text-xs text-muted-foreground truncate">{m.name}</p>
+                  )}
                   {m.pronouns && (
                     <p className="text-sm text-muted-foreground">{m.pronouns}</p>
                   )}

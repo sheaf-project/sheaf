@@ -76,7 +76,7 @@ export function FrontsPage() {
       return (
         <Badge key={mid} variant="secondary" className="gap-1.5">
           <ColorDot color={m?.color ?? null} />
-          {m?.name ?? "Unknown"}
+          {m?.display_name ?? m?.name ?? "Unknown"}
         </Badge>
       );
     });

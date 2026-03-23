@@ -24,5 +24,8 @@ venv/
 web/node_modules/
 web/dist/
 
+# TLS certs for local dev (never commit)
+certs/
+
 # internal project notes
 notes/
