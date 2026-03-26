@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { uploadFile } from "@/lib/files";
 import { useShowImageBadges } from "@/hooks/use-preferences";
+import { ImagePickerDialog } from "@/components/image-picker";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ImagePlus, Bold, Italic, Link, Code, Tags, Tag } from "lucide-react";
@@ -70,10 +70,9 @@ export function BioEditor({
   onChange: (value: string) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
   const [tab, setTab] = useState<string>("write");
   const [showBadges, setShowBadges] = useShowImageBadges();
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
 
   function insertAtCursor(text: string) {
     const ta = textareaRef.current;
@@ -85,7 +84,6 @@ export function BioEditor({
     const end = ta.selectionEnd;
     const newValue = value.slice(0, start) + text + value.slice(end);
     onChange(newValue);
-    // Restore cursor position after the inserted text
     requestAnimationFrame(() => {
       ta.selectionStart = ta.selectionEnd = start + text.length;
       ta.focus();
@@ -105,27 +103,6 @@ export function BioEditor({
       ta.selectionEnd = end + before.length;
       ta.focus();
     });
-  }
-
-  const [uploadError, setUploadError] = useState("");
-
-  async function handleImageUpload(file: File) {
-    setUploadError("");
-    setUploading(true);
-    try {
-      const res = await uploadFile(file, "bio");
-      insertAtCursor(`![image](/v1/files/${res.key})`);
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) handleImageUpload(file);
-    e.target.value = "";
   }
 
   return (
@@ -183,9 +160,8 @@ export function BioEditor({
                 variant="ghost"
                 size="sm"
                 className="h-7 w-7 p-0"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                title="Upload image"
+                onClick={() => setImagePickerOpen(true)}
+                title="Add image"
               >
                 <ImagePlus className="h-3.5 w-3.5" />
               </Button>
@@ -200,9 +176,6 @@ export function BioEditor({
             className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-y"
             placeholder="Write a bio... (supports markdown)"
           />
-          {uploadError && (
-            <p className="text-xs text-destructive">{uploadError}</p>
-          )}
         </TabsContent>
         <TabsContent value="preview" className="mt-1">
           <div className="min-h-[120px] rounded-md border border-input bg-background px-3 py-2">
@@ -223,12 +196,10 @@ export function BioEditor({
           </div>
         </TabsContent>
       </Tabs>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/jpeg,image/png,image/gif,image/webp"
-        className="hidden"
-        onChange={handleFileChange}
+      <ImagePickerDialog
+        open={imagePickerOpen}
+        onOpenChange={setImagePickerOpen}
+        onSelect={insertAtCursor}
       />
     </div>
   );

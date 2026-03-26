@@ -112,6 +112,55 @@ async def get_usage(
     }
 
 
+@router.get("/list")
+async def list_files(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all uploaded files for the current user."""
+    result = await db.execute(
+        select(UploadedFile)
+        .where(UploadedFile.user_id == user.id)
+        .order_by(UploadedFile.created_at.desc())
+    )
+    files = result.scalars().all()
+    return [
+        {
+            "id": str(f.id),
+            "key": f.key,
+            "url": resolve_avatar_url(f.key),
+            "purpose": f.purpose,
+            "content_type": f.content_type,
+            "size_bytes": f.size_bytes,
+            "created_at": f.created_at.isoformat(),
+        }
+        for f in files
+    ]
+
+
+@router.delete("/{file_id}", dependencies=[Depends(require_scope("members:write"))])
+async def delete_file(
+    file_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a specific uploaded file."""
+    result = await db.execute(
+        select(UploadedFile).where(
+            UploadedFile.id == file_id,
+            UploadedFile.user_id == user.id,
+        )
+    )
+    file = result.scalar_one_or_none()
+    if file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    storage = get_storage()
+    await storage.delete(file.key)
+    await db.delete(file)
+    return {"deleted": True, "key": file.key, "freed_bytes": file.size_bytes}
+
+
 @router.post("/cleanup")
 async def cleanup_files(
     user: User = Depends(get_current_user),

@@ -33,3 +33,24 @@ export interface CleanupResult {
 export function cleanupFiles() {
   return apiFetch<CleanupResult>("/v1/files/cleanup", { method: "POST" });
 }
+
+export interface UploadedFileInfo {
+  id: string;
+  key: string;
+  url: string;
+  purpose: string;
+  content_type: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+export function listFiles() {
+  return apiFetch<UploadedFileInfo[]>("/v1/files/list");
+}
+
+export function deleteFile(fileId: string) {
+  return apiFetch<{ deleted: boolean; key: string; freed_bytes: number }>(
+    `/v1/files/${fileId}`,
+    { method: "DELETE" },
+  );
+}
