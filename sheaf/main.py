@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf.api.v1.router import v1_router
 from sheaf.config import SheafMode, _validate_settings, settings
@@ -99,6 +100,26 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if settings.allow_external_images:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data: blob: https:; "
+                "style-src 'self' 'unsafe-inline'"
+            )
+        else:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data: blob:; "
+                "style-src 'self' 'unsafe-inline'"
+            )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(v1_router)
 

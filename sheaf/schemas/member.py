@@ -1,9 +1,14 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
-from sheaf.files import resolve_avatar_url
+from sheaf.files import (
+    normalize_avatar_url,
+    normalize_description_urls,
+    resolve_avatar_url,
+    resolve_description_urls,
+)
 from sheaf.models.system import PrivacyLevel
 
 
@@ -17,6 +22,16 @@ class MemberCreate(BaseModel):
     birthday: str | None = Field(default=None, max_length=10)
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
 
+    @field_validator("avatar_url", mode="before")
+    @classmethod
+    def _normalize_avatar(cls, v: str | None) -> str | None:
+        return normalize_avatar_url(v)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v: str | None) -> str | None:
+        return normalize_description_urls(v)
+
 
 class MemberUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
@@ -27,6 +42,16 @@ class MemberUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=7)
     birthday: str | None = Field(default=None, max_length=10)
     privacy: PrivacyLevel | None = None
+
+    @field_validator("avatar_url", mode="before")
+    @classmethod
+    def _normalize_avatar(cls, v: str | None) -> str | None:
+        return normalize_avatar_url(v)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v: str | None) -> str | None:
+        return normalize_description_urls(v)
 
 
 class MemberDeleteConfirm(BaseModel):
@@ -53,3 +78,7 @@ class MemberRead(BaseModel):
     @field_serializer("avatar_url")
     def _sign_avatar_url(self, v: str | None) -> str | None:
         return resolve_avatar_url(v)
+
+    @field_serializer("description")
+    def _sign_description_urls(self, v: str | None) -> str | None:
+        return resolve_description_urls(v)

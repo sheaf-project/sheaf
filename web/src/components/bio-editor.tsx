@@ -113,8 +113,8 @@ export function BioEditor({
     setUploadError("");
     setUploading(true);
     try {
-      const res = await uploadFile(file);
-      insertAtCursor(`![image](${res.url})`);
+      const res = await uploadFile(file, "bio");
+      insertAtCursor(`![image](/v1/files/${res.key})`);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
