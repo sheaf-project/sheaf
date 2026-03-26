@@ -67,6 +67,6 @@ export function runCleanup() {
   return apiFetch<{ users_checked: number; total_orphaned: number; total_freed_bytes: number }>("/v1/admin/cleanup/run", { method: "POST" });
 }
 
-export function runStorageAudit() {
-  return apiFetch<{ users_checked: number; users_corrected: number }>("/v1/admin/storage/audit", { method: "POST" });
+export function getStorageStats() {
+  return apiFetch<{ total_bytes: number; total_files: number; users_with_files: number }>("/v1/admin/storage/stats");
 }

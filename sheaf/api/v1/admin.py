@@ -13,8 +13,9 @@ from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.models.member import Member
 from sheaf.models.system import System
+from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
-from sheaf.services.file_cleanup import audit_all_storage, cleanup_orphaned_files
+from sheaf.services.file_cleanup import cleanup_orphaned_files
 from sheaf.services.front_retention import prune_free_tier_fronts
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -108,7 +109,9 @@ async def get_stats(
     """Aggregate system stats. Requires admin:read scope or is_admin."""
     total_users = await db.scalar(select(func.count(User.id)))
     total_members = await db.scalar(select(func.count(Member.id)))
-    total_storage = await db.scalar(select(func.sum(User.storage_used_bytes))) or 0
+    total_storage = await db.scalar(
+        select(func.coalesce(func.sum(UploadedFile.size_bytes), 0))
+    )
 
     # Users by tier
     rows = await db.execute(
@@ -165,15 +168,29 @@ async def list_users(
         .subquery()
     )
 
+    storage_sq = (
+        select(
+            UploadedFile.user_id,
+            func.coalesce(func.sum(UploadedFile.size_bytes), 0).label("storage_used_bytes"),
+        )
+        .group_by(UploadedFile.user_id)
+        .subquery()
+    )
+
     query = (
-        select(User, func.coalesce(member_count_sq.c.member_count, 0).label("member_count"))
+        select(
+            User,
+            func.coalesce(member_count_sq.c.member_count, 0).label("member_count"),
+            func.coalesce(storage_sq.c.storage_used_bytes, 0).label("storage_used_bytes"),
+        )
         .outerjoin(member_count_sq, member_count_sq.c.user_id == User.id)
+        .outerjoin(storage_sq, storage_sq.c.user_id == User.id)
         .order_by(User.created_at.desc())
     )
 
     rows = await db.execute(query)
     all_users = []
-    for user, member_count in rows:
+    for user, member_count, storage_used_bytes in rows:
         try:
             email = decrypt(user.email)
         except Exception:
@@ -188,7 +205,7 @@ async def list_users(
             tier=user.tier,
             is_admin=user.is_admin,
             member_limit=user.member_limit,
-            storage_used_bytes=user.storage_used_bytes,
+            storage_used_bytes=storage_used_bytes,
             member_count=member_count,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
@@ -220,12 +237,17 @@ async def update_user(
     elif body.member_limit is not None:
         target.member_limit = body.member_limit
 
-    # Get member count for response
+    # Get member count and storage for response
     member_count = await db.scalar(
         select(func.count(Member.id))
         .join(System, System.id == Member.system_id)
         .where(System.user_id == user_id)
     ) or 0
+
+    storage_used = await db.scalar(
+        select(func.coalesce(func.sum(UploadedFile.size_bytes), 0))
+        .where(UploadedFile.user_id == user_id)
+    )
 
     try:
         email = decrypt(target.email)
@@ -238,7 +260,7 @@ async def update_user(
         tier=target.tier,
         is_admin=target.is_admin,
         member_limit=target.member_limit,
-        storage_used_bytes=target.storage_used_bytes,
+        storage_used_bytes=storage_used,
         member_count=member_count,
         created_at=target.created_at,
         last_login_at=target.last_login_at,
@@ -282,13 +304,25 @@ async def run_cleanup(
     }
 
 
-@router.post("/storage/audit")
-async def run_storage_audit(
-    _: User = Depends(get_admin_write_user),
+@router.get("/storage/stats")
+async def get_storage_stats(
+    _: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Audit and correct storage usage counters for all users. Admin only."""
-    return await audit_all_storage(db)
+    """Storage statistics from uploaded_files table. Admin only."""
+    result = await db.execute(
+        select(
+            func.coalesce(func.sum(UploadedFile.size_bytes), 0),
+            func.count(UploadedFile.id),
+            func.count(func.distinct(UploadedFile.user_id)),
+        )
+    )
+    total_bytes, total_files, users_with_files = result.one()
+    return {
+        "total_bytes": total_bytes,
+        "total_files": total_files,
+        "users_with_files": users_with_files,
+    }
 
 
 # Legacy endpoint kept for backwards compatibility

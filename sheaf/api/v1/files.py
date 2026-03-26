@@ -3,6 +3,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
@@ -10,13 +11,10 @@ from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.files import resolve_avatar_url, verify_file_token
+from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
-from sheaf.services.file_cleanup import audit_storage_usage, cleanup_orphaned_files
+from sheaf.services.file_cleanup import cleanup_orphaned_files
 from sheaf.storage import get_storage
-
-# Per-user audit cache: user_id -> (timestamp, result)
-_audit_cache: dict[str, tuple[float, dict]] = {}
-_AUDIT_TTL = 60  # seconds
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -38,6 +36,7 @@ def _get_quota_bytes(user: User) -> int:
 @router.post("/upload", dependencies=[Depends(require_scope("members:write"))])
 async def upload_file(
     file: UploadFile,
+    purpose: str = Query(default="avatar", pattern="^(avatar|bio)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -59,23 +58,34 @@ async def upload_file(
 
     # Check storage quota
     quota = _get_quota_bytes(user)
-    if quota > 0 and (user.storage_used_bytes + file_size) > quota:
-        quota_mb = quota // (1024 * 1024)
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
+    if quota > 0:
+        used = await db.scalar(
+            select(func.coalesce(func.sum(UploadedFile.size_bytes), 0))
+            .where(UploadedFile.user_id == user.id)
         )
+        if (used + file_size) > quota:
+            quota_mb = quota // (1024 * 1024)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
+            )
 
     has_ext = file.filename and "." in file.filename
     ext = file.filename.rsplit(".", 1)[-1].lower() if has_ext else "bin"
-    key = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
+    prefix = "bios" if purpose == "bio" else "avatars"
+    key = f"{prefix}/{user.id}/{uuid.uuid4().hex}.{ext}"
 
     storage = get_storage()
     await storage.put(key, data, file.content_type or "application/octet-stream")
 
-    # Track usage
-    user.storage_used_bytes += file_size
-    _audit_cache.pop(str(user.id), None)
+    # Track upload
+    db.add(UploadedFile(
+        user_id=user.id,
+        key=key,
+        purpose=purpose,
+        content_type=file.content_type or "application/octet-stream",
+        size_bytes=file_size,
+    ))
 
     return {"url": resolve_avatar_url(key), "key": key, "size": file_size}
 
@@ -85,26 +95,20 @@ async def get_usage(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the user's current storage usage and quota.
-
-    Audits actual disk/S3 usage and corrects the tracked counter if drifted.
-    Cached per-user for 60s to avoid hammering storage on repeated loads.
-    """
-    uid = str(user.id)
-    now = time.monotonic()
-    cached = _audit_cache.get(uid)
-
-    if cached and (now - cached[0]) < _AUDIT_TTL:
-        audit = cached[1]
-    else:
-        audit = await audit_storage_usage(db, uid)
-        _audit_cache[uid] = (now, audit)
+    """Return the user's current storage usage and quota."""
+    result = await db.execute(
+        select(
+            func.coalesce(func.sum(UploadedFile.size_bytes), 0),
+            func.count(UploadedFile.id),
+        ).where(UploadedFile.user_id == user.id)
+    )
+    used_bytes, file_count = result.one()
 
     quota = _get_quota_bytes(user)
     return {
-        "used_bytes": audit["actual_bytes"],
+        "used_bytes": used_bytes,
         "quota_bytes": quota,  # 0 = unlimited
-        "file_count": audit["file_count"],
+        "file_count": file_count,
     }
 
 
@@ -114,9 +118,7 @@ async def cleanup_files(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete orphaned files and reclaim storage quota."""
-    uid = str(user.id)
-    result = await cleanup_orphaned_files(db, uid)
-    _audit_cache.pop(uid, None)
+    result = await cleanup_orphaned_files(db, str(user.id))
     return result
 
 

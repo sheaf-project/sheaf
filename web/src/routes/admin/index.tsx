@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getAdminStats, runRetention, runCleanup, runStorageAudit } from "@/lib/admin";
+import { getAdminStats, runRetention, runCleanup } from "@/lib/admin";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -49,8 +49,6 @@ export function AdminDashboard() {
   const { data: stats } = useQuery({ queryKey: ["admin", "stats"], queryFn: getAdminStats });
   const [retentionResult, setRetentionResult] = useState<string | null>(null);
   const [cleanupResult, setCleanupResult] = useState<string | null>(null);
-  const [auditResult, setAuditResult] = useState<string | null>(null);
-
   const retention = useMutation({
     mutationFn: runRetention,
     onSuccess: (d) => setRetentionResult(`Pruned ${d.pruned} front record(s)`),
@@ -58,10 +56,6 @@ export function AdminDashboard() {
   const cleanup = useMutation({
     mutationFn: runCleanup,
     onSuccess: (d) => setCleanupResult(`Removed ${d.total_orphaned} file(s), freed ${formatBytes(d.total_freed_bytes)}`),
-  });
-  const audit = useMutation({
-    mutationFn: runStorageAudit,
-    onSuccess: (d) => setAuditResult(`Audited ${d.users_checked} user(s), corrected ${d.users_corrected}`),
   });
 
   return (
@@ -98,11 +92,6 @@ export function AdminDashboard() {
               label="Clean up orphaned files"
               onRun={() => cleanup.mutate()}
               result={cleanupResult}
-            />
-            <MaintenanceButton
-              label="Audit storage usage"
-              onRun={() => audit.mutate()}
-              result={auditResult}
             />
           </CardContent>
         </Card>
