@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.jwt import TokenType, decode_token
 from sheaf.auth.sessions import check_admin_step_up, get_session_user_id
 from sheaf.database import get_db
-from sheaf.models.user import User
+from sheaf.models.user import AccountStatus, User
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -120,11 +120,50 @@ async def get_current_user(
             detail="User not found",
         )
 
+    # Check account status
+    _STATUS_MESSAGES = {
+        AccountStatus.PENDING_APPROVAL: "Account pending approval",
+        AccountStatus.SUSPENDED: "Account suspended",
+        AccountStatus.BANNED: "Account banned",
+    }
+    if user.account_status in _STATUS_MESSAGES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_STATUS_MESSAGES[user.account_status],
+        )
+    # pending_deletion: allow login but block via separate check on mutations
+
+    # Check email verification (skip if explicitly allowed, e.g. resend-verification)
+    if not user.email_verified and not getattr(request.state, "_skip_email_verification", False):
+        from sheaf.config import settings
+
+        if settings.email_verification == "required":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Email not verified",
+            )
+
     # For session/JWT auth, no scope restrictions
     if not hasattr(request.state, "api_key_scopes"):
         request.state.api_key_scopes = None
 
     return user
+
+
+async def get_current_user_allow_unverified(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+) -> User:
+    """Like get_current_user but skips the email verification check.
+
+    Used for endpoints that unverified users need access to (e.g. resend-verification).
+    Still enforces account status checks.
+    """
+    # Stash a flag so get_current_user can skip the verification check
+    request.state._skip_email_verification = True
+    return await get_current_user(request, db, credentials, session_id)
 
 
 def require_scope(scope: str) -> Callable:

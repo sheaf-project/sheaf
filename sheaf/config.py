@@ -77,6 +77,24 @@ class Settings(BaseSettings):
     # Must be a clean divisor of a day (e.g. 3600). Default: 1 hour.
     file_url_expiry_seconds: int = 3600
 
+    # Email
+    email_backend: str = "none"  # "none", "smtp", or "ses"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_tls: bool = True
+    ses_region: str = ""
+    ses_from: str = ""
+    ses_access_key: str = ""
+    ses_secret_key: str = ""
+
+    # Registration
+    registration_mode: str = "open"  # "open", "approval", "invite", "closed"
+    email_verification: str = "off"  # "off" or "required"
+    sheaf_base_url: str = ""  # Required when email is enabled, e.g. "https://sheaf.example.com"
+
     # Admin dashboard step-up authentication level.
     # "none"     — any admin can access the dashboard immediately.
     # "password" — admin must re-enter their password (valid for 2 hours).
@@ -155,6 +173,26 @@ def _validate_settings() -> None:
             "IMAGE_SERVING=unsigned with S3 and no S3_PUBLIC_URL: files are publicly "
             "accessible via direct S3 URLs. Set S3_PUBLIC_URL to a Cloudflare-proxied "
             "domain with hotlink protection, or switch to IMAGE_SERVING=signed."
+        )
+
+    if settings.email_verification == "required" and settings.email_backend == "none":
+        logger.critical(
+            "EMAIL_VERIFICATION=required but EMAIL_BACKEND=none — "
+            "cannot send verification emails. Set EMAIL_BACKEND to smtp or ses."
+        )
+        sys.exit(1)
+
+    if settings.email_backend != "none" and not settings.sheaf_base_url:
+        logger.critical(
+            "EMAIL_BACKEND is configured but SHEAF_BASE_URL is not set — "
+            "email links require a base URL. Set SHEAF_BASE_URL (e.g. https://sheaf.example.com)."
+        )
+        sys.exit(1)
+
+    if settings.registration_mode == "approval" and settings.email_backend == "none":
+        logger.warning(
+            "REGISTRATION_MODE=approval with EMAIL_BACKEND=none — "
+            "users won't receive notification when approved. Consider configuring email."
         )
 
     if settings.sheaf_mode == SheafMode.SAAS and problems:

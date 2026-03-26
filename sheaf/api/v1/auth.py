@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import secrets
 from datetime import UTC, datetime
 
@@ -10,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unverified
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
 from sheaf.auth.sessions import create_session, delete_session
@@ -70,6 +71,7 @@ class ApiKeyCreated(ApiKeyRead):
     key: str  # plaintext, returned once only
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("sheaf.auth")
 
 
 def _hash_recovery_code(code: str) -> str:
@@ -99,22 +101,94 @@ def _check_recovery_code(user: User, code: str) -> bool:
     return False
 
 
+async def _validate_invite_code(db: AsyncSession, code: str):
+    """Validate and return an invite code, or raise 400/403."""
+    from sheaf.models.invite_code import InviteCode
+
+    result = await db.execute(select(InviteCode).where(InviteCode.code == code))
+    invite = result.scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid invite code",
+        )
+    if invite.expires_at is not None and datetime.now(UTC) > invite.expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invite code expired",
+        )
+    if invite.max_uses > 0 and invite.use_count >= invite.max_uses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invite code has reached maximum uses",
+        )
+    return invite
+
+
+async def _send_verification_email(db: AsyncSession, user: "User", email: str) -> None:
+    """Generate a verification token and send the verification email."""
+    from sheaf.services.email import send_email
+    from sheaf.services.email_templates import verification_email
+
+    token = secrets.token_urlsafe(32)
+    # Store hashed token on the user (reuse crypto for consistency)
+    user.email_verification_token = hashlib.sha256(token.encode()).hexdigest()
+    user.email_verification_sent_at = datetime.now(UTC)
+
+    subject, html, text = verification_email(token)
+    try:
+        await send_email(email, subject, html, text)
+    except Exception:
+        logger.exception("Failed to send verification email to user %s", user.id)
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     body: UserRegister,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
+    # Check registration mode
+    reg_mode = settings.registration_mode
+    if reg_mode == "closed":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is closed",
+        )
+
+    # Validate invite code if required
+    invite = None
+    if reg_mode == "invite":
+        if not body.invite_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invite code required",
+            )
+        invite = await _validate_invite_code(db, body.invite_code)
+    elif body.invite_code:
+        # Invite code provided but not required — ignore it silently
+        pass
+
     email_hash = blind_index(body.email)
 
     existing = await db.execute(select(User).where(User.email_hash == email_hash))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
+    # Determine initial account status
+    from sheaf.models.user import AccountStatus
+
+    account_status = (
+        AccountStatus.PENDING_APPROVAL if reg_mode == "approval" else AccountStatus.ACTIVE
+    )
+    email_verified = settings.email_verification != "required"
+
     user = User(
         email=encrypt(body.email),
         email_hash=email_hash,
         password_hash=hash_password(body.password),
+        account_status=account_status,
+        email_verified=email_verified,
     )
     db.add(user)
 
@@ -125,9 +199,17 @@ async def register(
             status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
         ) from exc
 
+    # Increment invite code usage
+    if invite is not None:
+        invite.use_count += 1
+
     # Auto-create a system for the user
     system = System(user_id=user.id, name="My System")
     db.add(system)
+
+    # Send verification email if required
+    if not email_verified and settings.email_backend != "none":
+        await _send_verification_email(db, user, body.email)
 
     # Create session before committing so a Redis failure rolls back the DB
     session_id = await create_session(user.id)
@@ -157,6 +239,66 @@ async def register(
         access_token=create_token(user.id, TokenType.ACCESS),
         refresh_token=refresh_token,
     )
+
+
+@router.get("/verify-email")
+async def verify_email(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify email address using the token from the verification email."""
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    result = await db.execute(
+        select(User).where(User.email_verification_token == token_hash)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
+    # Check expiry (24 hours)
+    if user.email_verification_sent_at is not None:
+        age = (datetime.now(UTC) - user.email_verification_sent_at).total_seconds()
+        if age > 86400:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification link expired. Request a new one.",
+            )
+
+    user.email_verified = True
+    user.email_verification_token = None
+    user.email_verification_sent_at = None
+    await db.commit()
+    return {"verified": True}
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    user: User = Depends(get_current_user_allow_unverified),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend the email verification link."""
+    if user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already verified",
+        )
+
+    # Rate limit: 3 per hour
+    if user.email_verification_sent_at is not None:
+        age = (datetime.now(UTC) - user.email_verification_sent_at).total_seconds()
+        if age < 1200:  # 20 minutes between resends
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Please wait before requesting another verification email",
+            )
+
+    email = decrypt(user.email)
+    await _send_verification_email(db, user, email)
+    await db.commit()
+    return {"sent": True}
 
 
 @router.post("/login", response_model=TokenResponse)
