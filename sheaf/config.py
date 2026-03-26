@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     s3_secret_key: str = ""
     s3_region: str = "us-east-1"
     s3_endpoint: str = ""  # For MinIO/R2 compatibility
+    s3_presign_endpoint: str = ""  # External URL for presigned URLs (if different from s3_endpoint)
     s3_public_url: str = ""  # CDN URL prefix, if any
     max_upload_size_mb: int = 5
     # Storage quotas per tier (MB). 0 = unlimited.
@@ -56,6 +57,10 @@ class Settings(BaseSettings):
     member_limit_free: int = 512
     member_limit_plus: int = 0  # unlimited
     member_limit_selfhosted: int = 0  # unlimited
+
+    # Allow external images in bios/descriptions. If False, CSP blocks
+    # external image loading — only hosted uploads are displayed.
+    allow_external_images: bool = True
 
     # Image serving mode: "signed" (default) or "unsigned".
     # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.

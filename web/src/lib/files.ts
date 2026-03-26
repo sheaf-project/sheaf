@@ -5,10 +5,10 @@ interface UploadResponse {
   key: string;
 }
 
-export function uploadFile(file: File): Promise<UploadResponse> {
+export function uploadFile(file: File, purpose: "avatar" | "bio" = "avatar"): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
-  return apiFetch<UploadResponse>("/v1/files/upload", {
+  return apiFetch<UploadResponse>(`/v1/files/upload?purpose=${purpose}`, {
     method: "POST",
     body: form,
   });

@@ -115,6 +115,7 @@ S3_ACCESS_KEY=...
 S3_SECRET_KEY=...
 S3_REGION=us-east-1
 S3_ENDPOINT=https://your-minio.example.com  # Omit for AWS S3
+# S3_PRESIGN_ENDPOINT=  # See "Presigned URL endpoint" below
 ```
 
 ### Image serving and hotlink protection
@@ -126,6 +127,19 @@ By default (`IMAGE_SERVING=signed`), avatar URLs are HMAC-signed with a short ex
 | `IMAGE_SERVING=signed` | URLs include an HMAC token and expiry. S3: server redirects to a presigned S3 URL (bucket can be private). Filesystem: token validated on every request. |
 | `IMAGE_SERVING=unsigned` | No token required — anyone with a URL can load the file. Use only with a CDN that has hotlink protection. |
 | `S3_PUBLIC_URL=https://cdn.example.com` | Avatar URLs resolve directly to your CDN, bypassing the serve endpoint entirely. Combine with `IMAGE_SERVING=unsigned` and Cloudflare hotlink protection rules. |
+
+#### Presigned URL endpoint
+
+When using S3-compatible storage (MinIO, etc.) where `S3_ENDPOINT` is a Docker-internal hostname (e.g. `http://minio:9000`), presigned redirect URLs will point at that internal hostname — which the browser can't reach.
+
+Set `S3_PRESIGN_ENDPOINT` to the externally-reachable URL for your S3 service:
+
+```env
+S3_ENDPOINT=http://minio:9000               # Used by the app container
+S3_PRESIGN_ENDPOINT=http://localhost:9000    # Used in presigned URLs sent to the browser
+```
+
+Not needed for AWS S3 (the endpoint is always publicly reachable) or when using `S3_PUBLIC_URL` / `IMAGE_SERVING=unsigned`.
 
 #### Signed URL expiry window
 
@@ -275,6 +289,7 @@ S3_BUCKET=sheaf-files
 S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
 S3_ENDPOINT=http://minio:9000
+S3_PRESIGN_ENDPOINT=http://localhost:9000  # So the browser can reach presigned URLs
 ```
 
 MinIO console at `http://localhost:9001`.

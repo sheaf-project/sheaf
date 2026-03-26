@@ -20,6 +20,13 @@ class S3Storage(StorageBackend):
         self.client = boto3.client("s3", **kwargs)
         self.bucket = settings.s3_bucket
 
+        # Presigned URLs may need a different endpoint (e.g. localhost vs Docker hostname).
+        if settings.s3_presign_endpoint:
+            presign_kwargs = {**kwargs, "endpoint_url": settings.s3_presign_endpoint}
+            self._presign_client = boto3.client("s3", **presign_kwargs)
+        else:
+            self._presign_client = self.client
+
     async def _run(self, fn, *args, **kwargs):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
@@ -37,7 +44,7 @@ class S3Storage(StorageBackend):
     async def presign(self, key: str, expiry_seconds: int) -> str:
         """Generate a presigned GET URL for a private S3 object."""
         return await self._run(
-            self.client.generate_presigned_url,
+            self._presign_client.generate_presigned_url,
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=expiry_seconds,

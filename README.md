@@ -206,6 +206,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [x] API keys with granular scopes (for scripts and integrations)
 - [x] Admin UI (user management, maintenance operations)
 - [x] Signed image URLs with S3 presign support (hotlink protection)
+- [ ] Webhooks for switch/fronter notification
 - [ ] Custom-defined user tiers by server admin instead of placeholder free/plus/selfhosted
 - [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
 - [ ] Prometheus-compatible /metrics endpoint
