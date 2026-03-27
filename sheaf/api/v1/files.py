@@ -86,6 +86,7 @@ async def upload_file(
         content_type=file.content_type or "application/octet-stream",
         size_bytes=file_size,
     ))
+    await db.commit()
 
     return {"url": resolve_avatar_url(key), "key": key, "size": file_size}
 
@@ -158,6 +159,7 @@ async def delete_file(
     storage = get_storage()
     await storage.delete(file.key)
     await db.delete(file)
+    await db.commit()
     return {"deleted": True, "key": file.key, "freed_bytes": file.size_bytes}
 
 

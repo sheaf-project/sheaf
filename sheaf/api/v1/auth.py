@@ -494,6 +494,7 @@ async def totp_verify(
         )
 
     user.totp_enabled = True
+    await db.commit()
 
 
 @router.post("/totp/disable", status_code=status.HTTP_204_NO_CONTENT)
@@ -533,6 +534,7 @@ async def totp_disable(
     user.totp_enabled = False
     user.totp_secret = None
     user.recovery_codes = None
+    await db.commit()
 
 
 @router.get("/keys", response_model=list[ApiKeyRead])
@@ -615,3 +617,4 @@ async def revoke_api_key(
     if api_key is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
     await db.delete(api_key)
+    await db.commit()

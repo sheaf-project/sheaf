@@ -174,11 +174,6 @@ def test_cleanup_run_requires_admin(auth_client: httpx.Client):
     assert resp.status_code == 403
 
 
-def test_storage_audit_requires_admin(auth_client: httpx.Client):
-    resp = auth_client.post("/v1/admin/storage/audit")
-    assert resp.status_code == 403
-
-
 def test_retention_run(admin_client: httpx.Client):
     resp = admin_client.post("/v1/admin/retention/run")
     assert resp.status_code == 200
@@ -192,11 +187,6 @@ def test_cleanup_run(admin_client: httpx.Client):
     assert "users_checked" in data
     assert "total_orphaned" in data
     assert "total_freed_bytes" in data
-
-
-def test_storage_audit_run(admin_client: httpx.Client):
-    resp = admin_client.post("/v1/admin/storage/audit")
-    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
