@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    ports:
+    ports: !override
       - "8001:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://sheaf:sheaftest@db:5432/sheaf
@@ -10,6 +10,9 @@ services:
       SHEAF_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
       ADMIN_AUTH_LEVEL: "${ADMIN_AUTH_LEVEL:-none}"
+      REGISTRATION_MODE: open
+      EMAIL_BACKEND: none
+      EMAIL_VERIFICATION: "off"
       STORAGE_BACKEND: filesystem
       IMAGE_SERVING: unsigned
     volumes: []
@@ -20,7 +23,7 @@ services:
         condition: service_healthy
 
   db:
-    ports:
+    ports: !override
       - "5433:5432"
     volumes: []
     environment:
@@ -29,6 +32,6 @@ services:
       POSTGRES_PASSWORD: sheaftest
 
   redis:
-    ports:
+    ports: !override
       - "6380:6379"
     volumes: []
