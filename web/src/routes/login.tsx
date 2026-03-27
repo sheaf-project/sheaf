@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { Navigate } from "react-router";
+import { Link, Navigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
 import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
@@ -117,6 +117,7 @@ export function LoginPage() {
                     value={totpCode}
                     onChange={(e) => setTotpCode(e.target.value)}
                     placeholder="6-digit code or recovery code"
+                    autoComplete="off"
                     autoFocus
                   />
                 </div>
@@ -127,6 +128,16 @@ export function LoginPage() {
               <Button type="submit" className="w-full" disabled={submitting}>
                 {submitting ? "Signing in..." : "Sign in"}
               </Button>
+              {config?.email_enabled && (
+                <div className="text-center">
+                  <Link
+                    to="/forgot-password"
+                    className="text-sm text-muted-foreground hover:underline"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
+              )}
             </form>
           ) : (
             <Tabs defaultValue="login">
@@ -167,6 +178,7 @@ export function LoginPage() {
                         value={totpCode}
                         onChange={(e) => setTotpCode(e.target.value)}
                         placeholder="6-digit code or recovery code"
+                        autoComplete="off"
                         autoFocus
                       />
                     </div>
@@ -183,6 +195,16 @@ export function LoginPage() {
                   >
                     {submitting ? "Signing in..." : "Sign in"}
                   </Button>
+                  {config?.email_enabled && (
+                    <div className="text-center">
+                      <Link
+                        to="/forgot-password"
+                        className="text-sm text-muted-foreground hover:underline"
+                      >
+                        Forgot password?
+                      </Link>
+                    </div>
+                  )}
                 </form>
               </TabsContent>
               <TabsContent value="register">

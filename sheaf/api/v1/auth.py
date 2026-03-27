@@ -84,6 +84,7 @@ async def get_auth_config():
         "registration_mode": settings.registration_mode,
         "invite_codes_enabled": invite_enabled,
         "email_verification": settings.email_verification,
+        "email_enabled": settings.email_backend != "none",
     }
 
 
@@ -315,6 +316,109 @@ async def resend_verification(
     await _send_verification_email(db, user, email)
     await db.commit()
     return {"sent": True}
+
+
+# ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+
+class PasswordReset(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/request-password-reset")
+async def request_password_reset(
+    body: PasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Request a password reset email.
+
+    Always returns 200 to avoid leaking whether the email exists.
+    """
+    if settings.email_backend == "none":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is not configured on this server",
+        )
+
+    email_hash = blind_index(body.email)
+    result = await db.execute(select(User).where(User.email_hash == email_hash))
+    user = result.scalar_one_or_none()
+
+    if user is not None:
+        # Rate limit
+        if user.password_reset_sent_at is not None:
+            age = (datetime.now(UTC) - user.password_reset_sent_at).total_seconds()
+            if age < settings.password_reset_rate_limit_minutes * 60:
+                # Still return 200 — don't reveal timing info
+                return {"requested": True}
+
+        token = secrets.token_urlsafe(32)
+        user.password_reset_token = hashlib.sha256(token.encode()).hexdigest()
+        user.password_reset_sent_at = datetime.now(UTC)
+        await db.commit()
+
+        try:
+            from sheaf.services.email import send_email
+            from sheaf.services.email_templates import password_reset_email
+
+            requester_ip = request.client.host if request.client else None
+            subject, html, text = password_reset_email(token, ip=requester_ip)
+            await send_email(body.email, subject, html, text)
+        except Exception:
+            logger.exception("Failed to send password reset email")
+
+    return {"requested": True}
+
+
+@router.post("/reset-password")
+async def reset_password(
+    body: PasswordReset,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset password using a token from the password reset email."""
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters",
+        )
+    if len(body.new_password) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at most 128 characters",
+        )
+
+    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    result = await db.execute(
+        select(User).where(User.password_reset_token == token_hash)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Check 1-hour expiry
+    if user.password_reset_sent_at is not None:
+        age = (datetime.now(UTC) - user.password_reset_sent_at).total_seconds()
+        if age > 3600:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Reset token has expired. Please request a new one.",
+            )
+
+    user.password_hash = hash_password(body.new_password)
+    user.password_reset_token = None
+    user.password_reset_sent_at = None
+    await db.commit()
+    return {"reset": True}
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -549,6 +653,32 @@ async def totp_disable(
     user.totp_secret = None
     user.recovery_codes = None
     await db.commit()
+
+
+@router.post("/totp/regenerate-recovery-codes")
+async def regenerate_recovery_codes(
+    body: TOTPVerify,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate recovery codes. Requires a valid TOTP code to authorize."""
+    if not user.totp_enabled or not user.totp_secret:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="2FA is not enabled",
+        )
+
+    secret = decrypt(user.totp_secret)
+    if not verify_code(secret, body.code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid TOTP code",
+        )
+
+    codes = generate_recovery_codes()
+    _store_recovery_codes(user, codes)
+    await db.commit()
+    return {"recovery_codes": codes}
 
 
 @router.get("/keys", response_model=list[ApiKeyRead])

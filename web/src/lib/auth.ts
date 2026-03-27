@@ -5,6 +5,7 @@ export interface AuthConfig {
   registration_mode: string;
   invite_codes_enabled: boolean;
   email_verification: string;
+  email_enabled: boolean;
 }
 
 export function getAuthConfig() {
@@ -71,4 +72,28 @@ export function resendVerification() {
 
 export function verifyEmail(token: string) {
   return apiFetch<{ verified: boolean }>(`/v1/auth/verify-email?token=${encodeURIComponent(token)}`);
+}
+
+export function requestPasswordReset(email: string) {
+  return apiFetch<{ requested: boolean }>("/v1/auth/request-password-reset", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetPassword(token: string, new_password: string) {
+  return apiFetch<{ reset: boolean }>("/v1/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, new_password }),
+  });
+}
+
+export function regenerateRecoveryCodes(totp_code: string) {
+  return apiFetch<{ recovery_codes: string[] }>(
+    "/v1/auth/totp/regenerate-recovery-codes",
+    {
+      method: "POST",
+      body: JSON.stringify({ code: totp_code }),
+    },
+  );
 }

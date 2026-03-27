@@ -36,11 +36,12 @@ def verification_email(token: str) -> tuple[str, str, str]:
     return subject, html, text
 
 
-def password_reset_email(token: str) -> tuple[str, str, str]:
+def password_reset_email(token: str, ip: str | None = None) -> tuple[str, str, str]:
     link = f"{_base_url()}/reset-password?token={token}"
+    ip_line = f" from IP address {ip}" if ip else ""
     subject = "Reset your Sheaf password"
     text = (
-        f"Someone requested a password reset for your Sheaf account.\n\n"
+        f"Someone{ip_line} requested a password reset for your Sheaf account.\n\n"
         f"Click the link below to set a new password:\n\n"
         f"{link}\n\n"
         f"This link expires in 1 hour.\n\n"
@@ -49,7 +50,7 @@ def password_reset_email(token: str) -> tuple[str, str, str]:
     )
     html = (
         f"<h2>Password reset</h2>"
-        f"<p>Someone requested a password reset for your Sheaf account.</p>"
+        f"<p>Someone{ip_line} requested a password reset for your Sheaf account.</p>"
         f'<p><a href="{link}">Reset password</a></p>'
         f"<p>This link expires in 1 hour.</p>"
         f"<p>If you didn't request this, you can ignore this email. "

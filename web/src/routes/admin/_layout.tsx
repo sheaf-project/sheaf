@@ -81,6 +81,7 @@ function StepUpForm({ level, totpEnabled }: { level: "password" | "totp"; totpEn
                   placeholder="000000"
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
+                  autoComplete="off"
                   autoFocus
                   required
                 />

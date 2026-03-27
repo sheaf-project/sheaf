@@ -1,7 +1,13 @@
 import { type FormEvent, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useAuth } from "@/hooks/use-auth";
-import { totpSetup, totpVerify, totpDisable, type TOTPSetupResponse } from "@/lib/auth";
+import {
+  totpSetup,
+  totpVerify,
+  totpDisable,
+  regenerateRecoveryCodes,
+  type TOTPSetupResponse,
+} from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -91,6 +97,7 @@ export function TOTPSetup() {
               pattern="[0-9]{6}"
               required
               className="w-32"
+              autoComplete="off"
               autoFocus
             />
             <Button type="submit" disabled={loading || code.length !== 6}>
@@ -141,11 +148,12 @@ export function TOTPSetup() {
 
 function TOTPDisable() {
   const { user, refreshUser } = useAuth();
-  const [confirming, setConfirming] = useState(false);
+  const [action, setAction] = useState<"idle" | "disable" | "regenerate" | "show-codes">("idle");
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [newCodes, setNewCodes] = useState<string[]>([]);
 
   async function handleDisable(e: FormEvent) {
     e.preventDefault();
@@ -154,7 +162,7 @@ function TOTPDisable() {
     try {
       await totpDisable(user!.email, password, totpCode);
       await refreshUser();
-      setConfirming(false);
+      setAction("idle");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disable 2FA");
     } finally {
@@ -162,16 +170,100 @@ function TOTPDisable() {
     }
   }
 
-  if (!confirming) {
+  async function handleRegenerate(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const result = await regenerateRecoveryCodes(totpCode);
+      setNewCodes(result.recovery_codes);
+      setAction("show-codes");
+      setTotpCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to regenerate codes");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (action === "show-codes") {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm font-medium text-green-600">
+          Recovery codes regenerated.
+        </p>
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Save these new recovery codes somewhere safe. Your old codes are now invalid.
+          </p>
+          <div className="grid grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-3">
+            {newCodes.map((c) => (
+              <code key={c} className="text-sm font-mono">{c}</code>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              navigator.clipboard.writeText(newCodes.join("\n"));
+            }}
+          >
+            Copy to clipboard
+          </Button>
+        </div>
+        <Button onClick={() => { setAction("idle"); setNewCodes([]); }}>
+          Done
+        </Button>
+      </div>
+    );
+  }
+
+  if (action === "idle") {
     return (
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
           2FA is enabled. Your account is protected with a TOTP authenticator.
         </p>
-        <Button variant="outline" onClick={() => setConfirming(true)}>
-          Disable 2FA
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setAction("regenerate")}>
+            Regenerate recovery codes
+          </Button>
+          <Button variant="outline" onClick={() => setAction("disable")}>
+            Disable 2FA
+          </Button>
+        </div>
       </div>
+    );
+  }
+
+  if (action === "regenerate") {
+    return (
+      <form onSubmit={handleRegenerate} className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Enter a current TOTP code to generate new recovery codes. This will invalidate your existing codes.
+        </p>
+        <div className="space-y-1">
+          <Label className="text-sm">TOTP code</Label>
+          <Input
+            value={totpCode}
+            onChange={(e) => setTotpCode(e.target.value)}
+            placeholder="000000"
+            maxLength={6}
+            autoComplete="off"
+            required
+            autoFocus
+          />
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <div className="flex gap-2">
+          <Button type="submit" disabled={loading || totpCode.length !== 6}>
+            {loading ? "Regenerating..." : "Regenerate codes"}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => { setAction("idle"); setError(""); setTotpCode(""); }}>
+            Cancel
+          </Button>
+        </div>
+      </form>
     );
   }
 
@@ -196,6 +288,7 @@ function TOTPDisable() {
           onChange={(e) => setTotpCode(e.target.value)}
           placeholder="000000"
           maxLength={6}
+          autoComplete="off"
           required
         />
       </div>
@@ -204,7 +297,7 @@ function TOTPDisable() {
         <Button type="submit" variant="destructive" disabled={loading}>
           {loading ? "Disabling..." : "Disable 2FA"}
         </Button>
-        <Button type="button" variant="outline" onClick={() => setConfirming(false)}>
+        <Button type="button" variant="outline" onClick={() => { setAction("idle"); setError(""); setPassword(""); setTotpCode(""); }}>
           Cancel
         </Button>
       </div>

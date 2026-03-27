@@ -273,6 +273,7 @@ function DeleteMemberDialog({
                   onChange={(e) => setTotpCode(e.target.value)}
                   placeholder="6-digit code"
                   maxLength={6}
+                  autoComplete="off"
                 />
               </div>
             )}

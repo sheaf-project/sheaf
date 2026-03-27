@@ -9,6 +9,8 @@ import { SettingsPage } from "./settings";
 import { ImportPage } from "./import";
 import { AdminLayout } from "./admin/_layout";
 import { VerifyEmailPage } from "./verify-email";
+import { ForgotPasswordPage } from "./forgot-password";
+import { ResetPasswordPage } from "./reset-password";
 import { AdminDashboard } from "./admin/index";
 import { AdminUsersPage } from "./admin/users";
 import { AdminApprovalsPage } from "./admin/approvals";
@@ -22,6 +24,14 @@ export const router = createBrowserRouter([
   {
     path: "/verify-email",
     element: <VerifyEmailPage />,
+  },
+  {
+    path: "/forgot-password",
+    element: <ForgotPasswordPage />,
+  },
+  {
+    path: "/reset-password",
+    element: <ResetPasswordPage />,
   },
   {
     element: <AppLayout />,

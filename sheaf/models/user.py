@@ -55,6 +55,11 @@ class User(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    password_reset_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    password_reset_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Nullable = use tier default. Set by admin to override (support request).
     member_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
