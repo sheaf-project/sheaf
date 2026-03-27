@@ -1,10 +1,28 @@
 import type { TokenResponse, User } from "@/types/api";
 import { apiFetch } from "./api-client";
 
-export function register(email: string, password: string) {
+export interface AuthConfig {
+  registration_mode: string;
+  invite_codes_enabled: boolean;
+  email_verification: string;
+}
+
+export function getAuthConfig() {
+  return apiFetch<AuthConfig>("/v1/auth/config");
+}
+
+export function register(
+  email: string,
+  password: string,
+  invite_code?: string,
+) {
   return apiFetch<TokenResponse>("/v1/auth/register", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(invite_code ? { invite_code } : {}),
+    }),
   });
 }
 

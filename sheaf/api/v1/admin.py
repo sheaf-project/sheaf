@@ -472,3 +472,117 @@ async def set_member_limit(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     target.member_limit = body.member_limit
     return {"user_id": str(user_id), "member_limit": target.member_limit}
+
+
+# ---------------------------------------------------------------------------
+# Invite codes
+# ---------------------------------------------------------------------------
+
+class InviteCodeCreate(BaseModel):
+    max_uses: int = 0  # 0 = unlimited
+    note: str | None = None
+    expires_at: datetime | None = None
+
+
+@router.get("/invites")
+async def list_invites(
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all invite codes. Admin only."""
+    from sheaf.models.invite_code import InviteCode
+
+    result = await db.execute(
+        select(InviteCode).order_by(InviteCode.created_at.desc())
+    )
+    invites = result.scalars().all()
+
+    # Resolve creator emails
+    creator_ids = {i.created_by for i in invites if i.created_by}
+    creators: dict[uuid.UUID, str] = {}
+    if creator_ids:
+        users_result = await db.execute(
+            select(User.id, User.email).where(User.id.in_(creator_ids))
+        )
+        for uid, email_enc in users_result.all():
+            try:
+                creators[uid] = decrypt(email_enc)
+            except Exception:
+                creators[uid] = "<encrypted>"
+
+    return [
+        {
+            "id": str(i.id),
+            "code": i.code,
+            "created_by_email": creators.get(i.created_by) if i.created_by else None,
+            "max_uses": i.max_uses,
+            "use_count": i.use_count,
+            "note": i.note,
+            "expires_at": i.expires_at.isoformat() if i.expires_at else None,
+            "created_at": i.created_at.isoformat(),
+        }
+        for i in invites
+    ]
+
+
+@router.post("/invites", status_code=status.HTTP_201_CREATED)
+async def create_invite(
+    body: InviteCodeCreate,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new invite code. Admin only."""
+    import secrets as _secrets
+
+    from sheaf.models.invite_code import InviteCode
+
+    code = _secrets.token_urlsafe(16)
+    invite = InviteCode(
+        code=code,
+        created_by=admin.id,
+        max_uses=body.max_uses,
+        note=body.note,
+        expires_at=body.expires_at,
+    )
+    db.add(invite)
+    await db.commit()
+    await db.refresh(invite)
+
+    admin_email: str | None = None
+    try:
+        admin_email = decrypt(admin.email)
+    except Exception:
+        admin_email = "<encrypted>"
+
+    return {
+        "id": str(invite.id),
+        "code": invite.code,
+        "created_by_email": admin_email,
+        "max_uses": invite.max_uses,
+        "use_count": invite.use_count,
+        "note": invite.note,
+        "expires_at": invite.expires_at.isoformat() if invite.expires_at else None,
+        "created_at": invite.created_at.isoformat(),
+    }
+
+
+@router.delete("/invites/{invite_id}")
+async def delete_invite(
+    invite_id: uuid.UUID,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an invite code. Admin only."""
+    from sheaf.models.invite_code import InviteCode
+
+    result = await db.execute(
+        select(InviteCode).where(InviteCode.id == invite_id)
+    )
+    invite = result.scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Invite code not found"
+        )
+    await db.delete(invite)
+    await db.commit()
+    return {"deleted": True}

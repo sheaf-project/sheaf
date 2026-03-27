@@ -12,6 +12,7 @@ import { VerifyEmailPage } from "./verify-email";
 import { AdminDashboard } from "./admin/index";
 import { AdminUsersPage } from "./admin/users";
 import { AdminApprovalsPage } from "./admin/approvals";
+import { AdminInvitesPage } from "./admin/invites";
 
 export const router = createBrowserRouter([
   {
@@ -38,6 +39,7 @@ export const router = createBrowserRouter([
           { index: true, element: <AdminDashboard /> },
           { path: "users", element: <AdminUsersPage /> },
           { path: "approvals", element: <AdminApprovalsPage /> },
+          { path: "invites", element: <AdminInvitesPage /> },
         ],
       },
     ],

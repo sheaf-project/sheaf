@@ -74,6 +74,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger("sheaf.auth")
 
 
+@router.get("/config")
+async def get_auth_config():
+    """Public endpoint returning registration settings for the login UI."""
+    invite_enabled = (
+        settings.registration_mode == "invite" or settings.invite_codes_enabled
+    )
+    return {
+        "registration_mode": settings.registration_mode,
+        "invite_codes_enabled": invite_enabled,
+        "email_verification": settings.email_verification,
+    }
+
+
 def _hash_recovery_code(code: str) -> str:
     """Hash a recovery code for storage."""
     return hashlib.sha256(code.strip().lower().encode()).hexdigest()
@@ -157,7 +170,7 @@ async def register(
             detail="Registration is closed",
         )
 
-    # Validate invite code if required
+    # Validate invite code if required or optionally provided
     invite = None
     if reg_mode == "invite":
         if not body.invite_code:
@@ -166,9 +179,8 @@ async def register(
                 detail="Invite code required",
             )
         invite = await _validate_invite_code(db, body.invite_code)
-    elif body.invite_code:
-        # Invite code provided but not required — ignore it silently
-        pass
+    elif body.invite_code and settings.invite_codes_enabled:
+        invite = await _validate_invite_code(db, body.invite_code)
 
     email_hash = blind_index(body.email)
 
@@ -179,9 +191,10 @@ async def register(
     # Determine initial account status
     from sheaf.models.user import AccountStatus
 
-    account_status = (
-        AccountStatus.PENDING_APPROVAL if reg_mode == "approval" else AccountStatus.ACTIVE
-    )
+    if reg_mode == "approval" and invite is None:
+        account_status = AccountStatus.PENDING_APPROVAL
+    else:
+        account_status = AccountStatus.ACTIVE
     email_verified = settings.email_verification != "required"
 
     user = User(
@@ -201,9 +214,10 @@ async def register(
             status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
         ) from exc
 
-    # Increment invite code usage
+    # Track invite code usage
     if invite is not None:
         invite.use_count += 1
+        user.invite_code_id = invite.id
 
     # Auto-create a system for the user
     system = System(user_id=user.id, name="My System")

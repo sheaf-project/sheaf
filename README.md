@@ -178,6 +178,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [ ] Prometheus-compatible /metrics endpoint
 - [ ] Terraform module for cloud deployment
 - [ ] More 2FA methods — WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
+- [ ] Alternate secrets management methods - AWS Secrets Manager, Vault, others?
 
 ## License
 

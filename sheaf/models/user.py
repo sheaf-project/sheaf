@@ -1,7 +1,9 @@
 import enum
+import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from sheaf.models.base import Base, TimestampMixin, UUIDMixin
@@ -63,6 +65,9 @@ class User(UUIDMixin, TimestampMixin, Base):
     )
 
     signup_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    invite_code_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invite_codes.id", ondelete="SET NULL"), nullable=True
+    )
 
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

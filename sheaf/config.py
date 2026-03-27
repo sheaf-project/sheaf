@@ -92,6 +92,7 @@ class Settings(BaseSettings):
 
     # Registration
     registration_mode: str = "open"  # "open", "approval", "invite", "closed"
+    invite_codes_enabled: bool = False  # Accept invite codes in open/approval modes too
     email_verification: str = "off"  # "off" or "required"
     sheaf_base_url: str = ""  # Required when email is enabled, e.g. "https://sheaf.example.com"
 

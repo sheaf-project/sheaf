@@ -181,6 +181,10 @@ With `EMAIL_BACKEND=none`, email-dependent features (verification, password rese
 # open (default) | approval | invite | closed
 REGISTRATION_MODE=open
 
+# Accept invite codes even in open/approval mode (default: false).
+# In "invite" mode, codes are always required regardless of this setting.
+INVITE_CODES_ENABLED=false
+
 # off (default) | required
 EMAIL_VERIFICATION=off
 
@@ -194,6 +198,8 @@ SHEAF_BASE_URL=https://sheaf.example.com
 | `approval` | New accounts are held with `pending_approval` status until an admin approves them |
 | `invite` | Registration requires a valid invite code (create and manage codes in the admin UI) |
 | `closed` | No new registrations allowed |
+
+**Invite codes** can be created and managed in the admin UI under **Invites**. In `approval` mode, users who register with a valid invite code bypass the approval queue. Set `INVITE_CODES_ENABLED=true` to accept invite codes in `open` or `approval` modes (they're always required in `invite` mode).
 
 When `EMAIL_VERIFICATION=required`, new users must verify their email before they can access the API. A verification link is sent on registration. Users can request a new link (rate limited to once per 20 minutes).
 

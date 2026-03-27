@@ -93,3 +93,39 @@ export function approveUser(id: string) {
 export function rejectUser(id: string) {
   return apiFetch<{ rejected: boolean }>(`/v1/admin/users/${id}/reject`, { method: "POST" });
 }
+
+// Invite codes
+
+export interface InviteCode {
+  id: string;
+  code: string;
+  created_by_email: string | null;
+  max_uses: number;
+  use_count: number;
+  note: string | null;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface InviteCodeCreate {
+  max_uses?: number;
+  note?: string;
+  expires_at?: string;
+}
+
+export function getInvites() {
+  return apiFetch<InviteCode[]>("/v1/admin/invites");
+}
+
+export function createInvite(body: InviteCodeCreate) {
+  return apiFetch<InviteCode>("/v1/admin/invites", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteInvite(id: string) {
+  return apiFetch<{ deleted: boolean }>(`/v1/admin/invites/${id}`, {
+    method: "DELETE",
+  });
+}
