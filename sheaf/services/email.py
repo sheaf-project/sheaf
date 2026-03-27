@@ -33,12 +33,26 @@ def get_email_backend() -> EmailBackend:
         from sheaf.config import settings
 
         if settings.email_backend == "smtp":
-            from sheaf.services.email_smtp import SMTPBackend
+            try:
+                from sheaf.services.email_smtp import SMTPBackend
+            except ImportError:
+                raise RuntimeError(
+                    "EMAIL_BACKEND=smtp requires the 'smtp' extra. "
+                    "Install with: pip install sheaf[smtp]  "
+                    "(Docker: add 'smtp' to the pip install extras in Dockerfile)"
+                ) from None
 
             _backend = SMTPBackend()
             logger.info("Using SMTP email backend (%s:%d)", settings.smtp_host, settings.smtp_port)
         elif settings.email_backend == "ses":
-            from sheaf.services.email_ses import SESBackend
+            try:
+                from sheaf.services.email_ses import SESBackend
+            except ImportError:
+                raise RuntimeError(
+                    "EMAIL_BACKEND=ses requires the 'ses' extra. "
+                    "Install with: pip install sheaf[ses]  "
+                    "(Docker: add 'ses' to the pip install extras in Dockerfile)"
+                ) from None
 
             _backend = SESBackend()
             logger.info("Using SES email backend (region: %s)", settings.ses_region)

@@ -14,6 +14,8 @@ export interface User {
   totp_enabled: boolean;
   tier: string;
   is_admin: boolean;
+  account_status: string;
+  email_verified: boolean;
   created_at: string;
   last_login_at: string | null;
 }

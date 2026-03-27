@@ -113,6 +113,7 @@ Key endpoints:
 | `GET/POST /v1/fields` | Custom field definitions |
 | `PUT /v1/members/{id}/fields` | Set custom field values |
 | `POST /v1/import/simplyplural` | Import SP data |
+| `POST /v1/import/sheaf` | Import Sheaf export |
 | `GET /v1/export` | Export all data |
 | `POST /v1/files/upload` | Upload avatar |
 
@@ -120,58 +121,23 @@ Full interactive docs: `http://your-instance/v1/docs`
 
 ## Self-Hosting
 
-### Requirements
-- Docker and Docker Compose
-- ~512MB RAM minimum
-
-### Admin access
-
-To grant admin access, set `SHEAF_ADMIN_EMAILS` to a comma-separated list of email addresses. These accounts are automatically promoted to admin on startup:
-
-```env
-SHEAF_ADMIN_EMAILS=you@example.com,colleague@example.com
+```bash
+cp .env.example .env
+# Edit .env — at minimum, change POSTGRES_PASSWORD and JWT_SECRET_KEY
+docker compose up -d
 ```
 
-Admins gain access to the `/admin` section of the web UI (user management, maintenance operations) and can create `admin:read`/`admin:write` scoped API keys.
+See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 
-Optionally require a step-up challenge before the admin dashboard is accessible:
-
-```env
-# none (default) | password | totp
-ADMIN_AUTH_LEVEL=totp
-```
-
-With `totp`, the admin account must have 2FA enabled — if not, access is blocked until they enable it in Settings.
-
-### File Storage
-
-Avatars can be stored locally (default) or on any S3-compatible service (AWS S3, MinIO, Cloudflare R2, BackBlaze B2, etc).
-
-```env
-# Local filesystem (default)
-STORAGE_BACKEND=filesystem
-STORAGE_PATH=data/files
-
-# S3-compatible
-STORAGE_BACKEND=s3
-S3_BUCKET=sheaf-files
-S3_ACCESS_KEY=...
-S3_SECRET_KEY=...
-S3_REGION=us-east-1
-S3_ENDPOINT=https://your-minio.example.com  # For MinIO/R2
-```
-
-**Hotlink protection:** By default, avatar URLs are HMAC-signed with a short expiry window (`IMAGE_SERVING=signed`). This prevents your S3 bucket being used as free image hosting. Three modes are available:
-
-| Mode | How it works |
-|------|--------------|
-| `IMAGE_SERVING=signed` (default) | Signed URLs with window-based expiry. S3: redirects to a presigned S3 URL (private bucket). Filesystem: HMAC token verified on every request. |
-| `IMAGE_SERVING=unsigned` | No token required — anyone with the URL can access the file. Suitable if you control hotlinking via a CDN (see below). |
-| `S3_PUBLIC_URL=https://cdn.example.com` | Bypass the serve endpoint entirely; avatar URLs resolve directly to your CDN. Best combined with Cloudflare hotlink protection rules. |
-
-### Reverse Proxy
-
-Sheaf should sit behind nginx, Caddy, or similar for TLS termination. There is no builtin TLS support - proxy to localhost:8000 after TLS termination.
+- Secrets and encryption key management
+- Admin access and step-up authentication
+- Optional dependencies (S3, SMTP, SES)
+- Email configuration (SMTP / AWS SES)
+- Registration modes (open / approval / invite / closed) and email verification
+- File storage (filesystem / S3) with hotlink protection
+- Storage quotas and upload limits
+- Reverse proxy setup (nginx, Caddy)
+- Backups
 
 ## Development
 
@@ -211,6 +177,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
 - [ ] Prometheus-compatible /metrics endpoint
 - [ ] Terraform module for cloud deployment
+- [ ] More 2FA methods — WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
 
 ## License
 

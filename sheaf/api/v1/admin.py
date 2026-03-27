@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -14,9 +15,11 @@ from sheaf.database import get_db
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
-from sheaf.models.user import User, UserTier
+from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.services.file_cleanup import cleanup_orphaned_files
 from sheaf.services.front_retention import prune_free_tier_fronts
+
+logger = logging.getLogger("sheaf.admin")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -136,6 +139,9 @@ class AdminUserRead(BaseModel):
     email: str
     tier: str
     is_admin: bool
+    account_status: str
+    email_verified: bool
+    signup_ip: str | None
     member_limit: int | None
     storage_used_bytes: int
     member_count: int
@@ -204,6 +210,9 @@ async def list_users(
             email=email,
             tier=user.tier,
             is_admin=user.is_admin,
+            account_status=user.account_status,
+            email_verified=user.email_verified,
+            signup_ip=user.signup_ip,
             member_limit=user.member_limit,
             storage_used_bytes=storage_used_bytes,
             member_count=member_count,
@@ -259,12 +268,131 @@ async def update_user(
         email=email,
         tier=target.tier,
         is_admin=target.is_admin,
+        account_status=target.account_status,
+        email_verified=target.email_verified,
+        signup_ip=target.signup_ip,
         member_limit=target.member_limit,
         storage_used_bytes=storage_used,
         member_count=member_count,
         created_at=target.created_at,
         last_login_at=target.last_login_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# Approvals
+# ---------------------------------------------------------------------------
+
+class PendingUserRead(BaseModel):
+    id: str
+    email: str
+    email_verified: bool
+    signup_ip: str | None
+    created_at: datetime
+
+
+@router.get("/approvals", response_model=list[PendingUserRead])
+async def list_pending_approvals(
+    _: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all users with pending_approval status."""
+    result = await db.execute(
+        select(User)
+        .where(User.account_status == AccountStatus.PENDING_APPROVAL)
+        .order_by(User.created_at.asc())
+    )
+    users = []
+    for user in result.scalars():
+        try:
+            email = decrypt(user.email)
+        except Exception:
+            email = "<encrypted>"
+        users.append(PendingUserRead(
+            id=str(user.id),
+            email=email,
+            email_verified=user.email_verified,
+            signup_ip=user.signup_ip,
+            created_at=user.created_at,
+        ))
+    return users
+
+
+@router.post("/users/{user_id}/approve")
+async def approve_user(
+    user_id: uuid.UUID,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve a pending user account."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if target.account_status != AccountStatus.PENDING_APPROVAL:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"User is not pending approval (status: {target.account_status})",
+        )
+
+    target.account_status = AccountStatus.ACTIVE
+
+    # Send approval notification email if configured
+    try:
+        email = decrypt(target.email)
+        from sheaf.config import settings as app_settings
+
+        if app_settings.email_backend != "none":
+            from sheaf.services.email import send_email
+            from sheaf.services.email_templates import account_approved_email
+
+            subject, html, text = account_approved_email()
+            await send_email(email, subject, html, text)
+    except Exception:
+        logger.exception("Failed to send approval email to user %s", user_id)
+
+    return {"approved": True}
+
+
+@router.post("/users/{user_id}/reject")
+async def reject_user(
+    user_id: uuid.UUID,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject a pending user account. Deletes the user and their system."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if target.account_status != AccountStatus.PENDING_APPROVAL:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"User is not pending approval (status: {target.account_status})",
+        )
+
+    # Send rejection notification email if configured
+    try:
+        email = decrypt(target.email)
+        from sheaf.config import settings as app_settings
+
+        if app_settings.email_backend != "none":
+            from sheaf.services.email import send_email
+            from sheaf.services.email_templates import account_rejected_email
+
+            subject, html, text = account_rejected_email()
+            await send_email(email, subject, html, text)
+    except Exception:
+        logger.exception("Failed to send rejection email to user %s", user_id)
+
+    # Delete system (cascade will handle members, fronts, etc.)
+    sys_result = await db.execute(select(System).where(System.user_id == user_id))
+    system = sys_result.scalar_one_or_none()
+    if system:
+        await db.delete(system)
+
+    await db.delete(target)
+    return {"rejected": True}
 
 
 # ---------------------------------------------------------------------------

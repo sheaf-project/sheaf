@@ -62,6 +62,8 @@ class User(UUIDMixin, TimestampMixin, Base):
         nullable=False,
     )
 
+    signup_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

@@ -121,15 +121,22 @@ async def get_current_user(
         )
 
     # Check account status
-    _STATUS_MESSAGES = {
-        AccountStatus.PENDING_APPROVAL: "Account pending approval",
-        AccountStatus.SUSPENDED: "Account suspended",
-        AccountStatus.BANNED: "Account banned",
-    }
-    if user.account_status in _STATUS_MESSAGES:
+    if user.account_status in (AccountStatus.SUSPENDED, AccountStatus.BANNED):
+        _STATUS_MESSAGES = {
+            AccountStatus.SUSPENDED: "Account suspended",
+            AccountStatus.BANNED: "Account banned",
+        }
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=_STATUS_MESSAGES[user.account_status],
+        )
+    if (
+        user.account_status == AccountStatus.PENDING_APPROVAL
+        and not getattr(request.state, "_allow_pending_approval", False)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account pending approval",
         )
     # pending_deletion: allow login but block via separate check on mutations
 
@@ -159,10 +166,10 @@ async def get_current_user_allow_unverified(
     """Like get_current_user but skips the email verification check.
 
     Used for endpoints that unverified users need access to (e.g. resend-verification).
-    Still enforces account status checks.
+    Still enforces account status checks (suspended/banned).
     """
-    # Stash a flag so get_current_user can skip the verification check
     request.state._skip_email_verification = True
+    request.state._allow_pending_approval = True
     return await get_current_user(request, db, credentials, session_id)
 
 

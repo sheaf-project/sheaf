@@ -46,3 +46,11 @@ export function totpDisable(email: string, password: string, totp_code: string) 
     body: JSON.stringify({ email, password, totp_code }),
   });
 }
+
+export function resendVerification() {
+  return apiFetch<{ sent: boolean }>("/v1/auth/resend-verification", { method: "POST" });
+}
+
+export function verifyEmail(token: string) {
+  return apiFetch<{ verified: boolean }>(`/v1/auth/verify-email?token=${encodeURIComponent(token)}`);
+}

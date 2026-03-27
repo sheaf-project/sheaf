@@ -8,13 +8,19 @@ import { GroupsPage } from "./groups";
 import { SettingsPage } from "./settings";
 import { ImportPage } from "./import";
 import { AdminLayout } from "./admin/_layout";
+import { VerifyEmailPage } from "./verify-email";
 import { AdminDashboard } from "./admin/index";
 import { AdminUsersPage } from "./admin/users";
+import { AdminApprovalsPage } from "./admin/approvals";
 
 export const router = createBrowserRouter([
   {
     path: "/login",
     element: <LoginPage />,
+  },
+  {
+    path: "/verify-email",
+    element: <VerifyEmailPage />,
   },
   {
     element: <AppLayout />,
@@ -31,6 +37,7 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <AdminDashboard /> },
           { path: "users", element: <AdminUsersPage /> },
+          { path: "approvals", element: <AdminApprovalsPage /> },
         ],
       },
     ],

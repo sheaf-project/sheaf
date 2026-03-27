@@ -54,9 +54,21 @@ async def _promote_admin_emails() -> None:
             email_hash = blind_index(email)
             result = await db.execute(select(User).where(User.email_hash == email_hash))
             user = result.scalar_one_or_none()
-            if user and not user.is_admin:
-                user.is_admin = True
-                logger.info("Promoted %s to admin", email)
+            if user:
+                changed = False
+                if not user.is_admin:
+                    user.is_admin = True
+                    changed = True
+                if not user.email_verified:
+                    user.email_verified = True
+                    changed = True
+                from sheaf.models.user import AccountStatus
+
+                if user.account_status != AccountStatus.ACTIVE:
+                    user.account_status = AccountStatus.ACTIVE
+                    changed = True
+                if changed:
+                    logger.info("Promoted %s to admin (verified, active)", email)
         await db.commit()
 
 

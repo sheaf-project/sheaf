@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
 import { AppSidebar } from "@/components/app-sidebar";
+import { AccountPending } from "@/components/account-pending";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function AppLayout() {
@@ -16,6 +17,11 @@ export function AppLayout() {
 
   if (!user) {
     return <Navigate to="/login" replace />;
+  }
+
+  // Show pending screen if account needs verification or approval
+  if (!user.email_verified || user.account_status === "pending_approval") {
+    return <AccountPending />;
   }
 
   return (

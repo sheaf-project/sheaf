@@ -10,7 +10,7 @@ COPY sheaf/ sheaf/
 COPY alembic.ini .
 COPY alembic/ alembic/
 
-RUN pip install --no-cache-dir ".[s3]"
+RUN pip install --no-cache-dir ".[s3,smtp]"
 
 RUN mkdir -p /app/data && chown sheaf:sheaf /app/data
 

@@ -38,7 +38,14 @@ def get_storage() -> "StorageBackend":
         from sheaf.config import settings
 
         if settings.storage_backend == "s3":
-            from sheaf.storage.s3 import S3Storage
+            try:
+                from sheaf.storage.s3 import S3Storage
+            except ImportError:
+                raise RuntimeError(
+                    "STORAGE_BACKEND=s3 requires the 's3' extra. "
+                    "Install with: pip install sheaf[s3]  "
+                    "(Docker: add 's3' to the pip install extras in Dockerfile)"
+                ) from None
 
             _backend = S3Storage()
             logger.info("Using S3 storage backend (bucket: %s)", settings.s3_bucket)

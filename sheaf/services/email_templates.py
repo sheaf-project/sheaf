@@ -18,6 +18,8 @@ def verification_email(token: str) -> tuple[str, str, str]:
         f"Welcome to Sheaf!\n\n"
         f"Click the link below to verify your email address:\n\n"
         f"{link}\n\n"
+        f"Or paste this code on the verification screen:\n\n"
+        f"{token}\n\n"
         f"This link expires in 24 hours.\n\n"
         f"If you didn't create a Sheaf account, you can ignore this email."
     )
@@ -25,6 +27,9 @@ def verification_email(token: str) -> tuple[str, str, str]:
         f"<h2>Welcome to Sheaf!</h2>"
         f"<p>Click the link below to verify your email address:</p>"
         f'<p><a href="{link}">Verify email</a></p>'
+        f"<p>Or paste this code on the verification screen:</p>"
+        f'<p style="font-family:monospace;font-size:16px;background:#f4f4f4;'
+        f'padding:8px 12px;border-radius:4px;display:inline-block">{token}</p>'
         f"<p>This link expires in 24 hours.</p>"
         f"<p>If you didn't create a Sheaf account, you can ignore this email.</p>"
     )

@@ -96,6 +96,115 @@ With `ADMIN_AUTH_LEVEL=totp`: if the admin account does not have TOTP enabled, a
 
 ---
 
+## Optional dependencies
+
+Sheaf uses optional Python extras for backend integrations. The Docker image includes `s3` by default — add others by editing the `pip install` line in the Dockerfile:
+
+```dockerfile
+# Default: only S3
+RUN pip install --no-cache-dir ".[s3]"
+
+# With SMTP email:
+RUN pip install --no-cache-dir ".[s3,smtp]"
+
+# With SES email:
+RUN pip install --no-cache-dir ".[s3,ses]"
+
+# Everything:
+RUN pip install --no-cache-dir ".[s3,smtp,ses]"
+```
+
+| Extra | Package | Required when |
+|-------|---------|---------------|
+| `s3` | `boto3` | `STORAGE_BACKEND=s3` |
+| `smtp` | `aiosmtplib` | `EMAIL_BACKEND=smtp` |
+| `ses` | `boto3` | `EMAIL_BACKEND=ses` |
+
+If a backend is configured but its extra isn't installed, Sheaf will fail on startup with a clear error message telling you which extra to add.
+
+For local development without Docker, install all extras you need:
+
+```bash
+pip install -e ".[dev,s3,smtp]"
+```
+
+---
+
+## Email
+
+Email is needed for email verification and password reset. Two backends are supported:
+
+### SMTP
+
+Works with any SMTP provider (Mailgun, Postmark, SendGrid, your own mail server, etc.):
+
+```env
+EMAIL_BACKEND=smtp
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=apikey
+SMTP_PASSWORD=your-api-key
+SMTP_FROM=noreply@example.com
+SMTP_TLS=true
+```
+
+Port 465 uses implicit TLS; all other ports use STARTTLS (when `SMTP_TLS=true`).
+
+**Requires the `smtp` extra** — see [Optional dependencies](#optional-dependencies).
+
+### AWS SES
+
+```env
+EMAIL_BACKEND=ses
+SES_REGION=us-east-1
+SES_FROM=noreply@example.com
+# Optional — omit to use IAM role/instance profile credentials:
+SES_ACCESS_KEY=...
+SES_SECRET_KEY=...
+```
+
+**Requires the `ses` extra** — see [Optional dependencies](#optional-dependencies).
+
+### Disabling email
+
+```env
+EMAIL_BACKEND=none   # default
+```
+
+With `EMAIL_BACKEND=none`, email-dependent features (verification, password reset) are unavailable. Sheaf will refuse to start if `EMAIL_VERIFICATION=required` and `EMAIL_BACKEND=none`.
+
+---
+
+## Registration
+
+```env
+# open (default) | approval | invite | closed
+REGISTRATION_MODE=open
+
+# off (default) | required
+EMAIL_VERIFICATION=off
+
+# Required when email is enabled — used in verification/reset links
+SHEAF_BASE_URL=https://sheaf.example.com
+```
+
+| Mode | Behaviour |
+|------|-----------|
+| `open` | Anyone can register and use their account immediately |
+| `approval` | New accounts are held with `pending_approval` status until an admin approves them |
+| `invite` | Registration requires a valid invite code (create and manage codes in the admin UI) |
+| `closed` | No new registrations allowed |
+
+When `EMAIL_VERIFICATION=required`, new users must verify their email before they can access the API. A verification link is sent on registration. Users can request a new link (rate limited to once per 20 minutes).
+
+**Invalid combinations** (Sheaf will refuse to start):
+- `EMAIL_VERIFICATION=required` + `EMAIL_BACKEND=none`
+
+**Warnings** (logged at startup):
+- `REGISTRATION_MODE=approval` + `EMAIL_BACKEND=none` — approval notification emails won't be sent
+
+---
+
 ## File storage
 
 ### Filesystem (default)

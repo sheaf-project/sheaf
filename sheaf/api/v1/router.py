@@ -9,6 +9,7 @@ from sheaf.api.v1 import (
     fronts,
     groups,
     members,
+    sheaf_import,
     sp_import,
     systems,
     tags,
@@ -54,5 +55,6 @@ v1_router.include_router(
 # Files: upload gated by members:write (used for avatars/bios); serve is public
 v1_router.include_router(files.router)
 v1_router.include_router(sp_import.router)
+v1_router.include_router(sheaf_import.router)
 # File serve catch-all MUST be last — {path:path} would shadow other routes
 v1_router.include_router(files.serve_router)

@@ -12,11 +12,22 @@ export interface AdminUser {
   email: string;
   tier: string;
   is_admin: boolean;
+  account_status: string;
+  email_verified: boolean;
+  signup_ip: string | null;
   member_limit: number | null;
   storage_used_bytes: number;
   member_count: number;
   created_at: string;
   last_login_at: string | null;
+}
+
+export interface PendingUser {
+  id: string;
+  email: string;
+  email_verified: boolean;
+  signup_ip: string | null;
+  created_at: string;
 }
 
 export interface AdminUserPatch {
@@ -69,4 +80,16 @@ export function runCleanup() {
 
 export function getStorageStats() {
   return apiFetch<{ total_bytes: number; total_files: number; users_with_files: number }>("/v1/admin/storage/stats");
+}
+
+export function getPendingApprovals() {
+  return apiFetch<PendingUser[]>("/v1/admin/approvals");
+}
+
+export function approveUser(id: string) {
+  return apiFetch<{ approved: boolean }>(`/v1/admin/users/${id}/approve`, { method: "POST" });
+}
+
+export function rejectUser(id: string) {
+  return apiFetch<{ rejected: boolean }>(`/v1/admin/users/${id}/reject`, { method: "POST" });
 }

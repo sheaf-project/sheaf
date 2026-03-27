@@ -5,7 +5,7 @@ import secrets
 from datetime import UTC, datetime
 
 import jwt
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -145,6 +145,7 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     body: UserRegister,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
@@ -189,6 +190,7 @@ async def register(
         password_hash=hash_password(body.password),
         account_status=account_status,
         email_verified=email_verified,
+        signup_ip=request.client.host if request.client else None,
     )
     db.add(user)
 
@@ -280,7 +282,7 @@ async def resend_verification(
     db: AsyncSession = Depends(get_db),
 ):
     """Resend the email verification link."""
-    if user.email_verified:
+    if user.email_verified or settings.email_verification != "required":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already verified",
@@ -429,13 +431,17 @@ async def refresh(
 
 
 @router.get("/me", response_model=UserRead)
-async def get_me(user: User = Depends(get_current_user)):
+async def get_me(user: User = Depends(get_current_user_allow_unverified)):
+    # Only flag email as unverified if the server actually requires verification
+    email_verified = user.email_verified or settings.email_verification != "required"
     return UserRead(
         id=user.id,
         email=decrypt(user.email),
         totp_enabled=user.totp_enabled,
         is_admin=user.is_admin,
         tier=user.tier.value,
+        account_status=user.account_status,
+        email_verified=email_verified,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
     )
