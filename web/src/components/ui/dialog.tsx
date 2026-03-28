@@ -10,6 +10,16 @@ import { Button } from "@/components/ui/button"
 function Dialog({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  // Warn on tab close/reload while a dialog is open
+  React.useEffect(() => {
+    if (!props.open) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+    }
+    window.addEventListener("beforeunload", handler)
+    return () => window.removeEventListener("beforeunload", handler)
+  }, [props.open])
+
   return <DialogPrimitive.Root data-slot="dialog" {...props} />
 }
 

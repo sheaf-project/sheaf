@@ -1243,10 +1243,10 @@ export function SettingsPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-3">
-              Import your data from SimplyPlural or other sources.
+              Supported formats: SimplyPlural, Sheaf
             </p>
             <Link to="/import">
-              <Button variant="outline">Import from SimplyPlural</Button>
+              <Button variant="outline">Import data</Button>
             </Link>
           </CardContent>
         </Card>
