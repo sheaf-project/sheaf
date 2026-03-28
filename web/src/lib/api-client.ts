@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 let accessToken: string | null = null;
 let refreshPromise: Promise<string | null> | null = null;
 
@@ -23,6 +25,18 @@ async function refreshAccessToken(): Promise<string | null> {
     });
 
     if (!resp.ok) {
+      // Check if session was revoked
+      if (resp.status === 401) {
+        const body = await resp.json().catch(() => ({}));
+        if (body.detail === "Session revoked") {
+          accessToken = null;
+          toast.error("Your session has been revoked. Redirecting to login...");
+          setTimeout(() => {
+            window.location.href = "/login";
+          }, 1500);
+          return null;
+        }
+      }
       accessToken = null;
       return null;
     }
@@ -83,7 +97,28 @@ export async function apiFetch<T>(
 
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new ApiError(resp.status, body.detail || "Request failed");
+    const detail = body.detail || "Request failed";
+
+    // Session revoked — redirect to login
+    if (resp.status === 401 && detail === "Session revoked") {
+      accessToken = null;
+      toast.error("Your session has been revoked. Redirecting to login...");
+      setTimeout(() => {
+        window.location.href = "/login";
+      }, 1500);
+      throw new ApiError(resp.status, detail);
+    }
+
+    // Show toast for non-auth errors (auth errors during login/register are
+    // handled inline by the form, not via toast)
+    if (resp.status >= 500) {
+      toast.error("Server error — please try again");
+    } else if (resp.status !== 401 && resp.status !== 409) {
+      // Don't toast 401 (handled by refresh) or 409 (conflict, shown inline)
+      toast.error(detail);
+    }
+
+    throw new ApiError(resp.status, detail);
   }
 
   return resp.json();

@@ -25,9 +25,12 @@ import {
 import { dateFormatLabels } from "@/lib/date-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useShowImageBadges } from "@/hooks/use-preferences";
+import { useUiScale } from "@/hooks/use-theme";
 import { TOTPSetup } from "@/components/totp-setup";
 import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
+import { getSessions, renameSession, revokeSession, revokeOtherSessions, type Session } from "@/lib/auth";
+import { Pencil } from "lucide-react";
 
 function SystemSettings() {
   const qc = useQueryClient();
@@ -735,6 +738,7 @@ function UploadedFilesCard() {
 
 function DisplayPreferences() {
   const [showBadges, setShowBadges] = useShowImageBadges();
+  const { scale, setScale, scales } = useUiScale();
 
   return (
     <Card>
@@ -742,6 +746,30 @@ function DisplayPreferences() {
         <CardTitle className="text-base">Display</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">UI scale</p>
+            <p className="text-xs text-muted-foreground">
+              Adjust the interface size
+            </p>
+          </div>
+          <div className="flex gap-1">
+            {scales.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setScale(s)}
+                className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  scale === s
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {s}%
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-medium">Image source badges</p>
@@ -1051,6 +1079,146 @@ function ApiKeysCard() {
   );
 }
 
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function ActiveSessionsCard() {
+  const qc = useQueryClient();
+  const { data: sessions } = useQuery({
+    queryKey: ["sessions"],
+    queryFn: getSessions,
+  });
+  const revoke = useMutation({
+    mutationFn: revokeSession,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sessions"] }),
+  });
+  const revokeAll = useMutation({
+    mutationFn: revokeOtherSessions,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sessions"] }),
+  });
+  const renameMut = useMutation({
+    mutationFn: ({ id, nickname }: { id: string; nickname: string }) =>
+      renameSession(id, nickname),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sessions"] }),
+  });
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editNickname, setEditNickname] = useState("");
+
+  function startEdit(s: Session) {
+    setEditingId(s.id);
+    setEditNickname(s.nickname ?? "");
+  }
+
+  function saveNickname() {
+    if (editingId) {
+      renameMut.mutate({ id: editingId, nickname: editNickname });
+      setEditingId(null);
+    }
+  }
+
+  const otherCount = sessions?.filter((s) => !s.is_current).length ?? 0;
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-base">Active sessions</CardTitle>
+        {otherCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => revokeAll.mutate()}
+            disabled={revokeAll.isPending}
+          >
+            {revokeAll.isPending ? "Revoking..." : "Revoke all others"}
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {revokeAll.data && revokeAll.data.revoked > 0 && (
+          <p className="text-xs text-green-600">
+            Revoked {revokeAll.data.revoked} session{revokeAll.data.revoked !== 1 ? "s" : ""}
+          </p>
+        )}
+        {sessions && sessions.length === 0 && (
+          <p className="text-sm text-muted-foreground">No active sessions.</p>
+        )}
+        {sessions?.map((s) => (
+          <div
+            key={s.id}
+            className="flex items-start justify-between rounded-md border px-3 py-2 text-sm"
+          >
+            <div className="space-y-1 min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                {editingId === s.id ? (
+                  <form
+                    className="flex items-center gap-1"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      saveNickname();
+                    }}
+                  >
+                    <Input
+                      value={editNickname}
+                      onChange={(e) => setEditNickname(e.target.value)}
+                      className="h-6 w-40 text-xs"
+                      placeholder="Session name"
+                      autoFocus
+                      onBlur={saveNickname}
+                    />
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 font-medium hover:text-muted-foreground transition-colors"
+                    onClick={() => startEdit(s)}
+                  >
+                    {s.nickname || s.client_name}
+                    <Pencil className="h-3 w-3 text-muted-foreground" />
+                  </button>
+                )}
+                {s.is_current && (
+                  <Badge variant="outline" className="text-xs">
+                    Current
+                  </Badge>
+                )}
+              </div>
+              {s.nickname && editingId !== s.id && (
+                <p className="text-xs text-muted-foreground">{s.client_name}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Last active {formatRelativeTime(s.last_active_at)}
+                {s.last_active_ip && ` from ${s.last_active_ip}`}
+                {" · "}Created {new Date(s.created_at).toLocaleDateString()}
+                {s.created_ip && ` from ${s.created_ip}`}
+              </p>
+            </div>
+            {!s.is_current && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive shrink-0"
+                onClick={() => revoke.mutate(s.id)}
+                disabled={revoke.isPending}
+              >
+                Revoke
+              </Button>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   return (
     <>
@@ -1065,6 +1233,7 @@ export function SettingsPage() {
         <Separator />
         <AccountInfo />
         <ApiKeysCard />
+        <ActiveSessionsCard />
         <StorageUsageCard />
         <UploadedFilesCard />
         <DataExport />

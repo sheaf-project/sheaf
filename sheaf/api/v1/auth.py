@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unverified
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
-from sheaf.auth.sessions import create_session, delete_session
+from sheaf.auth.sessions import (
+    create_session,
+    delete_other_sessions,
+    delete_session,
+    list_user_sessions,
+    rename_session,
+)
 from sheaf.auth.totp import (
     generate_recovery_codes,
     generate_secret,
@@ -229,7 +235,12 @@ async def register(
         await _send_verification_email(db, user, body.email)
 
     # Create session before committing so a Redis failure rolls back the DB
-    session_id = await create_session(user.id)
+    session_id = await create_session(
+        user.id,
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+        client_header=request.headers.get("x-sheaf-client"),
+    )
 
     await db.commit()
 
@@ -241,7 +252,7 @@ async def register(
         samesite="lax",
     )
 
-    refresh_token = create_token(user.id, TokenType.REFRESH)
+    refresh_token = create_token(user.id, TokenType.REFRESH, session_id=session_id)
     response.set_cookie(
         key="sheaf_refresh",
         value=refresh_token,
@@ -253,7 +264,7 @@ async def register(
     )
 
     return TokenResponse(
-        access_token=create_token(user.id, TokenType.ACCESS),
+        access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
         refresh_token=refresh_token,
     )
 
@@ -424,6 +435,7 @@ async def reset_password(
 @router.post("/login", response_model=TokenResponse)
 async def login(
     body: UserLogin,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
@@ -461,7 +473,12 @@ async def login(
     user.last_login_at = datetime.now(UTC)
 
     # Create session before committing so a Redis failure rolls back the DB
-    session_id = await create_session(user.id)
+    session_id = await create_session(
+        user.id,
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+        client_header=request.headers.get("x-sheaf-client"),
+    )
 
     await db.commit()
 
@@ -473,7 +490,7 @@ async def login(
         samesite="lax",
     )
 
-    refresh_token = create_token(user.id, TokenType.REFRESH)
+    refresh_token = create_token(user.id, TokenType.REFRESH, session_id=session_id)
     response.set_cookie(
         key="sheaf_refresh",
         value=refresh_token,
@@ -485,7 +502,7 @@ async def login(
     )
 
     return TokenResponse(
-        access_token=create_token(user.id, TokenType.ACCESS),
+        access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
         refresh_token=refresh_token,
     )
 
@@ -499,6 +516,97 @@ async def logout(
         await delete_session(session_id)
     response.delete_cookie("sheaf_session")
     response.delete_cookie("sheaf_refresh", path="/v1/auth")
+
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+
+class SessionRename(BaseModel):
+    nickname: str
+
+
+@router.get("/sessions")
+async def get_sessions(
+    request: Request,
+    user: User = Depends(get_current_user),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """List all active sessions for the current user."""
+    sessions = await list_user_sessions(user.id)
+    return [
+        {
+            "id": s["id"],
+            "nickname": s.get("nickname") or None,
+            "client_name": s.get("client_name", "Unknown"),
+            "created_at": s.get("created_at"),
+            "created_ip": s.get("created_ip") or None,
+            "last_active_at": s.get("last_active_at"),
+            "last_active_ip": s.get("last_active_ip") or None,
+            "is_current": s["id"] == session_id,
+        }
+        for s in sessions
+    ]
+
+
+@router.patch("/sessions/{target_session_id}")
+async def update_session(
+    target_session_id: str,
+    body: SessionRename,
+    user: User = Depends(get_current_user),
+):
+    """Rename a session. Only the owning user can rename their sessions."""
+    from sheaf.auth.sessions import get_session_info
+
+    info = await get_session_info(target_session_id)
+    if info is None or info.get("user_id") != str(user.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    await rename_session(target_session_id, body.nickname)
+    return {"ok": True}
+
+
+@router.delete(
+    "/sessions/{target_session_id}", status_code=status.HTTP_204_NO_CONTENT,
+)
+async def revoke_session(
+    target_session_id: str,
+    user: User = Depends(get_current_user),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Revoke a specific session. Cannot revoke the current session (use /logout)."""
+    if target_session_id == session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot revoke current session. Use /logout instead.",
+        )
+    from sheaf.auth.sessions import get_session_info
+
+    info = await get_session_info(target_session_id)
+    if info is None or info.get("user_id") != str(user.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    await delete_session(target_session_id)
+
+
+@router.post("/sessions/revoke-others")
+async def revoke_other_sessions(
+    user: User = Depends(get_current_user),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Revoke all sessions except the current one."""
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No current session",
+        )
+    revoked = await delete_other_sessions(user.id, session_id)
+    return {"revoked": revoked}
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -525,13 +633,26 @@ async def refresh(
         from uuid import UUID
 
         user_id = UUID(payload["sub"])
+        sid = payload.get("sid")
     except (jwt.PyJWTError, ValueError, KeyError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         ) from exc
 
-    new_refresh = create_token(user_id, TokenType.REFRESH)
+    # If the token is bound to a session, verify the session still exists.
+    if sid is not None:
+        from sheaf.auth.sessions import get_session_user_id
+
+        if await get_session_user_id(sid) is None:
+            response.delete_cookie("sheaf_session")
+            response.delete_cookie("sheaf_refresh", path="/v1/auth")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session revoked",
+            )
+
+    new_refresh = create_token(user_id, TokenType.REFRESH, session_id=sid)
     response.set_cookie(
         key="sheaf_refresh",
         value=new_refresh,
@@ -543,7 +664,7 @@ async def refresh(
     )
 
     return TokenResponse(
-        access_token=create_token(user_id, TokenType.ACCESS),
+        access_token=create_token(user_id, TokenType.ACCESS, session_id=sid),
         refresh_token=new_refresh,
     )
 

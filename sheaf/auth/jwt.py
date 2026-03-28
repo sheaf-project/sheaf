@@ -12,7 +12,11 @@ class TokenType(StrEnum):
     REFRESH = "refresh"
 
 
-def create_token(user_id: uuid.UUID, token_type: TokenType) -> str:
+def create_token(
+    user_id: uuid.UUID,
+    token_type: TokenType,
+    session_id: str | None = None,
+) -> str:
     if token_type == TokenType.ACCESS:
         expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     else:
@@ -24,6 +28,8 @@ def create_token(user_id: uuid.UUID, token_type: TokenType) -> str:
         "exp": datetime.now(UTC) + expires,
         "iat": datetime.now(UTC),
     }
+    if session_id is not None:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 

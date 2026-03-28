@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.jwt import TokenType, decode_token
-from sheaf.auth.sessions import check_admin_step_up, get_session_user_id
+from sheaf.auth.sessions import check_admin_step_up, get_session_user_id, touch_session
 from sheaf.database import get_db
 from sheaf.models.user import AccountStatus, User
 
@@ -94,15 +94,31 @@ async def get_current_user(
                 detail="Invalid or expired token",
             ) from exc
 
+        # If the JWT is bound to a session, verify it still exists
+        jwt_sid = payload.get("sid")
+        if jwt_sid is not None:
+            if await get_session_user_id(jwt_sid) is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Session revoked",
+                )
+            request.state.session_id = jwt_sid
+            await touch_session(
+                jwt_sid, ip=request.client.host if request.client else None,
+            )
+
     # Fall back to session cookie
     if user_id is None and session_id is not None:
         user_id = await get_session_user_id(session_id)
         if user_id is not None:
             request.state.auth_method = "session"
+            # Update last-active metadata
+            await touch_session(
+                session_id, ip=request.client.host if request.client else None,
+            )
 
-    # Always track session_id — used for admin step-up auth even when JWT is
-    # the primary auth method (both tokens come from the same browser session).
-    if session_id is not None:
+    # Track session_id from cookie for admin step-up auth
+    if session_id is not None and not hasattr(request.state, "session_id"):
         request.state.session_id = session_id
 
     if user_id is None:

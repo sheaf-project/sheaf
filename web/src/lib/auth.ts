@@ -97,3 +97,39 @@ export function regenerateRecoveryCodes(totp_code: string) {
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+export interface Session {
+  id: string;
+  nickname: string | null;
+  client_name: string;
+  created_at: string;
+  created_ip: string | null;
+  last_active_at: string;
+  last_active_ip: string | null;
+  is_current: boolean;
+}
+
+export function getSessions() {
+  return apiFetch<Session[]>("/v1/auth/sessions");
+}
+
+export function renameSession(id: string, nickname: string) {
+  return apiFetch<{ ok: boolean }>(`/v1/auth/sessions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nickname }),
+  });
+}
+
+export function revokeSession(id: string) {
+  return apiFetch<void>(`/v1/auth/sessions/${id}`, { method: "DELETE" });
+}
+
+export function revokeOtherSessions() {
+  return apiFetch<{ revoked: number }>("/v1/auth/sessions/revoke-others", {
+    method: "POST",
+  });
+}
