@@ -119,6 +119,8 @@ Key endpoints:
 
 Full interactive docs: `http://your-instance/v1/docs`
 
+**Building a client?** See **[docs/CLIENT_DESIGN.md](docs/CLIENT_DESIGN.md)** for the complete client development guide — auth flows, scopes, session management, client settings storage, and all endpoints.
+
 ## Self-Hosting
 
 ```bash
@@ -179,6 +181,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [ ] Terraform module for cloud deployment
 - [ ] More 2FA methods — WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
 - [ ] Alternate secrets management methods - AWS Secrets Manager, Vault, others?
+- [ ] Accessibility improvements - image alt text support, additional TBD
 
 ## License
 

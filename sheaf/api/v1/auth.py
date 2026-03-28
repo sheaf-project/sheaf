@@ -91,6 +91,7 @@ async def get_auth_config():
         "invite_codes_enabled": invite_enabled,
         "email_verification": settings.email_verification,
         "email_enabled": settings.email_backend != "none",
+        "base_url": settings.sheaf_base_url or None,
     }
 
 

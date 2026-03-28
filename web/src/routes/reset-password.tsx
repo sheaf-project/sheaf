@@ -9,6 +9,8 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { PasswordField } from "@/components/password-field";
 import { ApiError } from "@/lib/api-client";
 import { resetPassword } from "@/lib/auth";
@@ -17,21 +19,25 @@ import { Check, X, Sun, Moon } from "lucide-react";
 export function ResetPasswordPage() {
   const { theme, toggleTheme } = useTheme();
   const [params] = useSearchParams();
-  const token = params.get("token");
+  const urlToken = params.get("token");
+  const [manualToken, setManualToken] = useState("");
   const [password, setPassword] = useState("");
-  const [state, setState] = useState<"form" | "success" | "error">(
-    token ? "form" : "error",
-  );
-  const [error, setError] = useState(token ? "" : "Missing reset token");
+  const [state, setState] = useState<"form" | "success" | "error">("form");
+  const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  const effectiveToken = urlToken || manualToken.trim();
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!token) return;
+    if (!effectiveToken) {
+      setError("Please enter a reset token");
+      return;
+    }
     setError("");
     setSubmitting(true);
     try {
-      await resetPassword(token, password);
+      await resetPassword(effectiveToken, password);
       setState("success");
     } catch (err) {
       if (err instanceof ApiError) {
@@ -70,6 +76,21 @@ export function ResetPasswordPage() {
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
+                {!urlToken && (
+                  <div className="space-y-2">
+                    <Label htmlFor="reset-token">Reset token</Label>
+                    <Input
+                      id="reset-token"
+                      value={manualToken}
+                      onChange={(e) => setManualToken(e.target.value)}
+                      placeholder="Paste token from email"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Paste the token from your password reset email, or open
+                      the link directly.
+                    </p>
+                  </div>
+                )}
                 <PasswordField
                   id="new-password"
                   value={password}
