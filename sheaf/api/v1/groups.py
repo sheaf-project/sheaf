@@ -65,7 +65,8 @@ async def create_group(
 
     group = Group(system_id=system.id, **body.model_dump())
     db.add(group)
-    await db.flush()
+    await db.commit()
+    await db.refresh(group)
     return group
 
 
@@ -123,6 +124,8 @@ async def update_group(
 
     for key, value in update_data.items():
         setattr(group, key, value)
+    await db.commit()
+    await db.refresh(group)
     return group
 
 
@@ -139,7 +142,7 @@ async def delete_group(
     system = await _get_user_system(user, db)
     group = await _get_own_group(group_id, system, db)
     await db.delete(group)
-    await db.flush()
+    await db.commit()
 
 
 @router.get("/{group_id}/members", response_model=list[MemberRead])
@@ -195,4 +198,5 @@ async def set_group_members(
         )
 
     group.members = members
-    return group.members
+    await db.commit()
+    return members

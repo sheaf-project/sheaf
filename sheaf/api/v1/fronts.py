@@ -115,7 +115,8 @@ async def create_front(
         members=members,
     )
     db.add(front)
-    await db.flush()
+    await db.commit()
+    await db.refresh(front, ["members"])
     return _front_to_read(front)
 
 
@@ -158,6 +159,8 @@ async def update_front(
             )
         front.members = members
 
+    await db.commit()
+    await db.refresh(front, ["members"])
     return _front_to_read(front)
 
 
@@ -179,4 +182,4 @@ async def delete_front(
     if front is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Front not found")
     await db.delete(front)
-    await db.flush()
+    await db.commit()

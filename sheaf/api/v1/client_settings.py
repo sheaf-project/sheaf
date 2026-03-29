@@ -82,7 +82,8 @@ async def put_client_settings(
         )
         db.add(row)
 
-    await db.flush()
+    await db.commit()
+    await db.refresh(row)
     return {"client_id": row.client_id, "settings": row.settings}
 
 
@@ -106,3 +107,4 @@ async def delete_client_settings(
             detail="No settings stored for this client",
         )
     await db.delete(row)
+    await db.commit()

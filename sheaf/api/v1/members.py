@@ -91,7 +91,8 @@ async def create_member(
 
     member = Member(system_id=system.id, **body.model_dump())
     db.add(member)
-    await db.flush()
+    await db.commit()
+    await db.refresh(member)
     return member
 
 
@@ -121,6 +122,8 @@ async def update_member(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(member, key, value)
+    await db.commit()
+    await db.refresh(member)
     return member
 
 
@@ -164,4 +167,4 @@ async def delete_member(
 
     member = await _get_own_member(member_id, system, db)
     await db.delete(member)
-    await db.flush()
+    await db.commit()

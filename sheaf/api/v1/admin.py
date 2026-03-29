@@ -263,6 +263,8 @@ async def update_user(
     except Exception:
         email = "<encrypted>"
 
+    await db.commit()
+
     return AdminUserRead(
         id=str(target.id),
         email=email,
@@ -336,6 +338,7 @@ async def approve_user(
         )
 
     target.account_status = AccountStatus.ACTIVE
+    await db.commit()
 
     # Send approval notification email if configured
     try:
@@ -392,6 +395,7 @@ async def reject_user(
         await db.delete(system)
 
     await db.delete(target)
+    await db.commit()
     return {"rejected": True}
 
 
@@ -471,6 +475,7 @@ async def set_member_limit(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     target.member_limit = body.member_limit
+    await db.commit()
     return {"user_id": str(user_id), "member_limit": target.member_limit}
 
 
@@ -743,5 +748,6 @@ async def admin_cancel_deletion(
     target.account_status = AccountStatus.ACTIVE
     target.deletion_requested_at = None
     target.deletion_reminders_sent = None
+    await db.commit()
 
     return {"cancelled": True}

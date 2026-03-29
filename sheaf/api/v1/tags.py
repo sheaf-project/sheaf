@@ -48,7 +48,8 @@ async def create_tag(
     system = await _get_user_system(user, db)
     tag = Tag(system_id=system.id, **body.model_dump())
     db.add(tag)
-    await db.flush()
+    await db.commit()
+    await db.refresh(tag)
     return tag
 
 
@@ -90,6 +91,8 @@ async def update_tag(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(tag, key, value)
+    await db.commit()
+    await db.refresh(tag)
     return tag
 
 
@@ -111,4 +114,4 @@ async def delete_tag(
     if tag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
     await db.delete(tag)
-    await db.flush()
+    await db.commit()

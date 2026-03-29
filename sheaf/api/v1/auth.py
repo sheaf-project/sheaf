@@ -707,6 +707,7 @@ async def totp_setup(
     # Store encrypted secret and recovery codes (not yet enabled — needs verification)
     user.totp_secret = encrypt(secret)
     _store_recovery_codes(user, recovery_codes)
+    await db.commit()
 
     return TOTPSetupResponse(
         secret=secret,

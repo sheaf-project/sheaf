@@ -44,6 +44,8 @@ async def update_own_system(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(system, key, value)
+    await db.commit()
+    await db.refresh(system)
     return system
 
 
@@ -86,6 +88,8 @@ async def update_delete_confirmation(
 
     system = await _get_user_system(user, db)
     system.delete_confirmation = body.level
+    await db.commit()
+    await db.refresh(system)
     return system
 
 

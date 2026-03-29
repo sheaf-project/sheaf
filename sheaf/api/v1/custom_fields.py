@@ -59,7 +59,8 @@ async def create_field(
     system = await _get_user_system(user, db)
     field = CustomFieldDefinition(system_id=system.id, **body.model_dump())
     db.add(field)
-    await db.flush()
+    await db.commit()
+    await db.refresh(field)
     return field
 
 
@@ -107,6 +108,8 @@ async def update_field(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(field, key, value)
+    await db.commit()
+    await db.refresh(field)
     return field
 
 
@@ -131,7 +134,7 @@ async def delete_field(
     if field is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
     await db.delete(field)
-    await db.flush()
+    await db.commit()
 
 
 # --- Field values on members ---
@@ -212,7 +215,7 @@ async def set_member_field_values(
                 )
             )
 
-    await db.flush()
+    await db.commit()
 
     # Return all values for this member
     result = await db.execute(
