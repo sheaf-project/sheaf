@@ -197,8 +197,8 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
         except Exception:
             logger.warning("Failed to delete sessions for user %s", user.id)
 
-        # Delete user (CASCADE handles system, members, etc.)
-        await db.delete(user)
+        # Delete user (DB CASCADE handles system, members, etc.)
+        await db.execute(delete(User).where(User.id == user.id))
         deleted += 1
         logger.info("Permanently deleted account %s", user.id)
 
@@ -333,7 +333,7 @@ async def _cleanup_unverified_accounts(db: AsyncSession) -> dict:
         except Exception:
             logger.warning("Failed to delete sessions for user %s", user.id)
 
-        await db.delete(user)
+        await db.execute(delete(User).where(User.id == user.id))
         deleted += 1
         logger.info("Deleted unverified account %s (created %s)", user.id, user.created_at)
 
