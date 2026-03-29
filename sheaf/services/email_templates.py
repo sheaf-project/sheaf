@@ -89,6 +89,29 @@ def account_rejected_email() -> tuple[str, str, str]:
     return subject, html, text
 
 
+def deletion_reminder_email(days_remaining: int) -> tuple[str, str, str]:
+    link = f"{_base_url()}/login"
+    day_word = "day" if days_remaining == 1 else "days"
+    subject = f"Your Sheaf account will be deleted in {days_remaining} {day_word}"
+    text = (
+        f"This is a reminder that your Sheaf account is scheduled for deletion "
+        f"in {days_remaining} {day_word}.\n\n"
+        f"All your data will be permanently deleted.\n\n"
+        f"To cancel, log in and go to Settings:\n\n"
+        f"{link}\n\n"
+        f"If you want your account deleted, no action is needed."
+    )
+    html = (
+        f"<h2>Deletion reminder</h2>"
+        f"<p>Your Sheaf account is scheduled for deletion in "
+        f"<strong>{days_remaining} {day_word}</strong>.</p>"
+        f"<p>All your data will be permanently deleted.</p>"
+        f'<p>To cancel, <a href="{link}">log in</a> and go to Settings.</p>'
+        f"<p>If you want your account deleted, no action is needed.</p>"
+    )
+    return subject, html, text
+
+
 def deletion_confirmation_email(cancel_by_date: str) -> tuple[str, str, str]:
     link = f"{_base_url()}/login"
     subject = "Your Sheaf account is scheduled for deletion"

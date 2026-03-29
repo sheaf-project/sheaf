@@ -29,8 +29,10 @@ import { useUiScale } from "@/hooks/use-theme";
 import { TOTPSetup } from "@/components/totp-setup";
 import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
-import { getSessions, renameSession, revokeSession, revokeOtherSessions, type Session } from "@/lib/auth";
-import { Pencil } from "lucide-react";
+import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, type Session } from "@/lib/auth";
+import { PasswordField } from "@/components/password-field";
+import { Pencil, AlertTriangle } from "lucide-react";
+import { ApiError } from "@/lib/api-client";
 
 function SystemSettings() {
   const qc = useQueryClient();
@@ -1219,6 +1221,132 @@ function ActiveSessionsCard() {
   );
 }
 
+function DeleteAccountCard() {
+  const { user, refreshUser } = useAuth();
+  const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const isPending = user?.account_status === "pending_deletion";
+
+  async function handleDelete(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      await requestAccountDeletion(password, totpCode || undefined);
+      await refreshUser();
+      setPassword("");
+      setTotpCode("");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.detail);
+      } else {
+        setError("Something went wrong");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleCancel() {
+    setCancelling(true);
+    try {
+      await cancelDeletion();
+      await refreshUser();
+    } catch {
+      // Error toast handled by apiFetch
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  if (isPending) {
+    const deletionDate = user?.deletion_requested_at
+      ? new Date(
+          new Date(user.deletion_requested_at).getTime() + 14 * 86400000,
+        )
+      : null;
+
+    return (
+      <Card className="border-destructive/50">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-4 w-4" />
+            Account deletion scheduled
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Your account is scheduled for permanent deletion
+            {deletionDate
+              ? ` on ${deletionDate.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}`
+              : ""}.
+            All your data will be permanently removed.
+          </p>
+          <Button
+            variant="outline"
+            onClick={handleCancel}
+            disabled={cancelling}
+          >
+            {cancelling ? "Cancelling..." : "Cancel deletion"}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-destructive/50">
+      <CardHeader>
+        <CardTitle className="text-base text-destructive">
+          Delete account
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground mb-4">
+          Permanently delete your account and all associated data. You will have
+          a 14-day grace period to change your mind.
+        </p>
+        <form onSubmit={handleDelete} className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="delete-password">Confirm your password</Label>
+            <PasswordField
+              id="delete-password"
+              value={password}
+              onChange={setPassword}
+            />
+          </div>
+          {user?.totp_enabled && (
+            <div className="space-y-2">
+              <Label htmlFor="delete-totp">2FA code</Label>
+              <Input
+                id="delete-totp"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                placeholder="Enter TOTP or recovery code"
+                autoComplete="one-time-code"
+              />
+            </div>
+          )}
+          {error && (
+            <p className="text-sm text-destructive-foreground">{error}</p>
+          )}
+          <Button
+            type="submit"
+            variant="destructive"
+            disabled={submitting || !password}
+          >
+            {submitting ? "Requesting deletion..." : "Delete my account"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   return (
     <>
@@ -1250,6 +1378,8 @@ export function SettingsPage() {
             </Link>
           </CardContent>
         </Card>
+        <Separator />
+        <DeleteAccountCard />
       </div>
     </>
   );

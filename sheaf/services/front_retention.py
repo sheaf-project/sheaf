@@ -8,7 +8,7 @@ retention window for free-tier users.
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import SheafMode, settings
@@ -20,14 +20,14 @@ from sheaf.models.user import User, UserTier
 logger = logging.getLogger("sheaf.retention")
 
 
-async def prune_free_tier_fronts(db: AsyncSession) -> int:
+async def prune_free_tier_fronts(db: AsyncSession) -> dict:
     """Delete front history older than the retention window for free-tier users.
 
-    Returns the number of fronts deleted.
+    Returns dict with items_processed count and per-user detail.
     """
     if settings.sheaf_mode != SheafMode.SAAS:
         logger.debug("Skipping pruning — not in aaS mode")
-        return 0
+        return {"items_processed": 0}
 
     cutoff = datetime.now(UTC) - timedelta(days=settings.free_tier_front_retention_days)
 
@@ -38,6 +38,19 @@ async def prune_free_tier_fronts(db: AsyncSession) -> int:
         .where(User.tier == UserTier.FREE)
         .scalar_subquery()
     )
+
+    # Count per-user before deleting (for detail log)
+    per_user_counts = await db.execute(
+        select(System.user_id, func.count(Front.id))
+        .join(System, Front.system_id == System.id)
+        .where(
+            Front.system_id.in_(free_system_ids),
+            Front.started_at < cutoff,
+            Front.ended_at.is_not(None),
+        )
+        .group_by(System.user_id)
+    )
+    user_counts = {uid: cnt for uid, cnt in per_user_counts.all()}
 
     # Find fronts to delete
     old_fronts = (
@@ -64,4 +77,11 @@ async def prune_free_tier_fronts(db: AsyncSession) -> int:
     if count > 0:
         logger.info("Pruned %d front records older than %s", count, cutoff.isoformat())
 
-    return count
+    detail_lines = [
+        f"User {uid}: pruned {cnt} fronts" for uid, cnt in user_counts.items()
+    ]
+
+    return {
+        "items_processed": count,
+        "details": "\n".join(detail_lines) if detail_lines else None,
+    }

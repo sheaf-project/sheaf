@@ -36,6 +36,7 @@ class UserRead(BaseModel):
     email_verified: bool
     created_at: datetime
     last_login_at: datetime | None
+    deletion_requested_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

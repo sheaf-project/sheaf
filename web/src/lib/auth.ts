@@ -133,3 +133,29 @@ export function revokeOtherSessions() {
     method: "POST",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Account deletion
+// ---------------------------------------------------------------------------
+
+export function requestAccountDeletion(
+  password: string,
+  totp_code?: string,
+) {
+  return apiFetch<{ deletion_scheduled_for: string; grace_days: number }>(
+    "/v1/auth/delete-account",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        password,
+        ...(totp_code ? { totp_code } : {}),
+      }),
+    },
+  );
+}
+
+export function cancelDeletion() {
+  return apiFetch<{ cancelled: boolean }>("/v1/auth/cancel-deletion", {
+    method: "POST",
+  });
+}

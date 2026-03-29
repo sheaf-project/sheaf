@@ -79,6 +79,14 @@ class User(UUIDMixin, TimestampMixin, Base):
         nullable=True,
     )
 
+    # Account deletion
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deletion_reminders_sent: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+
     # Relationships
     system: Mapped["System"] = relationship(back_populates="user", uselist=False)
     api_keys: Mapped[list["ApiKey"]] = relationship(

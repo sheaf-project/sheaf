@@ -8,34 +8,13 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf.api.v1.router import v1_router
-from sheaf.config import SheafMode, _validate_settings, settings
+from sheaf.config import _validate_settings, settings
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("sheaf")
-
-
-async def _retention_loop() -> None:
-    """Periodically prune free-tier front history in aaS mode."""
-    from sheaf.database import async_session_factory
-    from sheaf.services.front_retention import prune_free_tier_fronts
-
-    interval = settings.retention_check_interval_hours * 3600
-    hours = settings.retention_check_interval_hours
-    logger.info("Retention task started — checking every %dh", hours)
-
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            async with async_session_factory() as session:
-                count = await prune_free_tier_fronts(session)
-                await session.commit()
-                if count > 0:
-                    logger.info("Retention task pruned %d fronts", count)
-        except Exception:
-            logger.exception("Retention task failed")
 
 
 async def _promote_admin_emails() -> None:
@@ -81,16 +60,15 @@ async def lifespan(app: FastAPI):
 
     await _promote_admin_emails()
 
-    retention_task = None
-    if settings.sheaf_mode == SheafMode.SAAS:
-        retention_task = asyncio.create_task(_retention_loop())
+    from sheaf.services.jobs import job_runner_loop
+
+    jobs_task = asyncio.create_task(job_runner_loop())
 
     yield
 
-    if retention_task is not None:
-        retention_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await retention_task
+    jobs_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await jobs_task
     logger.info("Sheaf shutting down")
 
 

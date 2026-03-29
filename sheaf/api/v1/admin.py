@@ -586,3 +586,162 @@ async def delete_invite(
     await db.delete(invite)
     await db.commit()
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Scheduled jobs
+# ---------------------------------------------------------------------------
+
+
+@router.get("/jobs")
+async def list_jobs(
+    _: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all registered jobs with their status and last run info."""
+    from sheaf.models.job_run import JobRun
+    from sheaf.services.jobs import get_registry
+
+    registry = get_registry()
+    # Ensure jobs are registered even if runner loop hasn't started yet
+    if not registry:
+        from sheaf.services.jobs import _register_all_jobs
+        _register_all_jobs()
+        registry = get_registry()
+
+    # Get last run for each job
+    jobs = []
+    for name, job_def in registry.items():
+        result = await db.execute(
+            select(JobRun)
+            .where(JobRun.job_name == name)
+            .order_by(JobRun.started_at.desc())
+            .limit(1)
+        )
+        last_run = result.scalar_one_or_none()
+
+        last_run_info = None
+        if last_run is not None:
+            duration_ms = None
+            if last_run.finished_at and last_run.started_at:
+                duration_ms = int(
+                    (last_run.finished_at - last_run.started_at).total_seconds() * 1000
+                )
+            last_run_info = {
+                "started_at": last_run.started_at.isoformat(),
+                "finished_at": last_run.finished_at.isoformat() if last_run.finished_at else None,
+                "status": last_run.status,
+                "items_processed": last_run.items_processed,
+                "duration_ms": duration_ms,
+                "error_message": last_run.error_message,
+                "details": last_run.details,
+            }
+
+        jobs.append({
+            "name": name,
+            "description": job_def.description,
+            "enabled": job_def.enabled(),
+            "interval_seconds": job_def.interval_seconds(),
+            "last_run": last_run_info,
+        })
+
+    return jobs
+
+
+@router.post("/jobs/{job_name}/run")
+async def trigger_job(
+    job_name: str,
+    _: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a scheduled job. Requires admin:write."""
+    from sheaf.services.jobs import get_registry, run_job
+
+    registry = get_registry()
+    if job_name not in registry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown job: {job_name}",
+        )
+
+    run = await run_job(job_name, db)
+    await db.commit()
+
+    duration_ms = None
+    if run.finished_at and run.started_at:
+        duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+
+    return {
+        "job_name": run.job_name,
+        "status": run.status,
+        "items_processed": run.items_processed,
+        "duration_ms": duration_ms,
+        "error_message": run.error_message,
+        "details": run.details,
+    }
+
+
+@router.get("/jobs/{job_name}/logs")
+async def get_job_logs(
+    job_name: str,
+    limit: int = 20,
+    _: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get recent run history for a job. Requires admin:read."""
+    from sheaf.models.job_run import JobRun
+
+    result = await db.execute(
+        select(JobRun)
+        .where(JobRun.job_name == job_name)
+        .order_by(JobRun.started_at.desc())
+        .limit(min(limit, 100))
+    )
+    runs = result.scalars().all()
+
+    return [
+        {
+            "id": str(run.id),
+            "started_at": run.started_at.isoformat(),
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "status": run.status,
+            "items_processed": run.items_processed,
+            "duration_ms": (
+                int((run.finished_at - run.started_at).total_seconds() * 1000)
+                if run.finished_at and run.started_at
+                else None
+            ),
+            "error_message": run.error_message,
+            "details": run.details,
+        }
+        for run in runs
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Admin cancel deletion
+# ---------------------------------------------------------------------------
+
+
+@router.post("/users/{user_id}/cancel-deletion")
+async def admin_cancel_deletion(
+    user_id: uuid.UUID,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a user's pending account deletion. Requires admin:write."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if target.account_status != AccountStatus.PENDING_DELETION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User does not have a pending deletion",
+        )
+
+    target.account_status = AccountStatus.ACTIVE
+    target.deletion_requested_at = None
+    target.deletion_reminders_sent = None
+
+    return {"cancelled": True}

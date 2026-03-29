@@ -32,7 +32,7 @@ from sheaf.crypto import blind_index, decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.api_key import ApiKey
 from sheaf.models.system import System
-from sheaf.models.user import User
+from sheaf.models.user import AccountStatus, User
 from sheaf.schemas.user import (
     TokenRefresh,
     TokenResponse,
@@ -684,6 +684,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         email_verified=email_verified,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
+        deletion_requested_at=user.deletion_requested_at,
     )
 
 
@@ -884,3 +885,111 @@ async def revoke_api_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
     await db.delete(api_key)
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Account deletion
+# ---------------------------------------------------------------------------
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str
+    totp_code: str | None = None
+
+
+@router.post("/delete-account")
+async def request_account_deletion(
+    body: DeleteAccountRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Request account deletion with a grace period."""
+    if user.account_status == AccountStatus.PENDING_DELETION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account is already scheduled for deletion",
+        )
+
+    # Verify password
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect password",
+        )
+
+    # Verify TOTP if enabled
+    if user.totp_enabled:
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="TOTP code required",
+                headers={"X-Sheaf-2FA": "required"},
+            )
+        totp_secret = decrypt(user.totp_secret)
+        if not verify_code(totp_secret, body.totp_code):
+            # Check recovery codes
+            valid_recovery = False
+            if user.recovery_codes:
+                stored_codes = json.loads(decrypt(user.recovery_codes))
+                candidate = hashlib.sha256(
+                    body.totp_code.strip().lower().encode()
+                ).hexdigest()
+                if candidate in stored_codes:
+                    stored_codes.remove(candidate)
+                    user.recovery_codes = encrypt(json.dumps(stored_codes))
+                    valid_recovery = True
+            if not valid_recovery:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid TOTP code",
+                )
+
+    now = datetime.now(UTC)
+    user.account_status = AccountStatus.PENDING_DELETION
+    user.deletion_requested_at = now
+    user.deletion_reminders_sent = None
+
+    from datetime import timedelta
+
+    deletion_date = now + timedelta(days=settings.account_deletion_grace_days)
+
+    # Send confirmation email
+    if settings.email_backend != "none":
+        try:
+            from sheaf.services.email import send_email
+            from sheaf.services.email_templates import deletion_confirmation_email
+
+            email = decrypt(user.email)
+            subject, html, text = deletion_confirmation_email(
+                deletion_date.strftime("%B %d, %Y")
+            )
+            await send_email(email, subject, html, text)
+        except Exception:
+            logger.exception("Failed to send deletion confirmation email")
+
+    await db.commit()
+
+    return {
+        "deletion_scheduled_for": deletion_date.isoformat(),
+        "grace_days": settings.account_deletion_grace_days,
+    }
+
+
+@router.post("/cancel-deletion")
+async def cancel_account_deletion(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a pending account deletion."""
+    if user.account_status != AccountStatus.PENDING_DELETION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No pending deletion to cancel",
+        )
+
+    user.account_status = AccountStatus.ACTIVE
+    user.deletion_requested_at = None
+    user.deletion_reminders_sent = None
+    await db.commit()
+
+    return {"cancelled": True}

@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     free_tier_front_retention_days: int = 30
     retention_check_interval_hours: int = 6
 
+    # Account deletion
+    account_deletion_grace_days: int = 14
+    account_deletion_reminder_days: str = "10,7,1"  # send reminders N days before deletion
+
+    # Unverified account cleanup
+    unverified_account_cleanup_days: int = 7  # delete never-verified accounts after N days
+
+    # Scheduled jobs
+    job_check_interval_minutes: int = 15  # how often job runner wakes up
+    orphan_cleanup_interval_hours: int = 24  # how often orphan file cleanup runs
+    job_log_retention_days: int = 30  # how long to keep job run logs
+
     # File storage
     storage_backend: str = "filesystem"  # "filesystem" or "s3"
     storage_path: Path = Path("data/files")

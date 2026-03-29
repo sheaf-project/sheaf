@@ -18,6 +18,7 @@ export interface User {
   email_verified: boolean;
   created_at: string;
   last_login_at: string | null;
+  deletion_requested_at: string | null;
 }
 
 export interface ApiKey {

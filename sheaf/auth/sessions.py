@@ -171,6 +171,24 @@ async def delete_other_sessions(
     return revoked
 
 
+async def delete_all_user_sessions(user_id: uuid.UUID) -> int:
+    """Delete all sessions for a user. Returns count deleted."""
+    r = await get_redis()
+    set_key = _user_sessions_key(user_id)
+    session_ids = await r.smembers(set_key)
+
+    if not session_ids:
+        return 0
+
+    pipe = r.pipeline()
+    for sid in session_ids:
+        pipe.delete(_session_key(sid))
+    pipe.delete(set_key)
+    await pipe.execute()
+
+    return len(session_ids)
+
+
 async def rename_session(session_id: str, nickname: str) -> bool:
     """Set a nickname on a session. Returns False if session doesn't exist."""
     r = await get_redis()

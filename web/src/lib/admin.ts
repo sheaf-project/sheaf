@@ -129,3 +129,57 @@ export function deleteInvite(id: string) {
     method: "DELETE",
   });
 }
+
+// Scheduled jobs
+
+export interface JobRunInfo {
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  items_processed: number;
+  duration_ms: number | null;
+  error_message: string | null;
+  details: string | null;
+}
+
+export interface JobInfo {
+  name: string;
+  description: string;
+  enabled: boolean;
+  interval_seconds: number;
+  last_run: JobRunInfo | null;
+}
+
+export interface JobLogEntry {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  items_processed: number;
+  duration_ms: number | null;
+  error_message: string | null;
+  details: string | null;
+}
+
+export function getJobs() {
+  return apiFetch<JobInfo[]>("/v1/admin/jobs");
+}
+
+export function triggerJob(jobName: string) {
+  return apiFetch<JobRunInfo>(`/v1/admin/jobs/${jobName}/run`, {
+    method: "POST",
+  });
+}
+
+export function getJobLogs(jobName: string, limit = 20) {
+  return apiFetch<JobLogEntry[]>(
+    `/v1/admin/jobs/${jobName}/logs?limit=${limit}`,
+  );
+}
+
+export function cancelUserDeletion(userId: string) {
+  return apiFetch<{ cancelled: boolean }>(
+    `/v1/admin/users/${userId}/cancel-deletion`,
+    { method: "POST" },
+  );
+}

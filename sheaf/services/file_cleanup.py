@@ -124,5 +124,5 @@ async def cleanup_orphaned_files(
         "orphaned": len(orphaned),
         "freed_bytes": freed_bytes,
         "dry_run": dry_run,
-        "keys": [f.key for f in orphaned] if dry_run else [],
+        "keys": [f.key for f in orphaned],
     }

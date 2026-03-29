@@ -15,6 +15,7 @@ import { AdminDashboard } from "./admin/index";
 import { AdminUsersPage } from "./admin/users";
 import { AdminApprovalsPage } from "./admin/approvals";
 import { AdminInvitesPage } from "./admin/invites";
+import { AdminJobsPage } from "./admin/jobs";
 
 export const router = createBrowserRouter([
   {
@@ -50,6 +51,7 @@ export const router = createBrowserRouter([
           { path: "users", element: <AdminUsersPage /> },
           { path: "approvals", element: <AdminApprovalsPage /> },
           { path: "invites", element: <AdminInvitesPage /> },
+          { path: "jobs", element: <AdminJobsPage /> },
         ],
       },
     ],
