@@ -148,6 +148,49 @@ Email links go to web URLs (`{SHEAF_BASE_URL}/reset-password?token=...`, etc.). 
 
 3. **Deep links (polish):** Register your app to handle `{instance_domain}/reset-password` and `/verify-email` URLs via Android App Links / iOS Universal Links. Requires the instance to serve `.well-known/assetlinks.json` (Android) or `apple-app-site-association` (iOS) — more complex for self-hosted instances with arbitrary domains.
 
+### Account Deletion
+
+Users can request account deletion with a configurable grace period (default 14 days). During the grace period, the user can cancel.
+
+**Request deletion (authenticated):**
+
+```
+POST /v1/auth/delete-account
+{ "password": "...", "totp_code": "123456" }
+
+→ { "deletion_scheduled_for": "2026-04-12T...", "grace_days": 14 }
+```
+
+- Requires password confirmation
+- Requires TOTP code if 2FA is enabled (same `X-Sheaf-2FA: required` pattern as login)
+- Returns 400 if already pending deletion
+
+**Cancel deletion (authenticated):**
+
+```
+POST /v1/auth/cancel-deletion
+
+→ { "cancelled": true }
+```
+
+Returns 400 if no pending deletion.
+
+**Check deletion status:**
+
+`GET /v1/auth/me` includes `deletion_requested_at` (ISO 8601 string or `null`) and `account_status` (`"active"`, `"pending_deletion"`, etc.). Use these to show a warning banner and the scheduled deletion date:
+
+```
+deletion_date = deletion_requested_at + grace_days
+```
+
+The grace period length comes from the server config and is returned in the `delete-account` response. Clients can show it as `deletion_requested_at + grace_days` or just display the `deletion_scheduled_for` value from the initial response.
+
+**What happens during the grace period:**
+- The user can still log in and use the system normally
+- Reminder emails are sent at 10, 7, and 1 day(s) before deletion (if email is enabled)
+- The user can cancel at any time via `POST /v1/auth/cancel-deletion`
+- After the grace period expires, a background job permanently deletes the account and all associated data (system, members, fronts, groups, tags, files, sessions, API keys)
+
 ## Scopes
 
 API key scopes control access. Session/JWT auth has full access (no scope restrictions).
@@ -237,6 +280,8 @@ Use this for preferences that should sync across devices running the same client
 | DELETE | `/auth/keys/{id}` | Revoke API key |
 | POST | `/auth/request-password-reset` | Request reset email |
 | POST | `/auth/reset-password` | Reset with token |
+| POST | `/auth/delete-account` | Request account deletion (password + TOTP) |
+| POST | `/auth/cancel-deletion` | Cancel pending deletion |
 
 ### Resources
 
