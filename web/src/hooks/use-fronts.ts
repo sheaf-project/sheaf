@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { FrontCreate, FrontUpdate } from "@/types/api";
 import * as api from "@/lib/fronts";
 
@@ -29,6 +30,7 @@ export function useCreateFront() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: frontKeys.all });
       qc.invalidateQueries({ queryKey: frontKeys.current });
+      toast.success("Front started");
     },
   });
 }
@@ -41,6 +43,7 @@ export function useUpdateFront() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: frontKeys.all });
       qc.invalidateQueries({ queryKey: frontKeys.current });
+      toast.success("Front updated");
     },
   });
 }
@@ -52,6 +55,7 @@ export function useDeleteFront() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: frontKeys.all });
       qc.invalidateQueries({ queryKey: frontKeys.current });
+      toast.success("Front deleted");
     },
   });
 }

@@ -20,6 +20,21 @@ class ClientSettingsBody(BaseModel):
     settings: dict
 
 
+@router.get("")
+async def list_client_settings(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all stored client settings for the current user."""
+    result = await db.execute(
+        select(ClientSettings)
+        .where(ClientSettings.user_id == user.id)
+        .order_by(ClientSettings.client_id)
+    )
+    rows = result.scalars().all()
+    return [{"client_id": r.client_id, "settings": r.settings} for r in rows]
+
+
 @router.get("/{client_id}")
 async def get_client_settings(
     client_id: str,

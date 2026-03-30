@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { CustomFieldCreate, CustomFieldUpdate, CustomFieldValueSet } from "@/types/api";
 import * as api from "@/lib/custom-fields";
 import { memberKeys } from "./use-members";
@@ -19,7 +20,10 @@ export function useCreateField() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: CustomFieldCreate) => api.createField(data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: fieldKeys.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: fieldKeys.all });
+      toast.success("Field created");
+    },
   });
 }
 
@@ -28,7 +32,10 @@ export function useUpdateField() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: CustomFieldUpdate }) =>
       api.updateField(id, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: fieldKeys.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: fieldKeys.all });
+      toast.success("Field updated");
+    },
   });
 }
 
@@ -36,7 +43,10 @@ export function useDeleteField() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.deleteField(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: fieldKeys.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: fieldKeys.all });
+      toast.success("Field deleted");
+    },
   });
 }
 
@@ -56,6 +66,7 @@ export function useSetMemberFieldValues() {
     onSuccess: (_data, { memberId }) => {
       qc.invalidateQueries({ queryKey: fieldKeys.memberValues(memberId) });
       qc.invalidateQueries({ queryKey: memberKeys.all });
+      toast.success("Field values saved");
     },
   });
 }

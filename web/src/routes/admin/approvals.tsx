@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,7 @@ function ApprovalRow({ user }: { user: PendingUser }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
       qc.invalidateQueries({ queryKey: ["admin", "stats"] });
+      toast.success("User approved");
     },
   });
 
@@ -40,6 +42,7 @@ function ApprovalRow({ user }: { user: PendingUser }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
       qc.invalidateQueries({ queryKey: ["admin", "stats"] });
+      toast.success("User rejected");
     },
   });
 

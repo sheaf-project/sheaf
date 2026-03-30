@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { MemberCreate, MemberUpdate } from "@/types/api";
 import * as api from "@/lib/members";
 
@@ -25,7 +26,10 @@ export function useCreateMember() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: MemberCreate) => api.createMember(data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: memberKeys.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: memberKeys.all });
+      toast.success("Member created");
+    },
   });
 }
 
@@ -37,6 +41,7 @@ export function useUpdateMember() {
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: memberKeys.all });
       qc.invalidateQueries({ queryKey: memberKeys.detail(id) });
+      toast.success("Member updated");
     },
   });
 }
@@ -51,6 +56,9 @@ export function useDeleteMember() {
       id: string;
       confirm?: { password?: string; totp_code?: string };
     }) => api.deleteMember(id, confirm),
-    onSuccess: () => qc.invalidateQueries({ queryKey: memberKeys.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: memberKeys.all });
+      toast.success("Member deleted");
+    },
   });
 }

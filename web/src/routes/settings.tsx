@@ -30,9 +30,11 @@ import { TOTPSetup } from "@/components/totp-setup";
 import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
 import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, type Session } from "@/lib/auth";
+import { listClientSettings, deleteClientSettings } from "@/lib/client-settings";
 import { PasswordField } from "@/components/password-field";
 import { Pencil, AlertTriangle } from "lucide-react";
 import { ApiError } from "@/lib/api-client";
+import { toast } from "sonner";
 
 function SystemSettings() {
   const qc = useQueryClient();
@@ -42,7 +44,10 @@ function SystemSettings() {
   });
   const update = useMutation({
     mutationFn: updateMySystem,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["system", "me"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["system", "me"] });
+      toast.success("System settings saved");
+    },
   });
 
   if (!system) return null;
@@ -415,7 +420,10 @@ function DeleteConfirmationSetting() {
   });
   const mutation = useMutation({
     mutationFn: updateDeleteConfirmation,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["system", "me"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["system", "me"] });
+      toast.success("Delete confirmation updated");
+    },
   });
 
   const [pending, setPending] = useState<DeleteConfirmation | null>(null);
@@ -603,7 +611,14 @@ function StorageUsageCard() {
   });
   const cleanup = useMutation({
     mutationFn: cleanupFiles,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["storage", "usage"] }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["storage", "usage"] });
+      if (data?.total_orphaned > 0) {
+        toast.success(`Cleaned up ${data.total_orphaned} orphaned file(s)`);
+      } else {
+        toast.success("No orphaned files found");
+      }
+    },
   });
 
   if (!usage) return null;
@@ -672,6 +687,7 @@ function UploadedFilesCard() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["files", "list"] });
       qc.invalidateQueries({ queryKey: ["storage", "usage"] });
+      toast.success("File deleted");
     },
   });
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -797,7 +813,10 @@ function FrontPreferences() {
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
   const update = useMutation({
     mutationFn: (replace_fronts_default: boolean) => updateMySystem({ replace_fronts_default }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["system", "me"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["system", "me"] });
+      toast.success("Front preferences saved");
+    },
   });
 
   if (!system) return null;
@@ -918,7 +937,10 @@ function ApiKeysCard() {
   const { data: keys } = useQuery({ queryKey: ["api-keys"], queryFn: listApiKeys });
   const revoke = useMutation({
     mutationFn: revokeApiKey,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["api-keys"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["api-keys"] });
+      toast.success("API key revoked");
+    },
   });
   const create = useMutation({
     mutationFn: createApiKey,
@@ -1100,16 +1122,25 @@ function ActiveSessionsCard() {
   });
   const revoke = useMutation({
     mutationFn: revokeSession,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["sessions"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+      toast.success("Session revoked");
+    },
   });
   const revokeAll = useMutation({
     mutationFn: revokeOtherSessions,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["sessions"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+      toast.success("Other sessions revoked");
+    },
   });
   const renameMut = useMutation({
     mutationFn: ({ id, nickname }: { id: string; nickname: string }) =>
       renameSession(id, nickname),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["sessions"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+      toast.success("Session renamed");
+    },
   });
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1347,6 +1378,67 @@ function DeleteAccountCard() {
   );
 }
 
+function ClientSettingsCard() {
+  const qc = useQueryClient();
+  const { data: entries, isLoading } = useQuery({
+    queryKey: ["client-settings"],
+    queryFn: listClientSettings,
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: deleteClientSettings,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["client-settings"] });
+      toast.success("Client settings deleted");
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Client Settings</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground mb-3">
+          Settings stored by apps and integrations that use this account.
+        </p>
+        {isLoading && (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        )}
+        {entries && entries.length === 0 && (
+          <p className="text-sm text-muted-foreground">No client settings stored.</p>
+        )}
+        {entries && entries.length > 0 && (
+          <div className="space-y-2">
+            {entries.map((entry) => (
+              <div
+                key={entry.client_id}
+                className="flex items-center justify-between rounded-md border px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{entry.client_id}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {JSON.stringify(entry.settings).length.toLocaleString()} bytes
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive shrink-0"
+                  onClick={() => deleteMut.mutate(entry.client_id)}
+                  disabled={deleteMut.isPending}
+                >
+                  Delete
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   return (
     <>
@@ -1364,6 +1456,7 @@ export function SettingsPage() {
         <ActiveSessionsCard />
         <StorageUsageCard />
         <UploadedFilesCard />
+        <ClientSettingsCard />
         <DataExport />
         <Card>
           <CardHeader>
