@@ -40,12 +40,9 @@ async def _get_redis():
 
 
 def _client_ip(request: Request) -> str:
-    """Extract client IP, respecting X-Forwarded-For behind a trusted proxy."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        # First IP in the chain is the original client
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Extract client IP using the shared utility."""
+    from sheaf.request import client_ip
+    return client_ip(request)
 
 
 async def _check_limit(

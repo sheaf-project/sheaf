@@ -34,6 +34,7 @@ from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.system import System
 from sheaf.models.user import AccountStatus, User
+from sheaf.request import client_ip
 from sheaf.schemas.user import (
     TokenRefresh,
     TokenResponse,
@@ -217,7 +218,7 @@ async def register(
         password_hash=hash_password(body.password),
         account_status=account_status,
         email_verified=email_verified,
-        signup_ip=request.client.host if request.client else None,
+        signup_ip=client_ip(request),
     )
     db.add(user)
 
@@ -244,7 +245,7 @@ async def register(
     # Create session before committing so a Redis failure rolls back the DB
     session_id = await create_session(
         user.id,
-        ip=request.client.host if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
         client_header=request.headers.get("x-sheaf-client"),
     )
@@ -386,7 +387,7 @@ async def request_password_reset(
             from sheaf.services.email import send_email
             from sheaf.services.email_templates import password_reset_email
 
-            requester_ip = request.client.host if request.client else None
+            requester_ip = client_ip(request)
             subject, html, text = password_reset_email(token, ip=requester_ip)
             await send_email(body.email, subject, html, text)
         except Exception:
@@ -486,7 +487,7 @@ async def login(
     # Create session before committing so a Redis failure rolls back the DB
     session_id = await create_session(
         user.id,
-        ip=request.client.host if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
         client_header=request.headers.get("x-sheaf-client"),
     )

@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
     rate_limit_global_window: int = 60  # window in seconds
 
+    # Trusted proxies — comma-separated IPs that are allowed to set X-Forwarded-For.
+    # Only these IPs' X-Forwarded-For headers are trusted for rate limiting and
+    # IP logging. If empty, X-Forwarded-For is never read (direct IP is used).
+    # Common values: "127.0.0.1", "172.17.0.1" (Docker bridge), "10.0.0.1"
+    trusted_proxies: str = ""
+
+    @property
+    def trusted_proxy_set(self) -> set[str]:
+        """Return trusted_proxies as a parsed set for fast lookup."""
+        if not self.trusted_proxies:
+            return set()
+        return {ip.strip() for ip in self.trusted_proxies.split(",") if ip.strip()}
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

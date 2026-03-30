@@ -12,6 +12,7 @@ from sheaf.auth.jwt import TokenType, decode_token
 from sheaf.auth.sessions import check_admin_step_up, get_session_user_id, touch_session
 from sheaf.database import get_db
 from sheaf.models.user import AccountStatus, User
+from sheaf.request import client_ip
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -104,7 +105,7 @@ async def get_current_user(
                 )
             request.state.session_id = jwt_sid
             await touch_session(
-                jwt_sid, ip=request.client.host if request.client else None,
+                jwt_sid, ip=client_ip(request),
             )
 
     # Fall back to session cookie
@@ -114,7 +115,7 @@ async def get_current_user(
             request.state.auth_method = "session"
             # Update last-active metadata
             await touch_session(
-                session_id, ip=request.client.host if request.client else None,
+                session_id, ip=client_ip(request),
             )
 
     # Track session_id from cookie for admin step-up auth
