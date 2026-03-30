@@ -9,7 +9,7 @@ export interface AuthConfig {
 }
 
 export function getAuthConfig() {
-  return apiFetch<AuthConfig>("/v1/auth/config");
+  return apiFetch<AuthConfig>("/v1/auth/config", { skipRefresh: true });
 }
 
 export function register(
@@ -19,6 +19,7 @@ export function register(
 ) {
   return apiFetch<TokenResponse>("/v1/auth/register", {
     method: "POST",
+    skipRefresh: true,
     body: JSON.stringify({
       email,
       password,
@@ -30,6 +31,7 @@ export function register(
 export function login(email: string, password: string, totp_code?: string) {
   return apiFetch<TokenResponse>("/v1/auth/login", {
     method: "POST",
+    skipRefresh: true,
     body: JSON.stringify({ email, password, ...(totp_code ? { totp_code } : {}) }),
   });
 }
@@ -71,12 +73,16 @@ export function resendVerification() {
 }
 
 export function verifyEmail(token: string) {
-  return apiFetch<{ verified: boolean }>(`/v1/auth/verify-email?token=${encodeURIComponent(token)}`);
+  return apiFetch<{ verified: boolean }>(
+    `/v1/auth/verify-email?token=${encodeURIComponent(token)}`,
+    { skipRefresh: true },
+  );
 }
 
 export function requestPasswordReset(email: string) {
   return apiFetch<{ requested: boolean }>("/v1/auth/request-password-reset", {
     method: "POST",
+    skipRefresh: true,
     body: JSON.stringify({ email }),
   });
 }
@@ -84,6 +90,7 @@ export function requestPasswordReset(email: string) {
 export function resetPassword(token: string, new_password: string) {
   return apiFetch<{ reset: boolean }>("/v1/auth/reset-password", {
     method: "POST",
+    skipRefresh: true,
     body: JSON.stringify({ token, new_password }),
   });
 }

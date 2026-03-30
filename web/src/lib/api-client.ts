@@ -61,24 +61,30 @@ export class ApiError extends Error {
   }
 }
 
+interface ApiFetchOptions extends RequestInit {
+  /** Skip automatic token refresh on 401. Use for login/register endpoints. */
+  skipRefresh?: boolean;
+}
+
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit = {},
+  options: ApiFetchOptions = {},
 ): Promise<T> {
-  const isFormData = options.body instanceof FormData;
+  const { skipRefresh, ...fetchOptions } = options;
+  const isFormData = fetchOptions.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
-    ...(options.headers as Record<string, string>),
+    ...(fetchOptions.headers as Record<string, string>),
   };
 
   if (accessToken) {
     headers["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  let resp = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  let resp = await fetch(path, { ...fetchOptions, headers, credentials: "same-origin" });
 
-  // Auto-refresh on 401 using HttpOnly cookie
-  if (resp.status === 401) {
+  // Auto-refresh on 401 using HttpOnly cookie (skip for login/register)
+  if (resp.status === 401 && !skipRefresh) {
     if (!refreshPromise) {
       refreshPromise = refreshAccessToken();
     }
@@ -87,7 +93,7 @@ export async function apiFetch<T>(
 
     if (newToken) {
       headers["Authorization"] = `Bearer ${newToken}`;
-      resp = await fetch(path, { ...options, headers, credentials: "same-origin" });
+      resp = await fetch(path, { ...fetchOptions, headers, credentials: "same-origin" });
     }
   }
 

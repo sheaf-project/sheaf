@@ -142,6 +142,7 @@ class AdminUserRead(BaseModel):
     is_admin: bool
     account_status: str
     email_verified: bool
+    totp_enabled: bool
     signup_ip: str | None
     member_limit: int | None
     storage_used_bytes: int
@@ -213,6 +214,7 @@ async def list_users(
             is_admin=user.is_admin,
             account_status=user.account_status,
             email_verified=user.email_verified,
+            totp_enabled=user.totp_enabled,
             signup_ip=user.signup_ip,
             member_limit=user.member_limit,
             storage_used_bytes=storage_used_bytes,
@@ -273,6 +275,7 @@ async def update_user(
         is_admin=target.is_admin,
         account_status=target.account_status,
         email_verified=target.email_verified,
+        totp_enabled=target.totp_enabled,
         signup_ip=target.signup_ip,
         member_limit=target.member_limit,
         storage_used_bytes=storage_used,
@@ -722,6 +725,152 @@ async def get_job_logs(
         }
         for run in runs
     ]
+
+
+# ---------------------------------------------------------------------------
+# Account recovery tools
+# ---------------------------------------------------------------------------
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str | None = None  # If omitted, generate a random password
+
+
+class AdminChangeEmailRequest(BaseModel):
+    new_email: str
+
+
+@router.post("/users/{user_id}/reset-password")
+async def admin_reset_password(
+    user_id: uuid.UUID,
+    body: AdminResetPasswordRequest,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset a user's password. Returns the new password once. Requires admin:write.
+
+    Revokes all the user's sessions to force re-login.
+    """
+    import secrets
+
+    from sheaf.auth.passwords import hash_password
+    from sheaf.auth.sessions import delete_all_user_sessions
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    new_password = body.new_password or secrets.token_urlsafe(16)
+    target.password_hash = hash_password(new_password)
+    # Clear any pending password reset tokens
+    target.password_reset_token = None
+    target.password_reset_sent_at = None
+    await db.commit()
+
+    # Revoke all sessions so the user must log in with the new password
+    sessions_revoked = await delete_all_user_sessions(user_id)
+
+    return {
+        "password": new_password,
+        "sessions_revoked": sessions_revoked,
+    }
+
+
+@router.post("/users/{user_id}/change-email")
+async def admin_change_email(
+    user_id: uuid.UUID,
+    body: AdminChangeEmailRequest,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change a user's email address. Requires admin:write.
+
+    Updates the encrypted email and blind index. Marks email as verified
+    (admin-initiated change is trusted). Checks for conflicts.
+    """
+    from sheaf.crypto import blind_index, encrypt
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    new_hash = blind_index(body.new_email)
+
+    # Check for conflicts
+    existing = await db.execute(select(User).where(User.email_hash == new_hash))
+    conflict = existing.scalar_one_or_none()
+    if conflict is not None and conflict.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use by another account",
+        )
+
+    target.email = encrypt(body.new_email)
+    target.email_hash = new_hash
+    target.email_verified = True
+    # Clear any pending verification tokens
+    target.email_verification_token = None
+    target.email_verification_sent_at = None
+    await db.commit()
+
+    return {"email": body.new_email}
+
+
+@router.post("/users/{user_id}/disable-totp")
+async def admin_disable_totp(
+    user_id: uuid.UUID,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable TOTP 2FA on a user's account. Requires admin:write.
+
+    Clears the TOTP secret and recovery codes. The user can re-enrol later.
+    """
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not target.totp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="TOTP is not enabled on this account",
+        )
+
+    target.totp_enabled = False
+    target.totp_secret = None
+    target.recovery_codes = None
+    await db.commit()
+
+    return {"disabled": True}
+
+
+@router.post("/users/{user_id}/verify-email")
+async def admin_verify_email(
+    user_id: uuid.UUID,
+    _admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Force-verify a user's email address. Requires admin:write."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if target.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already verified",
+        )
+
+    target.email_verified = True
+    target.email_verification_token = None
+    target.email_verification_sent_at = None
+    await db.commit()
+
+    return {"verified": True}
 
 
 # ---------------------------------------------------------------------------

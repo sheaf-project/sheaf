@@ -14,6 +14,7 @@ export interface AdminUser {
   is_admin: boolean;
   account_status: string;
   email_verified: boolean;
+  totp_enabled: boolean;
   signup_ip: string | null;
   member_limit: number | null;
   storage_used_bytes: number;
@@ -180,6 +181,42 @@ export function getJobLogs(jobName: string, limit = 20) {
 export function cancelUserDeletion(userId: string) {
   return apiFetch<{ cancelled: boolean }>(
     `/v1/admin/users/${userId}/cancel-deletion`,
+    { method: "POST" },
+  );
+}
+
+// Account recovery tools
+
+export function resetUserPassword(userId: string, newPassword?: string) {
+  return apiFetch<{ password: string; sessions_revoked: number }>(
+    `/v1/admin/users/${userId}/reset-password`,
+    {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPassword ?? null }),
+    },
+  );
+}
+
+export function changeUserEmail(userId: string, newEmail: string) {
+  return apiFetch<{ email: string }>(
+    `/v1/admin/users/${userId}/change-email`,
+    {
+      method: "POST",
+      body: JSON.stringify({ new_email: newEmail }),
+    },
+  );
+}
+
+export function disableUserTotp(userId: string) {
+  return apiFetch<{ disabled: boolean }>(
+    `/v1/admin/users/${userId}/disable-totp`,
+    { method: "POST" },
+  );
+}
+
+export function verifyUserEmail(userId: string) {
+  return apiFetch<{ verified: boolean }>(
+    `/v1/admin/users/${userId}/verify-email`,
     { method: "POST" },
   );
 }
