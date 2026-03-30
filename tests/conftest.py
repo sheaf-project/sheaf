@@ -9,10 +9,19 @@ import pytest
 
 BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
 
+# Guard: tests require a running server managed by run_tests.sh.
+if "SHEAF_TEST_URL" not in os.environ:
+    raise SystemExit(
+        "Tests must be run via ./run_tests.sh, which manages the test server stack.\n"
+        "Usage: ./run_tests.sh [--no-build]\n"
+        "See CONTRIBUTING.md for details."
+    )
+
 # Set by run_tests.sh to tell the suite which server config is active.
 # Controls which config-specific tests are skipped.
 _ADMIN_AUTH_LEVEL = os.environ.get("SHEAF_TEST_ADMIN_AUTH_LEVEL", "none")
 _SHEAF_MODE = os.environ.get("SHEAF_TEST_MODE", "selfhosted")
+_RATE_LIMIT = os.environ.get("SHEAF_TEST_RATE_LIMIT", "false").lower() == "true"
 
 
 def pytest_collection_modifyitems(items):
@@ -23,6 +32,8 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_ADMIN_AUTH_LEVEL=totp"))
         if "saas" in item.keywords and _SHEAF_MODE != "saas":
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_MODE=saas"))
+        if "rate_limit" in item.keywords and not _RATE_LIMIT:
+            item.add_marker(pytest.mark.skip("requires SHEAF_TEST_RATE_LIMIT=true"))
 
 
 @pytest.fixture
@@ -55,6 +66,7 @@ def _promote_to_admin(email: str) -> None:
     async def _run() -> None:
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
         from sqlalchemy.orm import sessionmaker
+
         from sheaf.config import settings
         from sheaf.models.user import User
 

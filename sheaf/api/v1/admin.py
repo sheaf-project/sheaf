@@ -12,6 +12,7 @@ from sheaf.auth.sessions import check_admin_step_up, set_admin_step_up
 from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
@@ -57,7 +58,7 @@ async def get_admin_auth_status(
     }
 
 
-@router.post("/auth")
+@router.post("/auth", dependencies=[rate_limit(5, 60, "user")])
 async def verify_admin_step_up(
     body: AdminStepUpVerify,
     user: User = Depends(get_current_user),

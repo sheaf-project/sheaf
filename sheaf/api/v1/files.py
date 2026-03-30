@@ -11,6 +11,7 @@ from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.files import resolve_avatar_url, verify_file_token
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
 from sheaf.services.file_cleanup import cleanup_orphaned_files
@@ -33,7 +34,10 @@ def _get_quota_bytes(user: User) -> int:
     return mb * 1024 * 1024 if mb > 0 else 0
 
 
-@router.post("/upload", dependencies=[Depends(require_scope("members:write"))])
+@router.post(
+    "/upload",
+    dependencies=[Depends(require_scope("members:write")), rate_limit(10, 60, "user")],
+)
 async def upload_file(
     file: UploadFile,
     purpose: str = Query(default="avatar", pattern="^(avatar|bio)$"),

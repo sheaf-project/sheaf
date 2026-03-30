@@ -30,6 +30,7 @@ from sheaf.auth.totp import (
 from sheaf.config import settings
 from sheaf.crypto import blind_index, decrypt, encrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.system import System
 from sheaf.models.user import AccountStatus, User
@@ -163,7 +164,12 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
         logger.exception("Failed to send verification email to user %s", user.id)
 
 
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[rate_limit(5, 60), rate_limit(15, 3600)],
+)
 async def register(
     body: UserRegister,
     request: Request,
@@ -270,7 +276,7 @@ async def register(
     )
 
 
-@router.get("/verify-email")
+@router.get("/verify-email", dependencies=[rate_limit(5, 60)])
 async def verify_email(
     token: str,
     db: AsyncSession = Depends(get_db),
@@ -303,7 +309,7 @@ async def verify_email(
     return {"verified": True}
 
 
-@router.post("/resend-verification")
+@router.post("/resend-verification", dependencies=[rate_limit(3, 60)])
 async def resend_verification(
     user: User = Depends(get_current_user_allow_unverified),
     db: AsyncSession = Depends(get_db),
@@ -343,7 +349,7 @@ class PasswordReset(BaseModel):
     new_password: str
 
 
-@router.post("/request-password-reset")
+@router.post("/request-password-reset", dependencies=[rate_limit(3, 60)])
 async def request_password_reset(
     body: PasswordResetRequest,
     request: Request,
@@ -389,7 +395,7 @@ async def request_password_reset(
     return {"requested": True}
 
 
-@router.post("/reset-password")
+@router.post("/reset-password", dependencies=[rate_limit(5, 60)])
 async def reset_password(
     body: PasswordReset,
     db: AsyncSession = Depends(get_db),
@@ -433,7 +439,11 @@ async def reset_password(
     return {"reset": True}
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    dependencies=[rate_limit(10, 60), rate_limit(30, 3600)],
+)
 async def login(
     body: UserLogin,
     request: Request,
@@ -688,7 +698,11 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
     )
 
 
-@router.post("/totp/setup", response_model=TOTPSetupResponse)
+@router.post(
+    "/totp/setup",
+    response_model=TOTPSetupResponse,
+    dependencies=[rate_limit(5, 60, "user")],
+)
 async def totp_setup(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -716,7 +730,11 @@ async def totp_setup(
     )
 
 
-@router.post("/totp/verify", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/totp/verify",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[rate_limit(5, 60, "user")],
+)
 async def totp_verify(
     body: TOTPVerify,
     user: User = Depends(get_current_user),
@@ -825,7 +843,12 @@ async def list_api_keys(
     ]
 
 
-@router.post("/keys", response_model=ApiKeyCreated, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/keys",
+    response_model=ApiKeyCreated,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[rate_limit(10, 60, "user")],
+)
 async def create_api_key(
     body: ApiKeyCreate,
     user: User = Depends(get_current_user),
@@ -898,7 +921,7 @@ class DeleteAccountRequest(BaseModel):
     totp_code: str | None = None
 
 
-@router.post("/delete-account")
+@router.post("/delete-account", dependencies=[rate_limit(3, 60, "user")])
 async def request_account_deletion(
     body: DeleteAccountRequest,
     user: User = Depends(get_current_user),

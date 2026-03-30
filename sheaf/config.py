@@ -127,6 +127,11 @@ class Settings(BaseSettings):
         """Return sheaf_admin_emails as a parsed list."""
         return [e.strip() for e in self.sheaf_admin_emails.split(",") if e.strip()]
 
+    # Rate limiting
+    rate_limit_enabled: bool = True
+    rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
+    rate_limit_global_window: int = 60  # window in seconds
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

@@ -3,7 +3,6 @@
 import os
 
 import httpx
-import pytest
 
 BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
 

@@ -170,6 +170,9 @@ async def get_current_user(
     if not hasattr(request.state, "api_key_scopes"):
         request.state.api_key_scopes = None
 
+    # Expose user ID on request state for rate limiting and logging
+    request.state.user_id = str(user.id)
+
     return user
 
 

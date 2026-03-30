@@ -56,4 +56,5 @@ markers = [
     "admin_auth_password: requires server running with ADMIN_AUTH_LEVEL=password",
     "admin_auth_totp: requires server running with ADMIN_AUTH_LEVEL=totp",
     "saas: requires server running with SHEAF_MODE=saas",
+    "rate_limit: requires server running with RATE_LIMIT_ENABLED=true",
 ]

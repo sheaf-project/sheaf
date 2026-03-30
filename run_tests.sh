@@ -104,7 +104,7 @@ wait_for_app
 
 # 1. Main suite — excludes config-specific marks
 run_config "selfhosted/none" "none" "selfhosted" \
-    "not admin_auth_password and not admin_auth_totp and not saas"
+    "not admin_auth_password and not admin_auth_totp and not saas and not rate_limit"
 
 # 2. Password step-up enforcement
 run_config "selfhosted/admin_auth_password" "password" "selfhosted" \
@@ -116,6 +116,30 @@ run_config "selfhosted/admin_auth_totp" "totp" "selfhosted" \
 
 # 4. SaaS mode — run all tests; conftest skips password/totp marks, runs saas marks
 run_config "saas/none" "none" "saas"
+
+# 5. Rate limiting — low limits so tests can trigger 429s
+echo ""
+echo "================================================================"
+echo "Config: selfhosted/rate_limit"
+echo "================================================================"
+
+ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
+    RATE_LIMIT_ENABLED=true RATE_LIMIT_GLOBAL_PER_IP=600 RATE_LIMIT_GLOBAL_WINDOW=60 \
+    $COMPOSE up -d app
+
+wait_for_app
+
+if SHEAF_TEST_URL="$TEST_URL" \
+   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+   SHEAF_TEST_MODE=selfhosted \
+   SHEAF_TEST_RATE_LIMIT=true \
+   uv run pytest -q -m "rate_limit"; then
+    echo "PASSED: selfhosted/rate_limit"
+else
+    echo "FAILED: selfhosted/rate_limit"
+    FAILED+=("selfhosted/rate_limit")
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

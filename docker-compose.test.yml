@@ -15,6 +15,9 @@ services:
       EMAIL_VERIFICATION: "off"
       STORAGE_BACKEND: filesystem
       IMAGE_SERVING: unsigned
+      RATE_LIMIT_ENABLED: "${RATE_LIMIT_ENABLED:-false}"
+      RATE_LIMIT_GLOBAL_PER_IP: "${RATE_LIMIT_GLOBAL_PER_IP:-600}"
+      RATE_LIMIT_GLOBAL_WINDOW: "${RATE_LIMIT_GLOBAL_WINDOW:-60}"
     volumes: []
     depends_on:
       db:
