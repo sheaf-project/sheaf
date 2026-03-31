@@ -101,13 +101,17 @@ async def get_session_user_id(session_id: str) -> uuid.UUID | None:
 
 
 async def touch_session(session_id: str, ip: str | None = None) -> None:
-    """Update last_active_at and last_active_ip for an active session."""
+    """Update last_active_at, last_active_ip, and extend session TTL."""
     r = await get_redis()
     now = datetime.now(UTC).isoformat()
+    ttl = settings.session_expire_hours * 3600
     mapping: dict[str, str] = {"last_active_at": now}
     if ip:
         mapping["last_active_ip"] = ip
-    await r.hset(_session_key(session_id), mapping=mapping)
+    pipe = r.pipeline()
+    pipe.hset(_session_key(session_id), mapping=mapping)
+    pipe.expire(_session_key(session_id), ttl)
+    await pipe.execute()
 
 
 async def get_session_info(session_id: str) -> dict | None:
