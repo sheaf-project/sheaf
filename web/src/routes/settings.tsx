@@ -32,6 +32,7 @@ import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
 import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, type Session } from "@/lib/auth";
 import { listClientSettings, deleteClientSettings } from "@/lib/client-settings";
 import { PasswordField } from "@/components/password-field";
+import { timeAgo } from "@/lib/utils";
 import { Pencil, AlertTriangle } from "lucide-react";
 import { ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -299,6 +300,7 @@ function CustomFieldsManager() {
   const [newType, setNewType] = useState<FieldType>("text");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   function handleCreate(e: FormEvent) {
     e.preventDefault();
@@ -389,14 +391,38 @@ function CustomFieldsManager() {
                   {f.name}
                   <span className="ml-2 text-xs text-muted-foreground">{f.field_type}</span>
                 </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-                  onClick={() => deleteField.mutate(f.id)}
-                >
-                  Delete
-                </Button>
+                {deleteConfirmId === f.id ? (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => {
+                        deleteField.mutate(f.id);
+                        setDeleteConfirmId(null);
+                      }}
+                    >
+                      Confirm
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setDeleteConfirmId(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+                    onClick={() => setDeleteConfirmId(f.id)}
+                  >
+                    Delete
+                  </Button>
+                )}
               </div>
             ),
           )}
@@ -546,6 +572,9 @@ function DataExport() {
       a.download = `sheaf-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      toast.success("Data exported");
+    } catch {
+      toast.error("Export failed");
     } finally {
       setExporting(false);
     }
@@ -953,6 +982,7 @@ function ApiKeysCard() {
   const [adminLevel, setAdminLevel] = useState<ScopeLevel>("none");
   const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
   const [copied, setCopied] = useState(false);
+  const [revokeConfirmId, setRevokeConfirmId] = useState<string | null>(null);
 
   const setLevel = useCallback((key: string, v: ScopeLevel) => {
     setLevels((prev) => ({ ...prev, [key]: v }));
@@ -1081,15 +1111,40 @@ function ApiKeysCard() {
                     {k.expires_at && ` · Expires ${new Date(k.expires_at).toLocaleDateString()}`}
                   </p>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => revoke.mutate(k.id)}
-                  disabled={revoke.isPending}
-                >
-                  Revoke
-                </Button>
+                {revokeConfirmId === k.id ? (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        revoke.mutate(k.id);
+                        setRevokeConfirmId(null);
+                      }}
+                      disabled={revoke.isPending}
+                    >
+                      Confirm
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setRevokeConfirmId(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive shrink-0"
+                    onClick={() => setRevokeConfirmId(k.id)}
+                    disabled={revoke.isPending}
+                  >
+                    Revoke
+                  </Button>
+                )}
               </div>
             ))}
           </div>
@@ -1101,17 +1156,6 @@ function ApiKeysCard() {
       </CardContent>
     </Card>
   );
-}
-
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 function ActiveSessionsCard() {
@@ -1228,7 +1272,7 @@ function ActiveSessionsCard() {
                 <p className="text-xs text-muted-foreground">{s.client_name}</p>
               )}
               <p className="text-xs text-muted-foreground">
-                Last active {formatRelativeTime(s.last_active_at)}
+                Last active {timeAgo(s.last_active_at)}
                 {s.last_active_ip && ` from ${s.last_active_ip}`}
                 {" · "}Created {new Date(s.created_at).toLocaleDateString()}
                 {s.created_ip && ` from ${s.created_ip}`}
