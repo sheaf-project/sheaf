@@ -1,6 +1,9 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        INCLUDE_DEV_TOOLS: "${INCLUDE_DEV_TOOLS:-false}"
     ports:
       - "${SHEAF_PORT:-8000}:8000"
     env_file:

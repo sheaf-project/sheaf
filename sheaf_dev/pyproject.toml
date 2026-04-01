@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sheaf-dev"
+version = "0.1.0"
+description = "Dev-only tools for Sheaf — destructive jobs that must NOT exist in production"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.12"
+# No explicit dependency on sheaf — always installed alongside it
+dependencies = []

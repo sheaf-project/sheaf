@@ -12,6 +12,15 @@ COPY alembic/ alembic/
 
 RUN pip install --no-cache-dir ".[s3,smtp]"
 
+# Dev-only tools (destructive jobs for demo instances, etc.)
+# Only installed when INCLUDE_DEV_TOOLS=true. Default: not installed,
+# so production images physically cannot contain this code.
+ARG INCLUDE_DEV_TOOLS=false
+COPY sheaf_dev/ sheaf_dev/
+RUN if [ "$INCLUDE_DEV_TOOLS" = "true" ]; then \
+      pip install --no-cache-dir ./sheaf_dev; \
+    fi && rm -rf sheaf_dev/
+
 RUN mkdir -p /app/data && chown sheaf:sheaf /app/data
 
 USER sheaf

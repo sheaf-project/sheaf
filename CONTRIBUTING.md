@@ -27,6 +27,7 @@ docker compose up db redis -d
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+pip install -e ./sheaf_dev       # optional: dev-only tools (demo wipe, etc.)
 alembic upgrade head
 uvicorn sheaf.main:app --reload
 
@@ -125,6 +126,7 @@ Before making significant changes, it helps to understand a few design decisions
 
 - **User != System.** A user is an auth identity. A system is the plural system profile. They're 1:1 today but separated for future flexibility - do not poke holes in the separation between the two.
 - **Self-hosted first.** The codebase supports both self-hosting and a hosted tier without forking. The `SHEAF_MODE` config flag controls which features are active.
+- **Dev-only code stays in `sheaf_dev/`.** Destructive tools (database wipes, demo resets) belong in the `sheaf_dev` package, never in `sheaf`. The production Docker image doesn't include it by default — the code physically cannot exist in production. To include dev tools in a Docker build: `INCLUDE_DEV_TOOLS=true docker compose up -d --build`. For local dev: `pip install -e ./sheaf_dev`. The job system loads dev jobs via `try/except ImportError`, so no configuration error can activate code that isn't there.
 - **Encryption is application-level.** Email and TOTP secrets are encrypted before storage. Lookups use blind indexes. Don't bypass this.
 
 ## Key conventions

@@ -10,6 +10,9 @@ data/
 certs/
 notes/
 nginx/
+# sheaf_dev/ intentionally NOT ignored — needs to be in build context
+# so the INCLUDE_DEV_TOOLS build arg can conditionally install it.
+# It is only installed when INCLUDE_DEV_TOOLS=true; otherwise deleted.
 .venv
 
 __pycache__

@@ -462,3 +462,11 @@ def _register_all_jobs() -> None:
         func=_cleanup_job_logs,
         interval_seconds=lambda: 86400,  # daily
     )
+
+    # Dev-only jobs — sheaf_dev is NOT installed in production Docker images
+    try:
+        from sheaf_dev.jobs import register_dev_jobs
+
+        register_dev_jobs()
+    except ImportError:
+        pass  # sheaf_dev not installed — this is expected in production
