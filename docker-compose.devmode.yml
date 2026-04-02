@@ -1,0 +1,60 @@
+# Dev-mode overlay — a separate disposable instance with dev tools enabled.
+#
+# Usage:
+#   ./run_devmode.sh          # start (builds with dev tools, ports 8002/5434/6381)
+#   ./run_devmode.sh --down   # tear down and wipe volumes
+#
+# Does NOT conflict with the normal dev stack (8000) or test suite (8001).
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        INCLUDE_DEV_TOOLS: "true"
+    ports: !override
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sheaf:sheafdev@db:5432/sheaf
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: devmode-jwt-secret-not-for-production
+      SHEAF_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SHEAF_MODE: selfhosted
+      ADMIN_AUTH_LEVEL: none
+      REGISTRATION_MODE: open
+      EMAIL_BACKEND: none
+      EMAIL_VERIFICATION: "off"
+      STORAGE_BACKEND: filesystem
+      IMAGE_SERVING: unsigned
+      RATE_LIMIT_ENABLED: "false"
+      # Dev job config
+      DEMO_WIPE_ENABLED: "${DEMO_WIPE_ENABLED:-false}"
+      DEMO_WIPE_INTERVAL_HOURS: "${DEMO_WIPE_INTERVAL_HOURS:-24}"
+    volumes:
+      - devmode-appdata:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    ports: !override
+      - "5434:5432"
+    volumes:
+      - devmode-pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: sheaf
+      POSTGRES_USER: sheaf
+      POSTGRES_PASSWORD: sheafdev
+
+  redis:
+    ports: !override
+      - "6381:6379"
+    volumes:
+      - devmode-redisdata:/data
+
+volumes:
+  devmode-pgdata:
+  devmode-redisdata:
+  devmode-appdata:
