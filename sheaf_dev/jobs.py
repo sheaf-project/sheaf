@@ -91,3 +91,34 @@ def register_dev_jobs() -> None:
     )
 
     logger.info("Dev jobs registered (%d jobs)", 1)
+
+
+async def ensure_dev_announcement(db: AsyncSession) -> None:
+    """Create a non-dismissible dev-mode warning banner if one doesn't exist.
+
+    Called once at startup from the lifespan hook when sheaf_dev is installed.
+    """
+    from sheaf.models.announcement import ServerAnnouncement
+
+    # Check if we already have a dev-mode announcement
+    result = await db.execute(
+        select(ServerAnnouncement).where(
+            ServerAnnouncement.title == "Development Instance",
+        )
+    )
+    if result.scalar_one_or_none() is not None:
+        return
+
+    announcement = ServerAnnouncement(
+        title="Development Instance",
+        body=(
+            "This is a development/demo instance. Data may be wiped at any time."
+            " Do not store anything important here."
+        ),
+        severity="warning",
+        dismissible=False,
+        active=True,
+    )
+    db.add(announcement)
+    await db.commit()
+    logger.info("Created dev-mode announcement banner")

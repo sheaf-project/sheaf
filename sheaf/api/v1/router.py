@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from sheaf.api.v1 import (
     admin,
+    announcements,
     auth,
     client_settings,
     custom_fields,
@@ -22,6 +23,8 @@ v1_router = APIRouter(prefix="/v1")
 # Auth, admin, client settings: no scope enforcement
 v1_router.include_router(auth.router)
 v1_router.include_router(admin.router)
+v1_router.include_router(announcements.admin_router)
+v1_router.include_router(announcements.public_router)
 v1_router.include_router(client_settings.router)
 
 # Resource routers: router-level read scope dep + per-endpoint write scope dep

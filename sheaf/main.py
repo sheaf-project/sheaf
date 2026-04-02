@@ -61,6 +61,16 @@ async def lifespan(app: FastAPI):
 
     await _promote_admin_emails()
 
+    # Dev-only startup tasks (sheaf_dev not installed in production)
+    try:
+        from sheaf.database import async_session_factory
+        from sheaf_dev.jobs import ensure_dev_announcement
+
+        async with async_session_factory() as db:
+            await ensure_dev_announcement(db)
+    except ImportError:
+        pass
+
     from sheaf.services.jobs import job_runner_loop
 
     jobs_task = asyncio.create_task(job_runner_loop())
