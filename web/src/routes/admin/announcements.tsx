@@ -189,7 +189,7 @@ function EditAnnouncementForm({
   const qc = useQueryClient();
   const [title, setTitle] = useState(announcement.title);
   const [body, setBody] = useState(announcement.body);
-  const [severity, setSeverity] = useState(announcement.severity);
+  const [severity, setSeverity] = useState<string>(announcement.severity);
   const [dismissible, setDismissible] = useState(announcement.dismissible);
 
   const save = useMutation({

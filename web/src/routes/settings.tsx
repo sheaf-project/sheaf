@@ -642,8 +642,8 @@ function StorageUsageCard() {
     mutationFn: cleanupFiles,
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["storage", "usage"] });
-      if (data?.total_orphaned > 0) {
-        toast.success(`Cleaned up ${data.total_orphaned} orphaned file(s)`);
+      if (data?.orphaned > 0) {
+        toast.success(`Cleaned up ${data.orphaned} orphaned file(s)`);
       } else {
         toast.success("No orphaned files found");
       }

@@ -9,7 +9,12 @@ from sheaf.auth.dependencies import get_admin_user, get_admin_write_user, get_cu
 from sheaf.database import get_db
 from sheaf.models.announcement import ServerAnnouncement
 from sheaf.models.user import User
-from sheaf.schemas.announcement import AnnouncementCreate, AnnouncementRead, AnnouncementUpdate
+from sheaf.schemas.announcement import (
+    AnnouncementCreate,
+    AnnouncementPublic,
+    AnnouncementRead,
+    AnnouncementUpdate,
+)
 
 # ---------------------------------------------------------------------------
 # Admin CRUD
@@ -116,7 +121,7 @@ async def delete_announcement(
 public_router = APIRouter(prefix="/announcements", tags=["announcements"])
 
 
-@public_router.get("", response_model=list[AnnouncementRead])
+@public_router.get("", response_model=list[AnnouncementPublic])
 async def get_active_announcements(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

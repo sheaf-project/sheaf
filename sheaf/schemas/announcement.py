@@ -26,17 +26,24 @@ class AnnouncementUpdate(BaseModel):
     clear_expires_at: bool = False
 
 
-class AnnouncementRead(BaseModel):
+class AnnouncementPublic(BaseModel):
+    """Public-facing schema — no admin metadata."""
+
     id: uuid.UUID
     title: str
     body: str
     severity: str
     dismissible: bool
-    active: bool
-    created_by: uuid.UUID | None
     starts_at: datetime | None
     expires_at: datetime | None
     created_at: datetime
-    updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AnnouncementRead(AnnouncementPublic):
+    """Admin schema — includes internal fields."""
+
+    active: bool
+    created_by: uuid.UUID | None
+    updated_at: datetime
