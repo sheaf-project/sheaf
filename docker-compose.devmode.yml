@@ -5,7 +5,7 @@
 #   ./run_devmode.sh --down   # tear down and wipe volumes
 #
 # Does NOT conflict with the normal dev stack (8000) or test suite (8001).
-
+# Note this is for *TESTING* devmode and should not be used live (null encryption key, various changemes)
 services:
   app:
     build:
