@@ -16,7 +16,7 @@ Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ```bash
 # Clone the repo
-git clone https://github.com/SiteRelEnby/sheaf.git
+git clone https://github.com/sheaf-project/sheaf.git
 cd sheaf
 
 # Copy env and start infrastructure
