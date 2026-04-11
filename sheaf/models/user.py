@@ -23,6 +23,13 @@ class AccountStatus(enum.StrEnum):
     PENDING_DELETION = "pending_deletion"
 
 
+class EmailDeliveryStatus(enum.StrEnum):
+    OK = "ok"
+    SOFT_BOUNCING = "soft_bouncing"
+    HARD_BOUNCED = "hard_bounced"
+    COMPLAINED = "complained"
+
+
 class User(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "users"
 
@@ -85,6 +92,36 @@ class User(UUIDMixin, TimestampMixin, Base):
     )
     deletion_reminders_sent: Mapped[str | None] = mapped_column(
         String(50), nullable=True
+    )
+
+    # Newsletter / marketing mail consent. Explicit opt-in; timestamp records
+    # when consent was given for audit/GDPR purposes.
+    newsletter_opt_in: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    newsletter_opted_in_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Email deliverability state — driven by SES bounce/complaint notifications.
+    # When not OK, no further mail is sent to this address until it's resolved
+    # (user updates email + re-verifies, or admin clears).
+    email_delivery_status: Mapped[EmailDeliveryStatus] = mapped_column(
+        Enum(EmailDeliveryStatus, values_callable=lambda e: [m.value for m in e]),
+        default=EmailDeliveryStatus.OK,
+        nullable=False,
+        server_default="ok",
+    )
+    email_delivery_status_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    email_soft_bounce_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
+    # Set on hard bounce or complaint — forces user to re-enter and re-verify
+    # their email address on next login before they can use the app normally.
+    email_revalidation_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
     )
 
     # Relationships

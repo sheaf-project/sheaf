@@ -16,6 +16,7 @@ export function register(
   email: string,
   password: string,
   invite_code?: string,
+  newsletter_opt_in: boolean = false,
 ) {
   return apiFetch<TokenResponse>("/v1/auth/register", {
     method: "POST",
@@ -23,8 +24,16 @@ export function register(
     body: JSON.stringify({
       email,
       password,
+      newsletter_opt_in,
       ...(invite_code ? { invite_code } : {}),
     }),
+  });
+}
+
+export function updateMe(update: { newsletter_opt_in?: boolean }) {
+  return apiFetch<User>("/v1/auth/me", {
+    method: "PATCH",
+    body: JSON.stringify(update),
   });
 }
 

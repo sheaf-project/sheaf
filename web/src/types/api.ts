@@ -19,6 +19,9 @@ export interface User {
   created_at: string;
   last_login_at: string | null;
   deletion_requested_at: string | null;
+  newsletter_opt_in: boolean;
+  email_delivery_status: "ok" | "soft_bouncing" | "hard_bounced" | "complained";
+  email_revalidation_required: boolean;
 }
 
 export interface ApiKey {

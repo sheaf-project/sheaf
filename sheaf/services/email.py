@@ -67,7 +67,44 @@ async def send_email(
     subject: str,
     body_html: str,
     body_text: str,
+    *,
+    force: bool = False,
 ) -> None:
-    """Send a transactional email via the configured backend."""
+    """Send a transactional email via the configured backend.
+
+    If the recipient has a non-OK email_delivery_status (bounced or
+    complained), the send is skipped. Pass force=True for revalidation
+    flows that must reach the user regardless of current state.
+    """
+    if not force and await _is_blocked_recipient(to):
+        logger.info("Skipping send to %s (blocked by delivery status): %s", to, subject)
+        return
+
     backend = get_email_backend()
     await backend.send(to, subject, body_html, body_text)
+
+
+async def _is_blocked_recipient(email: str) -> bool:
+    """Return True if this recipient is flagged as hard-bounced or complained."""
+    from sqlalchemy import select
+
+    from sheaf.crypto import blind_index
+    from sheaf.database import async_session_factory
+    from sheaf.models.user import EmailDeliveryStatus, User
+
+    try:
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(User.email_delivery_status).where(
+                    User.email_hash == blind_index(email)
+                )
+            )
+            status = result.scalar_one_or_none()
+    except Exception:
+        # Don't block sends on a DB hiccup during gate check — fail open.
+        logger.exception("Delivery gate check failed; allowing send")
+        return False
+
+    if status is None:
+        return False
+    return status != EmailDeliveryStatus.OK

@@ -8,6 +8,7 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     invite_code: str | None = None
+    newsletter_opt_in: bool = False
 
 
 class UserLogin(BaseModel):
@@ -37,8 +38,15 @@ class UserRead(BaseModel):
     created_at: datetime
     last_login_at: datetime | None
     deletion_requested_at: datetime | None = None
+    newsletter_opt_in: bool = False
+    email_delivery_status: str = "ok"
+    email_revalidation_required: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    newsletter_opt_in: bool | None = None
 
 
 class TOTPSetupResponse(BaseModel):

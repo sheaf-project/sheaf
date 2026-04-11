@@ -388,6 +388,170 @@ async def _prune_free_tier_fronts(db: AsyncSession) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SES event processing (bounces + complaints)
+# ---------------------------------------------------------------------------
+
+
+async def _apply_ses_bounce(db: AsyncSession, email: str, bounce_type: str) -> bool:
+    """Apply a bounce to the user row. Returns True if a user was updated."""
+    from sheaf.crypto import blind_index
+    from sheaf.models.user import EmailDeliveryStatus, User
+
+    email_hash = blind_index(email)
+    result = await db.execute(select(User).where(User.email_hash == email_hash))
+    user = result.scalar_one_or_none()
+    if user is None:
+        logger.info("SES bounce for unknown recipient (hash only logged)")
+        return False
+
+    now = datetime.now(UTC)
+    if bounce_type == "Permanent":
+        user.email_delivery_status = EmailDeliveryStatus.HARD_BOUNCED
+        user.email_delivery_status_changed_at = now
+        user.email_revalidation_required = True
+        logger.info("Hard bounce for user %s — flagged for revalidation", user.id)
+    else:
+        user.email_soft_bounce_count = (user.email_soft_bounce_count or 0) + 1
+        if user.email_delivery_status == EmailDeliveryStatus.OK:
+            user.email_delivery_status = EmailDeliveryStatus.SOFT_BOUNCING
+            user.email_delivery_status_changed_at = now
+        logger.info(
+            "Soft bounce for user %s (count=%d)",
+            user.id, user.email_soft_bounce_count,
+        )
+    return True
+
+
+async def _apply_ses_complaint(db: AsyncSession, email: str) -> bool:
+    """Apply a complaint to the user row. Returns True if a user was updated."""
+    from sheaf.crypto import blind_index
+    from sheaf.models.user import EmailDeliveryStatus, User
+
+    email_hash = blind_index(email)
+    result = await db.execute(select(User).where(User.email_hash == email_hash))
+    user = result.scalar_one_or_none()
+    if user is None:
+        logger.info("SES complaint for unknown recipient (hash only logged)")
+        return False
+
+    user.email_delivery_status = EmailDeliveryStatus.COMPLAINED
+    user.email_delivery_status_changed_at = datetime.now(UTC)
+    user.email_revalidation_required = True
+    logger.info("Complaint for user %s — flagged for revalidation", user.id)
+    return True
+
+
+async def _handle_ses_message(db: AsyncSession, raw_body: str) -> int:
+    """Parse a single SQS message body (SES event) and apply state changes.
+
+    Returns the number of user rows updated. Handles both raw SNS delivery
+    (bare SES event JSON) and envelope-wrapped delivery.
+    """
+    import json
+
+    body = json.loads(raw_body)
+    if isinstance(body, dict) and body.get("Type") == "Notification":
+        body = json.loads(body["Message"])
+
+    event_type = body.get("eventType") or body.get("notificationType")
+    mail = body.get("mail") or {}
+    message_id = mail.get("messageId", "?")
+
+    updated = 0
+    if event_type == "Bounce":
+        bounce = body.get("bounce", {})
+        bounce_type = bounce.get("bounceType", "Undetermined")
+        for r in bounce.get("bouncedRecipients", []):
+            addr = r.get("emailAddress")
+            if addr and await _apply_ses_bounce(db, addr, bounce_type):
+                updated += 1
+        logger.info("Processed SES Bounce (%s) messageId=%s", bounce_type, message_id)
+
+    elif event_type == "Complaint":
+        complaint = body.get("complaint", {})
+        for r in complaint.get("complainedRecipients", []):
+            addr = r.get("emailAddress")
+            if addr and await _apply_ses_complaint(db, addr):
+                updated += 1
+        logger.info("Processed SES Complaint messageId=%s", message_id)
+
+    else:
+        logger.info("Ignoring SES event type: %s", event_type)
+
+    return updated
+
+
+async def _process_ses_events(db: AsyncSession) -> dict:
+    """Drain the SES events SQS queue and apply bounce/complaint transitions."""
+    if not settings.ses_events_queue_url:
+        return {"items_processed": 0}
+
+    try:
+        import boto3
+    except ImportError:
+        logger.error(
+            "process_ses_events: boto3 not installed — install sheaf[ses] "
+            "or unset SHEAF_SES_EVENTS_QUEUE_URL"
+        )
+        return {"items_processed": 0}
+
+    sqs = boto3.client(
+        "sqs",
+        region_name=settings.ses_region or "eu-west-1",
+        aws_access_key_id=settings.ses_access_key or None,
+        aws_secret_access_key=settings.ses_secret_key or None,
+    )
+
+    processed = 0
+    max_iterations = 10  # drain up to ~100 messages per run
+
+    for _ in range(max_iterations):
+        resp = await asyncio.to_thread(
+            sqs.receive_message,
+            QueueUrl=settings.ses_events_queue_url,
+            MaxNumberOfMessages=10,
+            WaitTimeSeconds=10,
+            VisibilityTimeout=60,
+        )
+        messages = resp.get("Messages", [])
+        if not messages:
+            break
+
+        to_delete: list[str] = []
+        for msg in messages:
+            try:
+                await _handle_ses_message(db, msg["Body"])
+            except Exception:
+                logger.exception(
+                    "Failed to handle SES event; leaving in queue for redelivery"
+                )
+                continue
+            to_delete.append(msg["ReceiptHandle"])
+            processed += 1
+
+        # Commit DB changes before deleting SQS messages so a failure between
+        # the two just causes a replay (bounce/complaint transitions are
+        # idempotent for hard_bounced/complained; soft-bounce counter may
+        # double-count on replay, which is acceptable).
+        await db.commit()
+
+        if to_delete:
+            try:
+                await asyncio.to_thread(
+                    sqs.delete_message_batch,
+                    QueueUrl=settings.ses_events_queue_url,
+                    Entries=[
+                        {"Id": str(i), "ReceiptHandle": h}
+                        for i, h in enumerate(to_delete)
+                    ],
+                )
+            except Exception:
+                logger.exception("Failed to batch-delete SQS messages")
+
+    return {"items_processed": processed}
+
+
+# ---------------------------------------------------------------------------
 # Job log cleanup
 # ---------------------------------------------------------------------------
 
@@ -461,6 +625,14 @@ def _register_all_jobs() -> None:
         description="Delete job run logs older than 30 days",
         func=_cleanup_job_logs,
         interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="process_ses_events",
+        description="Process SES bounce/complaint events from the SQS queue",
+        func=_process_ses_events,
+        interval_seconds=lambda: settings.job_check_interval_minutes * 60,
+        enabled=lambda: bool(settings.ses_events_queue_url),
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images

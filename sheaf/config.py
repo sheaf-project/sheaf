@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     ses_from: str = ""
     ses_access_key: str = ""
     ses_secret_key: str = ""
+    # SQS queue that receives SES bounce/complaint events (via SNS).
+    # When unset, the SES events processor job is disabled. The queue and
+    # SNS subscription are provisioned in sheaf-infra (Terraform).
+    ses_events_queue_url: str = ""
 
     # Registration
     registration_mode: str = "open"  # "open", "approval", "invite", "closed"

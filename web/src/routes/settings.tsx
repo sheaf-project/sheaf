@@ -29,7 +29,7 @@ import { useUiScale } from "@/hooks/use-theme";
 import { TOTPSetup } from "@/components/totp-setup";
 import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
-import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, type Session } from "@/lib/auth";
+import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, updateMe, type Session } from "@/lib/auth";
 import { listClientSettings, deleteClientSettings } from "@/lib/client-settings";
 import { PasswordField } from "@/components/password-field";
 import { timeAgo } from "@/lib/utils";
@@ -598,7 +598,16 @@ function DataExport() {
 }
 
 function AccountInfo() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
+  const newsletterToggle = useMutation({
+    mutationFn: (newsletter_opt_in: boolean) => updateMe({ newsletter_opt_in }),
+    onSuccess: async () => {
+      await refreshUser();
+      toast.success("Preferences saved");
+    },
+    onError: () => toast.error("Failed to save preferences"),
+  });
+
   return (
     <Card>
       <CardHeader>
@@ -618,6 +627,28 @@ function AccountInfo() {
         <div className="space-y-2">
           <p className="text-sm font-medium">Two-factor authentication</p>
           <TOTPSetup />
+        </div>
+        <Separator />
+        <div className="flex items-start gap-3">
+          <Checkbox
+            id="newsletter-opt-in"
+            checked={user?.newsletter_opt_in ?? false}
+            onCheckedChange={(v) => newsletterToggle.mutate(v === true)}
+            disabled={newsletterToggle.isPending}
+          />
+          <div>
+            <Label
+              htmlFor="newsletter-opt-in"
+              className="text-sm font-medium cursor-pointer"
+            >
+              Product updates email
+            </Label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Occasional updates about Sheaf — new features and important
+              changes. Transactional mail (password reset, security alerts,
+              etc.) is not affected by this setting.
+            </p>
+          </div>
         </div>
       </CardContent>
     </Card>

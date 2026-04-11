@@ -43,6 +43,7 @@ from sheaf.schemas.user import (
     UserLogin,
     UserRead,
     UserRegister,
+    UserUpdate,
 )
 
 _VALID_SCOPES = {
@@ -219,6 +220,8 @@ async def register(
         account_status=account_status,
         email_verified=email_verified,
         signup_ip=client_ip(request),
+        newsletter_opt_in=body.newsletter_opt_in,
+        newsletter_opted_in_at=datetime.now(UTC) if body.newsletter_opt_in else None,
     )
     db.add(user)
 
@@ -696,6 +699,40 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         created_at=user.created_at,
         last_login_at=user.last_login_at,
         deletion_requested_at=user.deletion_requested_at,
+        newsletter_opt_in=user.newsletter_opt_in,
+        email_delivery_status=user.email_delivery_status.value,
+        email_revalidation_required=user.email_revalidation_required,
+    )
+
+
+@router.patch("/me", response_model=UserRead)
+async def update_me(
+    body: UserUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.newsletter_opt_in is not None and body.newsletter_opt_in != user.newsletter_opt_in:
+        user.newsletter_opt_in = body.newsletter_opt_in
+        user.newsletter_opted_in_at = datetime.now(UTC) if body.newsletter_opt_in else None
+
+    await db.commit()
+    await db.refresh(user)
+
+    email_verified = user.email_verified or settings.email_verification != "required"
+    return UserRead(
+        id=user.id,
+        email=decrypt(user.email),
+        totp_enabled=user.totp_enabled,
+        is_admin=user.is_admin,
+        tier=user.tier.value,
+        account_status=user.account_status,
+        email_verified=email_verified,
+        created_at=user.created_at,
+        last_login_at=user.last_login_at,
+        deletion_requested_at=user.deletion_requested_at,
+        newsletter_opt_in=user.newsletter_opt_in,
+        email_delivery_status=user.email_delivery_status.value,
+        email_revalidation_required=user.email_revalidation_required,
     )
 
 

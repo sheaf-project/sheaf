@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordField } from "@/components/password-field";
 import { ApiError } from "@/lib/api-client";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
@@ -18,6 +19,7 @@ export function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  const [newsletterOptIn, setNewsletterOptIn] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [needs2FA, setNeeds2FA] = useState(false);
   const [error, setError] = useState("");
@@ -43,7 +45,7 @@ export function LoginPage() {
       if (action === "login") {
         await login(email, password, totpCode || undefined);
       } else {
-        await register(email, password, inviteCode || undefined);
+        await register(email, password, inviteCode || undefined, newsletterOptIn);
       }
     } catch (err) {
       if (err instanceof ApiError) {
@@ -246,6 +248,21 @@ export function LoginPage() {
                       />
                     </div>
                   )}
+                  <div className="flex items-start gap-3 pt-1">
+                    <Checkbox
+                      id="reg-newsletter"
+                      checked={newsletterOptIn}
+                      onCheckedChange={(v) => setNewsletterOptIn(v === true)}
+                    />
+                    <Label
+                      htmlFor="reg-newsletter"
+                      className="text-sm font-normal leading-snug cursor-pointer"
+                    >
+                      Email me occasional updates about Sheaf (new features,
+                      important changes). Unchecked by default — you can change
+                      this anytime in settings.
+                    </Label>
+                  </div>
                   {error && (
                     <p className="text-sm text-destructive-foreground">
                       {error}

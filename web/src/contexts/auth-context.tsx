@@ -7,7 +7,12 @@ interface AuthState {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string, totp_code?: string) => Promise<void>;
-  register: (email: string, password: string, invite_code?: string) => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+    invite_code?: string,
+    newsletter_opt_in?: boolean,
+  ) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -47,13 +52,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(me);
   }, []);
 
-  const register = useCallback(async (email: string, password: string, invite_code?: string) => {
-    const tokens = await authApi.register(email, password, invite_code);
-    setAccessToken(tokens.access_token);
-    // Refresh token is set as HttpOnly cookie by the server
-    const me = await authApi.getMe();
-    setUser(me);
-  }, []);
+  const register = useCallback(
+    async (
+      email: string,
+      password: string,
+      invite_code?: string,
+      newsletter_opt_in?: boolean,
+    ) => {
+      const tokens = await authApi.register(
+        email,
+        password,
+        invite_code,
+        newsletter_opt_in,
+      );
+      setAccessToken(tokens.access_token);
+      // Refresh token is set as HttpOnly cookie by the server
+      const me = await authApi.getMe();
+      setUser(me);
+    },
+    [],
+  );
 
   const refreshUser = useCallback(async () => {
     const me = await authApi.getMe();
