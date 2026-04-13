@@ -392,62 +392,17 @@ async def _prune_free_tier_fronts(db: AsyncSession) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _apply_ses_bounce(db: AsyncSession, email: str, bounce_type: str) -> bool:
-    """Apply a bounce to the user row. Returns True if a user was updated."""
-    from sheaf.crypto import blind_index
-    from sheaf.models.user import EmailDeliveryStatus, User
-
-    email_hash = blind_index(email)
-    result = await db.execute(select(User).where(User.email_hash == email_hash))
-    user = result.scalar_one_or_none()
-    if user is None:
-        logger.info("SES bounce for unknown recipient (hash only logged)")
-        return False
-
-    now = datetime.now(UTC)
-    if bounce_type == "Permanent":
-        user.email_delivery_status = EmailDeliveryStatus.HARD_BOUNCED
-        user.email_delivery_status_changed_at = now
-        user.email_revalidation_required = True
-        logger.info("Hard bounce for user %s — flagged for revalidation", user.id)
-    else:
-        user.email_soft_bounce_count = (user.email_soft_bounce_count or 0) + 1
-        if user.email_delivery_status == EmailDeliveryStatus.OK:
-            user.email_delivery_status = EmailDeliveryStatus.SOFT_BOUNCING
-            user.email_delivery_status_changed_at = now
-        logger.info(
-            "Soft bounce for user %s (count=%d)",
-            user.id, user.email_soft_bounce_count,
-        )
-    return True
-
-
-async def _apply_ses_complaint(db: AsyncSession, email: str) -> bool:
-    """Apply a complaint to the user row. Returns True if a user was updated."""
-    from sheaf.crypto import blind_index
-    from sheaf.models.user import EmailDeliveryStatus, User
-
-    email_hash = blind_index(email)
-    result = await db.execute(select(User).where(User.email_hash == email_hash))
-    user = result.scalar_one_or_none()
-    if user is None:
-        logger.info("SES complaint for unknown recipient (hash only logged)")
-        return False
-
-    user.email_delivery_status = EmailDeliveryStatus.COMPLAINED
-    user.email_delivery_status_changed_at = datetime.now(UTC)
-    user.email_revalidation_required = True
-    logger.info("Complaint for user %s — flagged for revalidation", user.id)
-    return True
-
-
 async def _handle_ses_message(db: AsyncSession, raw_body: str) -> int:
     """Parse a single SQS message body (SES event) and apply state changes.
 
     Returns the number of user rows updated. Handles both raw SNS delivery
     (bare SES event JSON) and envelope-wrapped delivery.
+
+    Uses shared email_events module for the actual state transitions.
     """
     import json
+
+    from sheaf.services.email_events import apply_bounce, apply_complaint
 
     body = json.loads(raw_body)
     if isinstance(body, dict) and body.get("Type") == "Notification":
@@ -463,7 +418,7 @@ async def _handle_ses_message(db: AsyncSession, raw_body: str) -> int:
         bounce_type = bounce.get("bounceType", "Undetermined")
         for r in bounce.get("bouncedRecipients", []):
             addr = r.get("emailAddress")
-            if addr and await _apply_ses_bounce(db, addr, bounce_type):
+            if addr and await apply_bounce(db, addr, permanent=bounce_type == "Permanent"):
                 updated += 1
         logger.info("Processed SES Bounce (%s) messageId=%s", bounce_type, message_id)
 
@@ -471,7 +426,7 @@ async def _handle_ses_message(db: AsyncSession, raw_body: str) -> int:
         complaint = body.get("complaint", {})
         for r in complaint.get("complainedRecipients", []):
             addr = r.get("emailAddress")
-            if addr and await _apply_ses_complaint(db, addr):
+            if addr and await apply_complaint(db, addr):
                 updated += 1
         logger.info("Processed SES Complaint messageId=%s", message_id)
 

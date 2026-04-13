@@ -29,6 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 s3 = ["boto3>=1.35.0"]
 ses = ["boto3>=1.35.0"]
+sendgrid = ["httpx>=0.28.0"]
 smtp = ["aiosmtplib>=3.0.0"]
 dev = [
     "pytest>=8.0.0",

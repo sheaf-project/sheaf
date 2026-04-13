@@ -56,6 +56,18 @@ def get_email_backend() -> EmailBackend:
 
             _backend = SESBackend()
             logger.info("Using SES email backend (region: %s)", settings.ses_region)
+        elif settings.email_backend == "sendgrid":
+            try:
+                from sheaf.services.email_sendgrid import SendGridBackend
+            except ImportError:
+                raise RuntimeError(
+                    "EMAIL_BACKEND=sendgrid requires the 'sendgrid' extra. "
+                    "Install with: pip install sheaf[sendgrid]  "
+                    "(Docker: add 'sendgrid' to the pip install extras in Dockerfile)"
+                ) from None
+
+            _backend = SendGridBackend()
+            logger.info("Using SendGrid email backend")
         else:
             _backend = NoneBackend()
             logger.info("Email disabled (EMAIL_BACKEND=none)")

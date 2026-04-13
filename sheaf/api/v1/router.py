@@ -15,6 +15,7 @@ from sheaf.api.v1 import (
     sp_import,
     systems,
     tags,
+    webhooks,
 )
 from sheaf.auth.dependencies import require_scope
 
@@ -61,5 +62,6 @@ v1_router.include_router(
 v1_router.include_router(files.router)
 v1_router.include_router(sp_import.router)
 v1_router.include_router(sheaf_import.router)
+v1_router.include_router(webhooks.router)
 # File serve catch-all MUST be last — {path:path} would shadow other routes
 v1_router.include_router(files.serve_router)

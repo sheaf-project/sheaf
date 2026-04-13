@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     # SNS subscription are provisioned in sheaf-infra (Terraform).
     ses_events_queue_url: str = ""
 
+    # SendGrid
+    sendgrid_api_key: str = ""
+    sendgrid_from: str = ""
+    # Shared secret for the SendGrid Event Webhook. Configure SendGrid to
+    # POST to /v1/webhooks/sendgrid/events?token=<this value>.
+    # When empty, the webhook endpoint returns 404.
+    sendgrid_webhook_secret: str = ""
+
     # Registration
     registration_mode: str = "open"  # "open", "approval", "invite", "closed"
     invite_codes_enabled: bool = False  # Accept invite codes in open/approval modes too
