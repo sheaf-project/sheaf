@@ -2,7 +2,7 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
@@ -95,6 +95,7 @@ async def get_auth_config():
         "email_verification": settings.email_verification,
         "email_enabled": settings.email_backend != "none",
         "base_url": settings.sheaf_base_url or None,
+        "account_deletion_grace_days": settings.account_deletion_grace_days,
     }
 
 
@@ -688,6 +689,11 @@ async def refresh(
 async def get_me(user: User = Depends(get_current_user_allow_unverified)):
     # Only flag email as unverified if the server actually requires verification
     email_verified = user.email_verified or settings.email_verification != "required"
+    deletion_scheduled = None
+    if user.deletion_requested_at:
+        deletion_scheduled = user.deletion_requested_at + timedelta(
+            days=settings.account_deletion_grace_days
+        )
     return UserRead(
         id=user.id,
         email=decrypt(user.email),
@@ -699,6 +705,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         created_at=user.created_at,
         last_login_at=user.last_login_at,
         deletion_requested_at=user.deletion_requested_at,
+        deletion_scheduled_for=deletion_scheduled,
         newsletter_opt_in=user.newsletter_opt_in,
         email_delivery_status=user.email_delivery_status.value,
         email_revalidation_required=user.email_revalidation_required,
@@ -719,6 +726,11 @@ async def update_me(
     await db.refresh(user)
 
     email_verified = user.email_verified or settings.email_verification != "required"
+    deletion_scheduled = None
+    if user.deletion_requested_at:
+        deletion_scheduled = user.deletion_requested_at + timedelta(
+            days=settings.account_deletion_grace_days
+        )
     return UserRead(
         id=user.id,
         email=decrypt(user.email),
@@ -730,6 +742,7 @@ async def update_me(
         created_at=user.created_at,
         last_login_at=user.last_login_at,
         deletion_requested_at=user.deletion_requested_at,
+        deletion_scheduled_for=deletion_scheduled,
         newsletter_opt_in=user.newsletter_opt_in,
         email_delivery_status=user.email_delivery_status.value,
         email_revalidation_required=user.email_revalidation_required,
@@ -1010,8 +1023,6 @@ async def request_account_deletion(
     user.account_status = AccountStatus.PENDING_DELETION
     user.deletion_requested_at = now
     user.deletion_reminders_sent = None
-
-    from datetime import timedelta
 
     deletion_date = now + timedelta(days=settings.account_deletion_grace_days)
 

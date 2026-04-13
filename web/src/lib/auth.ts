@@ -6,6 +6,7 @@ export interface AuthConfig {
   invite_codes_enabled: boolean;
   email_verification: string;
   email_enabled: boolean;
+  account_deletion_grace_days: number;
 }
 
 export function getAuthConfig() {

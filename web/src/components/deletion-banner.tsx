@@ -8,17 +8,13 @@ export function DeletionBanner() {
   const { user, refreshUser } = useAuth();
   const [cancelling, setCancelling] = useState(false);
 
-  if (!user?.deletion_requested_at) return null;
+  if (!user?.deletion_scheduled_for) return null;
 
-  const deletionDate = new Date(user.deletion_requested_at);
-  // Grace period is server-configured; we approximate from the date
-  // The exact date doesn't matter for display — we show relative time
+  const deletionDate = new Date(user.deletion_scheduled_for);
   const now = new Date();
   const daysRemaining = Math.max(
     0,
-    Math.ceil(
-      (deletionDate.getTime() + 14 * 86400000 - now.getTime()) / 86400000,
-    ),
+    Math.ceil((deletionDate.getTime() - now.getTime()) / 86400000),
   );
 
   async function handleCancel() {

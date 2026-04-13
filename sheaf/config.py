@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     retention_check_interval_hours: int = 6
 
     # Account deletion
-    account_deletion_grace_days: int = 14
-    account_deletion_reminder_days: str = "10,7,1"  # send reminders N days before deletion
+    account_deletion_grace_days: int = 7
+    account_deletion_reminder_days: str = "5,3,1"  # send reminders N days before deletion
 
     # Unverified account cleanup
     unverified_account_cleanup_days: int = 7  # delete never-verified accounts after N days

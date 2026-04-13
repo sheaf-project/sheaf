@@ -29,9 +29,8 @@ import { useUiScale } from "@/hooks/use-theme";
 import { TOTPSetup } from "@/components/totp-setup";
 import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
-import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, updateMe, type Session } from "@/lib/auth";
+import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, updateMe, getAuthConfig, type Session } from "@/lib/auth";
 import { listClientSettings, deleteClientSettings } from "@/lib/client-settings";
-import { PasswordField } from "@/components/password-field";
 import { timeAgo } from "@/lib/utils";
 import { Pencil, AlertTriangle } from "lucide-react";
 import { ApiError } from "@/lib/api-client";
@@ -1335,7 +1334,9 @@ function DeleteAccountCard() {
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
+  const { data: config } = useQuery({ queryKey: ["auth-config"], queryFn: getAuthConfig });
   const isPending = user?.account_status === "pending_deletion";
+  const graceDays = config?.account_deletion_grace_days ?? 7;
 
   async function handleDelete(e: FormEvent) {
     e.preventDefault();
@@ -1370,10 +1371,8 @@ function DeleteAccountCard() {
   }
 
   if (isPending) {
-    const deletionDate = user?.deletion_requested_at
-      ? new Date(
-          new Date(user.deletion_requested_at).getTime() + 14 * 86400000,
-        )
+    const deletionDate = user?.deletion_scheduled_for
+      ? new Date(user.deletion_scheduled_for)
       : null;
 
     return (
@@ -1414,15 +1413,18 @@ function DeleteAccountCard() {
       <CardContent>
         <p className="text-sm text-muted-foreground mb-4">
           Permanently delete your account and all associated data. You will have
-          a 14-day grace period to change your mind.
+          a {graceDays}-day grace period to change your mind.
         </p>
         <form onSubmit={handleDelete} className="space-y-3">
           <div className="space-y-2">
             <Label htmlFor="delete-password">Confirm your password</Label>
-            <PasswordField
+            <Input
               id="delete-password"
+              type="password"
               value={password}
-              onChange={setPassword}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              autoComplete="current-password"
             />
           </div>
           {user?.totp_enabled && (

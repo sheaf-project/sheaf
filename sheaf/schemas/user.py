@@ -38,6 +38,7 @@ class UserRead(BaseModel):
     created_at: datetime
     last_login_at: datetime | None
     deletion_requested_at: datetime | None = None
+    deletion_scheduled_for: datetime | None = None
     newsletter_opt_in: bool = False
     email_delivery_status: str = "ok"
     email_revalidation_required: bool = False
