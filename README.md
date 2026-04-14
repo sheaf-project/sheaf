@@ -4,6 +4,8 @@
 
 Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
 
+> **Status:** selfhostable and usable — hosted service is still being set up. Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://discord.gg/WFaKQPzFx8).
+
 ## Why
 
 SimplyPlural is shutting down. Many alternatives are either incomplete, closed-source, local-only, or lack credible infrastructure foundations. Sheaf is built by people who are actually paid to run things at scale, with a focus on:
@@ -23,7 +25,12 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **SimplyPlural import** — Import your SP export with granular control (select specific members, toggle front history, etc.)
 - **File storage** — File uploads with filesystem or S3-compatible backends
 - **Data export**
-- **2FA** — Optional TOTP
+- **2FA** — Optional TOTP with recovery codes
+- **API keys** — Scoped, named keys (`sk_…`) for scripts and integrations
+- **Admin dashboard** — User management, invite codes, storage audit, background job monitoring, optional step-up auth
+- **Registration modes** — Open, approval-required, invite-only, or closed
+- **Email verification** — Optional required verification with configurable flow
+- **Account deletion** — Self-service with configurable grace period
 - **Eye-friendly** — Default dark, with Dark Reader compatibility and a clear light toggle
 
 ## FAQ
@@ -80,12 +87,13 @@ sheaf/
 ├── web/                    # React + TypeScript + Vite + Tailwind
 ├── alembic/                # Database migrations
 ├── tests/                  # pytest test suite
+├── docs/                   # Self-hosting and client development guides
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
 ```
 
-**Tech stack:** Python 3.12+, FastAPI, SQLAlchemy 2.0 (async), PostgreSQL 16, Redis, Alembic. Frontend: React 19, TypeScript, Vite, Tailwind CSS v4, shadcn/ui.
+**Tech stack:** Python 3.12+, FastAPI, SQLAlchemy 2.0 (async), PostgreSQL 16, Redis, Alembic. Frontend: React 19, TypeScript, Vite, Tailwind CSS v4, shadcn/ui. Field-level encryption with XChaCha20-Poly1305 (libsodium).
 
 ## API
 
@@ -133,12 +141,15 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 
 - Secrets and encryption key management
 - Admin access and step-up authentication
-- Optional dependencies (S3, SMTP, SES)
-- Email configuration (SMTP / AWS SES)
+- Optional dependencies (S3, SMTP, SES, SendGrid)
+- Email configuration (SMTP / AWS SES / SendGrid) with bounce/complaint handling
 - Registration modes (open / approval / invite / closed) and email verification
+- Account deletion with configurable grace period
 - File storage (filesystem / S3) with hotlink protection
 - Storage quotas and upload limits
+- Frontend build and serving
 - Reverse proxy setup (nginx, Caddy)
+- Rate limiting and trusted proxies
 - Backups
 
 ## Development
@@ -176,7 +187,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [x] Signed image URLs with S3 presign support (hotlink protection)
 - [ ] Webhooks for switch/fronter notification
 - [ ] Custom-defined user tiers by server admin instead of placeholder free/plus/selfhosted
-- [ ] Android+iOS apps (API-first — OpenAPI spec available for client generation)
+- [ ] Android+iOS apps (in progress — API-first, OpenAPI spec available for client generation)
 - [ ] Prometheus-compatible /metrics endpoint
 - [ ] Terraform module for cloud deployment
 - [ ] More 2FA methods — WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
