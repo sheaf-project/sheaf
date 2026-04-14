@@ -111,7 +111,7 @@ RUN pip install --no-cache-dir ".[s3,smtp]"
 RUN pip install --no-cache-dir ".[s3,ses]"
 
 # Everything:
-RUN pip install --no-cache-dir ".[s3,smtp,ses]"
+RUN pip install --no-cache-dir ".[s3,smtp,ses,sendgrid]"
 ```
 
 | Extra | Package | Required when |
@@ -119,6 +119,7 @@ RUN pip install --no-cache-dir ".[s3,smtp,ses]"
 | `s3` | `boto3` | `STORAGE_BACKEND=s3` |
 | `smtp` | `aiosmtplib` | `EMAIL_BACKEND=smtp` |
 | `ses` | `boto3` | `EMAIL_BACKEND=ses` |
+| `sendgrid` | `httpx` | `EMAIL_BACKEND=sendgrid` |
 
 If a backend is configured but its extra isn't installed, Sheaf will fail on startup with a clear error message telling you which extra to add.
 
@@ -132,7 +133,7 @@ pip install -e ".[dev,s3,smtp]"
 
 ## Email
 
-Email is needed for email verification and password reset. Two backends are supported:
+Email is needed for email verification, password reset, and account deletion notifications. Three backends are supported:
 
 ### SMTP
 
@@ -164,6 +165,34 @@ SES_SECRET_KEY=...
 ```
 
 **Requires the `ses` extra** — see [Optional dependencies](#optional-dependencies).
+
+#### SES bounce/complaint handling
+
+If you configure an SQS queue to receive SES bounce/complaint notifications (via SNS), Sheaf can automatically suppress sending to addresses that hard-bounce or file complaints:
+
+```env
+SES_EVENTS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789/sheaf-ses-events
+```
+
+### SendGrid
+
+```env
+EMAIL_BACKEND=sendgrid
+SENDGRID_API_KEY=SG.xxxxx
+SENDGRID_FROM=noreply@example.com
+```
+
+**Requires the `sendgrid` extra** — see [Optional dependencies](#optional-dependencies).
+
+#### SendGrid bounce/complaint handling
+
+Configure a [SendGrid Event Webhook](https://docs.sendgrid.com/for-developers/tracking-events/getting-started-event-webhook) to POST to `/v1/webhooks/sendgrid/events?token=<secret>`. Set the shared secret in your `.env`:
+
+```env
+SENDGRID_WEBHOOK_SECRET=your-random-secret-here
+```
+
+When configured, Sheaf automatically handles bounce, block, drop, deferred, and spam complaint events. When `SENDGRID_WEBHOOK_SECRET` is empty, the webhook endpoint returns 404.
 
 ### Disabling email
 
@@ -337,14 +366,85 @@ Individual users can have their limit overridden via `PATCH /v1/admin/users/{id}
 
 ---
 
-## Reverse proxy
+## Account deletion
 
-Sheaf has no built-in TLS. Sit it behind nginx, Caddy, or Traefik:
+Users can request account deletion from Settings. Deletion has a configurable grace period during which the user can cancel:
+
+```env
+# Days between request and actual deletion (default: 7)
+ACCOUNT_DELETION_GRACE_DAYS=7
+
+# Days-before-deletion to send reminder emails (default: 5,3,1)
+# Only used when EMAIL_BACKEND != none
+ACCOUNT_DELETION_REMINDER_DAYS=5,3,1
+```
+
+When the grace period expires, the background job runner deletes the account and all associated data (systems, members, fronts, files, sessions, API keys).
+
+---
+
+## Rate limiting
+
+Global per-IP rate limiting is enabled by default:
+
+```env
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_GLOBAL_PER_IP=600   # max requests per window
+RATE_LIMIT_GLOBAL_WINDOW=60    # window in seconds
+```
+
+### Trusted proxies
+
+When Sheaf sits behind a reverse proxy, the connecting IP is the proxy, not the client. Set `TRUSTED_PROXIES` to trust `X-Forwarded-For` headers from specific IPs:
+
+```env
+# Comma-separated proxy IPs
+TRUSTED_PROXIES=127.0.0.1
+```
+
+If empty (default), `X-Forwarded-For` is never read — the direct connecting IP is used. This is safe but means all users behind the proxy share one rate-limit bucket.
+
+---
+
+## External images
+
+By default, member bios and descriptions can reference external image URLs. To restrict images to only hosted uploads (via Content Security Policy):
+
+```env
+ALLOW_EXTERNAL_IMAGES=false
+```
+
+---
+
+## Frontend
+
+The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only — you need to build and serve the frontend separately.
+
+### Building
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+This produces a static build in `web/dist/`.
+
+### Serving in production
+
+Serve the `web/dist/` directory with any static file server (nginx, Caddy, etc.). Configure your reverse proxy to route API calls to the backend and everything else to the SPA:
 
 **Caddy example:**
 ```
-your-domain.example.com {
-    reverse_proxy localhost:8000
+sheaf.example.com {
+    handle /v1/* {
+        reverse_proxy localhost:8000
+    }
+    handle {
+        root * /path/to/web/dist
+        try_files {path} /index.html
+        file_server
+    }
 }
 ```
 
@@ -352,23 +452,44 @@ your-domain.example.com {
 ```nginx
 server {
     listen 443 ssl;
-    server_name your-domain.example.com;
+    server_name sheaf.example.com;
 
-    location / {
+    # API
+    location /v1/ {
         proxy_pass http://localhost:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
+
+    # Frontend SPA
+    location / {
+        root /path/to/web/dist;
+        try_files $uri /index.html;
+    }
 }
 ```
 
-After setting up a proxy, set the port to 0 if you don't want uvicorn exposed directly:
+### Development
+
+For local development, the Vite dev server runs on port 5173 and proxies `/v1/*` requests to the backend at `localhost:8000`:
+
+```bash
+cd web
+npm run dev
+```
+
+---
+
+## Reverse proxy / TLS
+
+Sheaf has no built-in TLS. Use a reverse proxy (nginx, Caddy, Traefik) for HTTPS termination. See the [Frontend](#frontend) section above for split-routing examples that serve both the API and the SPA.
+
+If you don't want uvicorn directly exposed on the network:
 
 ```env
-SHEAF_PORT=8000
-SHEAF_HOST=0.0.0.0
+SHEAF_HOST=127.0.0.1
 ```
 
 ---
