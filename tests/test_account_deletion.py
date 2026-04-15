@@ -76,6 +76,8 @@ def _user_exists(email: str) -> bool:
 
 
 def test_request_deletion(auth_client: httpx.Client):
+    from sheaf.config import settings
+
     resp = auth_client.post(
         "/v1/auth/delete-account",
         json={"password": "testpassword123"},
@@ -83,7 +85,7 @@ def test_request_deletion(auth_client: httpx.Client):
     assert resp.status_code == 200
     data = resp.json()
     assert "deletion_scheduled_for" in data
-    assert data["grace_days"] == 14
+    assert data["grace_days"] == settings.account_deletion_grace_days
 
 
 def test_request_deletion_wrong_password(auth_client: httpx.Client):
@@ -199,7 +201,7 @@ def test_job_deletes_account_past_grace_period(admin_client: httpx.Client, clien
     )
     assert resp.status_code == 201
 
-    # Backdate deletion_requested_at to 15 days ago (past 14-day grace period)
+    # Backdate deletion_requested_at well past any reasonable grace period
     _set_deletion_requested_at(email, days_ago=15)
 
     # Trigger the deletion job
@@ -220,7 +222,7 @@ def test_job_does_not_delete_within_grace_period(admin_client: httpx.Client, cli
     )
     assert resp.status_code == 201
 
-    # Set deletion_requested_at to 5 days ago (within 14-day grace period)
+    # Set deletion_requested_at to 5 days ago (within default 7-day grace)
     _set_deletion_requested_at(email, days_ago=5)
 
     # Trigger the deletion job
