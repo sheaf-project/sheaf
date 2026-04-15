@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordField } from "@/components/password-field";
+import { Logo } from "@/components/logo";
 import { ApiError } from "@/lib/api-client";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
 import { Sun, Moon } from "lucide-react";
@@ -79,6 +80,7 @@ export function LoginPage() {
       </Button>
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
+          <Logo className="mx-auto mb-2 h-16 w-16 rounded-2xl" />
           <CardTitle className="text-2xl font-semibold">Sheaf</CardTitle>
           <p className="text-sm text-muted-foreground">
             Plural system tracking

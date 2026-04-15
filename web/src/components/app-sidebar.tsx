@@ -2,6 +2,7 @@ import { NavLink } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
 import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
+import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -30,7 +31,10 @@ export function AppSidebar() {
   return (
     <aside className="flex h-screen w-56 flex-col border-r bg-sidebar text-sidebar-foreground">
       <div className="flex h-14 items-center justify-between border-b px-4">
-        <span className="text-lg font-semibold tracking-tight">Sheaf</span>
+        <div className="flex items-center gap-2">
+          <Logo className="h-7 w-7 rounded-md" />
+          <span className="text-lg font-semibold tracking-tight">Sheaf</span>
+        </div>
         <Button
           variant="ghost"
           size="icon"
