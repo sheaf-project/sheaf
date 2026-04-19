@@ -73,7 +73,7 @@ run_config() {
        SHEAF_TEST_DB_URL="$TEST_DB_URL" \
        SHEAF_TEST_ADMIN_AUTH_LEVEL="$admin_auth_level" \
        SHEAF_TEST_MODE="$sheaf_mode" \
-       uv run pytest "${pytest_args[@]}"; then
+       uv run --extra dev pytest "${pytest_args[@]}"; then
         echo "PASSED: $name"
     else
         echo "FAILED: $name"
@@ -134,7 +134,7 @@ if SHEAF_TEST_URL="$TEST_URL" \
    SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
    SHEAF_TEST_MODE=selfhosted \
    SHEAF_TEST_RATE_LIMIT=true \
-   uv run pytest -q -m "rate_limit"; then
+   uv run --extra dev pytest -q -m "rate_limit"; then
     echo "PASSED: selfhosted/rate_limit"
 else
     echo "FAILED: selfhosted/rate_limit"
