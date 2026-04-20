@@ -42,6 +42,9 @@ class UserRead(BaseModel):
     newsletter_opt_in: bool = False
     email_delivery_status: str = "ok"
     email_revalidation_required: bool = False
+    # Effective permission — True if global uploads are on, the user is an
+    # admin, or the user is individually allowlisted.
+    uploads_allowed: bool = True
 
     model_config = {"from_attributes": True}
 

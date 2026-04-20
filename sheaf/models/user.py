@@ -48,6 +48,12 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Per-user override: lets this user upload images even when
+    # settings.allow_image_uploads is False. Admins are always allowed.
+    can_upload_images: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     account_status: Mapped[AccountStatus] = mapped_column(
         Enum(AccountStatus, values_callable=lambda e: [m.value for m in e]),
         default=AccountStatus.ACTIVE,

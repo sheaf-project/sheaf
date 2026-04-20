@@ -330,6 +330,8 @@ Allowed types: `image/jpeg`, `image/png`, `image/gif`, `image/webp`. Max size: 5
 
 Upload returns `{ "url": "...", "key": "...", "size": 12345 }`. Store the `key`; use `url` for immediate display.
 
+Uploads can be disabled server-wide (`ALLOW_IMAGE_UPLOADS=false`). When disabled, `POST /files/upload` returns 403 for regular users; admins and users with `can_upload_images=true` are unaffected. `GET /auth/me` returns `uploads_allowed: bool` — the effective permission for the current user. Hide upload UI when it is false and fall back to external-URL input where available.
+
 ### Import/Export
 
 | Method | Path | Description |

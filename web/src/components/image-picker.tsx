@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload, ImagePlus, Link } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -30,7 +31,9 @@ export function ImagePickerDialog({
   onOpenChange: (open: boolean) => void;
   onSelect: (markdown: string) => void;
 }) {
-  const [tab, setTab] = useState<string>("upload");
+  const { user } = useAuth();
+  const uploadsAllowed = user?.uploads_allowed ?? true;
+  const [tab, setTab] = useState<string>(uploadsAllowed ? "upload" : "existing");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -40,10 +43,12 @@ export function ImagePickerDialog({
         </DialogHeader>
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList className="w-full">
-            <TabsTrigger value="upload" className="flex-1 gap-1.5">
-              <Upload className="h-3.5 w-3.5" />
-              Upload
-            </TabsTrigger>
+            {uploadsAllowed && (
+              <TabsTrigger value="upload" className="flex-1 gap-1.5">
+                <Upload className="h-3.5 w-3.5" />
+                Upload
+              </TabsTrigger>
+            )}
             <TabsTrigger value="existing" className="flex-1 gap-1.5">
               <ImagePlus className="h-3.5 w-3.5" />
               Existing
@@ -53,14 +58,16 @@ export function ImagePickerDialog({
               External URL
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="upload" className="mt-3">
-            <UploadTab
-              onUploaded={(key) => {
-                onSelect(`![image](/v1/files/${key})`);
-                onOpenChange(false);
-              }}
-            />
-          </TabsContent>
+          {uploadsAllowed && (
+            <TabsContent value="upload" className="mt-3">
+              <UploadTab
+                onUploaded={(key) => {
+                  onSelect(`![image](/v1/files/${key})`);
+                  onOpenChange(false);
+                }}
+              />
+            </TabsContent>
+          )}
           <TabsContent value="existing" className="mt-3">
             <ExistingTab
               onSelect={(key) => {

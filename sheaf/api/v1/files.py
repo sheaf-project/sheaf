@@ -44,6 +44,12 @@ async def upload_file(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if not (user.is_admin or settings.allow_image_uploads or user.can_upload_images):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Image uploads are disabled on this instance.",
+        )
+
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

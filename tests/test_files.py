@@ -88,3 +88,26 @@ def test_cleanup(auth_client: httpx.Client):
     data = resp.json()
     assert "orphaned" in data
     assert "freed_bytes" in data
+
+
+def test_me_reports_uploads_allowed_by_default(auth_client: httpx.Client):
+    me = auth_client.get("/v1/auth/me").json()
+    assert me["uploads_allowed"] is True
+
+
+def test_admin_can_set_can_upload_images(
+    admin_client: httpx.Client, auth_client: httpx.Client
+):
+    user_id = auth_client.get("/v1/auth/me").json()["id"]
+
+    resp = admin_client.patch(
+        f"/v1/admin/users/{user_id}", json={"can_upload_images": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["can_upload_images"] is True
+
+    resp = admin_client.patch(
+        f"/v1/admin/users/{user_id}", json={"can_upload_images": False}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["can_upload_images"] is False

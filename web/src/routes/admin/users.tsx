@@ -274,6 +274,7 @@ function UserRow({ user }: { user: AdminUser }) {
   const qc = useQueryClient();
   const [tier, setTier] = useState(user.tier);
   const [isAdmin, setIsAdmin] = useState(user.is_admin);
+  const [canUploadImages, setCanUploadImages] = useState(user.can_upload_images);
   const [memberLimit, setMemberLimit] = useState(
     user.member_limit != null ? String(user.member_limit) : "",
   );
@@ -291,7 +292,12 @@ function UserRow({ user }: { user: AdminUser }) {
 
   function handleSave() {
     const limit = memberLimit === "" ? null : Number(memberLimit);
-    mutation.mutate({ tier, is_admin: isAdmin, member_limit: limit });
+    mutation.mutate({
+      tier,
+      is_admin: isAdmin,
+      member_limit: limit,
+      can_upload_images: canUploadImages,
+    });
   }
 
   return (
@@ -375,6 +381,23 @@ function UserRow({ user }: { user: AdminUser }) {
             </SelectContent>
           </Select>
         </td>
+        <td className="py-2 pr-4">
+          <Select
+            value={canUploadImages ? "yes" : "no"}
+            onValueChange={(v) => {
+              setCanUploadImages(v === "yes");
+              setDirty(true);
+            }}
+          >
+            <SelectTrigger className="h-7 w-20 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="no">No</SelectItem>
+              <SelectItem value="yes">Yes</SelectItem>
+            </SelectContent>
+          </Select>
+        </td>
         <td className="py-2 pr-4 text-xs text-muted-foreground">
           {user.member_count}
         </td>
@@ -396,7 +419,7 @@ function UserRow({ user }: { user: AdminUser }) {
       </tr>
       {expanded && (
         <tr className="border-b last:border-0">
-          <td colSpan={8} className="px-6 pb-3">
+          <td colSpan={9} className="px-6 pb-3">
             <UserActions user={user} />
           </td>
         </tr>
@@ -439,6 +462,7 @@ export function AdminUsersPage() {
                     Member limit
                   </th>
                   <th className="py-2 pr-4 text-left font-medium">Admin</th>
+                  <th className="py-2 pr-4 text-left font-medium">Uploads</th>
                   <th className="py-2 pr-4 text-left font-medium">Members</th>
                   <th className="py-2 pr-4 text-left font-medium">Storage</th>
                   <th className="py-2 text-left font-medium" />
@@ -449,7 +473,7 @@ export function AdminUsersPage() {
                 {users?.length === 0 && (
                   <tr>
                     <td
-                      colSpan={8}
+                      colSpan={9}
                       className="py-6 text-center text-sm text-muted-foreground"
                     >
                       No users found

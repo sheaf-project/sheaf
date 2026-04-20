@@ -709,6 +709,9 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         newsletter_opt_in=user.newsletter_opt_in,
         email_delivery_status=user.email_delivery_status.value,
         email_revalidation_required=user.email_revalidation_required,
+        uploads_allowed=(
+            user.is_admin or settings.allow_image_uploads or user.can_upload_images
+        ),
     )
 
 
@@ -746,6 +749,9 @@ async def update_me(
         newsletter_opt_in=user.newsletter_opt_in,
         email_delivery_status=user.email_delivery_status.value,
         email_revalidation_required=user.email_revalidation_required,
+        uploads_allowed=(
+            user.is_admin or settings.allow_image_uploads or user.can_upload_images
+        ),
     )
 
 

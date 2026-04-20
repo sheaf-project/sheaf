@@ -141,6 +141,29 @@ else
     FAILED+=("selfhosted/rate_limit")
 fi
 
+# 6. Image uploads globally disabled
+echo ""
+echo "================================================================"
+echo "Config: selfhosted/uploads_disabled"
+echo "================================================================"
+
+ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_IMAGE_UPLOADS=false \
+    $COMPOSE up -d app
+
+wait_for_app
+
+if SHEAF_TEST_URL="$TEST_URL" \
+   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+   SHEAF_TEST_MODE=selfhosted \
+   SHEAF_TEST_UPLOADS_DISABLED=true \
+   uv run --extra dev pytest -q -m "uploads_disabled"; then
+    echo "PASSED: selfhosted/uploads_disabled"
+else
+    echo "FAILED: selfhosted/uploads_disabled"
+    FAILED+=("selfhosted/uploads_disabled")
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

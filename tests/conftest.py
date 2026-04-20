@@ -22,6 +22,7 @@ if "SHEAF_TEST_URL" not in os.environ:
 _ADMIN_AUTH_LEVEL = os.environ.get("SHEAF_TEST_ADMIN_AUTH_LEVEL", "none")
 _SHEAF_MODE = os.environ.get("SHEAF_TEST_MODE", "selfhosted")
 _RATE_LIMIT = os.environ.get("SHEAF_TEST_RATE_LIMIT", "false").lower() == "true"
+_UPLOADS_DISABLED = os.environ.get("SHEAF_TEST_UPLOADS_DISABLED", "false").lower() == "true"
 
 
 def pytest_collection_modifyitems(items):
@@ -34,6 +35,8 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_MODE=saas"))
         if "rate_limit" in item.keywords and not _RATE_LIMIT:
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_RATE_LIMIT=true"))
+        if "uploads_disabled" in item.keywords and not _UPLOADS_DISABLED:
+            item.add_marker(pytest.mark.skip("requires SHEAF_TEST_UPLOADS_DISABLED=true"))
 
 
 @pytest.fixture

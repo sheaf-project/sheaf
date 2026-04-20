@@ -19,6 +19,7 @@ export interface AdminUser {
   member_limit: number | null;
   storage_used_bytes: number;
   member_count: number;
+  can_upload_images: boolean;
   created_at: string;
   last_login_at: string | null;
 }
@@ -35,6 +36,7 @@ export interface AdminUserPatch {
   tier?: string;
   is_admin?: boolean;
   member_limit?: number | null;
+  can_upload_images?: boolean;
 }
 
 export interface AdminAuthStatus {

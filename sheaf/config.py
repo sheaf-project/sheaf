@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True
 
+    # Global toggle for image uploads. When False, only admins and users
+    # with can_upload_images=True on their account can upload.
+    allow_image_uploads: bool = True
+
     # Image serving mode: "signed" (default) or "unsigned".
     # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.
     #   S3: private bucket; serve endpoint redirects to a presigned S3 URL.

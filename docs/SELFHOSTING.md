@@ -416,6 +416,21 @@ ALLOW_EXTERNAL_IMAGES=false
 
 ---
 
+## Image uploads
+
+By default, any authenticated user can upload avatars and bio images. To disable uploads globally (e.g. for a public test instance without a ToS):
+
+```env
+ALLOW_IMAGE_UPLOADS=false
+```
+
+When disabled:
+- Regular users see no upload button/tab in the UI and get HTTP 403 from `POST /v1/files/upload`.
+- Admins can upload regardless.
+- Any individual user can be allowlisted from the admin users page (**Uploads** column) or via `PATCH /v1/admin/users/{id}` with `{"can_upload_images": true}`. External image URLs are unaffected.
+
+---
+
 ## Frontend
 
 The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only — you need to build and serve the frontend separately.

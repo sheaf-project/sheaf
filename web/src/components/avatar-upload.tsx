@@ -4,6 +4,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Camera, X, Link } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
 
 export function AvatarUpload({
   url,
@@ -23,6 +24,8 @@ export function AvatarUpload({
   const [urlValue, setUrlValue] = useState("");
   // Signed preview URL after upload — separate from the stored key
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const { user } = useAuth();
+  const uploadsAllowed = user?.uploads_allowed ?? true;
 
   async function handleFile(file: File) {
     setError("");
@@ -62,18 +65,20 @@ export function AvatarUpload({
   return (
     <div className="flex items-center gap-3">
       <div
-        className="group relative cursor-pointer"
-        onClick={() => inputRef.current?.click()}
-        onDrop={handleDrop}
-        onDragOver={(e) => e.preventDefault()}
+        className={`group relative ${uploadsAllowed ? "cursor-pointer" : ""}`}
+        onClick={uploadsAllowed ? () => inputRef.current?.click() : undefined}
+        onDrop={uploadsAllowed ? handleDrop : undefined}
+        onDragOver={uploadsAllowed ? (e) => e.preventDefault() : undefined}
       >
         <Avatar className="size-20">
           {(previewUrl ?? url) && <AvatarImage src={previewUrl ?? url ?? undefined} />}
           <AvatarFallback className="text-lg">{fallback}</AvatarFallback>
         </Avatar>
-        <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
-          <Camera className="h-5 w-5 text-white" />
-        </div>
+        {uploadsAllowed && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
+            <Camera className="h-5 w-5 text-white" />
+          </div>
+        )}
       </div>
       <input
         ref={inputRef}
@@ -84,15 +89,17 @@ export function AvatarUpload({
       />
       <div className="space-y-1">
         <div className="flex gap-1">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => inputRef.current?.click()}
-            disabled={uploading}
-          >
-            {uploading ? "Uploading..." : "Upload"}
-          </Button>
+          {uploadsAllowed && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => inputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? "Uploading..." : "Upload"}
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"

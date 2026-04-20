@@ -147,6 +147,7 @@ class AdminUserRead(BaseModel):
     member_limit: int | None
     storage_used_bytes: int
     member_count: int
+    can_upload_images: bool
     created_at: datetime
     last_login_at: datetime | None
 
@@ -156,6 +157,7 @@ class AdminUserUpdate(BaseModel):
     is_admin: bool | None = None
     member_limit: int | None = None
     clear_member_limit: bool = False  # set True to reset to tier default (null)
+    can_upload_images: bool | None = None
 
 
 @router.get("/users", response_model=list[AdminUserRead])
@@ -219,6 +221,7 @@ async def list_users(
             member_limit=user.member_limit,
             storage_used_bytes=storage_used_bytes,
             member_count=member_count,
+            can_upload_images=user.can_upload_images,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
         ))
@@ -244,6 +247,8 @@ async def update_user(
         target.tier = body.tier
     if body.is_admin is not None:
         target.is_admin = body.is_admin
+    if body.can_upload_images is not None:
+        target.can_upload_images = body.can_upload_images
     if body.clear_member_limit:
         target.member_limit = None
     elif body.member_limit is not None:
@@ -280,6 +285,7 @@ async def update_user(
         member_limit=target.member_limit,
         storage_used_bytes=storage_used,
         member_count=member_count,
+        can_upload_images=target.can_upload_images,
         created_at=target.created_at,
         last_login_at=target.last_login_at,
     )

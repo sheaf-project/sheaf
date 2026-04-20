@@ -18,6 +18,7 @@ services:
       RATE_LIMIT_ENABLED: "${RATE_LIMIT_ENABLED:-false}"
       RATE_LIMIT_GLOBAL_PER_IP: "${RATE_LIMIT_GLOBAL_PER_IP:-600}"
       RATE_LIMIT_GLOBAL_WINDOW: "${RATE_LIMIT_GLOBAL_WINDOW:-60}"
+      ALLOW_IMAGE_UPLOADS: "${ALLOW_IMAGE_UPLOADS:-true}"
     volumes: []
     depends_on:
       db:

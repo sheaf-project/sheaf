@@ -23,6 +23,7 @@ export interface User {
   newsletter_opt_in: boolean;
   email_delivery_status: "ok" | "soft_bouncing" | "hard_bounced" | "complained";
   email_revalidation_required: boolean;
+  uploads_allowed: boolean;
 }
 
 export interface ApiKey {
