@@ -10,11 +10,13 @@ from sheaf.storage.base import StorageBackend
 
 class S3Storage(StorageBackend):
     def __init__(self) -> None:
-        kwargs: dict = {
-            "aws_access_key_id": settings.s3_access_key,
-            "aws_secret_access_key": settings.s3_secret_key,
-            "region_name": settings.s3_region,
-        }
+        # When access/secret are unset, fall through to boto3's default
+        # credential chain (IAM instance profile, IRSA, ~/.aws/credentials,
+        # AWS_ACCESS_KEY_ID env, etc.). Passing empty strings would block it.
+        kwargs: dict = {"region_name": settings.s3_region}
+        if settings.s3_access_key and settings.s3_secret_key:
+            kwargs["aws_access_key_id"] = settings.s3_access_key
+            kwargs["aws_secret_access_key"] = settings.s3_secret_key
         if settings.s3_endpoint:
             kwargs["endpoint_url"] = settings.s3_endpoint
         self.client = boto3.client("s3", **kwargs)

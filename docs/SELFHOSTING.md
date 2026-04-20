@@ -255,12 +255,14 @@ STORAGE_BACKEND=filesystem
 ```env
 STORAGE_BACKEND=s3
 S3_BUCKET=sheaf-files
-S3_ACCESS_KEY=...
-S3_SECRET_KEY=...
+S3_ACCESS_KEY=...     # Omit to use IAM role/instance profile credentials
+S3_SECRET_KEY=...     # Omit to use IAM role/instance profile credentials
 S3_REGION=us-east-1
 S3_ENDPOINT=https://your-minio.example.com  # Omit for AWS S3
 # S3_PRESIGN_ENDPOINT=  # See "Presigned URL endpoint" below
 ```
+
+When `S3_ACCESS_KEY`/`S3_SECRET_KEY` are unset, boto3's default credential chain is used — EC2 instance profile, ECS/EKS task role (IRSA), `~/.aws/credentials`, or the standard `AWS_*` env vars. The IAM identity needs `s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` on `arn:aws:s3:::your-bucket/*`.
 
 ### Image serving and hotlink protection
 
