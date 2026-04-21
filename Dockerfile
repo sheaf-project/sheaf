@@ -27,4 +27,4 @@ USER sheaf
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn sheaf.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn sheaf.main:app --host 0.0.0.0 --port ${SHEAF_PORT:-8000}"]

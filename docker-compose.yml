@@ -5,10 +5,12 @@ services:
       args:
         INCLUDE_DEV_TOOLS: "${INCLUDE_DEV_TOOLS:-false}"
     ports:
-      - "${SHEAF_PORT:-8000}:8000"
+      - "${SHEAF_PORT:-8000}:${SHEAF_PORT:-8000}"
     env_file:
       - path: .env
         required: false
+    environment:
+      SHEAF_PORT: "${SHEAF_PORT:-8000}"
     volumes:
       - appdata:/app/data
     depends_on:
@@ -17,7 +19,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${SHEAF_PORT:-8000}/health')\""]
       interval: 10s
       timeout: 5s
       retries: 5
