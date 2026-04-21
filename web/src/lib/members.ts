@@ -1,4 +1,10 @@
-import type { Member, MemberCreate, MemberUpdate } from "@/types/api";
+import type {
+  DeleteResult,
+  DestructiveConfirm,
+  Member,
+  MemberCreate,
+  MemberUpdate,
+} from "@/types/api";
 import { apiFetch } from "./api-client";
 
 export function listMembers() {
@@ -23,11 +29,8 @@ export function updateMember(id: string, data: MemberUpdate) {
   });
 }
 
-export function deleteMember(
-  id: string,
-  confirm?: { password?: string; totp_code?: string },
-) {
-  return apiFetch<void>(`/v1/members/${id}`, {
+export function deleteMember(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/members/${id}`, {
     method: "DELETE",
     ...(confirm ? { body: JSON.stringify(confirm) } : {}),
   });

@@ -7,7 +7,9 @@ from sheaf.models.group import Group
 from sheaf.models.invite_code import InviteCode
 from sheaf.models.job_run import JobRun
 from sheaf.models.member import Member, front_members, group_members, member_tags
-from sheaf.models.system import PrivacyLevel, System
+from sheaf.models.pending_action import PendingAction, PendingActionStatus, PendingActionType
+from sheaf.models.safety_change_request import SafetyChangeRequest, SafetyChangeStatus
+from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.uploaded_file import UploadedFile
@@ -20,13 +22,19 @@ __all__ = [
     "Base",
     "CustomFieldDefinition",
     "CustomFieldValue",
+    "DeleteConfirmation",
     "FieldType",
     "Front",
     "Group",
     "InviteCode",
     "JobRun",
     "Member",
+    "PendingAction",
+    "PendingActionStatus",
+    "PendingActionType",
     "PrivacyLevel",
+    "SafetyChangeRequest",
+    "SafetyChangeStatus",
     "ServerAnnouncement",
     "System",
     "Tag",

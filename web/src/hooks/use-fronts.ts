@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { FrontCreate, FrontUpdate } from "@/types/api";
+import {
+  isDeleteQueued,
+  type DestructiveConfirm,
+  type FrontCreate,
+  type FrontUpdate,
+} from "@/types/api";
 import * as api from "@/lib/fronts";
 
 export const frontKeys = {
@@ -51,11 +56,24 @@ export function useUpdateFront() {
 export function useDeleteFront() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteFront(id),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.deleteFront(id, confirm),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: frontKeys.all });
       qc.invalidateQueries({ queryKey: frontKeys.current });
-      toast.success("Front deleted");
+      if (isDeleteQueued(result)) {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Front entry scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+        );
+      } else {
+        toast.success("Front deleted");
+      }
     },
   });
 }

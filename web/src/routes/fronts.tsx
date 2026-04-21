@@ -11,7 +11,7 @@ import { useMembers } from "@/hooks/use-members";
 import { PageHeader } from "@/components/page-header";
 import { MemberSelect } from "@/components/member-select";
 import { ColorDot } from "@/components/color-dot";
-import { ConfirmDialog } from "@/components/confirm-dialog";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -206,16 +206,18 @@ export function FrontsPage() {
       </Dialog>
 
       {/* Delete confirm */}
-      <ConfirmDialog
+      <DestructiveConfirmDialog
         open={!!deleting}
         onOpenChange={(open) => !open && setDeleting(null)}
         title="Delete front entry"
         description="Are you sure? This removes this front from history."
-        onConfirm={() =>
+        tier={system?.delete_confirmation ?? "none"}
+        onConfirm={(confirm) =>
           deleting &&
-          deleteFront.mutate(deleting, {
-            onSuccess: () => setDeleting(null),
-          })
+          deleteFront.mutate(
+            { id: deleting, confirm },
+            { onSuccess: () => setDeleting(null) },
+          )
         }
         loading={deleteFront.isPending}
       />

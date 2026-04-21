@@ -107,6 +107,20 @@ alembic upgrade head
 
 When adding enum columns, ensure the migration creates the Postgres enum type with **lowercase values** to match the StrEnum values.
 
+#### Idempotency on long-running feature branches
+
+If your branch lives long enough to be rebased onto new schema changes — or its migration revision id ever needs renumbering to resolve a chain conflict — write the `upgrade()` so it can run on a DB that already has a previous version applied. Use the SQLAlchemy inspector to check before each `add_column` / `create_table`:
+
+```python
+bind = op.get_bind()
+inspector = sa.inspect(bind)
+existing_cols = {c["name"] for c in inspector.get_columns("my_table")}
+if "my_new_col" not in existing_cols:
+    op.add_column("my_table", sa.Column("my_new_col", ...))
+```
+
+Why: dev DBs that ran the original revision id won't know to skip the renumbered one, and the app crashes in a restart loop before you can `alembic stamp` it manually. Production isn't affected, but everyone testing the branch will hit it.
+
 ## How to contribute
 
 ### Reporting bugs

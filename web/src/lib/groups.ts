@@ -1,4 +1,11 @@
-import type { Group, GroupCreate, GroupUpdate, Member } from "@/types/api";
+import type {
+  DeleteResult,
+  DestructiveConfirm,
+  Group,
+  GroupCreate,
+  GroupUpdate,
+  Member,
+} from "@/types/api";
 import { apiFetch } from "./api-client";
 
 export function listGroups() {
@@ -23,8 +30,11 @@ export function updateGroup(id: string, data: GroupUpdate) {
   });
 }
 
-export function deleteGroup(id: string) {
-  return apiFetch<void>(`/v1/groups/${id}`, { method: "DELETE" });
+export function deleteGroup(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/groups/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }
 
 export function getGroupMembers(id: string) {

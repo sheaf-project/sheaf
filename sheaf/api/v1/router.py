@@ -13,6 +13,7 @@ from sheaf.api.v1 import (
     members,
     sheaf_import,
     sp_import,
+    system_safety,
     systems,
     tags,
     webhooks,
@@ -34,6 +35,10 @@ v1_router.include_router(
 # Resource routers: router-level read scope dep + per-endpoint write scope dep
 v1_router.include_router(
     systems.router,
+    dependencies=[Depends(require_scope("system:read"))],
+)
+v1_router.include_router(
+    system_safety.router,
     dependencies=[Depends(require_scope("system:read"))],
 )
 v1_router.include_router(

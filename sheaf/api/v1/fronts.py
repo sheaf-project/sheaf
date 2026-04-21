@@ -1,7 +1,8 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,9 +11,16 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.front import Front
 from sheaf.models.member import Member
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.front import FrontCreate, FrontRead, FrontUpdate
+from sheaf.schemas.member import MemberDeleteConfirm
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
+)
 
 router = APIRouter(prefix="/fronts", tags=["fronts"])
 
@@ -166,20 +174,47 @@ async def update_front(
 
 @router.delete(
     "/{front_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("fronts:delete"))],
 )
 async def delete_front(
     front_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Response:
     system = await _get_user_system(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
     result = await db.execute(
         select(Front).where(Front.id == front_id, Front.system_id == system.id)
     )
     front = result.scalar_one_or_none()
     if front is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Front not found")
+
+    if is_safeguarded(system, PendingActionType.FRONT_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.FRONT_DELETE,
+            target_id=front.id,
+            target_label=f"Front starting {front.started_at.isoformat()}",
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(front)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

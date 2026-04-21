@@ -1,15 +1,23 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
+from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.tag import TagCreate, TagRead, TagUpdate
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
+)
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -98,20 +106,47 @@ async def update_tag(
 
 @router.delete(
     "/{tag_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("tags:delete"))],
 )
 async def delete_tag(
     tag_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Response:
     system = await _get_user_system(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
     result = await db.execute(
         select(Tag).where(Tag.id == tag_id, Tag.system_id == system.id)
     )
     tag = result.scalar_one_or_none()
     if tag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
+
+    if is_safeguarded(system, PendingActionType.TAG_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.TAG_DELETE,
+            target_id=tag.id,
+            target_label=tag.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(tag)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -5,6 +5,8 @@ import { AccountPending } from "@/components/account-pending";
 import { AnnouncementBanners } from "@/components/announcement-banners";
 import { DeletionBanner } from "@/components/deletion-banner";
 import { LegalFooter } from "@/components/legal-footer";
+import { SystemSafetyBanner } from "@/components/system-safety-banner";
+import { OnboardingPrompt } from "@/components/onboarding-prompt";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function AppLayout() {
@@ -33,11 +35,13 @@ export function AppLayout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <AnnouncementBanners />
         {user.account_status === "pending_deletion" && <DeletionBanner />}
+        <SystemSafetyBanner />
         <main className="flex-1 overflow-auto p-6">
           <Outlet />
         </main>
         <LegalFooter />
       </div>
+      <OnboardingPrompt />
     </div>
   );
 }

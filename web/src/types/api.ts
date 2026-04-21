@@ -206,3 +206,93 @@ export interface CustomFieldValueSet {
   field_id: string;
   value: unknown;
 }
+
+export type PendingActionType =
+  | "member_delete"
+  | "group_delete"
+  | "tag_delete"
+  | "field_delete"
+  | "front_delete";
+
+export type PendingActionStatus =
+  | "pending"
+  | "cancelled"
+  | "completed"
+  | "errored";
+
+export interface PendingAction {
+  id: string;
+  action_type: PendingActionType;
+  target_id: string;
+  target_label: string;
+  requested_at: string;
+  requested_by_user_id: string | null;
+  finalize_after: string;
+  fronting_member_ids: string[];
+  fronting_member_names: string[];
+  status: PendingActionStatus;
+}
+
+export type SafetyChangeStatus = "pending" | "cancelled" | "completed";
+
+export interface SafetyChangeRequest {
+  id: string;
+  requested_at: string;
+  requested_by_user_id: string | null;
+  finalize_after: string;
+  changes: Record<string, unknown>;
+  status: SafetyChangeStatus;
+}
+
+// auth_tier is the historical `delete_confirmation` setting, repurposed
+// as the auth tier for all safeguarded destructive actions.
+export interface SystemSafetySettings {
+  grace_period_days: number;
+  auth_tier: DeleteConfirmation;
+  applies_to_members: boolean;
+  applies_to_groups: boolean;
+  applies_to_tags: boolean;
+  applies_to_fields: boolean;
+  applies_to_fronts: boolean;
+}
+
+export interface SystemSafetyUpdate {
+  grace_period_days?: number;
+  auth_tier?: DeleteConfirmation;
+  applies_to_members?: boolean;
+  applies_to_groups?: boolean;
+  applies_to_tags?: boolean;
+  applies_to_fields?: boolean;
+  applies_to_fronts?: boolean;
+  password?: string;
+  totp_code?: string;
+}
+
+export interface SystemSafetyResponse {
+  settings: SystemSafetySettings;
+  pending_actions: PendingAction[];
+  pending_changes: SafetyChangeRequest[];
+}
+
+export interface SystemSafetyUpdateResponse {
+  settings: SystemSafetySettings;
+  applied: string[];
+  deferred: string[];
+  pending_change: SafetyChangeRequest | null;
+}
+
+export interface DeleteQueued {
+  pending_action_id: string;
+  finalize_after: string;
+}
+
+export type DeleteResult = void | DeleteQueued;
+
+export function isDeleteQueued(r: DeleteResult): r is DeleteQueued {
+  return !!r && typeof (r as DeleteQueued).pending_action_id === "string";
+}
+
+export interface DestructiveConfirm {
+  password?: string;
+  totp_code?: string;
+}

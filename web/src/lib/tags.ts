@@ -1,4 +1,10 @@
-import type { Tag, TagCreate, TagUpdate } from "@/types/api";
+import type {
+  DeleteResult,
+  DestructiveConfirm,
+  Tag,
+  TagCreate,
+  TagUpdate,
+} from "@/types/api";
 import { apiFetch } from "./api-client";
 
 export function listTags() {
@@ -19,6 +25,9 @@ export function updateTag(id: string, data: TagUpdate) {
   });
 }
 
-export function deleteTag(id: string) {
-  return apiFetch<void>(`/v1/tags/${id}`, { method: "DELETE" });
+export function deleteTag(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/tags/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }

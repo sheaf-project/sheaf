@@ -1,4 +1,10 @@
-import type { Front, FrontCreate, FrontUpdate } from "@/types/api";
+import type {
+  DeleteResult,
+  DestructiveConfirm,
+  Front,
+  FrontCreate,
+  FrontUpdate,
+} from "@/types/api";
 import { apiFetch } from "./api-client";
 
 export function listFronts(limit = 50, offset = 0) {
@@ -23,6 +29,9 @@ export function updateFront(id: string, data: FrontUpdate) {
   });
 }
 
-export function deleteFront(id: string) {
-  return apiFetch<void>(`/v1/fronts/${id}`, { method: "DELETE" });
+export function deleteFront(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/fronts/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }

@@ -1,6 +1,7 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +9,7 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.member import Member
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.custom_field import (
@@ -16,6 +18,12 @@ from sheaf.schemas.custom_field import (
     CustomFieldUpdate,
     CustomFieldValueRead,
     CustomFieldValueSet,
+)
+from sheaf.schemas.member import MemberDeleteConfirm
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
 )
 
 router = APIRouter(tags=["custom fields"])
@@ -115,15 +123,21 @@ async def update_field(
 
 @router.delete(
     "/fields/{field_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("fields:delete"))],
 )
 async def delete_field(
     field_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Response:
     system = await _get_user_system(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
     result = await db.execute(
         select(CustomFieldDefinition).where(
             CustomFieldDefinition.id == field_id,
@@ -133,8 +147,29 @@ async def delete_field(
     field = result.scalar_one_or_none()
     if field is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
+
+    if is_safeguarded(system, PendingActionType.FIELD_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.FIELD_DELETE,
+            target_id=field.id,
+            target_label=field.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(field)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- Field values on members ---

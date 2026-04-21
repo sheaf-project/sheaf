@@ -1,19 +1,23 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
-from sheaf.auth.passwords import verify_password
-from sheaf.auth.totp import verify_code
 from sheaf.config import settings
-from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.models.member import Member
-from sheaf.models.system import DeleteConfirmation, System
+from sheaf.models.pending_action import PendingActionType
+from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
 from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
+)
 
 router = APIRouter(prefix="/members", tags=["members"])
 
@@ -129,7 +133,6 @@ async def update_member(
 
 @router.delete(
     "/{member_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("members:delete"))],
 )
 async def delete_member(
@@ -137,34 +140,35 @@ async def delete_member(
     body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Response:
     system = await _get_user_system(user, db)
-    level = system.delete_confirmation
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
+    member = await _get_own_member(member_id, system, db)
 
-    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH) and (
-        not body or not body.password or not verify_password(body.password, user.password_hash)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Password required to delete member",
+    if is_safeguarded(system, PendingActionType.MEMBER_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.MEMBER_DELETE,
+            target_id=member.id,
+            target_label=member.display_name or member.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
         )
 
-    if level in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH):
-        if not user.totp_enabled:
-            pass  # TOTP not configured, skip
-        elif not body or not body.totp_code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="TOTP code required to delete member",
-            )
-        else:
-            secret = decrypt(user.totp_secret)
-            if not verify_code(secret, body.totp_code):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid TOTP code",
-                )
-
-    member = await _get_own_member(member_id, system, db)
     await db.delete(member)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
