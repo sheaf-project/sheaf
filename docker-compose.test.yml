@@ -1,6 +1,8 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
     ports: !override
       - "8001:8000"
     environment:

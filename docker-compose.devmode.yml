@@ -10,6 +10,7 @@ services:
   app:
     build:
       context: .
+      dockerfile: Dockerfile.backend
       args:
         INCLUDE_DEV_TOOLS: "true"
     ports: !override
