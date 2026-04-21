@@ -32,6 +32,44 @@ def test_upload_rejects_non_image(auth_client: httpx.Client):
     assert resp.status_code == 400
 
 
+def test_upload_rejects_fake_image_by_magic_bytes(auth_client: httpx.Client):
+    """Header claims image/png but bytes are HTML — must reject on magic-byte sniff."""
+    resp = auth_client.post(
+        "/v1/files/upload",
+        files={
+            "file": (
+                "evil.png",
+                io.BytesIO(b"<html><script>alert(1)</script></html>" + b"\x00" * 64),
+                "image/png",
+            )
+        },
+    )
+    assert resp.status_code == 400
+    assert "match" in resp.json()["detail"].lower()
+
+
+def test_upload_rejects_svg_posing_as_png(auth_client: httpx.Client):
+    """SVG bytes with .png/image/png metadata — magic-byte sniff must reject."""
+    svg = b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>"
+    resp = auth_client.post(
+        "/v1/files/upload",
+        files={"file": ("logo.png", io.BytesIO(svg), "image/png")},
+    )
+    assert resp.status_code == 400
+
+
+def test_upload_derives_extension_from_content_not_filename(auth_client: httpx.Client):
+    """Even with a .html filename, the stored key must use the sniffed extension."""
+    resp = auth_client.post(
+        "/v1/files/upload",
+        files={"file": ("xss.html", io.BytesIO(_png_bytes()), "image/png")},
+    )
+    assert resp.status_code == 200
+    key = resp.json()["key"]
+    assert key.endswith(".png")
+    assert ".html" not in key
+
+
 def test_upload_unauthenticated(client: httpx.Client):
     resp = client.post(
         "/v1/files/upload",

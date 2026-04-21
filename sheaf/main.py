@@ -9,6 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
+from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
 
 logging.basicConfig(
@@ -94,6 +95,17 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(BodyTooLargeError)
+async def body_too_large_handler(
+    request: Request, exc: BodyTooLargeError
+) -> JSONResponse:
+    mb = exc.max_bytes // (1024 * 1024)
+    return JSONResponse(
+        status_code=413,
+        content={"detail": f"Request body too large. Max: {mb}MB"},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception(
@@ -122,6 +134,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(
+    MaxBodySizeMiddleware,
+    max_bytes=settings.max_request_body_size_mb * 1024 * 1024,
+)
 
 app.include_router(v1_router)
 

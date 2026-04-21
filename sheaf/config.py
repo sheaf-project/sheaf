@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     s3_presign_endpoint: str = ""  # External URL for presigned URLs (if different from s3_endpoint)
     s3_public_url: str = ""  # CDN URL prefix, if any
     max_upload_size_mb: int = 5
+    # Global hard cap on request body size (MB) enforced by middleware before
+    # the body is buffered anywhere. Must be >= the largest per-endpoint cap
+    # (currently the 100MB import endpoint) plus a little multipart overhead.
+    max_request_body_size_mb: int = 110
     # Storage quotas per tier (MB). 0 = unlimited.
     storage_quota_free_mb: int = 50
     storage_quota_plus_mb: int = 500

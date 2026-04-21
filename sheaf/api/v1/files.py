@@ -21,6 +21,37 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
+# Canonical file extension for each validated image type. Used to build the
+# stored key so the client-supplied filename can't smuggle an extension
+# (e.g. .html, .svg) past the allow-list.
+_MIME_EXT = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """Identify the actual image format by magic bytes.
+
+    Returns the canonical MIME type for JPEG/PNG/GIF/WebP, or None if the
+    bytes don't match any supported format. Callers MUST use this rather
+    than trusting the client-supplied Content-Type header.
+    """
+    if len(data) < 12:
+        return None
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 _QUOTA_MAP = {
     UserTier.FREE: lambda: settings.storage_quota_free_mb,
     UserTier.PLUS: lambda: settings.storage_quota_plus_mb,
@@ -50,6 +81,8 @@ async def upload_file(
             detail="Image uploads are disabled on this instance.",
         )
 
+    # Cheap first-pass reject: client-supplied header must claim an allowed
+    # type. The authoritative check is the magic-byte sniff below.
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -66,6 +99,15 @@ async def upload_file(
             detail=f"File too large. Max: {settings.max_upload_size_mb}MB",
         )
 
+    # Authoritative content check: magic bytes determine the real MIME type.
+    # The client-supplied header and filename are NOT trusted past this point.
+    actual_mime = _sniff_image_mime(data)
+    if actual_mime is None or actual_mime not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File content does not match a supported image format.",
+        )
+
     # Check storage quota
     quota = _get_quota_bytes(user)
     if quota > 0:
@@ -80,20 +122,21 @@ async def upload_file(
                 detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
             )
 
-    has_ext = file.filename and "." in file.filename
-    ext = file.filename.rsplit(".", 1)[-1].lower() if has_ext else "bin"
+    # Server-derived extension + content-type from validated MIME. Never
+    # trust file.filename or file.content_type for the stored object.
+    ext = _MIME_EXT[actual_mime]
     prefix = "bios" if purpose == "bio" else "avatars"
     key = f"{prefix}/{user.id}/{uuid.uuid4().hex}.{ext}"
 
     storage = get_storage()
-    await storage.put(key, data, file.content_type or "application/octet-stream")
+    await storage.put(key, data, actual_mime)
 
     # Track upload
     db.add(UploadedFile(
         user_id=user.id,
         key=key,
         purpose=purpose,
-        content_type=file.content_type or "application/octet-stream",
+        content_type=actual_mime,
         size_bytes=file_size,
     ))
     await db.commit()
@@ -270,4 +313,13 @@ async def serve_file(
 
     suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
     content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
-    return Response(content=data, media_type=content_type)
+    # Defence in depth: uploads are gated to image magic bytes so we should
+    # never land here with a non-image extension. If we do (e.g. a legacy
+    # file from before the validator was tightened), force a download
+    # instead of letting the browser render.
+    headers = (
+        {"Content-Disposition": "attachment"}
+        if content_type == "application/octet-stream"
+        else {}
+    )
+    return Response(content=data, media_type=content_type, headers=headers)
