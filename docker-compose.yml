@@ -2,6 +2,7 @@ services:
   app:
     build:
       context: .
+      dockerfile: Dockerfile.backend
       args:
         INCLUDE_DEV_TOOLS: "${INCLUDE_DEV_TOOLS:-false}"
     ports:
