@@ -10,7 +10,7 @@ COPY sheaf/ sheaf/
 COPY alembic.ini .
 COPY alembic/ alembic/
 
-RUN pip install --no-cache-dir ".[s3,smtp]"
+RUN pip install --no-cache-dir ".[s3,ses,smtp,sendgrid]"
 
 # Dev-only tools (destructive jobs for demo instances, etc.)
 # Only installed when INCLUDE_DEV_TOOLS=true. Default: not installed,

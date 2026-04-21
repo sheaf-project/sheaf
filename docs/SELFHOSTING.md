@@ -98,21 +98,7 @@ With `ADMIN_AUTH_LEVEL=totp`: if the admin account does not have TOTP enabled, a
 
 ## Optional dependencies
 
-Sheaf uses optional Python extras for backend integrations. The Docker image includes `s3` by default — add others by editing the `pip install` line in the Dockerfile:
-
-```dockerfile
-# Default: only S3
-RUN pip install --no-cache-dir ".[s3]"
-
-# With SMTP email:
-RUN pip install --no-cache-dir ".[s3,smtp]"
-
-# With SES email:
-RUN pip install --no-cache-dir ".[s3,ses]"
-
-# Everything:
-RUN pip install --no-cache-dir ".[s3,smtp,ses,sendgrid]"
-```
+Sheaf uses optional Python extras for backend integrations. **The official Docker image bundles all of them** so any storage/email backend works out of the box without a rebuild:
 
 | Extra | Package | Required when |
 |-------|---------|---------------|
@@ -121,9 +107,19 @@ RUN pip install --no-cache-dir ".[s3,smtp,ses,sendgrid]"
 | `ses` | `boto3` | `EMAIL_BACKEND=ses` |
 | `sendgrid` | `httpx` | `EMAIL_BACKEND=sendgrid` |
 
+If you're building a slimmed-down image (e.g. you never want SES), edit the `pip install` line in `Dockerfile.backend`:
+
+```dockerfile
+# Default — everything, matches the published image:
+RUN pip install --no-cache-dir ".[s3,ses,smtp,sendgrid]"
+
+# Minimal — filesystem storage, SMTP email only:
+RUN pip install --no-cache-dir ".[smtp]"
+```
+
 If a backend is configured but its extra isn't installed, Sheaf will fail on startup with a clear error message telling you which extra to add.
 
-For local development without Docker, install all extras you need:
+For local development without Docker, install the extras you need:
 
 ```bash
 pip install -e ".[dev,s3,smtp]"
