@@ -260,15 +260,60 @@ S3_ENDPOINT=https://your-minio.example.com  # Omit for AWS S3
 
 When `S3_ACCESS_KEY`/`S3_SECRET_KEY` are unset, boto3's default credential chain is used — EC2 instance profile, ECS/EKS task role (IRSA), `~/.aws/credentials`, or the standard `AWS_*` env vars. The IAM identity needs `s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` on `arn:aws:s3:::your-bucket/*`.
 
-### Image serving and hotlink protection
+### Image serving paradigms
 
-By default (`IMAGE_SERVING=signed`), avatar URLs are HMAC-signed with a short expiry window. This prevents your storage from being used as free image hosting.
+Image URLs need to balance four things: preventing your instance from being used as free image hosting, CDN caching for performance, privacy (what the CDN sees), and operational cost/complexity. Four supported setups, pick whichever matches your deployment:
 
-| Setting | Behaviour |
-|---------|-----------|
-| `IMAGE_SERVING=signed` | URLs include an HMAC token and expiry. S3: server redirects to a presigned S3 URL (bucket can be private). Filesystem: token validated on every request. |
-| `IMAGE_SERVING=unsigned` | No token required — anyone with a URL can load the file. Use only with a CDN that has hotlink protection. |
-| `S3_PUBLIC_URL=https://cdn.example.com` | Avatar URLs resolve directly to your CDN, bypassing the serve endpoint entirely. Combine with `IMAGE_SERVING=unsigned` and Cloudflare hotlink protection rules. |
+#### 1. Filesystem, app-served (default, simplest)
+
+```env
+STORAGE_BACKEND=filesystem
+IMAGE_SERVING=signed
+```
+
+The app serves bytes directly from local disk after validating the HMAC token on each request. No CDN, no extra infra. Fine for single-server deployments and small instances. Every image request hits your app server.
+
+#### 2. S3 + signed presigned URLs (no CDN)
+
+```env
+STORAGE_BACKEND=s3
+S3_BUCKET=sheaf-files
+IMAGE_SERVING=signed
+# S3_PUBLIC_URL left unset
+```
+
+Bucket stays private. Clients load `/v1/files/{key}?token=…` from your app; the app validates the token and 302s to a short-lived S3 presigned URL. Presigns are cached in Redis within the signing window so repeat loads don't re-sign. No third party sees your image URLs.
+
+Downside: every first-view within a window round-trips through your app for the redirect, and browsers cache the final S3 URL (not the app URL). If you're okay serving images straight from S3's edge performance, this is the privacy-maximising choice.
+
+#### 3. S3 + unsigned + CDN hotlink protection
+
+```env
+STORAGE_BACKEND=s3
+IMAGE_SERVING=unsigned
+S3_PUBLIC_URL=https://images.example.com   # Your CDN hostname
+```
+
+Bucket must be publicly readable (or use an origin-access token scoped to your CDN). Clients load images directly from the CDN. Hotlinking is prevented by CDN rules (Cloudflare Referer rules, Page Rules, or a WAF rule checking `X-Sheaf-Client` / Origin).
+
+This is the cheapest setup at scale — the CDN caches aggressively and your app never sees image traffic. Tradeoff: anyone with a leaked URL can fetch the object for as long as it exists in the bucket (no expiry), and the CDN sees every image load.
+
+#### 4. S3 + signed URLs + CDN Worker (private bucket, expiring URLs, CDN-cached)
+
+```env
+STORAGE_BACKEND=s3
+IMAGE_SERVING=signed
+S3_PUBLIC_URL=https://images.example.com   # CDN hostname; Worker lives here
+FILE_SIGNING_KEY=...                       # 32+ bytes; shared with the Worker
+```
+
+Bucket stays private. Clients load `https://images.example.com/{key}?token=…&expires=…`. A Cloudflare Worker (see `selfhost-utils/cf-image-worker/`) on that hostname validates the HMAC against the same `FILE_SIGNING_KEY`, fetches the object from the private bucket via AWS SigV4, and returns it. The CDN caches by full URL so all requests within a signing window share a cache entry; expired or invalid tokens return 403 at the edge.
+
+This is the combination you want when you need *both* expiring URLs *and* CDN caching — e.g. a public-facing deployment where private images need hotlink protection stronger than a referer check and you don't want your app serving image bytes.
+
+Tradeoffs: one more moving piece (the Worker); the CDN sees image paths and tokens; Worker costs scale with cache-miss rate (typically free-tier for small/mid instances, see the `cf-image-worker/README.md` for numbers). `FILE_SIGNING_KEY` must be set explicitly here — without it the app derives the signing key from `JWT_SECRET_KEY`, which you should never give to a Worker.
+
+> **Privacy note:** paradigms 3 and 4 route image loads through a third-party CDN. If you're CDN-fronting only images (not the API/web UI), this is the split most people hosting publicly as a service may want — performance where it matters, privacy for the data that matters.
 
 #### Presigned URL endpoint
 

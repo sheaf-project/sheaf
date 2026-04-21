@@ -61,12 +61,32 @@ def _is_safe_external_url(url: str) -> bool:
 
 
 def _signing_key() -> bytes:
-    """Derive a file-specific HMAC key from the JWT secret to avoid cross-use."""
+    """HMAC key for signed file URLs.
+
+    If FILE_SIGNING_KEY is set, use it directly (raw UTF-8 bytes). This is
+    required for the signed + CDN paradigm, where a Cloudflare Worker must
+    share the same key to validate URLs at the edge.
+
+    Otherwise, derive from the JWT secret — safe for the non-CDN paradigms
+    where the key never leaves the app.
+    """
+    if settings.file_signing_key:
+        return settings.file_signing_key.encode()
     return hmac.new(
         settings.jwt_secret_key.encode(),
         b"sheaf-file-signing",
         hashlib.sha256,
     ).digest()
+
+
+def _signed_url_params(key: str) -> tuple[str, int]:
+    """Return (token, expires_at) for a key using the current signing window."""
+    window = settings.file_url_expiry_seconds
+    window_start = (int(time.time()) // window) * window
+    expires_at = window_start + 2 * window
+    msg = f"{key}:{expires_at}".encode()
+    token = hmac.new(_signing_key(), msg, hashlib.sha256).hexdigest()
+    return token, expires_at
 
 
 def sign_file_url(key: str) -> str:
@@ -77,12 +97,20 @@ def sign_file_url(key: str) -> str:
     The URL is always valid for at least one full window (up to two windows
     at the start of a window).
     """
-    window = settings.file_url_expiry_seconds
-    window_start = (int(time.time()) // window) * window
-    expires_at = window_start + 2 * window
-    msg = f"{key}:{expires_at}".encode()
-    token = hmac.new(_signing_key(), msg, hashlib.sha256).hexdigest()
+    token, expires_at = _signed_url_params(key)
     return f"/v1/files/{key}?token={token}&expires={expires_at}"
+
+
+def sign_cdn_url(key: str) -> str:
+    """Generate a signed URL on the CDN hostname (s3_public_url).
+
+    Used for the signed + CDN paradigm where a Cloudflare Worker sitting
+    on that hostname validates the same HMAC and fetches the private
+    bucket object directly. See selfhost-utils/cf-image-worker/.
+    """
+    token, expires_at = _signed_url_params(key)
+    base = settings.s3_public_url.rstrip("/")
+    return f"{base}/{key}?token={token}&expires={expires_at}"
 
 
 def verify_file_token(key: str, token: str, expires: str) -> bool:
@@ -126,9 +154,10 @@ def resolve_avatar_url(url: str | None) -> str | None:
     Priority:
     1. None → None
     2. External URL (starts with http) → returned as-is
-    3. S3 + s3_public_url set → {cdn_url}/{key}  (CDN serves directly from S3)
-    4. image_serving=signed → /v1/files/{key}?token=…  (HMAC gated)
-    5. image_serving=unsigned → /v1/files/{key}  (open access)
+    3. S3 + s3_public_url + signed → {cdn_url}/{key}?token=…  (CDN Worker validates HMAC)
+    4. S3 + s3_public_url + unsigned → {cdn_url}/{key}  (CDN hotlink protection only)
+    5. image_serving=signed → /v1/files/{key}?token=…  (HMAC gated, app serves)
+    6. image_serving=unsigned → /v1/files/{key}  (open access, app serves)
     """
     if url is None:
         return None
@@ -136,6 +165,8 @@ def resolve_avatar_url(url: str | None) -> str | None:
         return url
     key = url.removeprefix("/v1/files/")
     if settings.storage_backend == "s3" and settings.s3_public_url:
+        if settings.image_serving == "signed":
+            return sign_cdn_url(key)
         return f"{settings.s3_public_url.rstrip('/')}/{key}"
     if settings.image_serving == "signed":
         return sign_file_url(key)

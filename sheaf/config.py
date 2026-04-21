@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     s3_endpoint: str = ""  # For MinIO/R2 compatibility
     s3_presign_endpoint: str = ""  # External URL for presigned URLs (if different from s3_endpoint)
     s3_public_url: str = ""  # CDN URL prefix, if any
+    # Dedicated key for HMAC-signed image URLs. Required when running the
+    # signed + CDN paradigm (selfhost-utils/cf-image-worker), because the
+    # Cloudflare Worker needs the same key and we don't want to hand it
+    # the JWT secret. Left empty, the backend derives the signing key from
+    # jwt_secret_key — fine for the non-CDN paradigms.
+    file_signing_key: str = ""
     max_upload_size_mb: int = 5
     # Global hard cap on request body size (MB) enforced by middleware before
     # the body is buffered anywhere. Must be >= the largest per-endpoint cap

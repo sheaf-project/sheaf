@@ -1,0 +1,23 @@
+name = "sheaf-image-worker"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+# Set your image hostname here after the Worker is deployed, e.g.
+# routes = [{ pattern = "images.example.com/*", zone_name = "example.com" }]
+
+[vars]
+# Non-secret config. Edit these for your deployment.
+S3_BUCKET = ""
+S3_REGION = "us-east-1"
+# Leave S3_ENDPOINT unset for AWS S3. Set for MinIO, Wasabi, etc.
+S3_ENDPOINT = ""
+# Optional whitelist — only keys starting with one of these prefixes are
+# served. Comma-separated. Leave unset to allow any key the token validates.
+# Recommended: "avatars/,bios/"
+ALLOWED_KEY_PREFIXES = "avatars/,bios/"
+
+# Secrets below are set via `wrangler secret put <NAME>`, not here.
+# Required secrets:
+#   FILE_SIGNING_KEY       — matches backend FILE_SIGNING_KEY
+#   AWS_ACCESS_KEY_ID      — IAM key with s3:GetObject on the bucket
+#   AWS_SECRET_ACCESS_KEY  — paired secret
