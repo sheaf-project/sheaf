@@ -429,6 +429,62 @@ When disabled:
 
 ---
 
+## Public test / demo instance mode
+
+For a public instance that periodically wipes itself (useful for try-before-you-host demos), Sheaf ships an optional `sheaf_dev` package that registers a scheduled wipe job and a permanent warning banner. It is **excluded from the default image** so production builds physically cannot run it.
+
+### 1. Get the devtools image
+
+CI publishes a separate variant built with `INCLUDE_DEV_TOOLS=true`:
+
+```
+ghcr.io/sheaf-project/sheaf-devtools:head      # tip of main
+ghcr.io/sheaf-project/sheaf-devtools:vX.Y.Z    # pinned release
+ghcr.io/sheaf-project/sheaf-devtools:latest    # latest release
+```
+
+Point your compose file at it, e.g.:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/sheaf-project/sheaf-devtools:head
+    # (omit the `build:` block)
+```
+
+Or build it yourself:
+
+```bash
+INCLUDE_DEV_TOOLS=true docker compose build app
+```
+
+### 2. Enable the wipe job
+
+```env
+DEMO_WIPE_ENABLED=true
+DEMO_WIPE_INTERVAL_HOURS=24   # optional; default 24
+```
+
+When enabled, every N hours the job deletes all non-admin users along with their systems, members, fronts, uploaded files, sessions, etc. Admins are preserved. The job runner wakes every `JOB_CHECK_INTERVAL_MINUTES` (default 15), so the actual first fire may be up to that much after the interval elapses.
+
+`SHEAF_MODE=saas` acts as a hard safety belt — the wipe job refuses to register even if `sheaf_dev` is installed and `DEMO_WIPE_ENABLED=true`.
+
+### 3. The banner
+
+When `sheaf_dev` is installed, a non-dismissible `ServerAnnouncement` titled **"Development Instance"** is created on first startup and shown site-wide. There is no env var — the banner is tied to the package being present. To remove it, rebuild without `INCLUDE_DEV_TOOLS=true` (and delete the row from the `server_announcements` table if it's already in your DB).
+
+### Recommended companion settings
+
+For a public demo you almost certainly also want:
+
+```env
+ALLOW_IMAGE_UPLOADS=false     # otherwise it's free image hosting between wipes
+REGISTRATION_MODE=open        # or invite, depending on what you want to demo
+EMAIL_VERIFICATION=off        # users come and go, verification loops add friction
+```
+
+---
+
 ## Frontend
 
 The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only — you need to build and serve the frontend separately.

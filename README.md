@@ -150,6 +150,7 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - Frontend build and serving
 - Reverse proxy setup (nginx, Caddy)
 - Rate limiting and trusted proxies
+- Public test / demo mode (periodic non-admin wipe + warning banner)
 - Backups
 
 ## Development
