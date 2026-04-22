@@ -43,12 +43,14 @@ async def test_accepts_under_cap():
 
 @pytest.mark.asyncio
 async def test_rejects_on_content_length_header():
+    """Fast path: middleware emits 413 directly without invoking the app
+    or its exception handlers, so the body shape comes from the middleware."""
     app = _app(max_bytes=1024)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://t") as c:
         resp = await c.post("/echo", content=b"x" * 2048)
         assert resp.status_code == 413
-        assert "Too big" in resp.json()["detail"]
+        assert "too large" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
