@@ -7,6 +7,7 @@ import pytest
 from sheaf.config import settings
 from sheaf.files import (
     normalize_avatar_url,
+    normalize_description_urls,
     resolve_avatar_url,
     sign_cdn_url,
     sign_file_url,
@@ -22,6 +23,7 @@ def reset_settings(monkeypatch):
     monkeypatch.setattr(settings, "image_serving", "signed")
     monkeypatch.setattr(settings, "file_signing_key", "")
     monkeypatch.setattr(settings, "file_url_expiry_seconds", 3600)
+    monkeypatch.setattr(settings, "allow_external_images", True)
 
 
 def test_sign_cdn_url_shape(monkeypatch):
@@ -173,3 +175,34 @@ def test_normalize_avatar_url_bare_key_unchanged():
 
 def test_normalize_avatar_url_none():
     assert normalize_avatar_url(None) is None
+
+
+def test_normalize_avatar_url_external_dropped_when_disabled(monkeypatch):
+    """When the instance disables external images, external avatar URLs are
+    dropped to None rather than silently stored."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    assert normalize_avatar_url("https://gravatar.com/x.png") is None
+
+
+def test_normalize_avatar_url_bare_key_survives_when_external_disabled(monkeypatch):
+    """Toggling off external images must not break hosted avatars."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    assert normalize_avatar_url("avatars/user/abc.png") == "avatars/user/abc.png"
+
+
+def test_normalize_description_urls_strips_external_when_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    result = normalize_description_urls(
+        "Hi ![pic](https://example.com/a.png) there"
+    )
+    assert "example.com" not in result
+    assert result.startswith("Hi ")
+    assert result.endswith(" there")
+
+
+def test_normalize_description_urls_preserves_hosted_when_external_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    result = normalize_description_urls(
+        "See ![pic](/v1/files/avatars/u/a.png)"
+    )
+    assert "/v1/files/avatars/u/a.png" in result

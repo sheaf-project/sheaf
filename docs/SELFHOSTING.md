@@ -451,11 +451,19 @@ If empty (default), `X-Forwarded-For` is never read — the direct connecting IP
 
 ## External images
 
-By default, member bios and descriptions can reference external image URLs. To restrict images to only hosted uploads (via Content Security Policy):
+By default, member bios and descriptions can reference external image URLs, and avatars can be set to an arbitrary HTTPS URL. To restrict images to only hosted uploads:
 
 ```env
 ALLOW_EXTERNAL_IMAGES=false
 ```
+
+When disabled:
+- External `![image](https://…)` embeds are stripped from bios/descriptions on save.
+- External avatar URLs are dropped to null on save.
+- The frontend hides the "External URL" option in the image picker and the link-icon button in the avatar picker.
+- A CSP `img-src` directive blocks the browser from loading any non-hosted image as defense in depth.
+
+The toggle does not retroactively scrub existing content — it only governs new writes. CSP blocks old references at render time.
 
 ---
 
@@ -470,7 +478,20 @@ ALLOW_IMAGE_UPLOADS=false
 When disabled:
 - Regular users see no upload button/tab in the UI and get HTTP 403 from `POST /v1/files/upload`.
 - Admins can upload regardless.
-- Any individual user can be allowlisted from the admin users page (**Uploads** column) or via `PATCH /v1/admin/users/{id}` with `{"can_upload_images": true}`. External image URLs are unaffected.
+- Any individual user can be allowlisted from the admin users page (**Uploads** column) or via `PATCH /v1/admin/users/{id}` with `{"can_upload_images": true}`. External image URLs are governed separately by `ALLOW_EXTERNAL_IMAGES`.
+
+To keep avatar uploads on but block bio-image embeds (or vice versa), use the narrower toggle:
+
+```env
+ALLOW_BIO_IMAGES=false
+```
+
+Per-purpose size caps override `MAX_UPLOAD_SIZE_MB` when set (0 = inherit):
+
+```env
+MAX_AVATAR_SIZE_MB=1
+MAX_BIO_IMAGE_SIZE_MB=10
+```
 
 ---
 

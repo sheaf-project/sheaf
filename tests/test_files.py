@@ -132,6 +132,7 @@ def test_me_reports_uploads_allowed_by_default(auth_client: httpx.Client):
     me = auth_client.get("/v1/auth/me").json()
     assert me["uploads_allowed"] is True
     assert me["bio_uploads_allowed"] is True
+    assert me["external_images_allowed"] is True
 
 
 def test_admin_can_set_can_upload_images(

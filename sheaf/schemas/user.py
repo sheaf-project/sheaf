@@ -48,6 +48,9 @@ class UserRead(BaseModel):
     # Same logic but for bio/description image embeds specifically. False
     # when bios are disabled at the instance level even if avatars are on.
     bio_uploads_allowed: bool = True
+    # Instance policy for linking to external images (bio embeds + avatar URLs).
+    # Not user-gated — it's a privacy/CSP setting that applies uniformly.
+    external_images_allowed: bool = True
 
     model_config = {"from_attributes": True}
 

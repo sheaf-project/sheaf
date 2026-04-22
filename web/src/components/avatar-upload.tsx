@@ -26,6 +26,7 @@ export function AvatarUpload({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const { user } = useAuth();
   const uploadsAllowed = user?.uploads_allowed ?? true;
+  const externalAllowed = user?.external_images_allowed ?? true;
 
   async function handleFile(file: File) {
     setError("");
@@ -105,15 +106,17 @@ export function AvatarUpload({
               {uploading ? "Uploading..." : "Upload"}
             </Button>
           )}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowUrlInput(!showUrlInput)}
-            title="Use image URL"
-          >
-            <Link className="h-3 w-3" />
-          </Button>
+          {externalAllowed && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowUrlInput(!showUrlInput)}
+              title="Use image URL"
+            >
+              <Link className="h-3 w-3" />
+            </Button>
+          )}
           {(previewUrl ?? url) && onRemove && (
             <Button
               type="button"

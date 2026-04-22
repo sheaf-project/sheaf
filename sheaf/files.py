@@ -157,12 +157,17 @@ def normalize_avatar_url(url: str | None) -> str | None:
     - avatars/user_id/uuid.png → avatars/user_id/uuid.png  (already bare)
     - https://gravatar.com/img.png → https://gravatar.com/img.png  (external, unchanged)
     - None → None
+
+    When allow_external_images is disabled, external URLs are dropped to None
+    so an instance policy change doesn't leak through to new writes.
     """
     if url is None:
         return None
     key = _to_internal_key(url)
     if key is not None:
         return key
+    if not settings.allow_external_images:
+        return None
     return url
 
 
@@ -241,6 +246,9 @@ def normalize_description_urls(text: str | None) -> str | None:
 
         # External URLs must pass validation
         if url.startswith("http"):
+            if not settings.allow_external_images:
+                # Instance policy: no external embeds, strip the reference.
+                return ""
             if _is_safe_external_url(url):
                 return prefix + url + suffix
             # Unsafe URL — remove the image reference

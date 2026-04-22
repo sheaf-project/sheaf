@@ -33,6 +33,7 @@ export function ImagePickerDialog({
 }) {
   const { user } = useAuth();
   const uploadsAllowed = user?.bio_uploads_allowed ?? true;
+  const externalAllowed = user?.external_images_allowed ?? true;
   const [tab, setTab] = useState<string>(uploadsAllowed ? "upload" : "existing");
 
   return (
@@ -53,10 +54,12 @@ export function ImagePickerDialog({
               <ImagePlus className="h-3.5 w-3.5" />
               Existing
             </TabsTrigger>
-            <TabsTrigger value="external" className="flex-1 gap-1.5">
-              <Link className="h-3.5 w-3.5" />
-              External URL
-            </TabsTrigger>
+            {externalAllowed && (
+              <TabsTrigger value="external" className="flex-1 gap-1.5">
+                <Link className="h-3.5 w-3.5" />
+                External URL
+              </TabsTrigger>
+            )}
           </TabsList>
           {uploadsAllowed && (
             <TabsContent value="upload" className="mt-3">
@@ -76,14 +79,16 @@ export function ImagePickerDialog({
               }}
             />
           </TabsContent>
-          <TabsContent value="external" className="mt-3">
-            <ExternalTab
-              onSelect={(url) => {
-                onSelect(`![image](${url})`);
-                onOpenChange(false);
-              }}
-            />
-          </TabsContent>
+          {externalAllowed && (
+            <TabsContent value="external" className="mt-3">
+              <ExternalTab
+                onSelect={(url) => {
+                  onSelect(`![image](${url})`);
+                  onOpenChange(false);
+                }}
+              />
+            </TabsContent>
+          )}
         </Tabs>
       </DialogContent>
     </Dialog>

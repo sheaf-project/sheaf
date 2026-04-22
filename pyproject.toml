@@ -60,4 +60,5 @@ markers = [
     "rate_limit: requires server running with RATE_LIMIT_ENABLED=true",
     "uploads_disabled: requires server running with ALLOW_IMAGE_UPLOADS=false",
     "bio_uploads_disabled: requires server running with ALLOW_BIO_IMAGES=false",
+    "external_images_disabled: requires server running with ALLOW_EXTERNAL_IMAGES=false",
 ]

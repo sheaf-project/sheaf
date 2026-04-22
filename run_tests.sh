@@ -187,6 +187,29 @@ else
     FAILED+=("selfhosted/bio_uploads_disabled")
 fi
 
+# 8. External images disabled (hosted uploads still allowed)
+echo ""
+echo "================================================================"
+echo "Config: selfhosted/external_images_disabled"
+echo "================================================================"
+
+ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_EXTERNAL_IMAGES=false \
+    $COMPOSE up -d app
+
+wait_for_app
+
+if SHEAF_TEST_URL="$TEST_URL" \
+   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+   SHEAF_TEST_MODE=selfhosted \
+   SHEAF_TEST_EXTERNAL_IMAGES_DISABLED=true \
+   uv run --extra dev pytest -q -m "external_images_disabled"; then
+    echo "PASSED: selfhosted/external_images_disabled"
+else
+    echo "FAILED: selfhosted/external_images_disabled"
+    FAILED+=("selfhosted/external_images_disabled")
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

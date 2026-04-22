@@ -716,6 +716,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
             (user.is_admin or settings.allow_image_uploads or user.can_upload_images)
             and (user.is_admin or settings.allow_bio_images or user.can_upload_images)
         ),
+        external_images_allowed=settings.allow_external_images,
     )
 
 
@@ -760,6 +761,7 @@ async def update_me(
             (user.is_admin or settings.allow_image_uploads or user.can_upload_images)
             and (user.is_admin or settings.allow_bio_images or user.can_upload_images)
         ),
+        external_images_allowed=settings.allow_external_images,
     )
 
 
