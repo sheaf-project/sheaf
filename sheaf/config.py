@@ -180,6 +180,10 @@ class Settings(BaseSettings):
             return set()
         return {ip.strip() for ip in self.trusted_proxies.split(",") if ip.strip()}
 
+    # Legal links for the footer (optional). Empty = hide.
+    terms_url: str = ""
+    privacy_url: str = ""
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

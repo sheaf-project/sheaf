@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordField } from "@/components/password-field";
 import { Logo } from "@/components/logo";
+import { LegalFooter } from "@/components/legal-footer";
 import { ApiError } from "@/lib/api-client";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
 import { Sun, Moon } from "lucide-react";
@@ -64,7 +65,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+    <div className="relative flex min-h-screen flex-col bg-background">
       <Button
         variant="ghost"
         size="icon"
@@ -78,6 +79,7 @@ export function LoginPage() {
           <Moon className="h-4 w-4" />
         )}
       </Button>
+      <div className="flex flex-1 items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <Logo className="mx-auto mb-2 h-16 w-16 rounded-2xl" />
@@ -283,6 +285,8 @@ export function LoginPage() {
           )}
         </CardContent>
       </Card>
+      </div>
+      <LegalFooter />
     </div>
   );
 }

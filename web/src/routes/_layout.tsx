@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { AccountPending } from "@/components/account-pending";
 import { AnnouncementBanners } from "@/components/announcement-banners";
 import { DeletionBanner } from "@/components/deletion-banner";
+import { LegalFooter } from "@/components/legal-footer";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function AppLayout() {
@@ -35,6 +36,7 @@ export function AppLayout() {
         <main className="flex-1 overflow-auto p-6">
           <Outlet />
         </main>
+        <LegalFooter />
       </div>
     </div>
   );

@@ -96,6 +96,8 @@ async def get_auth_config():
         "email_enabled": settings.email_backend != "none",
         "base_url": settings.sheaf_base_url or None,
         "account_deletion_grace_days": settings.account_deletion_grace_days,
+        "terms_url": settings.terms_url or None,
+        "privacy_url": settings.privacy_url or None,
     }
 
 
