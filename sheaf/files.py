@@ -126,26 +126,44 @@ def verify_file_token(key: str, token: str, expires: str) -> bool:
     return hmac.compare_digest(expected, token)
 
 
+def _to_internal_key(url: str) -> str | None:
+    """If `url` points at our own storage, return the bare key; else None.
+
+    "Our own storage" means either the app serve path (/v1/files/...) or the
+    configured CDN hostname (settings.s3_public_url). Query params are
+    stripped. Bare keys (no scheme, no leading slash) are returned as-is.
+    Anything else — Gravatar, avatars.dicebear.com, a user-typed URL — is
+    treated as external and returns None so callers can pass it through.
+    """
+    if url.startswith("/v1/files/"):
+        return url.removeprefix("/v1/files/").split("?", 1)[0]
+    if settings.s3_public_url:
+        base = settings.s3_public_url.rstrip("/") + "/"
+        if url.startswith(base):
+            return url.removeprefix(base).split("?", 1)[0]
+    if url.startswith(("http://", "https://", "/")):
+        return None
+    # Already a bare key (e.g. "avatars/…/uuid.png"). Strip any query params
+    # defensively.
+    return url.split("?", 1)[0]
+
+
 def normalize_avatar_url(url: str | None) -> str | None:
-    """Strip a signed/serve URL back to a bare storage key for DB storage.
+    """Strip a signed/serve/CDN URL back to a bare storage key for DB storage.
 
     Handles:
-    - /v1/files/avatars/user_id/uuid.png?token=...&expires=... → avatars/user_id/uuid.png
-    - /v1/files/bios/user_id/uuid.png?token=...&expires=...   → bios/user_id/uuid.png
+    - /v1/files/avatars/user_id/uuid.png?token=... → avatars/user_id/uuid.png
+    - https://{s3_public_url}/avatars/user_id/uuid.png?token=... → avatars/user_id/uuid.png
     - avatars/user_id/uuid.png → avatars/user_id/uuid.png  (already bare)
-    - https://example.com/img.png → https://example.com/img.png  (external, unchanged)
+    - https://gravatar.com/img.png → https://gravatar.com/img.png  (external, unchanged)
     - None → None
     """
     if url is None:
         return None
-    if url.startswith("http"):
-        return url
-    # Strip /v1/files/ prefix if present
-    key = url.removeprefix("/v1/files/")
-    # Strip query params (token, expires)
-    if "?" in key:
-        key = key.split("?", 1)[0]
-    return key
+    key = _to_internal_key(url)
+    if key is not None:
+        return key
+    return url
 
 
 def resolve_avatar_url(url: str | None) -> str | None:
@@ -153,17 +171,21 @@ def resolve_avatar_url(url: str | None) -> str | None:
 
     Priority:
     1. None → None
-    2. External URL (starts with http) → returned as-is
-    3. S3 + s3_public_url + signed → {cdn_url}/{key}?token=…  (CDN Worker validates HMAC)
-    4. S3 + s3_public_url + unsigned → {cdn_url}/{key}  (CDN hotlink protection only)
-    5. image_serving=signed → /v1/files/{key}?token=…  (HMAC gated, app serves)
-    6. image_serving=unsigned → /v1/files/{key}  (open access, app serves)
+    2. External URL (not ours) → returned as-is
+    3. Internal URL or bare key, S3 + s3_public_url + signed → {cdn}/{key}?token=…
+    4. Internal URL or bare key, S3 + s3_public_url + unsigned → {cdn}/{key}
+    5. Internal URL or bare key, image_serving=signed → /v1/files/{key}?token=…
+    6. Internal URL or bare key, image_serving=unsigned → /v1/files/{key}
+
+    Recognising our own CDN hostname matters for DB rows written before this
+    code landed: they store the full CDN URL, and we want them signed on
+    read just the same as bare keys.
     """
     if url is None:
         return None
-    if url.startswith("http"):
+    key = _to_internal_key(url)
+    if key is None:
         return url
-    key = url.removeprefix("/v1/files/")
     if settings.storage_backend == "s3" and settings.s3_public_url:
         if settings.image_serving == "signed":
             return sign_cdn_url(key)

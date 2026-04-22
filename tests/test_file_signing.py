@@ -6,6 +6,7 @@ import pytest
 
 from sheaf.config import settings
 from sheaf.files import (
+    normalize_avatar_url,
     resolve_avatar_url,
     sign_cdn_url,
     sign_file_url,
@@ -115,3 +116,60 @@ def test_resolve_avatar_url_external_url_passthrough():
 
 def test_resolve_avatar_url_none():
     assert resolve_avatar_url(None) is None
+
+
+def test_resolve_avatar_url_legacy_full_cdn_url_gets_signed(monkeypatch):
+    """DB row written before CDN-aware code has the full CDN URL, no token.
+    It should still be recognised and signed on read."""
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    monkeypatch.setattr(settings, "image_serving", "signed")
+
+    stored = "https://images.example.com/avatars/user/abc.png"
+    resolved = resolve_avatar_url(stored)
+    assert resolved.startswith("https://images.example.com/avatars/user/abc.png?token=")
+    assert "expires=" in resolved
+
+
+def test_resolve_avatar_url_stored_signed_cdn_url_resigns(monkeypatch):
+    """DB row containing a stale signed CDN URL should drop the old token
+    and get a fresh one, not be returned verbatim."""
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    monkeypatch.setattr(settings, "image_serving", "signed")
+
+    stored = "https://images.example.com/avatars/user/abc.png?token=deadbeef&expires=1"
+    resolved = resolve_avatar_url(stored)
+    assert "token=deadbeef" not in resolved
+    assert "expires=1&" not in resolved and not resolved.endswith("expires=1")
+    # And is in fact a valid signed URL
+    q = parse_qs(urlparse(resolved).query)
+    assert verify_file_token("avatars/user/abc.png", q["token"][0], q["expires"][0])
+
+
+def test_normalize_avatar_url_strips_cdn_url_to_key(monkeypatch):
+    """Writing a full CDN URL back to the DB should persist the bare key."""
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    stored = "https://images.example.com/avatars/user/abc.png?token=x&expires=1"
+    assert normalize_avatar_url(stored) == "avatars/user/abc.png"
+
+
+def test_normalize_avatar_url_external_passthrough(monkeypatch):
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    assert (
+        normalize_avatar_url("https://gravatar.com/x.png")
+        == "https://gravatar.com/x.png"
+    )
+
+
+def test_normalize_avatar_url_strips_app_serve_url():
+    stored = "/v1/files/avatars/user/abc.png?token=x&expires=1"
+    assert normalize_avatar_url(stored) == "avatars/user/abc.png"
+
+
+def test_normalize_avatar_url_bare_key_unchanged():
+    assert normalize_avatar_url("avatars/user/abc.png") == "avatars/user/abc.png"
+
+
+def test_normalize_avatar_url_none():
+    assert normalize_avatar_url(None) is None
