@@ -22,6 +22,7 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [newsletterOptIn, setNewsletterOptIn] = useState(false);
+  const [termsAgreed, setTermsAgreed] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [needs2FA, setNeeds2FA] = useState(false);
   const [error, setError] = useState("");
@@ -267,6 +268,43 @@ export function LoginPage() {
                       this anytime in settings.
                     </Label>
                   </div>
+                  {config?.terms_url && (
+                    <div className="flex items-start gap-3">
+                      <Checkbox
+                        id="reg-terms"
+                        checked={termsAgreed}
+                        onCheckedChange={(v) => setTermsAgreed(v === true)}
+                      />
+                      <Label
+                        htmlFor="reg-terms"
+                        className="text-sm font-normal leading-snug cursor-pointer"
+                      >
+                        I agree to the{" "}
+                        <a
+                          href={config.terms_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline"
+                        >
+                          Terms of Service
+                        </a>
+                        {config.privacy_url && (
+                          <>
+                            {" "}and{" "}
+                            <a
+                              href={config.privacy_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline"
+                            >
+                              Privacy Policy
+                            </a>
+                          </>
+                        )}
+                        .
+                      </Label>
+                    </div>
+                  )}
                   {error && (
                     <p className="text-sm text-destructive-foreground">
                       {error}
@@ -275,7 +313,7 @@ export function LoginPage() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={submitting}
+                    disabled={submitting || (!!config?.terms_url && !termsAgreed)}
                   >
                     {submitting ? "Creating account..." : "Create account"}
                   </Button>
