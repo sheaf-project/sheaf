@@ -55,6 +55,11 @@ export function AvatarUpload({
 
   function handleUrlSubmit(e: FormEvent) {
     e.preventDefault();
+    // This <form> is nested inside the parent profile <form>. Submit events
+    // bubble through React's tree (even across Radix portals), so without
+    // stopPropagation the parent form saves with stale state before our
+    // onUpload takes effect.
+    e.stopPropagation();
     if (urlValue.trim()) {
       onUpload(urlValue.trim());
       setUrlValue("");

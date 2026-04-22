@@ -183,6 +183,11 @@ function ExternalTab({ onSelect }: { onSelect: (url: string) => void }) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // This dialog is rendered via a portal but React still bubbles submit
+    // events through the virtual tree, so without stopPropagation the parent
+    // profile <form> saves with stale bio state before our onSelect inserts
+    // the image markdown.
+    e.stopPropagation();
     const trimmed = url.trim();
     if (!trimmed) return;
     if (!trimmed.startsWith("https://")) {
