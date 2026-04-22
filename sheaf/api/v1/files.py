@@ -65,6 +65,16 @@ def _get_quota_bytes(user: User) -> int:
     return mb * 1024 * 1024 if mb > 0 else 0
 
 
+def _effective_size_limit_mb(purpose: str) -> int:
+    """Per-purpose upload size cap (MB), falling back to max_upload_size_mb."""
+    override = (
+        settings.max_bio_image_size_mb
+        if purpose == "bio"
+        else settings.max_avatar_size_mb
+    )
+    return override if override > 0 else settings.max_upload_size_mb
+
+
 @router.post(
     "/upload",
     dependencies=[Depends(require_scope("members:write")), rate_limit(10, 60, "user")],
@@ -81,6 +91,16 @@ async def upload_file(
             detail="Image uploads are disabled on this instance.",
         )
 
+    # Bio images have their own narrower toggle. Admins and per-user
+    # allowlist still bypass, same as the master switch.
+    if purpose == "bio" and not (
+        user.is_admin or settings.allow_bio_images or user.can_upload_images
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bio images are disabled on this instance.",
+        )
+
     # Cheap first-pass reject: client-supplied header must claim an allowed
     # type. The authoritative check is the magic-byte sniff below.
     if file.content_type not in ALLOWED_TYPES:
@@ -92,11 +112,12 @@ async def upload_file(
     data = await file.read()
     file_size = len(data)
 
-    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    max_mb = _effective_size_limit_mb(purpose)
+    max_bytes = max_mb * 1024 * 1024
     if file_size > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File too large. Max: {settings.max_upload_size_mb}MB",
+            detail=f"File too large. Max: {max_mb}MB",
         )
 
     # Authoritative content check: magic bytes determine the real MIME type.

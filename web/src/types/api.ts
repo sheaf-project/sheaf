@@ -24,6 +24,7 @@ export interface User {
   email_delivery_status: "ok" | "soft_bouncing" | "hard_bounced" | "complained";
   email_revalidation_required: boolean;
   uploads_allowed: boolean;
+  bio_uploads_allowed: boolean;
 }
 
 export interface ApiKey {

@@ -27,7 +27,10 @@ def _upload(c: httpx.Client) -> httpx.Response:
 
 
 def test_me_reports_uploads_not_allowed(auth_client: httpx.Client):
-    assert auth_client.get("/v1/auth/me").json()["uploads_allowed"] is False
+    me = auth_client.get("/v1/auth/me").json()
+    assert me["uploads_allowed"] is False
+    # Master gate off implies bio gate off too.
+    assert me["bio_uploads_allowed"] is False
 
 
 def test_non_allowlisted_user_gets_403(auth_client: httpx.Client):

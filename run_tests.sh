@@ -164,6 +164,29 @@ else
     FAILED+=("selfhosted/uploads_disabled")
 fi
 
+# 7. Bio images disabled (avatars still allowed)
+echo ""
+echo "================================================================"
+echo "Config: selfhosted/bio_uploads_disabled"
+echo "================================================================"
+
+ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_BIO_IMAGES=false \
+    $COMPOSE up -d app
+
+wait_for_app
+
+if SHEAF_TEST_URL="$TEST_URL" \
+   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+   SHEAF_TEST_MODE=selfhosted \
+   SHEAF_TEST_BIO_UPLOADS_DISABLED=true \
+   uv run --extra dev pytest -q -m "bio_uploads_disabled"; then
+    echo "PASSED: selfhosted/bio_uploads_disabled"
+else
+    echo "FAILED: selfhosted/bio_uploads_disabled"
+    FAILED+=("selfhosted/bio_uploads_disabled")
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

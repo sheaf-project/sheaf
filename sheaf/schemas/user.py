@@ -45,6 +45,9 @@ class UserRead(BaseModel):
     # Effective permission — True if global uploads are on, the user is an
     # admin, or the user is individually allowlisted.
     uploads_allowed: bool = True
+    # Same logic but for bio/description image embeds specifically. False
+    # when bios are disabled at the instance level even if avatars are on.
+    bio_uploads_allowed: bool = True
 
     model_config = {"from_attributes": True}
 

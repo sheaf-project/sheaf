@@ -32,7 +32,7 @@ export function ImagePickerDialog({
   onSelect: (markdown: string) => void;
 }) {
   const { user } = useAuth();
-  const uploadsAllowed = user?.uploads_allowed ?? true;
+  const uploadsAllowed = user?.bio_uploads_allowed ?? true;
   const [tab, setTab] = useState<string>(uploadsAllowed ? "upload" : "existing");
 
   return (

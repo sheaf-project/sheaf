@@ -23,6 +23,7 @@ _ADMIN_AUTH_LEVEL = os.environ.get("SHEAF_TEST_ADMIN_AUTH_LEVEL", "none")
 _SHEAF_MODE = os.environ.get("SHEAF_TEST_MODE", "selfhosted")
 _RATE_LIMIT = os.environ.get("SHEAF_TEST_RATE_LIMIT", "false").lower() == "true"
 _UPLOADS_DISABLED = os.environ.get("SHEAF_TEST_UPLOADS_DISABLED", "false").lower() == "true"
+_BIO_UPLOADS_DISABLED = os.environ.get("SHEAF_TEST_BIO_UPLOADS_DISABLED", "false").lower() == "true"
 
 
 def pytest_collection_modifyitems(items):
@@ -37,6 +38,8 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_RATE_LIMIT=true"))
         if "uploads_disabled" in item.keywords and not _UPLOADS_DISABLED:
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_UPLOADS_DISABLED=true"))
+        if "bio_uploads_disabled" in item.keywords and not _BIO_UPLOADS_DISABLED:
+            item.add_marker(pytest.mark.skip("requires SHEAF_TEST_BIO_UPLOADS_DISABLED=true"))
 
 
 @pytest.fixture

@@ -59,4 +59,5 @@ markers = [
     "saas: requires server running with SHEAF_MODE=saas",
     "rate_limit: requires server running with RATE_LIMIT_ENABLED=true",
     "uploads_disabled: requires server running with ALLOW_IMAGE_UPLOADS=false",
+    "bio_uploads_disabled: requires server running with ALLOW_BIO_IMAGES=false",
 ]

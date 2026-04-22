@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # jwt_secret_key — fine for the non-CDN paradigms.
     file_signing_key: str = ""
     max_upload_size_mb: int = 5
+    # Per-purpose overrides. 0 means "inherit max_upload_size_mb" so existing
+    # deploys keep the single-knob behaviour until they set these explicitly.
+    max_avatar_size_mb: int = 0
+    max_bio_image_size_mb: int = 0
     # Global hard cap on request body size (MB) enforced by middleware before
     # the body is buffered anywhere. Must be >= the largest per-endpoint cap
     # (currently the 100MB import endpoint) plus a little multipart overhead.
@@ -87,6 +91,11 @@ class Settings(BaseSettings):
     # Global toggle for image uploads. When False, only admins and users
     # with can_upload_images=True on their account can upload.
     allow_image_uploads: bool = True
+    # Bio-image toggle, narrower than allow_image_uploads. When False, avatar
+    # uploads still work but bio/description embeds are rejected. Admins and
+    # per-user can_upload_images still bypass. The master switch
+    # allow_image_uploads wins if it is False.
+    allow_bio_images: bool = True
 
     # Image serving mode: "signed" (default) or "unsigned".
     # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.

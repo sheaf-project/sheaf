@@ -712,6 +712,10 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         uploads_allowed=(
             user.is_admin or settings.allow_image_uploads or user.can_upload_images
         ),
+        bio_uploads_allowed=(
+            (user.is_admin or settings.allow_image_uploads or user.can_upload_images)
+            and (user.is_admin or settings.allow_bio_images or user.can_upload_images)
+        ),
     )
 
 
@@ -751,6 +755,10 @@ async def update_me(
         email_revalidation_required=user.email_revalidation_required,
         uploads_allowed=(
             user.is_admin or settings.allow_image_uploads or user.can_upload_images
+        ),
+        bio_uploads_allowed=(
+            (user.is_admin or settings.allow_image_uploads or user.can_upload_images)
+            and (user.is_admin or settings.allow_bio_images or user.can_upload_images)
         ),
     )
 
