@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { GroupCreate, GroupUpdate } from "@/types/api";
 import * as api from "@/lib/groups";
@@ -21,6 +22,24 @@ export function useGroupMembers(id: string) {
     queryKey: groupKeys.members(id),
     queryFn: () => api.getGroupMembers(id),
   });
+}
+
+export function useAllGroupMembers(): Map<string, Set<string>> {
+  const { data: groups } = useGroups();
+  const queries = useQueries({
+    queries: (groups ?? []).map((g) => ({
+      queryKey: groupKeys.members(g.id),
+      queryFn: () => api.getGroupMembers(g.id),
+    })),
+  });
+  return useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    (groups ?? []).forEach((g, i) => {
+      const members = queries[i]?.data;
+      if (members) map.set(g.id, new Set(members.map((m) => m.id)));
+    });
+    return map;
+  }, [groups, queries]);
 }
 
 export function useCreateGroup() {

@@ -182,6 +182,7 @@ export function FrontsPage() {
             selected={selectedMembers}
             onChange={setSelectedMembers}
             className="py-2"
+            showGroupFilter
           />
           <div className="flex items-center gap-2 pt-1">
             <Checkbox

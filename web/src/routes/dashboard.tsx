@@ -135,6 +135,7 @@ export function DashboardPage() {
             selected={selectedMembers}
             onChange={setSelectedMembers}
             className="py-2"
+            showGroupFilter
           />
           <DialogFooter>
             <Button
