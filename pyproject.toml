@@ -24,6 +24,7 @@ dependencies = [
     "python-multipart>=0.0.26",
     "email-validator>=2.1.0",
     "aiofiles>=24.1.0",
+    "altcha>=0.2.0",
 ]
 
 [project.optional-dependencies]

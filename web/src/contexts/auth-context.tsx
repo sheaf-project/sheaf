@@ -6,12 +6,18 @@ import * as authApi from "@/lib/auth";
 interface AuthState {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string, totp_code?: string) => Promise<void>;
+  login: (
+    email: string,
+    password: string,
+    totp_code?: string,
+    captcha?: string,
+  ) => Promise<void>;
   register: (
     email: string,
     password: string,
     invite_code?: string,
     newsletter_opt_in?: boolean,
+    captcha?: string,
   ) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -44,13 +50,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (email: string, password: string, totp_code?: string) => {
-    const tokens = await authApi.login(email, password, totp_code);
-    setAccessToken(tokens.access_token);
-    // Refresh token is set as HttpOnly cookie by the server
-    const me = await authApi.getMe();
-    setUser(me);
-  }, []);
+  const login = useCallback(
+    async (
+      email: string,
+      password: string,
+      totp_code?: string,
+      captcha?: string,
+    ) => {
+      const tokens = await authApi.login(email, password, totp_code, captcha);
+      setAccessToken(tokens.access_token);
+      // Refresh token is set as HttpOnly cookie by the server
+      const me = await authApi.getMe();
+      setUser(me);
+    },
+    [],
+  );
 
   const register = useCallback(
     async (
@@ -58,12 +72,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: string,
       invite_code?: string,
       newsletter_opt_in?: boolean,
+      captcha?: string,
     ) => {
       const tokens = await authApi.register(
         email,
         password,
         invite_code,
         newsletter_opt_in,
+        captcha,
       );
       setAccessToken(tokens.access_token);
       // Refresh token is set as HttpOnly cookie by the server

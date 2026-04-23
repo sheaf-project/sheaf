@@ -10,6 +10,8 @@ export interface AuthConfig {
   file_cdn_base: string | null;
   terms_url: string | null;
   privacy_url: string | null;
+  captcha_provider: string | null;
+  captcha_on_login: boolean;
 }
 
 export function getAuthConfig() {
@@ -21,6 +23,7 @@ export function register(
   password: string,
   invite_code?: string,
   newsletter_opt_in: boolean = false,
+  captcha?: string,
 ) {
   return apiFetch<TokenResponse>("/v1/auth/register", {
     method: "POST",
@@ -30,6 +33,7 @@ export function register(
       password,
       newsletter_opt_in,
       ...(invite_code ? { invite_code } : {}),
+      ...(captcha ? { captcha } : {}),
     }),
   });
 }
@@ -41,11 +45,21 @@ export function updateMe(update: { newsletter_opt_in?: boolean }) {
   });
 }
 
-export function login(email: string, password: string, totp_code?: string) {
+export function login(
+  email: string,
+  password: string,
+  totp_code?: string,
+  captcha?: string,
+) {
   return apiFetch<TokenResponse>("/v1/auth/login", {
     method: "POST",
     skipRefresh: true,
-    body: JSON.stringify({ email, password, ...(totp_code ? { totp_code } : {}) }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(totp_code ? { totp_code } : {}),
+      ...(captcha ? { captcha } : {}),
+    }),
   });
 }
 

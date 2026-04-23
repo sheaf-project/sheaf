@@ -184,6 +184,20 @@ class Settings(BaseSettings):
     terms_url: str = ""
     privacy_url: str = ""
 
+    # Captcha (signup gate; optionally login).
+    # Provider: "" (disabled) | "altcha". Altcha is in-process proof-of-work
+    # with no third-party dependency — see sheaf/services/captcha.py.
+    captcha_provider: str = ""
+    altcha_hmac_key: str = ""
+    # PoW cost (PBKDF2 iteration count). Higher = harder. ~50k ≈ low-single-digit
+    # seconds on modern hardware; 500k starts to feel sluggish. Tune up if you
+    # see abuse.
+    altcha_complexity: int = 50000
+    # Signup is always gated when CAPTCHA_PROVIDER is set. Login is opt-in
+    # because it's the hotter UX path and captchas on login are a friction
+    # trade-off you may not want unless under active credential-stuffing.
+    captcha_on_login: bool = False
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"
@@ -257,6 +271,21 @@ def _validate_settings() -> None:
         logger.critical(
             "EMAIL_BACKEND is configured but SHEAF_BASE_URL is not set — "
             "email links require a base URL. Set SHEAF_BASE_URL (e.g. https://sheaf.example.com)."
+        )
+        sys.exit(1)
+
+    if settings.captcha_provider and settings.captcha_provider != "altcha":
+        logger.critical(
+            "CAPTCHA_PROVIDER=%s is not recognised. Supported: altcha. "
+            "Leave empty to disable.",
+            settings.captcha_provider,
+        )
+        sys.exit(1)
+
+    if settings.captcha_provider == "altcha" and not settings.altcha_hmac_key:
+        logger.critical(
+            "CAPTCHA_PROVIDER=altcha but ALTCHA_HMAC_KEY is not set. "
+            "Generate a strong random string (e.g. `openssl rand -hex 32`) and set it."
         )
         sys.exit(1)
 

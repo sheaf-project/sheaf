@@ -45,6 +45,7 @@ from sheaf.schemas.user import (
     UserRegister,
     UserUpdate,
 )
+from sheaf.services import captcha
 
 _VALID_SCOPES = {
     "system:read", "system:write",
@@ -99,7 +100,23 @@ async def get_auth_config():
         "file_cdn_base": settings.s3_public_url.rstrip("/") or None,
         "terms_url": settings.terms_url or None,
         "privacy_url": settings.privacy_url or None,
+        "captcha_provider": settings.captcha_provider or None,
+        "captcha_on_login": captcha.required_for_login(),
     }
+
+
+@router.get(
+    "/captcha/challenge",
+    dependencies=[rate_limit(20, 60)],
+)
+async def get_captcha_challenge():
+    """Issue a captcha challenge for the login/register widget."""
+    if not captcha.required_for_signup():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Captcha is not enabled",
+        )
+    return captcha.issue_challenge()
 
 
 def _hash_recovery_code(code: str) -> str:
@@ -188,6 +205,12 @@ async def register(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Registration is closed",
+        )
+
+    if captcha.required_for_signup() and not captcha.verify(body.captcha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Captcha verification failed",
         )
 
     # Validate invite code if required or optionally provided
@@ -458,6 +481,12 @@ async def login(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
+    if captcha.required_for_login() and not captcha.verify(body.captcha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Captcha verification failed",
+        )
+
     email_hash = blind_index(body.email)
     result = await db.execute(select(User).where(User.email_hash == email_hash))
     user = result.scalar_one_or_none()

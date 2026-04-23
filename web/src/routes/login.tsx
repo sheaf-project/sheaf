@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordField } from "@/components/password-field";
+import { Captcha } from "@/components/captcha";
 import { Logo } from "@/components/logo";
 import { LegalFooter } from "@/components/legal-footer";
 import { ApiError } from "@/lib/api-client";
@@ -28,6 +29,8 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [config, setConfig] = useState<AuthConfig | null>(null);
+  const [registerCaptcha, setRegisterCaptcha] = useState("");
+  const [loginCaptcha, setLoginCaptcha] = useState("");
 
   useEffect(() => {
     getAuthConfig().then(setConfig).catch(() => {});
@@ -39,6 +42,8 @@ export function LoginPage() {
   const registrationClosed = config?.registration_mode === "closed";
   const showInviteField =
     config?.registration_mode === "invite" || config?.invite_codes_enabled;
+  const captchaOnRegister = !!config?.captcha_provider;
+  const captchaOnLogin = !!config?.captcha_provider && config.captcha_on_login;
 
   async function handleSubmit(action: "login" | "register", e: FormEvent) {
     e.preventDefault();
@@ -46,9 +51,20 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       if (action === "login") {
-        await login(email, password, totpCode || undefined);
+        await login(
+          email,
+          password,
+          totpCode || undefined,
+          loginCaptcha || undefined,
+        );
       } else {
-        await register(email, password, inviteCode || undefined, newsletterOptIn);
+        await register(
+          email,
+          password,
+          inviteCode || undefined,
+          newsletterOptIn,
+          registerCaptcha || undefined,
+        );
       }
     } catch (err) {
       if (err instanceof ApiError) {
@@ -129,10 +145,20 @@ export function LoginPage() {
                   />
                 </div>
               )}
+              {captchaOnLogin && (
+                <Captcha
+                  onVerified={setLoginCaptcha}
+                  onReset={() => setLoginCaptcha("")}
+                />
+              )}
               {error && (
                 <p className="text-sm text-destructive-foreground">{error}</p>
               )}
-              <Button type="submit" className="w-full" disabled={submitting}>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={submitting || (captchaOnLogin && !loginCaptcha)}
+              >
                 {submitting ? "Signing in..." : "Sign in"}
               </Button>
               {config?.email_enabled && (
@@ -190,6 +216,12 @@ export function LoginPage() {
                       />
                     </div>
                   )}
+                  {captchaOnLogin && (
+                    <Captcha
+                      onVerified={setLoginCaptcha}
+                      onReset={() => setLoginCaptcha("")}
+                    />
+                  )}
                   {error && (
                     <p className="text-sm text-destructive-foreground">
                       {error}
@@ -198,7 +230,7 @@ export function LoginPage() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={submitting}
+                    disabled={submitting || (captchaOnLogin && !loginCaptcha)}
                   >
                     {submitting ? "Signing in..." : "Sign in"}
                   </Button>
@@ -305,6 +337,12 @@ export function LoginPage() {
                       </Label>
                     </div>
                   )}
+                  {captchaOnRegister && (
+                    <Captcha
+                      onVerified={setRegisterCaptcha}
+                      onReset={() => setRegisterCaptcha("")}
+                    />
+                  )}
                   {error && (
                     <p className="text-sm text-destructive-foreground">
                       {error}
@@ -313,7 +351,11 @@ export function LoginPage() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={submitting || (!!config?.terms_url && !termsAgreed)}
+                    disabled={
+                      submitting
+                      || (!!config?.terms_url && !termsAgreed)
+                      || (captchaOnRegister && !registerCaptcha)
+                    }
                   >
                     {submitting ? "Creating account..." : "Create account"}
                   </Button>

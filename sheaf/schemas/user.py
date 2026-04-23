@@ -9,12 +9,14 @@ class UserRegister(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     invite_code: str | None = None
     newsletter_opt_in: bool = False
+    captcha: str | None = None
 
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
     totp_code: str | None = None
+    captcha: str | None = None
 
 
 class TokenResponse(BaseModel):
