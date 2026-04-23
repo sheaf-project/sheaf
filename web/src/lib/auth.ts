@@ -7,6 +7,7 @@ export interface AuthConfig {
   email_verification: string;
   email_enabled: boolean;
   account_deletion_grace_days: number;
+  file_cdn_base: string | null;
   terms_url: string | null;
   privacy_url: string | null;
 }

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useShowImageBadges } from "@/hooks/use-preferences";
@@ -6,9 +6,12 @@ import { ImagePickerDialog } from "@/components/image-picker";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ImagePlus, Bold, Italic, Link, Code, Tags, Tag } from "lucide-react";
+import { type AuthConfig, getAuthConfig } from "@/lib/auth";
 
-function isHostedImage(src: string) {
-  return src.startsWith("/v1/files/");
+function isHostedImage(src: string, cdnBase: string | null) {
+  if (src.startsWith("/v1/files/")) return true;
+  if (cdnBase && src.startsWith(cdnBase + "/")) return true;
+  return false;
 }
 
 function MarkdownPreview({
@@ -20,6 +23,13 @@ function MarkdownPreview({
 }) {
   const [defaultBadges] = useShowImageBadges();
   const showBadges = showBadgesOverride ?? defaultBadges;
+  const [cdnBase, setCdnBase] = useState<string | null>(null);
+
+  useEffect(() => {
+    getAuthConfig()
+      .then((c: AuthConfig) => setCdnBase(c.file_cdn_base))
+      .catch(() => {});
+  }, []);
 
   if (!content) {
     return <p className="text-sm text-muted-foreground italic">Nothing here yet.</p>;
@@ -31,7 +41,7 @@ function MarkdownPreview({
         remarkPlugins={[remarkGfm]}
         components={{
           img: ({ src, alt, ...props }) => {
-            const hosted = src ? isHostedImage(src) : false;
+            const hosted = src ? isHostedImage(src, cdnBase) : false;
             return (
               <span className="relative inline-block">
                 <img
