@@ -201,59 +201,60 @@ def resolve_avatar_url(url: str | None) -> str | None:
 
 
 def resolve_description_urls(text: str | None) -> str | None:
-    """Sign all /v1/files/ URLs in markdown description text for display."""
-    if text is None:
-        return None
+    """Sign image URLs in markdown descriptions for display.
 
-    def _replace(m: re.Match) -> str:
-        bare_path = m.group(1)  # /v1/files/{key}
-        key = bare_path.removeprefix("/v1/files/")
-        resolved = resolve_avatar_url(key)
-        return resolved or bare_path
+    Handles all three forms an internal reference can take:
+      1. /v1/files/{key} (the canonical storage form)
+      2. {s3_public_url}/{key} (legacy rows written before the CDN fix)
+      3. bare key (unusual, but _to_internal_key accepts it)
 
-    return _MD_FILE_URL_RE.sub(_replace, text)
-
-
-def normalize_description_urls(text: str | None) -> str | None:
-    """Normalize URLs in markdown descriptions for safe DB storage.
-
-    1. Strip signed query params from /v1/files/ URLs
-    2. Validate external image URLs (must be HTTPS, no internal IPs)
-    3. Remove unsafe external image references
+    Anything _to_internal_key doesn't recognise is left untouched.
     """
     if text is None:
         return None
 
-    # Strip signed query params from hosted file URLs
-    def _strip_signed(m: re.Match) -> str:
-        bare_path = m.group(1)
-        query = m.group(2) or ""
-        if query:
-            return bare_path
-        return bare_path + query
-
-    text = _MD_FILE_URL_RE.sub(_strip_signed, text)
-
-    # Validate external image URLs
-    def _validate_image(m: re.Match) -> str:
-        prefix = m.group(1)   # ![alt](
-        url = m.group(2)      # the URL
-        suffix = m.group(3)   # )
-
-        # Hosted images are fine
-        if url.startswith("/v1/files/") or url.startswith("/"):
+    def _replace(m: re.Match) -> str:
+        prefix, url, suffix = m.group(1), m.group(2), m.group(3)
+        key = _to_internal_key(url)
+        if key is None:
             return prefix + url + suffix
+        resolved = resolve_avatar_url(key)
+        return f"{prefix}{resolved or '/v1/files/' + key}{suffix}"
 
-        # External URLs must pass validation
+    return _MD_IMAGE_URL_RE.sub(_replace, text)
+
+
+def normalize_description_urls(text: str | None) -> str | None:
+    """Normalize markdown image URLs for safe DB storage.
+
+    Our own files — referenced as /v1/files/{key}, {s3_public_url}/{key}, or
+    a bare key — are canonicalised to /v1/files/{key} with any signed query
+    params stripped. External URLs are validated (HTTPS, no internal IPs);
+    unsafe ones and all externals under allow_external_images=False are
+    stripped from the text.
+
+    The CDN form matters: without recognising it, hosted bio images
+    re-rendered with a CDN URL round-trip through the client and come back
+    looking external — which then either silently deletes them (policy off)
+    or preserves a stale signed URL that 404s once its token expires.
+    """
+    if text is None:
+        return None
+
+    def _normalize(m: re.Match) -> str:
+        prefix, url, suffix = m.group(1), m.group(2), m.group(3)
+
+        key = _to_internal_key(url)
+        if key is not None:
+            return f"{prefix}/v1/files/{key}{suffix}"
+
         if url.startswith("http"):
             if not settings.allow_external_images:
-                # Instance policy: no external embeds, strip the reference.
                 return ""
             if _is_safe_external_url(url):
                 return prefix + url + suffix
-            # Unsafe URL — remove the image reference
             return ""
 
         return prefix + url + suffix
 
-    return _MD_IMAGE_URL_RE.sub(_validate_image, text)
+    return _MD_IMAGE_URL_RE.sub(_normalize, text)

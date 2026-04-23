@@ -9,6 +9,7 @@ from sheaf.files import (
     normalize_avatar_url,
     normalize_description_urls,
     resolve_avatar_url,
+    resolve_description_urls,
     sign_cdn_url,
     sign_file_url,
     verify_file_token,
@@ -206,3 +207,64 @@ def test_normalize_description_urls_preserves_hosted_when_external_disabled(monk
         "See ![pic](/v1/files/avatars/u/a.png)"
     )
     assert "/v1/files/avatars/u/a.png" in result
+
+
+def test_normalize_description_urls_canonicalises_signed_hosted_url(monkeypatch):
+    """Signed URLs round-trip back through normalize as bare /v1/files/ form."""
+    result = normalize_description_urls(
+        "See ![pic](/v1/files/members/m/a.png?token=xxx&expires=123)"
+    )
+    assert result == "See ![pic](/v1/files/members/m/a.png)"
+
+
+def test_normalize_description_urls_canonicalises_cdn_url(monkeypatch):
+    """CDN-form URLs are recognised as ours and stored as /v1/files/{key}.
+
+    Without this, a bio rendered with a CDN URL round-trips through the client
+    and comes back looking external — which either strips it (policy off) or
+    persists a stale token (policy on).
+    """
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
+    result = normalize_description_urls(
+        "See ![pic](https://cdn.example.com/members/m/a.png?token=xxx&expires=1)"
+    )
+    assert result == "See ![pic](/v1/files/members/m/a.png)"
+
+
+def test_normalize_description_urls_cdn_preserved_even_when_external_disabled(monkeypatch):
+    """The reported bug: hosted bio images must survive a save when
+    ALLOW_EXTERNAL_IMAGES=false, even under the CDN paradigm."""
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    result = normalize_description_urls(
+        "Portrait ![pic](https://cdn.example.com/members/m/a.png?token=old&expires=1)"
+    )
+    assert "/v1/files/members/m/a.png" in result
+    assert "cdn.example.com" not in result
+
+
+def test_resolve_description_urls_signs_hosted(monkeypatch):
+    result = resolve_description_urls("![pic](/v1/files/members/m/a.png)")
+    assert "/v1/files/members/m/a.png" in result
+    assert "token=" in result
+    assert "expires=" in result
+
+
+def test_resolve_description_urls_resigns_legacy_cdn_row(monkeypatch):
+    """Rows written before the CDN-recognition fix contain full CDN URLs with
+    stale tokens; resolve re-signs them so the client gets a fresh URL."""
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
+    result = resolve_description_urls(
+        "![pic](https://cdn.example.com/members/m/a.png?token=STALE&expires=1)"
+    )
+    assert "STALE" not in result
+    assert "cdn.example.com/members/m/a.png" in result
+    assert "token=" in result
+
+
+def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
+    result = resolve_description_urls("![avatar](https://gravatar.com/x.png)")
+    assert result == "![avatar](https://gravatar.com/x.png)"
