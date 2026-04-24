@@ -167,6 +167,14 @@ class Settings(BaseSettings):
     rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
     rate_limit_global_window: int = 60  # window in seconds
 
+    # Per-account login lockout. Any combination of wrong-password and
+    # wrong-TOTP attempts counts. On reaching max_failures, the account is
+    # locked for lockout_minutes. A successful login clears both fields;
+    # attempts arriving after an expired lockout reset the counter instead
+    # of incrementing, so the user isn't instantly re-locked on one typo.
+    login_max_failures: int = 10
+    login_lockout_minutes: int = 15
+
     # Trusted proxies — comma-separated IPs that are allowed to set X-Forwarded-For.
     # Only these IPs' X-Forwarded-For headers are trusted for rate limiting and
     # IP logging. If empty, X-Forwarded-For is never read (direct IP is used).

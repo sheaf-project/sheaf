@@ -1,13 +1,14 @@
 import hashlib
 import json
 import logging
+import math
 import secrets
 from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import and_, case, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -107,7 +108,7 @@ async def get_auth_config():
 
 @router.get(
     "/captcha/challenge",
-    dependencies=[rate_limit(20, 60)],
+    dependencies=[rate_limit(20, 60, fail_closed=True)],
 )
 async def get_captcha_challenge():
     """Issue a captcha challenge for the login/register widget."""
@@ -166,6 +167,40 @@ async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
     return True
 
 
+async def _record_login_failure(db: AsyncSession, user: User) -> None:
+    """Increment the user's failed-login counter and lock if threshold crossed.
+
+    A single atomic UPDATE handles both the increment and the lockout decision
+    so concurrent failed attempts can't race past the threshold. If the user
+    has a stale (expired) lockout, the counter resets to 1 for this attempt
+    instead of incrementing, so a returning user with one typo doesn't get
+    immediately re-locked on top of old failures.
+    """
+    now = datetime.now(UTC)
+    lockout_end = now + timedelta(minutes=settings.login_lockout_minutes)
+    threshold = settings.login_max_failures
+
+    new_count = case(
+        (
+            and_(User.locked_until.is_not(None), User.locked_until < now),
+            1,
+        ),
+        else_=User.failed_login_count + 1,
+    )
+    new_lock = case(
+        (new_count >= threshold, lockout_end),
+        else_=None,
+    )
+
+    await db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(failed_login_count=new_count, locked_until=new_lock)
+    )
+    await db.commit()
+    db.expire(user, ["failed_login_count", "locked_until"])
+
+
 async def _validate_invite_code(db: AsyncSession, code: str):
     """Validate and return an invite code, or raise 400/403."""
     from sheaf.models.invite_code import InviteCode
@@ -211,7 +246,10 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
     "/register",
     response_model=TokenResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[rate_limit(5, 60), rate_limit(15, 3600)],
+    dependencies=[
+        rate_limit(5, 60, fail_closed=True),
+        rate_limit(15, 3600, fail_closed=True),
+    ],
 )
 async def register(
     body: UserRegister,
@@ -327,7 +365,7 @@ async def register(
     )
 
 
-@router.get("/verify-email", dependencies=[rate_limit(5, 60)])
+@router.get("/verify-email", dependencies=[rate_limit(5, 60, fail_closed=True)])
 async def verify_email(
     token: str,
     db: AsyncSession = Depends(get_db),
@@ -360,7 +398,7 @@ async def verify_email(
     return {"verified": True}
 
 
-@router.post("/resend-verification", dependencies=[rate_limit(3, 60)])
+@router.post("/resend-verification", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def resend_verification(
     user: User = Depends(get_current_user_allow_unverified),
     db: AsyncSession = Depends(get_db),
@@ -400,7 +438,7 @@ class PasswordReset(BaseModel):
     new_password: str
 
 
-@router.post("/request-password-reset", dependencies=[rate_limit(3, 60)])
+@router.post("/request-password-reset", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def request_password_reset(
     body: PasswordResetRequest,
     request: Request,
@@ -446,7 +484,7 @@ async def request_password_reset(
     return {"requested": True}
 
 
-@router.post("/reset-password", dependencies=[rate_limit(5, 60)])
+@router.post("/reset-password", dependencies=[rate_limit(5, 60, fail_closed=True)])
 async def reset_password(
     body: PasswordReset,
     db: AsyncSession = Depends(get_db),
@@ -493,7 +531,10 @@ async def reset_password(
 @router.post(
     "/login",
     response_model=TokenResponse,
-    dependencies=[rate_limit(10, 60), rate_limit(30, 3600)],
+    dependencies=[
+        rate_limit(10, 60, fail_closed=True),
+        rate_limit(30, 3600, fail_closed=True),
+    ],
 )
 async def login(
     body: UserLogin,
@@ -511,7 +552,27 @@ async def login(
     result = await db.execute(select(User).where(User.email_hash == email_hash))
     user = result.scalar_one_or_none()
 
+    # Reject locked accounts before spending argon2 CPU on them. The lockout
+    # state leaks that the account exists, but so does a successful login
+    # attempt; rate limits + captcha are what stop anonymous enumeration.
+    now = datetime.now(UTC)
+    if (
+        user is not None
+        and user.locked_until is not None
+        and user.locked_until > now
+    ):
+        mins = max(1, math.ceil((user.locked_until - now).total_seconds() / 60))
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=(
+                f"Account temporarily locked after repeated failed attempts. "
+                f"Try again in {mins} minute{'s' if mins != 1 else ''}."
+            ),
+        )
+
     if user is None or not verify_password(body.password, user.password_hash):
+        if user is not None:
+            await _record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -529,6 +590,7 @@ async def login(
         if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
             db, user, body.totp_code
         ):
+            await _record_login_failure(db, user)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid TOTP code",
@@ -538,6 +600,9 @@ async def login(
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
 
+    # Successful login clears any accumulated failure state.
+    user.failed_login_count = 0
+    user.locked_until = None
     user.last_login_at = datetime.now(UTC)
 
     # Create session before committing so a Redis failure rolls back the DB

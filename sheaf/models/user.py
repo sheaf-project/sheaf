@@ -92,6 +92,18 @@ class User(UUIDMixin, TimestampMixin, Base):
         nullable=True,
     )
 
+    # Per-account brute-force lockout. failed_login_count accumulates across
+    # wrong-password and wrong-TOTP attempts; locked_until gates the login
+    # endpoint until the lockout window elapses. Both reset on a successful
+    # login, and the count is reset on the next attempt after locked_until
+    # passes so a returning user isn't immediately re-locked on one typo.
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Account deletion
     deletion_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
