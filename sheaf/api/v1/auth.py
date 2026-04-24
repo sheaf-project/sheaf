@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,20 +130,40 @@ def _store_recovery_codes(user: User, codes: list[str]) -> None:
     user.recovery_codes = encrypt(json.dumps(hashed))
 
 
-def _check_recovery_code(user: User, code: str) -> bool:
-    """Check a recovery code and consume it if valid."""
-    if not user.recovery_codes:
+async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
+    """Check a recovery code and consume it if valid.
+
+    Uses a conditional UPDATE (WHERE recovery_codes = <old ciphertext>) so two
+    concurrent logins presenting the same code can't both succeed. Fernet
+    re-randomises the IV on every encrypt, so the ciphertext comparison is a
+    reliable "I saw this exact version" check.
+    """
+    old_blob = user.recovery_codes
+    if not old_blob:
         return False
     try:
-        hashed_codes = json.loads(decrypt(user.recovery_codes))
+        hashed_codes = json.loads(decrypt(old_blob))
     except Exception:
         return False
     code_hash = _hash_recovery_code(code)
-    if code_hash in hashed_codes:
-        hashed_codes.remove(code_hash)
-        user.recovery_codes = encrypt(json.dumps(hashed_codes))
-        return True
-    return False
+    if code_hash not in hashed_codes:
+        return False
+
+    remaining = [c for c in hashed_codes if c != code_hash]
+    new_blob = encrypt(json.dumps(remaining))
+
+    result = await db.execute(
+        update(User)
+        .where(User.id == user.id, User.recovery_codes == old_blob)
+        .values(recovery_codes=new_blob)
+    )
+    if result.rowcount != 1:
+        return False
+    # Drop the ORM's stale copy so a later session flush doesn't overwrite
+    # our conditional update (or a concurrent winner's write) with the
+    # in-memory ciphertext.
+    db.expire(user, ["recovery_codes"])
+    return True
 
 
 async def _validate_invite_code(db: AsyncSession, code: str):
@@ -506,8 +526,8 @@ async def login(
                 headers={"X-Sheaf-2FA": "required"},
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code) and not _check_recovery_code(
-            user, body.totp_code
+        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+            db, user, body.totp_code
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -882,8 +902,8 @@ async def totp_disable(
         )
 
     secret = decrypt(user.totp_secret)
-    if not verify_code(secret, body.totp_code) and not _check_recovery_code(
-        user, body.totp_code
+    if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+        db, user, body.totp_code
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
