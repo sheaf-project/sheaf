@@ -119,15 +119,29 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        # HSTS only when the request arrived over HTTPS (via reverse proxy or
+        # direct TLS). Emitting HSTS on plain-HTTP bootstrap would hard-fail
+        # local dev and first-run setups.
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+        if forwarded_proto == "https" or request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Permissions-Policy"] = (
+            "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
+            "magnetometer=(), microphone=(), payment=(), usb=()"
+        )
         if settings.allow_external_images:
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; img-src 'self' data: blob: https:; "
-                "style-src 'self' 'unsafe-inline'"
+                "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
             )
         else:
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; img-src 'self' data: blob:; "
-                "style-src 'self' 'unsafe-inline'"
+                "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
             )
         return response
 

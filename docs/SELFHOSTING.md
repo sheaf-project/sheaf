@@ -583,11 +583,32 @@ sheaf.example.com {
 }
 ```
 
+Caddy terminates TLS automatically and passes `X-Forwarded-Proto=https` to the backend, so Sheaf will emit `Strict-Transport-Security` on its own responses. Caddy does not add HSTS to its own static responses by default — add `header Strict-Transport-Security "max-age=31536000; includeSubDomains"` inside the site block once you're confident HTTPS is permanent.
+
 **nginx example:**
 ```nginx
+# Redirect plain HTTP to HTTPS
 server {
-    listen 443 ssl;
+    listen 80;
     server_name sheaf.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name sheaf.example.com;
+
+    # TLS — modern profile. Adjust paths to your certificates.
+    ssl_certificate     /etc/letsencrypt/live/sheaf.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sheaf.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # HSTS — only enable after you're confident HTTPS is permanent for this
+    # domain. Once browsers receive this, they won't fall back to HTTP.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     # API
     location /v1/ {
@@ -605,6 +626,8 @@ server {
     }
 }
 ```
+
+Sheaf sets the other security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own responses, so you don't need to add them at the proxy. The `Strict-Transport-Security` line above ensures the header is also present on static-asset responses served directly by nginx.
 
 ### Development
 
