@@ -58,6 +58,8 @@ _VALID_SCOPES = {
     "groups:read", "groups:write", "groups:delete",
     "tags:read", "tags:write", "tags:delete",
     "fields:read", "fields:write", "fields:delete",
+    "settings:read", "settings:write", "settings:delete",
+    "import:write",
     "export:read",
     "admin:read", "admin:write",
 }

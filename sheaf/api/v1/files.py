@@ -260,7 +260,10 @@ async def delete_file(
     return {"deleted": True, "key": file.key, "freed_bytes": file.size_bytes}
 
 
-@router.post("/cleanup")
+@router.post(
+    "/cleanup",
+    dependencies=[Depends(require_scope("members:write"))],
+)
 async def cleanup_files(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -270,7 +273,10 @@ async def cleanup_files(
     return result
 
 
-@router.post("/cleanup/dry-run")
+@router.post(
+    "/cleanup/dry-run",
+    dependencies=[Depends(require_scope("members:write"))],
+)
 async def cleanup_dry_run(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
