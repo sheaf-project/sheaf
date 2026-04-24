@@ -203,6 +203,36 @@ async def rename_session(session_id: str, nickname: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Refresh token rotation (jti tracking + reuse detection)
+# ---------------------------------------------------------------------------
+
+def _refresh_jti_key(jti: str) -> str:
+    return f"sheaf:refresh:{jti}"
+
+
+async def register_refresh_jti(jti: str, session_id: str, ttl_seconds: int) -> None:
+    """Record a minted refresh token's jti so we can detect later reuse."""
+    r = await get_redis()
+    await r.setex(_refresh_jti_key(jti), ttl_seconds, session_id)
+
+
+async def consume_refresh_jti(jti: str) -> str | None:
+    """Atomically invalidate a refresh jti and return the bound session_id.
+
+    Returns None if the jti was already consumed (reuse) or never registered.
+    GETDEL is atomic, so two racing /refresh calls can't both succeed.
+    """
+    r = await get_redis()
+    return await r.getdel(_refresh_jti_key(jti))
+
+
+async def revoke_refresh_jti(jti: str) -> None:
+    """Best-effort revoke of a refresh jti (e.g. on logout)."""
+    r = await get_redis()
+    await r.delete(_refresh_jti_key(jti))
+
+
+# ---------------------------------------------------------------------------
 # Admin step-up auth (per-user, auth-method-agnostic)
 # ---------------------------------------------------------------------------
 

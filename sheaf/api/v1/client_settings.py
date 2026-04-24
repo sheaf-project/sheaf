@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.client_settings import ClientSettings
 from sheaf.models.user import User
@@ -57,7 +57,10 @@ async def get_client_settings(
     return {"client_id": row.client_id, "settings": row.settings}
 
 
-@router.put("/{client_id}")
+@router.put(
+    "/{client_id}",
+    dependencies=[Depends(require_scope("settings:write"))],
+)
 async def put_client_settings(
     client_id: str,
     body: ClientSettingsBody,
@@ -102,7 +105,11 @@ async def put_client_settings(
     return {"client_id": row.client_id, "settings": row.settings}
 
 
-@router.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{client_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("settings:delete"))],
+)
 async def delete_client_settings(
     client_id: str,
     user: User = Depends(get_current_user),

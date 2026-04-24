@@ -1,13 +1,14 @@
 import hashlib
 import json
 import logging
+import math
 import secrets
 from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, case, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,11 +16,14 @@ from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unv
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
 from sheaf.auth.sessions import (
+    consume_refresh_jti,
     create_session,
     delete_other_sessions,
     delete_session,
     list_user_sessions,
+    register_refresh_jti,
     rename_session,
+    revoke_refresh_jti,
 )
 from sheaf.auth.totp import (
     generate_recovery_codes,
@@ -28,7 +32,7 @@ from sheaf.auth.totp import (
     verify_code,
 )
 from sheaf.config import settings
-from sheaf.crypto import blind_index, decrypt, encrypt
+from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
@@ -54,6 +58,8 @@ _VALID_SCOPES = {
     "groups:read", "groups:write", "groups:delete",
     "tags:read", "tags:write", "tags:delete",
     "fields:read", "fields:write", "fields:delete",
+    "settings:read", "settings:write", "settings:delete",
+    "import:write",
     "export:read",
     "admin:read", "admin:write",
 }
@@ -107,7 +113,7 @@ async def get_auth_config():
 
 @router.get(
     "/captcha/challenge",
-    dependencies=[rate_limit(20, 60)],
+    dependencies=[rate_limit(20, 60, fail_closed=True)],
 )
 async def get_captcha_challenge():
     """Issue a captcha challenge for the login/register widget."""
@@ -130,20 +136,89 @@ def _store_recovery_codes(user: User, codes: list[str]) -> None:
     user.recovery_codes = encrypt(json.dumps(hashed))
 
 
-def _check_recovery_code(user: User, code: str) -> bool:
-    """Check a recovery code and consume it if valid."""
-    if not user.recovery_codes:
+async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
+    """Check a recovery code and consume it if valid.
+
+    Uses a conditional UPDATE (WHERE recovery_codes = <old ciphertext>) so two
+    concurrent logins presenting the same code can't both succeed. Fernet
+    re-randomises the IV on every encrypt, so the ciphertext comparison is a
+    reliable "I saw this exact version" check.
+    """
+    old_blob = user.recovery_codes
+    if not old_blob:
         return False
     try:
-        hashed_codes = json.loads(decrypt(user.recovery_codes))
+        hashed_codes = json.loads(decrypt(old_blob))
     except Exception:
         return False
     code_hash = _hash_recovery_code(code)
-    if code_hash in hashed_codes:
-        hashed_codes.remove(code_hash)
-        user.recovery_codes = encrypt(json.dumps(hashed_codes))
-        return True
-    return False
+    if code_hash not in hashed_codes:
+        return False
+
+    remaining = [c for c in hashed_codes if c != code_hash]
+    new_blob = encrypt(json.dumps(remaining))
+
+    result = await db.execute(
+        update(User)
+        .where(User.id == user.id, User.recovery_codes == old_blob)
+        .values(recovery_codes=new_blob)
+    )
+    if result.rowcount != 1:
+        return False
+    # Drop the ORM's stale copy so a later session flush doesn't overwrite
+    # our conditional update (or a concurrent winner's write) with the
+    # in-memory ciphertext.
+    db.expire(user, ["recovery_codes"])
+    return True
+
+
+async def _mint_refresh_token(user_id, session_id: str) -> str:
+    """Create a rotating refresh JWT and register its jti in Redis.
+
+    Refresh tokens carry a one-shot jti. /refresh consumes the jti on use
+    (GETDEL) and issues a new one; a second attempt with the same jti trips
+    reuse detection and kills the session. Binding jti→session_id in Redis
+    also lets logout revoke the refresh path even if the attacker has a
+    cached copy of the cookie.
+    """
+    jti = secrets.token_urlsafe(24)
+    ttl = settings.jwt_refresh_token_expire_days * 86400
+    await register_refresh_jti(jti, session_id, ttl)
+    return create_token(user_id, TokenType.REFRESH, session_id=session_id, jti=jti)
+
+
+async def _record_login_failure(db: AsyncSession, user: User) -> None:
+    """Increment the user's failed-login counter and lock if threshold crossed.
+
+    A single atomic UPDATE handles both the increment and the lockout decision
+    so concurrent failed attempts can't race past the threshold. If the user
+    has a stale (expired) lockout, the counter resets to 1 for this attempt
+    instead of incrementing, so a returning user with one typo doesn't get
+    immediately re-locked on top of old failures.
+    """
+    now = datetime.now(UTC)
+    lockout_end = now + timedelta(minutes=settings.login_lockout_minutes)
+    threshold = settings.login_max_failures
+
+    new_count = case(
+        (
+            and_(User.locked_until.is_not(None), User.locked_until < now),
+            1,
+        ),
+        else_=User.failed_login_count + 1,
+    )
+    new_lock = case(
+        (new_count >= threshold, lockout_end),
+        else_=None,
+    )
+
+    await db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(failed_login_count=new_count, locked_until=new_lock)
+    )
+    await db.commit()
+    db.expire(user, ["failed_login_count", "locked_until"])
 
 
 async def _validate_invite_code(db: AsyncSession, code: str):
@@ -176,8 +251,8 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
     from sheaf.services.email_templates import verification_email
 
     token = secrets.token_urlsafe(32)
-    # Store hashed token on the user (reuse crypto for consistency)
-    user.email_verification_token = hashlib.sha256(token.encode()).hexdigest()
+    # Store HMAC-hashed token so a DB leak can't be verified offline.
+    user.email_verification_token = hash_mail_token(token)
     user.email_verification_sent_at = datetime.now(UTC)
 
     subject, html, text = verification_email(token)
@@ -191,7 +266,10 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
     "/register",
     response_model=TokenResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[rate_limit(5, 60), rate_limit(15, 3600)],
+    dependencies=[
+        rate_limit(5, 60, fail_closed=True),
+        rate_limit(15, 3600, fail_closed=True),
+    ],
 )
 async def register(
     body: UserRegister,
@@ -290,7 +368,7 @@ async def register(
         samesite="lax",
     )
 
-    refresh_token = create_token(user.id, TokenType.REFRESH, session_id=session_id)
+    refresh_token = await _mint_refresh_token(user.id, session_id)
     response.set_cookie(
         key="sheaf_refresh",
         value=refresh_token,
@@ -307,13 +385,13 @@ async def register(
     )
 
 
-@router.get("/verify-email", dependencies=[rate_limit(5, 60)])
+@router.get("/verify-email", dependencies=[rate_limit(5, 60, fail_closed=True)])
 async def verify_email(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
     """Verify email address using the token from the verification email."""
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_hash = hash_mail_token(token)
     result = await db.execute(
         select(User).where(User.email_verification_token == token_hash)
     )
@@ -340,7 +418,7 @@ async def verify_email(
     return {"verified": True}
 
 
-@router.post("/resend-verification", dependencies=[rate_limit(3, 60)])
+@router.post("/resend-verification", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def resend_verification(
     user: User = Depends(get_current_user_allow_unverified),
     db: AsyncSession = Depends(get_db),
@@ -380,7 +458,7 @@ class PasswordReset(BaseModel):
     new_password: str
 
 
-@router.post("/request-password-reset", dependencies=[rate_limit(3, 60)])
+@router.post("/request-password-reset", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def request_password_reset(
     body: PasswordResetRequest,
     request: Request,
@@ -409,7 +487,7 @@ async def request_password_reset(
                 return {"requested": True}
 
         token = secrets.token_urlsafe(32)
-        user.password_reset_token = hashlib.sha256(token.encode()).hexdigest()
+        user.password_reset_token = hash_mail_token(token)
         user.password_reset_sent_at = datetime.now(UTC)
         await db.commit()
 
@@ -426,7 +504,7 @@ async def request_password_reset(
     return {"requested": True}
 
 
-@router.post("/reset-password", dependencies=[rate_limit(5, 60)])
+@router.post("/reset-password", dependencies=[rate_limit(5, 60, fail_closed=True)])
 async def reset_password(
     body: PasswordReset,
     db: AsyncSession = Depends(get_db),
@@ -443,7 +521,7 @@ async def reset_password(
             detail="Password must be at most 128 characters",
         )
 
-    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    token_hash = hash_mail_token(body.token)
     result = await db.execute(
         select(User).where(User.password_reset_token == token_hash)
     )
@@ -473,7 +551,10 @@ async def reset_password(
 @router.post(
     "/login",
     response_model=TokenResponse,
-    dependencies=[rate_limit(10, 60), rate_limit(30, 3600)],
+    dependencies=[
+        rate_limit(10, 60, fail_closed=True),
+        rate_limit(30, 3600, fail_closed=True),
+    ],
 )
 async def login(
     body: UserLogin,
@@ -491,7 +572,27 @@ async def login(
     result = await db.execute(select(User).where(User.email_hash == email_hash))
     user = result.scalar_one_or_none()
 
+    # Reject locked accounts before spending argon2 CPU on them. The lockout
+    # state leaks that the account exists, but so does a successful login
+    # attempt; rate limits + captcha are what stop anonymous enumeration.
+    now = datetime.now(UTC)
+    if (
+        user is not None
+        and user.locked_until is not None
+        and user.locked_until > now
+    ):
+        mins = max(1, math.ceil((user.locked_until - now).total_seconds() / 60))
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=(
+                f"Account temporarily locked after repeated failed attempts. "
+                f"Try again in {mins} minute{'s' if mins != 1 else ''}."
+            ),
+        )
+
     if user is None or not verify_password(body.password, user.password_hash):
+        if user is not None:
+            await _record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -506,9 +607,10 @@ async def login(
                 headers={"X-Sheaf-2FA": "required"},
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code) and not _check_recovery_code(
-            user, body.totp_code
+        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+            db, user, body.totp_code
         ):
+            await _record_login_failure(db, user)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid TOTP code",
@@ -518,6 +620,9 @@ async def login(
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
 
+    # Successful login clears any accumulated failure state.
+    user.failed_login_count = 0
+    user.locked_until = None
     user.last_login_at = datetime.now(UTC)
 
     # Create session before committing so a Redis failure rolls back the DB
@@ -538,7 +643,7 @@ async def login(
         samesite="lax",
     )
 
-    refresh_token = create_token(user.id, TokenType.REFRESH, session_id=session_id)
+    refresh_token = await _mint_refresh_token(user.id, session_id)
     response.set_cookie(
         key="sheaf_refresh",
         value=refresh_token,
@@ -559,9 +664,21 @@ async def login(
 async def logout(
     response: Response,
     session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+    refresh_cookie: str | None = Cookie(default=None, alias="sheaf_refresh"),
 ):
     if session_id:
         await delete_session(session_id)
+    # Also revoke the refresh jti so a cached copy of the cookie can't be
+    # replayed after logout. Best-effort: if the JWT is malformed or lacks
+    # a jti (older minted token), skip silently.
+    if refresh_cookie:
+        try:
+            payload = decode_token(refresh_cookie)
+            old_jti = payload.get("jti")
+            if old_jti:
+                await revoke_refresh_jti(old_jti)
+        except jwt.PyJWTError:
+            pass
     response.delete_cookie("sheaf_session")
     response.delete_cookie("sheaf_refresh", path="/v1/auth")
 
@@ -682,25 +799,45 @@ async def refresh(
 
         user_id = UUID(payload["sub"])
         sid = payload.get("sid")
+        jti = payload.get("jti")
     except (jwt.PyJWTError, ValueError, KeyError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         ) from exc
 
-    # If the token is bound to a session, verify the session still exists.
-    if sid is not None:
-        from sheaf.auth.sessions import get_session_user_id
+    # Consume the old jti atomically. If it's already gone, either the token
+    # was used before (reuse — likely theft) or was never tracked (pre-
+    # rotation token). Treat both as invalid and kill the session: if it
+    # really was theft, we contain the blast radius; if it was a pre-
+    # rotation token, the user re-logs in once.
+    if jti is None or sid is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+    consumed_sid = await consume_refresh_jti(jti)
+    if consumed_sid is None:
+        await delete_session(sid)
+        response.delete_cookie("sheaf_session")
+        response.delete_cookie("sheaf_refresh", path="/v1/auth")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
 
-        if await get_session_user_id(sid) is None:
-            response.delete_cookie("sheaf_session")
-            response.delete_cookie("sheaf_refresh", path="/v1/auth")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session revoked",
-            )
+    # Verify the session still exists (may have been revoked out-of-band).
+    from sheaf.auth.sessions import get_session_user_id
 
-    new_refresh = create_token(user_id, TokenType.REFRESH, session_id=sid)
+    if await get_session_user_id(sid) is None:
+        response.delete_cookie("sheaf_session")
+        response.delete_cookie("sheaf_refresh", path="/v1/auth")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session revoked",
+        )
+
+    new_refresh = await _mint_refresh_token(user_id, sid)
     response.set_cookie(
         key="sheaf_refresh",
         value=new_refresh,
@@ -882,8 +1019,8 @@ async def totp_disable(
         )
 
     secret = decrypt(user.totp_secret)
-    if not verify_code(secret, body.totp_code) and not _check_recovery_code(
-        user, body.totp_code
+    if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+        db, user, body.totp_code
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

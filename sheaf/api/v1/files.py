@@ -129,7 +129,8 @@ async def upload_file(
             detail="File content does not match a supported image format.",
         )
 
-    # Check storage quota
+    # Cheap pre-check: reject obviously over-quota uploads before touching
+    # storage. The authoritative check runs under a row lock below.
     quota = _get_quota_bytes(user)
     if quota > 0:
         used = await db.scalar(
@@ -151,6 +152,28 @@ async def upload_file(
 
     storage = get_storage()
     await storage.put(key, data, actual_mime)
+
+    # Serialize per-user quota accounting. Without this lock, two concurrent
+    # uploads can both pass the quota check above and both insert, landing
+    # the user over their limit. SELECT FOR UPDATE on the user row forces
+    # the second uploader to wait until the first's transaction commits,
+    # then recount with the new row visible.
+    if quota > 0:
+        await db.execute(
+            select(User.id).where(User.id == user.id).with_for_update()
+        )
+        used = await db.scalar(
+            select(func.coalesce(func.sum(UploadedFile.size_bytes), 0))
+            .where(UploadedFile.user_id == user.id)
+        )
+        if (used + file_size) > quota:
+            await storage.delete(key)
+            await db.rollback()
+            quota_mb = quota // (1024 * 1024)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
+            )
 
     # Track upload
     db.add(UploadedFile(
@@ -237,7 +260,10 @@ async def delete_file(
     return {"deleted": True, "key": file.key, "freed_bytes": file.size_bytes}
 
 
-@router.post("/cleanup")
+@router.post(
+    "/cleanup",
+    dependencies=[Depends(require_scope("members:write"))],
+)
 async def cleanup_files(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -247,7 +273,10 @@ async def cleanup_files(
     return result
 
 
-@router.post("/cleanup/dry-run")
+@router.post(
+    "/cleanup/dry-run",
+    dependencies=[Depends(require_scope("members:write"))],
+)
 async def cleanup_dry_run(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

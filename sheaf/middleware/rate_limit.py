@@ -87,6 +87,7 @@ def rate_limit(
     requests: int,
     window: int = 60,
     key: str = "ip",
+    fail_closed: bool = False,
 ):
     """FastAPI dependency that enforces a rate limit on a single endpoint.
 
@@ -99,6 +100,10 @@ def rate_limit(
         window: Window size in seconds (default 60).
         key: "ip" for per-IP or "user" for per-authenticated-user.
              "user" keys fall back to IP if auth hasn't resolved yet.
+        fail_closed: When True, reject requests with 503 if Redis is
+            unreachable. Use on auth endpoints so a Redis outage can't be
+            used to bypass brute-force protection. Default False — most
+            endpoints are better off staying available on Redis blips.
     """
     limit = Limit(requests=requests, window=window)
 
@@ -108,7 +113,16 @@ def rate_limit(
 
         try:
             r = await _get_redis()
-        except Exception:
+        except Exception as exc:
+            if fail_closed:
+                logger.error(
+                    "Redis unavailable on fail-closed endpoint: %s",
+                    request.url.path,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Service temporarily unavailable",
+                ) from exc
             logger.warning("Redis unavailable — skipping rate limit check")
             return
 

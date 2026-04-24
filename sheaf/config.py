@@ -1,8 +1,10 @@
 import logging
 import sys
 from enum import StrEnum
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("sheaf")
@@ -167,18 +169,56 @@ class Settings(BaseSettings):
     rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
     rate_limit_global_window: int = 60  # window in seconds
 
-    # Trusted proxies — comma-separated IPs that are allowed to set X-Forwarded-For.
-    # Only these IPs' X-Forwarded-For headers are trusted for rate limiting and
-    # IP logging. If empty, X-Forwarded-For is never read (direct IP is used).
-    # Common values: "127.0.0.1", "172.17.0.1" (Docker bridge), "10.0.0.1"
+    # Per-account login lockout. Any combination of wrong-password and
+    # wrong-TOTP attempts counts. On reaching max_failures, the account is
+    # locked for lockout_minutes. A successful login clears both fields;
+    # attempts arriving after an expired lockout reset the counter instead
+    # of incrementing, so the user isn't instantly re-locked on one typo.
+    login_max_failures: int = 10
+    login_lockout_minutes: int = 15
+
+    # Trusted proxies — comma-separated IPs and/or CIDR ranges that are allowed
+    # to set X-Forwarded-For. Only these peers' forwarded headers are trusted
+    # for rate limiting and IP logging. If empty, X-Forwarded-For is never read
+    # (direct IP is used).
+    # Common values: "127.0.0.1", "172.16.0.0/12" (docker-compose bridge range),
+    # "10.0.0.0/8", "::1"
     trusted_proxies: str = ""
 
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _validate_trusted_proxies(cls, v: str) -> str:
+        """Fail fast at startup if any entry isn't a valid IP or CIDR."""
+        if not v:
+            return v
+        for entry in v.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid entry in TRUSTED_PROXIES: {entry!r}. "
+                    f"Expected an IP or CIDR (e.g. 127.0.0.1 or 172.16.0.0/12). "
+                    f"Parse error: {exc}"
+                ) from exc
+        return v
+
     @property
-    def trusted_proxy_set(self) -> set[str]:
-        """Return trusted_proxies as a parsed set for fast lookup."""
+    def trusted_proxy_networks(self) -> list[IPv4Network | IPv6Network]:
+        """Return trusted_proxies parsed as a list of ip_network objects.
+
+        A bare IP parses as a /32 (or /128) network, so membership checks
+        uniformly use `in` against this list.
+        """
         if not self.trusted_proxies:
-            return set()
-        return {ip.strip() for ip in self.trusted_proxies.split(",") if ip.strip()}
+            return []
+        return [
+            ip_network(entry.strip(), strict=False)
+            for entry in self.trusted_proxies.split(",")
+            if entry.strip()
+        ]
 
     # Legal links for the footer (optional). Empty = hide.
     terms_url: str = ""
@@ -205,7 +245,14 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def get_encryption_key(self) -> bytes:
-        """Get or auto-generate the encryption key (32 bytes, hex-encoded on disk)."""
+        """Get or auto-generate the encryption key (32 bytes, hex-encoded on disk).
+
+        This key is required long-term — it encrypts emails / TOTP secrets AND
+        keys the blind-index used to look up users by email at login. Losing
+        it means nobody can log in, even with the correct password. Set
+        SHEAF_ENCRYPTION_KEY explicitly in production rather than relying on
+        the auto-generated file in the data volume.
+        """
         if self.sheaf_encryption_key:
             return self.sheaf_encryption_key.encode()
 
@@ -226,6 +273,11 @@ class Settings(BaseSettings):
         logger.warning(
             "AUTO-GENERATED ENCRYPTION KEY — BACK THIS UP OR YOU "
             "LOSE ALL ENCRYPTED DATA FOREVER"
+        )
+        logger.warning(
+            "This key encrypts emails and TOTP secrets AND keys the blind-"
+            "index the login endpoint uses to find users by email. Losing "
+            "it means no one will be able to log in."
         )
         logger.warning("Key file: %s", key_path.resolve())
         logger.warning("Key value: %s", key.decode())

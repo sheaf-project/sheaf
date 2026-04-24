@@ -112,17 +112,37 @@ async def cleanup_orphaned_files(
         return {"orphaned": 0, "freed_bytes": 0, "dry_run": dry_run}
 
     storage = get_storage()
-    freed_bytes = sum(f.size_bytes for f in orphaned)
 
-    if not dry_run:
-        for f in orphaned:
-            await storage.delete(f.key)
-            await db.delete(f)
-            logger.info("Deleted orphaned file: %s (%d bytes)", f.key, f.size_bytes)
+    if dry_run:
+        return {
+            "orphaned": len(orphaned),
+            "freed_bytes": sum(f.size_bytes for f in orphaned),
+            "dry_run": True,
+            "keys": [f.key for f in orphaned],
+        }
+
+    # Re-scan under the same session right before deleting. If a concurrent
+    # write attached one of these files (set an avatar, embedded it in a bio)
+    # between the initial find and now, this narrows the window where we'd
+    # delete a live reference to effectively nothing. Delete DB rows first
+    # and commit; only then remove blobs, so a surviving reference keeps the
+    # row and the blob together.
+    current_keys = {f.key for f in await find_orphaned_files(db, user_id)}
+    to_delete = [f for f in orphaned if f.key in current_keys]
+
+    for f in to_delete:
+        await db.delete(f)
+    await db.commit()
+
+    freed_bytes = 0
+    for f in to_delete:
+        await storage.delete(f.key)
+        freed_bytes += f.size_bytes
+        logger.info("Deleted orphaned file: %s (%d bytes)", f.key, f.size_bytes)
 
     return {
-        "orphaned": len(orphaned),
+        "orphaned": len(to_delete),
         "freed_bytes": freed_bytes,
-        "dry_run": dry_run,
-        "keys": [f.key for f in orphaned],
+        "dry_run": False,
+        "keys": [f.key for f in to_delete],
     }
