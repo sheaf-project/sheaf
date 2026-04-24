@@ -245,7 +245,14 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def get_encryption_key(self) -> bytes:
-        """Get or auto-generate the encryption key (32 bytes, hex-encoded on disk)."""
+        """Get or auto-generate the encryption key (32 bytes, hex-encoded on disk).
+
+        This key is required long-term — it encrypts emails / TOTP secrets AND
+        keys the blind-index used to look up users by email at login. Losing
+        it means nobody can log in, even with the correct password. Set
+        SHEAF_ENCRYPTION_KEY explicitly in production rather than relying on
+        the auto-generated file in the data volume.
+        """
         if self.sheaf_encryption_key:
             return self.sheaf_encryption_key.encode()
 
@@ -266,6 +273,11 @@ class Settings(BaseSettings):
         logger.warning(
             "AUTO-GENERATED ENCRYPTION KEY — BACK THIS UP OR YOU "
             "LOSE ALL ENCRYPTED DATA FOREVER"
+        )
+        logger.warning(
+            "This key encrypts emails and TOTP secrets AND keys the blind-"
+            "index the login endpoint uses to find users by email. Losing "
+            "it means no one will be able to log in."
         )
         logger.warning("Key file: %s", key_path.resolve())
         logger.warning("Key value: %s", key.decode())

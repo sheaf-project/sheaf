@@ -35,7 +35,7 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     # Encrypted at application level — store ciphertext
     email: Mapped[str] = mapped_column(String, nullable=False)
-    # Blind index for lookups (SHA-256 of normalised email)
+    # Blind index for lookups (keyed HMAC-SHA-256 of normalised email)
     email_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)

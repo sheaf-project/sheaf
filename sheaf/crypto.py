@@ -1,9 +1,18 @@
-"""Application-level field encryption.
+"""Application-level field encryption and keyed lookup hashes.
 
 XChaCha20-Poly1305 via libsodium (PyNaCl) — 256-bit key, 192-bit nonce,
 AEAD construction with no padding oracle surface.
 
 Ciphertext format: base64(nonce + ciphertext + tag)
+
+This module also owns two keyed hashes that are required for the app to
+function:
+
+- ``blind_index``: keyed HMAC-SHA-256 used to look up encrypted rows by
+  plaintext (e.g. find a user by email at login). Keyed off the encryption
+  key, so losing SHEAF_ENCRYPTION_KEY means nobody can log in.
+- ``hash_mail_token``: keyed HMAC-SHA-256 used to store the DB-side form of
+  password-reset and email-verification tokens. Keyed off JWT_SECRET_KEY.
 """
 
 import base64
@@ -43,13 +52,36 @@ def decrypt(token: str) -> str:
     return box.decrypt(raw).decode()
 
 
+_blind_index_key_cache: bytes | None = None
+
+
+def _blind_index_key() -> bytes:
+    """Derive a dedicated HMAC key for blind indexes from the encryption key.
+
+    Domain-separated via a fixed label so the same encryption key can produce
+    unrelated subkeys for different purposes. Cached after first computation.
+    """
+    global _blind_index_key_cache
+    if _blind_index_key_cache is None:
+        raw_key = settings.get_encryption_key()
+        _blind_index_key_cache = hmac.new(
+            b"sheaf-blind-index-v1", raw_key, hashlib.sha256,
+        ).digest()
+    return _blind_index_key_cache
+
+
 def blind_index(value: str) -> str:
-    """SHA-256 blind index for lookups on encrypted fields.
+    """Keyed HMAC-SHA-256 blind index for lookups on encrypted fields.
 
     Normalised (lowered, stripped) before hashing for case-insensitive lookups.
+    Keyed so an attacker with a DB dump can't precompute a rainbow table over
+    known email lists to reverse any `email_hash` row — they'd also need the
+    in-memory encryption key.
     """
     normalised = value.strip().lower()
-    return hashlib.sha256(normalised.encode()).hexdigest()
+    return hmac.new(
+        _blind_index_key(), normalised.encode(), hashlib.sha256,
+    ).hexdigest()
 
 
 def hash_mail_token(token: str) -> str:

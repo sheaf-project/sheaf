@@ -15,6 +15,12 @@ TEST_DB_URL="postgresql+asyncpg://sheaf:sheaftest@localhost:5433/sheaf"
 BUILD_FLAG="--build"
 FAILED=()
 
+# The conftest fixtures query the DB directly with blind_index() — keyed
+# HMAC derived from the encryption key — so the host-side pytest must share
+# the same key as the container set in docker-compose.test.yml.
+export SHEAF_ENCRYPTION_KEY="0000000000000000000000000000000000000000000000000000000000000000"
+export JWT_SECRET_KEY="test-jwt-secret-not-for-production"
+
 if [[ "${1:-}" == "--no-build" ]]; then
     BUILD_FLAG=""
 fi

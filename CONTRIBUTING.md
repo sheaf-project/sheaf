@@ -139,10 +139,6 @@ If you're coming from SimplyPlural, we're especially interested in hearing about
 - If your change adds an API endpoint, add a test.
 - Don't include unrelated formatting changes, refactors, or dependency bumps.
 
-### AI-assisted contributions
-
-We welcome AI-assisted contributions. If you use an AI tool, that's fine — just make sure you understand the code you submit, can explain it in your own words and not your agent's, and are willing to stand behind what you submit.
-
 ## Architecture notes
 
 Before making significant changes, it helps to understand a few design decisions:
@@ -156,7 +152,7 @@ Before making significant changes, it helps to understand a few design decisions
 
 - **All IDs are UUIDs.** No auto-increment.
 - **Enums use StrEnum with lowercase values.** SQLAlchemy Enum columns must use `values_callable=lambda e: [m.value for m in e]` to match.
-- **Encrypted fields** (email, totp_secret) use `crypto.encrypt()`/`crypto.decrypt()`. Lookups use blind indexes (`crypto.blind_index()`).
+- **Encrypted fields** (email, totp_secret) use `crypto.encrypt()`/`crypto.decrypt()`. Lookups use blind indexes (`crypto.blind_index()` — keyed HMAC derived from the encryption key, not plain SHA-256).
 - **Auth dependency:** Use `get_current_user` for authenticated endpoints, `get_admin_user` for admin-only (requires `is_admin=True` or `admin:read` scope), `get_admin_write_user` for mutating admin endpoints (`admin:write`), `get_current_user_optional` for public endpoints that optionally use auth.
 - **Scope enforcement:** All resource endpoints are gated by `require_scope()` from `sheaf/auth/dependencies.py`. Router-level read deps live in `sheaf/api/v1/router.py`; per-endpoint write/delete deps are on the individual route functions. Session/JWT auth bypasses scope checks (full access). Rules: `resource:write` and `resource:delete` both imply `resource:read`; nothing implies `resource:delete`. When adding a new endpoint, add the appropriate `dependencies=[Depends(require_scope(...))]`.
 - **API keys:** Stored as SHA-256 hash only — plaintext (`sk_…`) returned once on creation. Valid scopes are defined in `_ALL_SCOPES` (dependencies.py) and `_VALID_SCOPES` (auth.py) — keep both in sync when adding new scopes. `admin:*` scopes can only be created by users with `is_admin=True`.

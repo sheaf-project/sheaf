@@ -18,11 +18,18 @@ API at `http://localhost:8000`, docs at `http://localhost:8000/v1/docs`.
 
 ### Secrets
 
-Generate strong random values for these before going live:
+Sheaf requires **two** stable long-lived secrets. Both must be set before going live and must remain constant across restarts for the lifetime of the install — changing them has user-facing consequences (see below). Back them up wherever you back up the rest of your deployment.
+
+Generate strong random values:
 
 ```bash
-# JWT secret — used to sign access tokens
+# JWT secret — signs sessions, refresh tokens, mail-delivered tokens,
+# and keys the password-reset / email-verification HMACs.
 python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Encryption key — 32 bytes hex. Encrypts emails / TOTP secrets and keys
+# the blind-index used to look up users by email at login.
+python -c "import secrets; print(secrets.token_hex(32))"
 
 # Postgres password
 python -c "import secrets; print(secrets.token_hex(16))"
@@ -31,26 +38,24 @@ python -c "import secrets; print(secrets.token_hex(16))"
 Set in `.env`:
 ```env
 JWT_SECRET_KEY=<generated>
+SHEAF_ENCRYPTION_KEY=<generated>
 POSTGRES_PASSWORD=<generated>
 DATABASE_URL=postgresql+asyncpg://sheaf:${POSTGRES_PASSWORD}@db:5432/sheaf
 ```
 
-### Encryption key
+### What each key does — and what happens if you lose or change it
 
-Sheaf encrypts email addresses and TOTP secrets at rest using XChaCha20-Poly1305.
+**`JWT_SECRET_KEY`** — signs access tokens, refresh tokens, and keys the HMAC for password-reset and email-verification tokens stored in the DB. If you rotate it:
+- All sessions and refresh tokens are invalidated — every user must log in again.
+- Any outstanding password-reset or email-verification links become invalid (users request a new one).
 
-**If not set**, a key is auto-generated on first startup and saved to `data/encryption.key` inside the Docker volume. **Back this file up.** If you lose it, all encrypted data (emails, TOTP secrets) is permanently unrecoverable.
+Sheaf refuses to start in `saas` mode if this is left at the default, and logs a loud warning in `selfhosted` mode. The default is safe for local dev only.
 
-To use your own key (recommended — avoids relying on a file in a volume):
+**`SHEAF_ENCRYPTION_KEY`** — XChaCha20-Poly1305 key used to encrypt emails and TOTP secrets at rest. It **also** keys the blind-index (keyed HMAC-SHA-256 of the normalised email) that the login endpoint uses to look up a user by email. Practical consequences:
+- **Losing it is unrecoverable.** Encrypted emails / TOTP secrets can't be decrypted, and the `email_hash` column becomes a set of opaque numbers that match nothing computable without the key. Nobody will be able to log in.
+- **Rotating it** requires re-encrypting the email ciphertext AND re-computing every `email_hash` row (see `alembic/versions/k1l2m3n4o5p6_rehash_email_blind_index.py` for the pattern). Don't rotate this casually.
 
-```bash
-# Generate
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-```env
-SHEAF_ENCRYPTION_KEY=<generated>
-```
+**If not set**, a key is auto-generated on first startup and saved to `data/encryption.key` inside the Docker volume. **Back this file up.** Prefer setting `SHEAF_ENCRYPTION_KEY` explicitly so the key isn't tied to a single volume.
 
 ---
 
