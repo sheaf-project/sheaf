@@ -16,6 +16,7 @@ def create_token(
     user_id: uuid.UUID,
     token_type: TokenType,
     session_id: str | None = None,
+    jti: str | None = None,
 ) -> str:
     if token_type == TokenType.ACCESS:
         expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
@@ -30,6 +31,8 @@ def create_token(
     }
     if session_id is not None:
         payload["sid"] = session_id
+    if jti is not None:
+        payload["jti"] = jti
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 

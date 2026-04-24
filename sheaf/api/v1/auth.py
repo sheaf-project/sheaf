@@ -16,11 +16,14 @@ from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unv
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
 from sheaf.auth.sessions import (
+    consume_refresh_jti,
     create_session,
     delete_other_sessions,
     delete_session,
     list_user_sessions,
+    register_refresh_jti,
     rename_session,
+    revoke_refresh_jti,
 )
 from sheaf.auth.totp import (
     generate_recovery_codes,
@@ -29,7 +32,7 @@ from sheaf.auth.totp import (
     verify_code,
 )
 from sheaf.config import settings
-from sheaf.crypto import blind_index, decrypt, encrypt
+from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
@@ -167,6 +170,21 @@ async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
     return True
 
 
+async def _mint_refresh_token(user_id, session_id: str) -> str:
+    """Create a rotating refresh JWT and register its jti in Redis.
+
+    Refresh tokens carry a one-shot jti. /refresh consumes the jti on use
+    (GETDEL) and issues a new one; a second attempt with the same jti trips
+    reuse detection and kills the session. Binding jti→session_id in Redis
+    also lets logout revoke the refresh path even if the attacker has a
+    cached copy of the cookie.
+    """
+    jti = secrets.token_urlsafe(24)
+    ttl = settings.jwt_refresh_token_expire_days * 86400
+    await register_refresh_jti(jti, session_id, ttl)
+    return create_token(user_id, TokenType.REFRESH, session_id=session_id, jti=jti)
+
+
 async def _record_login_failure(db: AsyncSession, user: User) -> None:
     """Increment the user's failed-login counter and lock if threshold crossed.
 
@@ -231,8 +249,8 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
     from sheaf.services.email_templates import verification_email
 
     token = secrets.token_urlsafe(32)
-    # Store hashed token on the user (reuse crypto for consistency)
-    user.email_verification_token = hashlib.sha256(token.encode()).hexdigest()
+    # Store HMAC-hashed token so a DB leak can't be verified offline.
+    user.email_verification_token = hash_mail_token(token)
     user.email_verification_sent_at = datetime.now(UTC)
 
     subject, html, text = verification_email(token)
@@ -348,7 +366,7 @@ async def register(
         samesite="lax",
     )
 
-    refresh_token = create_token(user.id, TokenType.REFRESH, session_id=session_id)
+    refresh_token = await _mint_refresh_token(user.id, session_id)
     response.set_cookie(
         key="sheaf_refresh",
         value=refresh_token,
@@ -371,7 +389,7 @@ async def verify_email(
     db: AsyncSession = Depends(get_db),
 ):
     """Verify email address using the token from the verification email."""
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_hash = hash_mail_token(token)
     result = await db.execute(
         select(User).where(User.email_verification_token == token_hash)
     )
@@ -467,7 +485,7 @@ async def request_password_reset(
                 return {"requested": True}
 
         token = secrets.token_urlsafe(32)
-        user.password_reset_token = hashlib.sha256(token.encode()).hexdigest()
+        user.password_reset_token = hash_mail_token(token)
         user.password_reset_sent_at = datetime.now(UTC)
         await db.commit()
 
@@ -501,7 +519,7 @@ async def reset_password(
             detail="Password must be at most 128 characters",
         )
 
-    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    token_hash = hash_mail_token(body.token)
     result = await db.execute(
         select(User).where(User.password_reset_token == token_hash)
     )
@@ -623,7 +641,7 @@ async def login(
         samesite="lax",
     )
 
-    refresh_token = create_token(user.id, TokenType.REFRESH, session_id=session_id)
+    refresh_token = await _mint_refresh_token(user.id, session_id)
     response.set_cookie(
         key="sheaf_refresh",
         value=refresh_token,
@@ -644,9 +662,21 @@ async def login(
 async def logout(
     response: Response,
     session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+    refresh_cookie: str | None = Cookie(default=None, alias="sheaf_refresh"),
 ):
     if session_id:
         await delete_session(session_id)
+    # Also revoke the refresh jti so a cached copy of the cookie can't be
+    # replayed after logout. Best-effort: if the JWT is malformed or lacks
+    # a jti (older minted token), skip silently.
+    if refresh_cookie:
+        try:
+            payload = decode_token(refresh_cookie)
+            old_jti = payload.get("jti")
+            if old_jti:
+                await revoke_refresh_jti(old_jti)
+        except jwt.PyJWTError:
+            pass
     response.delete_cookie("sheaf_session")
     response.delete_cookie("sheaf_refresh", path="/v1/auth")
 
@@ -767,25 +797,45 @@ async def refresh(
 
         user_id = UUID(payload["sub"])
         sid = payload.get("sid")
+        jti = payload.get("jti")
     except (jwt.PyJWTError, ValueError, KeyError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         ) from exc
 
-    # If the token is bound to a session, verify the session still exists.
-    if sid is not None:
-        from sheaf.auth.sessions import get_session_user_id
+    # Consume the old jti atomically. If it's already gone, either the token
+    # was used before (reuse — likely theft) or was never tracked (pre-
+    # rotation token). Treat both as invalid and kill the session: if it
+    # really was theft, we contain the blast radius; if it was a pre-
+    # rotation token, the user re-logs in once.
+    if jti is None or sid is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+    consumed_sid = await consume_refresh_jti(jti)
+    if consumed_sid is None:
+        await delete_session(sid)
+        response.delete_cookie("sheaf_session")
+        response.delete_cookie("sheaf_refresh", path="/v1/auth")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
 
-        if await get_session_user_id(sid) is None:
-            response.delete_cookie("sheaf_session")
-            response.delete_cookie("sheaf_refresh", path="/v1/auth")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session revoked",
-            )
+    # Verify the session still exists (may have been revoked out-of-band).
+    from sheaf.auth.sessions import get_session_user_id
 
-    new_refresh = create_token(user_id, TokenType.REFRESH, session_id=sid)
+    if await get_session_user_id(sid) is None:
+        response.delete_cookie("sheaf_session")
+        response.delete_cookie("sheaf_refresh", path="/v1/auth")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session revoked",
+        )
+
+    new_refresh = await _mint_refresh_token(user_id, sid)
     response.set_cookie(
         key="sheaf_refresh",
         value=new_refresh,

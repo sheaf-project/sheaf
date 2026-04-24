@@ -8,6 +8,7 @@ Ciphertext format: base64(nonce + ciphertext + tag)
 
 import base64
 import hashlib
+import hmac
 import os
 
 import nacl.secret
@@ -49,3 +50,15 @@ def blind_index(value: str) -> str:
     """
     normalised = value.strip().lower()
     return hashlib.sha256(normalised.encode()).hexdigest()
+
+
+def hash_mail_token(token: str) -> str:
+    """Keyed HMAC-SHA-256 hash of a mail-delivered token for DB storage.
+
+    Used for the password-reset and email-verification tokens. Plain
+    hashlib.sha256 would let an attacker with a DB dump verify guessed
+    plaintexts offline; HMAC under the JWT secret ties verification to
+    the running app's in-memory key.
+    """
+    key = settings.jwt_secret_key.encode()
+    return hmac.new(key, token.encode(), hashlib.sha256).hexdigest()
