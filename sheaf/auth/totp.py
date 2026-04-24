@@ -21,5 +21,12 @@ def verify_code(secret: str, code: str) -> bool:
 
 
 def generate_recovery_codes(count: int = 8) -> list[str]:
-    """Generate single-use recovery codes."""
-    return [secrets.token_hex(4) for _ in range(count)]
+    """Generate single-use recovery codes.
+
+    Each code is 16 hex chars (64 bits of entropy). Formatted as two
+    hyphen-separated groups of 8 for readability when users transcribe them.
+    """
+    return [
+        f"{secrets.token_hex(4)}-{secrets.token_hex(4)}"
+        for _ in range(count)
+    ]
