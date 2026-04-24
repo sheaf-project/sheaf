@@ -1,8 +1,10 @@
 import logging
 import sys
 from enum import StrEnum
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("sheaf")
@@ -175,18 +177,48 @@ class Settings(BaseSettings):
     login_max_failures: int = 10
     login_lockout_minutes: int = 15
 
-    # Trusted proxies — comma-separated IPs that are allowed to set X-Forwarded-For.
-    # Only these IPs' X-Forwarded-For headers are trusted for rate limiting and
-    # IP logging. If empty, X-Forwarded-For is never read (direct IP is used).
-    # Common values: "127.0.0.1", "172.17.0.1" (Docker bridge), "10.0.0.1"
+    # Trusted proxies — comma-separated IPs and/or CIDR ranges that are allowed
+    # to set X-Forwarded-For. Only these peers' forwarded headers are trusted
+    # for rate limiting and IP logging. If empty, X-Forwarded-For is never read
+    # (direct IP is used).
+    # Common values: "127.0.0.1", "172.16.0.0/12" (docker-compose bridge range),
+    # "10.0.0.0/8", "::1"
     trusted_proxies: str = ""
 
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _validate_trusted_proxies(cls, v: str) -> str:
+        """Fail fast at startup if any entry isn't a valid IP or CIDR."""
+        if not v:
+            return v
+        for entry in v.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid entry in TRUSTED_PROXIES: {entry!r}. "
+                    f"Expected an IP or CIDR (e.g. 127.0.0.1 or 172.16.0.0/12). "
+                    f"Parse error: {exc}"
+                ) from exc
+        return v
+
     @property
-    def trusted_proxy_set(self) -> set[str]:
-        """Return trusted_proxies as a parsed set for fast lookup."""
+    def trusted_proxy_networks(self) -> list[IPv4Network | IPv6Network]:
+        """Return trusted_proxies parsed as a list of ip_network objects.
+
+        A bare IP parses as a /32 (or /128) network, so membership checks
+        uniformly use `in` against this list.
+        """
         if not self.trusted_proxies:
-            return set()
-        return {ip.strip() for ip in self.trusted_proxies.split(",") if ip.strip()}
+            return []
+        return [
+            ip_network(entry.strip(), strict=False)
+            for entry in self.trusted_proxies.split(",")
+            if entry.strip()
+        ]
 
     # Legal links for the footer (optional). Empty = hide.
     terms_url: str = ""

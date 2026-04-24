@@ -441,11 +441,17 @@ RATE_LIMIT_GLOBAL_WINDOW=60    # window in seconds
 When Sheaf sits behind a reverse proxy, the connecting IP is the proxy, not the client. Set `TRUSTED_PROXIES` to trust `X-Forwarded-For` headers from specific IPs:
 
 ```env
-# Comma-separated proxy IPs
+# Comma-separated IPs and/or CIDR ranges
 TRUSTED_PROXIES=127.0.0.1
+
+# Example for docker-compose where the reverse proxy is another container on
+# an auto-assigned bridge network (IP varies across `compose up`):
+# TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12
 ```
 
 If empty (default), `X-Forwarded-For` is never read — the direct connecting IP is used. This is safe but means all users behind the proxy share one rate-limit bucket.
+
+Entries accept either a literal IP (`127.0.0.1`, `::1`) or a CIDR range (`172.16.0.0/12`). Invalid entries fail fast at startup rather than silently disabling XFF.
 
 ---
 
