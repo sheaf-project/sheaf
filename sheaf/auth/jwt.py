@@ -6,6 +6,15 @@ import jwt
 
 from sheaf.config import settings
 
+JWT_AUDIENCE = "sheaf-api"
+
+
+def _jwt_issuer() -> str:
+    """The issuer claim. Prefer sheaf_base_url if configured so tokens are
+    tied to the exact origin; fall back to "sheaf" for installs with no
+    explicit base URL."""
+    return settings.sheaf_base_url or "sheaf"
+
 
 class TokenType(StrEnum):
     ACCESS = "access"
@@ -28,6 +37,8 @@ def create_token(
         "type": token_type.value,
         "exp": datetime.now(UTC) + expires,
         "iat": datetime.now(UTC),
+        "iss": _jwt_issuer(),
+        "aud": JWT_AUDIENCE,
     }
     if session_id is not None:
         payload["sid"] = session_id
@@ -37,5 +48,16 @@ def create_token(
 
 
 def decode_token(token: str) -> dict:
-    """Decode and validate a JWT. Raises jwt.PyJWTError on failure."""
-    return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+    """Decode and validate a JWT. Raises jwt.PyJWTError on failure.
+
+    Enforces the iss and aud claims; tokens issued before these were added
+    fail here and the caller treats them as invalid (user re-logs in).
+    """
+    return jwt.decode(
+        token,
+        settings.jwt_secret_key,
+        algorithms=[settings.jwt_algorithm],
+        audience=JWT_AUDIENCE,
+        issuer=_jwt_issuer(),
+        options={"require": ["exp", "iat", "sub", "iss", "aud"]},
+    )
