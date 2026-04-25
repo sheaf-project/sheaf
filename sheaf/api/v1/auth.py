@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import and_, case, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -464,6 +464,12 @@ class PasswordChange(BaseModel):
     totp_code: str | None = None
 
 
+class EmailChange(BaseModel):
+    new_email: EmailStr
+    current_password: str
+    totp_code: str | None = None
+
+
 @router.post("/request-password-reset", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def request_password_reset(
     body: PasswordResetRequest,
@@ -623,6 +629,89 @@ async def change_password(
         revoked = await delete_other_sessions(user.id, session_id)
 
     return {"changed": True, "revoked_other_sessions": revoked}
+
+
+@router.post(
+    "/change-email",
+    dependencies=[rate_limit(10, 3600, "user", fail_closed=True)],
+)
+async def change_email(
+    body: EmailChange,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Change the signed-in user's email.
+
+    Gated on the current password and, if TOTP is enabled, a fresh TOTP or
+    recovery code. The new address is verified again — verification status
+    is reset to false and a verification email is sent. Pre-apply
+    verification doesn't actually defend against session compromise (the
+    attacker controls the destination inbox); the password+TOTP gate is
+    the real protection. The re-verification is a typo safety net.
+    Other sessions are revoked, same as change-password.
+    """
+    new_email = body.new_email.strip().lower()
+    current_email = decrypt(user.email).strip().lower()
+    if new_email == current_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New email must differ from the current email",
+        )
+
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+
+    if user.totp_enabled:
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="TOTP code required",
+                headers={"X-Sheaf-2FA": "required"},
+            )
+        secret = decrypt(user.totp_secret)
+        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+            db, user, body.totp_code,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid TOTP code",
+            )
+
+    new_hash = blind_index(new_email)
+    existing = await db.execute(select(User).where(User.email_hash == new_hash))
+    conflict = existing.scalar_one_or_none()
+    if conflict is not None and conflict.id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use",
+        )
+
+    user.email = encrypt(new_email)
+    user.email_hash = new_hash
+    user.email_verified = False
+    user.email_verification_token = None
+    user.email_verification_sent_at = None
+
+    verification_sent = False
+    if settings.email_backend != "none":
+        await _send_verification_email(db, user, new_email)
+        verification_sent = True
+
+    await db.commit()
+
+    revoked = 0
+    if session_id:
+        revoked = await delete_other_sessions(user.id, session_id)
+
+    return {
+        "email": new_email,
+        "verification_sent": verification_sent,
+        "revoked_other_sessions": revoked,
+    }
 
 
 @router.post(

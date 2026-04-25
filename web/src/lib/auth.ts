@@ -122,6 +122,21 @@ export function resetPassword(token: string, new_password: string) {
   });
 }
 
+export function changeEmail(
+  new_email: string,
+  current_password: string,
+  totp_code?: string,
+) {
+  return apiFetch<{
+    email: string;
+    verification_sent: boolean;
+    revoked_other_sessions: number;
+  }>("/v1/auth/change-email", {
+    method: "POST",
+    body: JSON.stringify({ new_email, current_password, totp_code }),
+  });
+}
+
 export function changePassword(
   current_password: string,
   new_password: string,
