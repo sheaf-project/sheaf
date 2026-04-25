@@ -122,6 +122,20 @@ export function resetPassword(token: string, new_password: string) {
   });
 }
 
+export function changePassword(
+  current_password: string,
+  new_password: string,
+  totp_code?: string,
+) {
+  return apiFetch<{ changed: boolean; revoked_other_sessions: number }>(
+    "/v1/auth/change-password",
+    {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password, totp_code }),
+    },
+  );
+}
+
 export function regenerateRecoveryCodes(totp_code: string) {
   return apiFetch<{ recovery_codes: string[] }>(
     "/v1/auth/totp/regenerate-recovery-codes",

@@ -458,6 +458,12 @@ class PasswordReset(BaseModel):
     new_password: str
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+    totp_code: str | None = None
+
+
 @router.post("/request-password-reset", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def request_password_reset(
     body: PasswordResetRequest,
@@ -546,6 +552,77 @@ async def reset_password(
     user.password_reset_sent_at = None
     await db.commit()
     return {"reset": True}
+
+
+@router.post(
+    "/change-password",
+    dependencies=[rate_limit(10, 3600, "user", fail_closed=True)],
+)
+async def change_password(
+    body: PasswordChange,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Change the signed-in user's password.
+
+    Gated on the current password and, if TOTP is enabled, a fresh TOTP or
+    recovery code. On success all other sessions are revoked so a stolen
+    cookie elsewhere can't survive the change; the calling session stays
+    alive.
+    """
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters",
+        )
+    if len(body.new_password) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at most 128 characters",
+        )
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must differ from the current password",
+        )
+
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+
+    if user.totp_enabled:
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="TOTP code required",
+                headers={"X-Sheaf-2FA": "required"},
+            )
+        secret = decrypt(user.totp_secret)
+        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+            db, user, body.totp_code,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid TOTP code",
+            )
+
+    user.password_hash = hash_password(body.new_password)
+    user.failed_login_count = 0
+    user.locked_until = None
+    await db.commit()
+
+    # Revoke every other session for this user so any lingering copy of a
+    # session cookie elsewhere is dead. The calling session stays alive.
+    # Refresh tokens bound to revoked sessions fail at /refresh when the
+    # session lookup misses.
+    revoked = 0
+    if session_id:
+        revoked = await delete_other_sessions(user.id, session_id)
+
+    return {"changed": True, "revoked_other_sessions": revoked}
 
 
 @router.post(

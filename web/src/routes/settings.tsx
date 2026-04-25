@@ -27,6 +27,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useShowImageBadges } from "@/hooks/use-preferences";
 import { useUiScale } from "@/hooks/use-theme";
 import { TOTPSetup } from "@/components/totp-setup";
+import { ChangePassword } from "@/components/change-password";
 import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
 import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, updateMe, getAuthConfig, type Session } from "@/lib/auth";
@@ -621,6 +622,11 @@ function AccountInfo() {
             <span className="text-muted-foreground">Tier:</span>{" "}
             <Badge variant="outline">{user?.tier}</Badge>
           </div>
+        </div>
+        <Separator />
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Password</p>
+          <ChangePassword />
         </div>
         <Separator />
         <div className="space-y-2">
