@@ -270,6 +270,224 @@ def test_change_email_with_totp(client: httpx.Client):
     assert resp.status_code == 200
 
 
+def _enrol_totp(client: httpx.Client) -> "pyotp.TOTP":
+    setup = client.post("/v1/auth/totp/setup")
+    assert setup.status_code == 200, setup.text
+    secret = setup.json()["secret"]
+    totp = pyotp.TOTP(secret)
+    verify = client.post("/v1/auth/totp/verify", json={"code": totp.now()})
+    assert verify.status_code == 204, verify.text
+    return totp
+
+
+def test_remember_device_skips_totp_on_next_login(client: httpx.Client):
+    email = f"rd-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    totp = _enrol_totp(client)
+
+    # First login with remember_device=True: must include a TOTP code, and
+    # the response sets the trusted-device cookie.
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email,
+            "password": password,
+            "totp_code": totp.now(),
+            "remember_device": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    trusted_cookie = r.cookies.get("sheaf_trusted_device")
+    assert trusted_cookie
+
+    # Second login without TOTP, but presenting the trusted-device cookie
+    # — should succeed.
+    r = client.post(
+        "/v1/auth/login",
+        json={"email": email, "password": password},
+        cookies={"sheaf_trusted_device": trusted_cookie},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_remember_device_requires_totp_first(client: httpx.Client):
+    email = f"rd-need-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    _enrol_totp(client)
+
+    # remember_device=True without a TOTP code on the first login still
+    # rejects with the 2FA-required signal.
+    del client.headers["Authorization"]
+    r = client.post(
+        "/v1/auth/login",
+        json={"email": email, "password": password, "remember_device": True},
+    )
+    assert r.status_code == 401
+    assert r.headers.get("X-Sheaf-2FA") == "required"
+
+
+def test_trusted_device_bound_to_user(client: httpx.Client):
+    """A cookie minted for user A must not let user B skip TOTP."""
+    pw = "testpassword123"
+    email_a = f"rd-bind-a-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    email_b = f"rd-bind-b-{uuid.uuid4().hex[:8]}@sheaf.dev"
+
+    # User A: enrol TOTP and mint a trusted-device cookie.
+    token_a = _register_and_login(client, email_a, pw)
+    client.headers["Authorization"] = f"Bearer {token_a}"
+    totp_a = _enrol_totp(client)
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email_a, "password": pw,
+            "totp_code": totp_a.now(), "remember_device": True,
+        },
+    )
+    cookie_a = r.cookies.get("sheaf_trusted_device")
+    assert cookie_a
+
+    # User B: enrol TOTP, then try to log in presenting A's cookie.
+    del client.headers["Authorization"]
+    token_b = _register_and_login(client, email_b, pw)
+    client.headers["Authorization"] = f"Bearer {token_b}"
+    _enrol_totp(client)
+    del client.headers["Authorization"]
+
+    r = client.post(
+        "/v1/auth/login",
+        json={"email": email_b, "password": pw},
+        cookies={"sheaf_trusted_device": cookie_a},
+    )
+    # B has TOTP enabled and didn't supply a code; A's cookie shouldn't
+    # bypass for B.
+    assert r.status_code == 401
+    assert r.headers.get("X-Sheaf-2FA") == "required"
+
+
+def test_change_password_revokes_trusted_devices(client: httpx.Client):
+    email = f"rd-pw-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    totp = _enrol_totp(client)
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email, "password": password,
+            "totp_code": totp.now(), "remember_device": True,
+        },
+    )
+    cookie = r.cookies.get("sheaf_trusted_device")
+    assert cookie
+
+    # Change password.
+    r = client.post(
+        "/v1/auth/change-password",
+        json={
+            "current_password": password, "new_password": "newpassword456",
+            "totp_code": totp.now(),
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    # Old cookie no longer bypasses TOTP — the row was wiped.
+    del client.headers["Authorization"]
+    r = client.post(
+        "/v1/auth/login",
+        json={"email": email, "password": "newpassword456"},
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    assert r.status_code == 401
+    assert r.headers.get("X-Sheaf-2FA") == "required"
+
+
+def test_totp_disable_revokes_trusted_devices(client: httpx.Client):
+    email = f"rd-totp-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    totp = _enrol_totp(client)
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email, "password": password,
+            "totp_code": totp.now(), "remember_device": True,
+        },
+    )
+    cookie = r.cookies.get("sheaf_trusted_device")
+    assert cookie
+
+    # Disable TOTP.
+    r = client.post(
+        "/v1/auth/totp/disable",
+        json={"email": email, "password": password, "totp_code": totp.now()},
+    )
+    assert r.status_code == 204, r.text
+
+    # Re-enable TOTP — old cookie must not work even though we're back to
+    # TOTP-enabled.
+    r = client.post("/v1/auth/totp/setup")
+    new_totp = pyotp.TOTP(r.json()["secret"])
+    r = client.post("/v1/auth/totp/verify", json={"code": new_totp.now()})
+    assert r.status_code == 204, r.text
+
+    del client.headers["Authorization"]
+    r = client.post(
+        "/v1/auth/login",
+        json={"email": email, "password": password},
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    assert r.status_code == 401
+    assert r.headers.get("X-Sheaf-2FA") == "required"
+
+
+def test_list_and_revoke_trusted_device(client: httpx.Client):
+    email = f"rd-list-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    totp = _enrol_totp(client)
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email, "password": password,
+            "totp_code": totp.now(), "remember_device": True,
+        },
+    )
+    cookie = r.cookies.get("sheaf_trusted_device")
+    assert cookie
+
+    # List shows one device, marked is_current when the cookie is sent.
+    r = client.get(
+        "/v1/auth/trusted-devices",
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    assert r.status_code == 200
+    devices = r.json()
+    assert len(devices) == 1
+    assert devices[0]["is_current"] is True
+
+    # Revoke it; subsequent login with the cookie no longer bypasses.
+    device_id = devices[0]["id"]
+    r = client.delete(
+        f"/v1/auth/trusted-devices/{device_id}",
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    assert r.status_code == 204
+
+    del client.headers["Authorization"]
+    r = client.post(
+        "/v1/auth/login",
+        json={"email": email, "password": password},
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    assert r.status_code == 401
+
+
 def test_change_password_revokes_other_sessions(client: httpx.Client):
     email = f"chpw-rev-{uuid.uuid4().hex[:8]}@sheaf.dev"
     password = "oldpassword123"

@@ -9,6 +9,7 @@ from sheaf.models.job_run import JobRun
 from sheaf.models.member import Member, front_members, group_members, member_tags
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
+from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import AccountStatus, User, UserTier
 
@@ -29,6 +30,7 @@ __all__ = [
     "ServerAnnouncement",
     "System",
     "Tag",
+    "TrustedDevice",
     "UploadedFile",
     "User",
     "UserTier",

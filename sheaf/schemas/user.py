@@ -17,6 +17,7 @@ class UserLogin(BaseModel):
     password: str
     totp_code: str | None = None
     captcha: str | None = None
+    remember_device: bool = False
 
 
 class TokenResponse(BaseModel):
