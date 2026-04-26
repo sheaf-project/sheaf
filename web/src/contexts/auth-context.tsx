@@ -11,6 +11,7 @@ interface AuthState {
     password: string,
     totp_code?: string,
     captcha?: string,
+    remember_device?: boolean,
   ) => Promise<void>;
   register: (
     email: string,
@@ -56,8 +57,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: string,
       totp_code?: string,
       captcha?: string,
+      remember_device?: boolean,
     ) => {
-      const tokens = await authApi.login(email, password, totp_code, captcha);
+      const tokens = await authApi.login(
+        email, password, totp_code, captcha, remember_device,
+      );
       setAccessToken(tokens.access_token);
       // Refresh token is set as HttpOnly cookie by the server
       const me = await authApi.getMe();

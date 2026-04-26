@@ -50,6 +50,7 @@ export function login(
   password: string,
   totp_code?: string,
   captcha?: string,
+  remember_device?: boolean,
 ) {
   return apiFetch<TokenResponse>("/v1/auth/login", {
     method: "POST",
@@ -59,6 +60,7 @@ export function login(
       password,
       ...(totp_code ? { totp_code } : {}),
       ...(captcha ? { captcha } : {}),
+      ...(remember_device ? { remember_device } : {}),
     }),
   });
 }
@@ -122,6 +124,35 @@ export function resetPassword(token: string, new_password: string) {
   });
 }
 
+export function changeEmail(
+  new_email: string,
+  current_password: string,
+  totp_code?: string,
+) {
+  return apiFetch<{
+    email: string;
+    verification_sent: boolean;
+    revoked_other_sessions: number;
+  }>("/v1/auth/change-email", {
+    method: "POST",
+    body: JSON.stringify({ new_email, current_password, totp_code }),
+  });
+}
+
+export function changePassword(
+  current_password: string,
+  new_password: string,
+  totp_code?: string,
+) {
+  return apiFetch<{ changed: boolean; revoked_other_sessions: number }>(
+    "/v1/auth/change-password",
+    {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password, totp_code }),
+    },
+  );
+}
+
 export function regenerateRecoveryCodes(totp_code: string) {
   return apiFetch<{ recovery_codes: string[] }>(
     "/v1/auth/totp/regenerate-recovery-codes",
@@ -149,6 +180,39 @@ export interface Session {
 
 export function getSessions() {
   return apiFetch<Session[]>("/v1/auth/sessions");
+}
+
+export interface TrustedDevice {
+  id: string;
+  nickname: string | null;
+  user_agent: string;
+  created_at: string;
+  created_ip: string | null;
+  last_used_at: string | null;
+  last_used_ip: string | null;
+  expires_at: string;
+  is_current: boolean;
+}
+
+export function getTrustedDevices() {
+  return apiFetch<TrustedDevice[]>("/v1/auth/trusted-devices");
+}
+
+export function renameTrustedDevice(id: string, nickname: string) {
+  return apiFetch<{ ok: boolean }>(`/v1/auth/trusted-devices/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nickname }),
+  });
+}
+
+export function revokeTrustedDevice(id: string) {
+  return apiFetch<void>(`/v1/auth/trusted-devices/${id}`, { method: "DELETE" });
+}
+
+export function revokeAllTrustedDevices() {
+  return apiFetch<{ revoked: number }>("/v1/auth/trusted-devices/revoke-all", {
+    method: "POST",
+  });
 }
 
 export function renameSession(id: string, nickname: string) {

@@ -3,11 +3,12 @@ import json
 import logging
 import math
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import and_, case, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,12 +32,22 @@ from sheaf.auth.totp import (
     get_provisioning_uri,
     verify_code,
 )
+from sheaf.auth.trusted_devices import (
+    TRUSTED_DEVICE_COOKIE,
+    TRUSTED_DEVICE_TTL_DAYS,
+    list_trusted_devices,
+    mint_trusted_device,
+    revoke_all_trusted_devices,
+    revoke_trusted_device,
+    verify_trusted_device,
+)
 from sheaf.config import settings
 from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.system import System
+from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
@@ -458,6 +469,18 @@ class PasswordReset(BaseModel):
     new_password: str
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+    totp_code: str | None = None
+
+
+class EmailChange(BaseModel):
+    new_email: EmailStr
+    current_password: str
+    totp_code: str | None = None
+
+
 @router.post("/request-password-reset", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def request_password_reset(
     body: PasswordResetRequest,
@@ -549,6 +572,163 @@ async def reset_password(
 
 
 @router.post(
+    "/change-password",
+    dependencies=[rate_limit(10, 3600, "user", fail_closed=True)],
+)
+async def change_password(
+    body: PasswordChange,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Change the signed-in user's password.
+
+    Gated on the current password and, if TOTP is enabled, a fresh TOTP or
+    recovery code. On success all other sessions are revoked so a stolen
+    cookie elsewhere can't survive the change; the calling session stays
+    alive.
+    """
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters",
+        )
+    if len(body.new_password) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at most 128 characters",
+        )
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must differ from the current password",
+        )
+
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+
+    if user.totp_enabled:
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="TOTP code required",
+                headers={"X-Sheaf-2FA": "required"},
+            )
+        secret = decrypt(user.totp_secret)
+        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+            db, user, body.totp_code,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid TOTP code",
+            )
+
+    user.password_hash = hash_password(body.new_password)
+    user.failed_login_count = 0
+    user.locked_until = None
+    # Revoke every trusted device — a password change is the canonical
+    # "kick everything off" event.
+    await revoke_all_trusted_devices(db, user.id)
+    await db.commit()
+
+    # Revoke every other session for this user so any lingering copy of a
+    # session cookie elsewhere is dead. The calling session stays alive.
+    # Refresh tokens bound to revoked sessions fail at /refresh when the
+    # session lookup misses.
+    revoked = 0
+    if session_id:
+        revoked = await delete_other_sessions(user.id, session_id)
+
+    return {"changed": True, "revoked_other_sessions": revoked}
+
+
+@router.post(
+    "/change-email",
+    dependencies=[rate_limit(10, 3600, "user", fail_closed=True)],
+)
+async def change_email(
+    body: EmailChange,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
+):
+    """Change the signed-in user's email.
+
+    Gated on the current password and, if TOTP is enabled, a fresh TOTP or
+    recovery code. The new address is verified again — verification status
+    is reset to false and a verification email is sent. Pre-apply
+    verification doesn't actually defend against session compromise (the
+    attacker controls the destination inbox); the password+TOTP gate is
+    the real protection. The re-verification is a typo safety net.
+    Other sessions are revoked, same as change-password.
+    """
+    new_email = body.new_email.strip().lower()
+    current_email = decrypt(user.email).strip().lower()
+    if new_email == current_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New email must differ from the current email",
+        )
+
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+
+    if user.totp_enabled:
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="TOTP code required",
+                headers={"X-Sheaf-2FA": "required"},
+            )
+        secret = decrypt(user.totp_secret)
+        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+            db, user, body.totp_code,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid TOTP code",
+            )
+
+    new_hash = blind_index(new_email)
+    existing = await db.execute(select(User).where(User.email_hash == new_hash))
+    conflict = existing.scalar_one_or_none()
+    if conflict is not None and conflict.id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use",
+        )
+
+    user.email = encrypt(new_email)
+    user.email_hash = new_hash
+    user.email_verified = False
+    user.email_verification_token = None
+    user.email_verification_sent_at = None
+
+    verification_sent = False
+    if settings.email_backend != "none":
+        await _send_verification_email(db, user, new_email)
+        verification_sent = True
+
+    await db.commit()
+
+    revoked = 0
+    if session_id:
+        revoked = await delete_other_sessions(user.id, session_id)
+
+    return {
+        "email": new_email,
+        "verification_sent": verification_sent,
+        "revoked_other_sessions": revoked,
+    }
+
+
+@router.post(
     "/login",
     response_model=TokenResponse,
     dependencies=[
@@ -561,6 +741,9 @@ async def login(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    trusted_device_cookie: str | None = Cookie(
+        default=None, alias=TRUSTED_DEVICE_COOKIE,
+    ),
 ):
     if captcha.required_for_login() and not captcha.verify(body.captcha):
         raise HTTPException(
@@ -598,23 +781,32 @@ async def login(
             detail="Invalid email or password",
         )
 
-    # Enforce TOTP if enabled
+    # ---- login(): TOTP check + trusted-device handling ----
+    # Enforce TOTP if enabled — unless the browser presents a valid
+    # trusted-device cookie for this user.
+    bypassed_via_trusted_device = False
     if user.totp_enabled:
-        if not body.totp_code:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="TOTP code required",
-                headers={"X-Sheaf-2FA": "required"},
-            )
-        secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
-            db, user, body.totp_code
-        ):
-            await _record_login_failure(db, user)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid TOTP code",
-            )
+        trusted = await verify_trusted_device(
+            db, trusted_device_cookie, user.id, ip=client_ip(request),
+        )
+        if trusted is not None:
+            bypassed_via_trusted_device = True
+        else:
+            if not body.totp_code:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="TOTP code required",
+                    headers={"X-Sheaf-2FA": "required"},
+                )
+            secret = decrypt(user.totp_secret)
+            if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
+                db, user, body.totp_code
+            ):
+                await _record_login_failure(db, user)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid TOTP code",
+                )
 
     # Rehash if argon2 params have been upgraded
     if needs_rehash(user.password_hash):
@@ -653,6 +845,31 @@ async def login(
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/v1/auth",
     )
+
+    # Mint a trusted-device cookie if the user opted in. Only meaningful
+    # when TOTP was actually exercised (or already trusted) — without TOTP
+    # the cookie wouldn't bypass anything anyway.
+    if (
+        body.remember_device
+        and user.totp_enabled
+        and not bypassed_via_trusted_device
+    ):
+        device_token, _ = await mint_trusted_device(
+            db,
+            user.id,
+            user_agent=request.headers.get("user-agent", ""),
+            ip=client_ip(request),
+        )
+        await db.commit()
+        response.set_cookie(
+            key=TRUSTED_DEVICE_COOKIE,
+            value=device_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=TRUSTED_DEVICE_TTL_DAYS * 86400,
+            path="/v1/auth",
+        )
 
     return TokenResponse(
         access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
@@ -771,6 +988,120 @@ async def revoke_other_sessions(
             detail="No current session",
         )
     revoked = await delete_other_sessions(user.id, session_id)
+    return {"revoked": revoked}
+
+
+# ---------------------------------------------------------------------------
+# Trusted devices
+# ---------------------------------------------------------------------------
+
+
+class TrustedDeviceRename(BaseModel):
+    nickname: str
+
+
+@router.get("/trusted-devices")
+async def get_trusted_devices(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    trusted_cookie: str | None = Cookie(default=None, alias=TRUSTED_DEVICE_COOKIE),
+):
+    """List the user's non-expired trusted devices.
+
+    `is_current` is true for the device whose cookie is on this request.
+    """
+    devices = await list_trusted_devices(db, user.id)
+    current_hash = None
+    if trusted_cookie:
+        from sheaf.auth.trusted_devices import _hash_token
+
+        current_hash = _hash_token(trusted_cookie)
+    return [
+        {
+            "id": str(d.id),
+            "nickname": d.nickname,
+            "user_agent": d.user_agent,
+            "created_at": d.created_at,
+            "created_ip": d.created_ip,
+            "last_used_at": d.last_used_at,
+            "last_used_ip": d.last_used_ip,
+            "expires_at": d.expires_at,
+            "is_current": d.token_hash == current_hash,
+        }
+        for d in devices
+    ]
+
+
+@router.patch("/trusted-devices/{device_id}")
+async def rename_trusted_device(
+    device_id: uuid.UUID,
+    body: TrustedDeviceRename,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a trusted device."""
+    result = await db.execute(
+        select(TrustedDevice)
+        .where(TrustedDevice.id == device_id)
+        .where(TrustedDevice.user_id == user.id),
+    )
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Device not found",
+        )
+    device.nickname = body.nickname[:128] if body.nickname else None
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete(
+    "/trusted-devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT,
+)
+async def revoke_trusted_device_endpoint(
+    device_id: uuid.UUID,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    trusted_cookie: str | None = Cookie(default=None, alias=TRUSTED_DEVICE_COOKIE),
+):
+    """Revoke a trusted device. If the caller revoked the device tied to
+    this browser, also clear the cookie so the next login requires TOTP
+    again."""
+    # Look up the row first so we can compare its hash against the cookie
+    # before deletion.
+    result = await db.execute(
+        select(TrustedDevice)
+        .where(TrustedDevice.id == device_id)
+        .where(TrustedDevice.user_id == user.id),
+    )
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Device not found",
+        )
+    revoked_self = False
+    if trusted_cookie:
+        from sheaf.auth.trusted_devices import _hash_token
+
+        revoked_self = _hash_token(trusted_cookie) == device.token_hash
+    await revoke_trusted_device(db, user.id, device_id)
+    await db.commit()
+    if revoked_self:
+        response.delete_cookie(TRUSTED_DEVICE_COOKIE, path="/v1/auth")
+
+
+@router.post("/trusted-devices/revoke-all")
+async def revoke_all_trusted_devices_endpoint(
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke every trusted device for the user. Clears this browser's
+    cookie too."""
+    revoked = await revoke_all_trusted_devices(db, user.id)
+    await db.commit()
+    response.delete_cookie(TRUSTED_DEVICE_COOKIE, path="/v1/auth")
     return {"revoked": revoked}
 
 
@@ -1030,6 +1361,9 @@ async def totp_disable(
     user.totp_enabled = False
     user.totp_secret = None
     user.recovery_codes = None
+    # Trusted devices were minted under the old TOTP relationship; wipe
+    # them so a stale cookie can't bypass anything if TOTP is re-enabled.
+    await revoke_all_trusted_devices(db, user.id)
     await db.commit()
 
 

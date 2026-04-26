@@ -26,6 +26,7 @@ export function LoginPage() {
   const [termsAgreed, setTermsAgreed] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [needs2FA, setNeeds2FA] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [config, setConfig] = useState<AuthConfig | null>(null);
@@ -56,6 +57,7 @@ export function LoginPage() {
           password,
           totpCode || undefined,
           loginCaptcha || undefined,
+          rememberDevice,
         );
       } else {
         await register(
@@ -133,17 +135,33 @@ export function LoginPage() {
                 />
               </div>
               {needs2FA && (
-                <div className="space-y-2">
-                  <Label htmlFor="login-totp">2FA code</Label>
-                  <Input
-                    id="login-totp"
-                    value={totpCode}
-                    onChange={(e) => setTotpCode(e.target.value)}
-                    placeholder="6-digit code or recovery code"
-                    autoComplete="off"
-                    autoFocus
-                  />
-                </div>
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="login-totp">2FA code</Label>
+                    <Input
+                      id="login-totp"
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value)}
+                      placeholder="6-digit code or recovery code"
+                      autoComplete="off"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      id="login-remember"
+                      checked={rememberDevice}
+                      onCheckedChange={(v) => setRememberDevice(v === true)}
+                    />
+                    <Label
+                      htmlFor="login-remember"
+                      className="text-sm font-normal leading-snug cursor-pointer"
+                    >
+                      Trust this device for 30 days. Skip the 2FA prompt on
+                      this browser until then.
+                    </Label>
+                  </div>
+                </>
               )}
               {captchaOnLogin && (
                 <Captcha
@@ -204,17 +222,33 @@ export function LoginPage() {
                     />
                   </div>
                   {needs2FA && (
-                    <div className="space-y-2">
-                      <Label htmlFor="login-totp">2FA code</Label>
-                      <Input
-                        id="login-totp"
-                        value={totpCode}
-                        onChange={(e) => setTotpCode(e.target.value)}
-                        placeholder="6-digit code or recovery code"
-                        autoComplete="off"
-                        autoFocus
-                      />
-                    </div>
+                    <>
+                      <div className="space-y-2">
+                        <Label htmlFor="login-totp">2FA code</Label>
+                        <Input
+                          id="login-totp"
+                          value={totpCode}
+                          onChange={(e) => setTotpCode(e.target.value)}
+                          placeholder="6-digit code or recovery code"
+                          autoComplete="off"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <Checkbox
+                          id="login-remember"
+                          checked={rememberDevice}
+                          onCheckedChange={(v) => setRememberDevice(v === true)}
+                        />
+                        <Label
+                          htmlFor="login-remember"
+                          className="text-sm font-normal leading-snug cursor-pointer"
+                        >
+                          Trust this device for 30 days. Skip the 2FA prompt on
+                          this browser until then.
+                        </Label>
+                      </div>
+                    </>
                   )}
                   {captchaOnLogin && (
                     <Captcha
