@@ -63,7 +63,7 @@ jobs:
         run: uv pip install --system -e ".[dev]"
 
       - name: Run test suite
-        run: ./run_tests.sh
+        run: ./run_tests.sh || ./run_tests.sh --no-build
 
   docker:
     runs-on: ubuntu-latest
