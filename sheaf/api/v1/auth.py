@@ -17,10 +17,12 @@ from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unv
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
 from sheaf.auth.sessions import (
+    cache_refresh_rotation,
     consume_refresh_jti,
     create_session,
     delete_other_sessions,
     delete_session,
+    get_cached_refresh_rotation,
     list_user_sessions,
     register_refresh_jti,
     rename_session,
@@ -1147,25 +1149,31 @@ async def refresh(
             detail="Invalid or expired refresh token",
         ) from exc
 
-    # Consume the old jti atomically. If it's already gone, either the token
-    # was used before (reuse — likely theft) or was never tracked (pre-
-    # rotation token). Treat both as invalid and kill the session: if it
-    # really was theft, we contain the blast radius; if it was a pre-
-    # rotation token, the user re-logs in once.
+    # Consume the old jti atomically. GETDEL ensures only one of N parallel
+    # callers wins; the rest see None. None means either (a) genuine reuse —
+    # likely theft, kill the session — or (b) a concurrent legitimate caller
+    # raced and lost (StrictMode double-fire, parallel queries on page load,
+    # multiple tabs). To distinguish, the winner caches its rotation result
+    # for a few seconds; losers within that window replay it instead of
+    # tripping the kill-session path. Outside the grace window, treat as
+    # reuse and burn the session.
     if jti is None or sid is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
     consumed_sid = await consume_refresh_jti(jti)
+    replay_token: str | None = None
     if consumed_sid is None:
-        await delete_session(sid)
-        response.delete_cookie("sheaf_session")
-        response.delete_cookie("sheaf_refresh", path="/v1/auth")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-        )
+        replay_token = await get_cached_refresh_rotation(jti)
+        if replay_token is None:
+            await delete_session(sid)
+            response.delete_cookie("sheaf_session")
+            response.delete_cookie("sheaf_refresh", path="/v1/auth")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token",
+            )
 
     # Verify the session still exists (may have been revoked out-of-band).
     from sheaf.auth.sessions import get_session_user_id
@@ -1178,7 +1186,11 @@ async def refresh(
             detail="Session revoked",
         )
 
-    new_refresh = await _mint_refresh_token(user_id, sid)
+    if replay_token is not None:
+        new_refresh = replay_token
+    else:
+        new_refresh = await _mint_refresh_token(user_id, sid)
+        await cache_refresh_rotation(jti, new_refresh)
     response.set_cookie(
         key="sheaf_refresh",
         value=new_refresh,
