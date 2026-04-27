@@ -129,6 +129,205 @@ def test_refresh_concurrent_replay_does_not_kill_session(client: httpx.Client):
     assert me.status_code == 200, me.text
 
 
+def test_secondary_session_mints_independent_session(client: httpx.Client):
+    """A primary device (phone) can mint a child session for a paired
+    companion (watch). Both sessions exist concurrently in /sessions and
+    each holds its own one-shot refresh token, so the two devices can
+    rotate independently without colliding through the GETDEL serialisation
+    that previously made shared tokens fragile across the WCSession sync."""
+    email = f"secondary-mint-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    assert resp.status_code == 201, resp.text
+    primary_access = resp.json()["access_token"]
+    primary_refresh = resp.json()["refresh_token"]
+
+    secondary_resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={
+            "Authorization": f"Bearer {primary_access}",
+            "X-Sheaf-Client": "Sheaf watchOS/1.0",
+        },
+        json={"client_name": "Sheaf watchOS/1.0"},
+    )
+    assert secondary_resp.status_code == 201, secondary_resp.text
+    body = secondary_resp.json()
+    assert body["access_token"] and body["refresh_token"]
+    assert body["session_id"]
+    watch_access = body["access_token"]
+    watch_refresh = body["refresh_token"]
+
+    # Both sessions show up in /sessions, distinct ids.
+    list_resp = client.get(
+        "/v1/auth/sessions",
+        headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    ids = {s["id"] for s in list_resp.json()}
+    assert body["session_id"] in ids
+    assert len(ids) >= 2
+
+    # Watch's refresh works — independent jti, doesn't touch primary's.
+    r_watch = client.post(
+        "/v1/auth/refresh", json={"refresh_token": watch_refresh},
+    )
+    assert r_watch.status_code == 200, r_watch.text
+
+    # Primary's refresh ALSO still works — was never consumed by the watch.
+    r_phone = client.post(
+        "/v1/auth/refresh", json={"refresh_token": primary_refresh},
+    )
+    assert r_phone.status_code == 200, r_phone.text
+
+
+def test_secondary_session_cascade_on_parent_logout(client: httpx.Client):
+    """Revoking the parent session must take its child sessions with it.
+    Cascade lives server-side so it fires whether the user logs out from
+    the phone, deletes the phone session from a browser, or anywhere else
+    — the phone doesn't have to remember the watch sid to do the cleanup
+    itself."""
+    email = f"secondary-cascade-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    secondary_resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {primary_access}"},
+        json={"client_name": "Sheaf watchOS/1.0"},
+    )
+    assert secondary_resp.status_code == 201, secondary_resp.text
+    watch_access = secondary_resp.json()["access_token"]
+    watch_refresh = secondary_resp.json()["refresh_token"]
+
+    # Watch can hit /me before the cascade.
+    me = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
+    )
+    assert me.status_code == 200
+
+    # Logging out the phone should cascade-kill the watch's session too.
+    logout = client.post(
+        "/v1/auth/logout",
+        headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert logout.status_code == 204
+
+    # Watch access token is now bound to a dead session.
+    me_after = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
+    )
+    assert me_after.status_code == 401
+
+    # And the watch's refresh token can't resurrect the session either.
+    refresh_after = client.post(
+        "/v1/auth/refresh", json={"refresh_token": watch_refresh},
+    )
+    assert refresh_after.status_code == 401
+
+
+def test_secondary_session_can_be_revoked_alone(client: httpx.Client):
+    """Killing only the watch session must leave the phone alive — the user
+    revoking a wearable from /sessions shouldn't get logged out of the
+    primary device."""
+    email = f"secondary-solo-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    secondary_resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {primary_access}"},
+        json={"client_name": "Sheaf watchOS/1.0"},
+    )
+    watch_sid = secondary_resp.json()["session_id"]
+    watch_access = secondary_resp.json()["access_token"]
+
+    revoke = client.delete(
+        f"/v1/auth/sessions/{watch_sid}",
+        headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert revoke.status_code == 204, revoke.text
+
+    # Watch is dead.
+    me_watch = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
+    )
+    assert me_watch.status_code == 401
+
+    # Phone is still alive.
+    me_phone = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert me_phone.status_code == 200
+
+
+def test_secondary_session_change_password_keeps_paired_watch(
+    client: httpx.Client,
+):
+    """change-password runs delete_other_sessions, which would naively kill
+    the watch (it's "another session"). The whole point of the parent/child
+    link is that the watch is a *companion* of the calling phone — keep it
+    alive across the calling session's password change so the user doesn't
+    have to re-pair the watch every time they rotate their password."""
+    email = f"secondary-chpw-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "originalpass1"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    secondary_resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {primary_access}"},
+        json={"client_name": "Sheaf watchOS/1.0"},
+    )
+    assert secondary_resp.status_code == 201, secondary_resp.text
+    watch_access = secondary_resp.json()["access_token"]
+
+    # Need the session cookie for change-password to identify "this session".
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": email, "password": "originalpass1"},
+    )
+    assert login.status_code == 200
+    login_access = login.json()["access_token"]
+
+    # Mint a watch session bound to the *cookie* session (which is the one
+    # that will run change-password).
+    secondary_via_cookie = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {login_access}"},
+        json={"client_name": "Sheaf watchOS/1.0"},
+    )
+    assert secondary_via_cookie.status_code == 201
+    cookie_watch_access = secondary_via_cookie.json()["access_token"]
+
+    chpw = client.post(
+        "/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {login_access}"},
+        json={
+            "current_password": "originalpass1",
+            "new_password": "freshpass2",
+        },
+    )
+    assert chpw.status_code == 200, chpw.text
+
+    # Watch paired with the calling session survives.
+    me_keep = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {cookie_watch_access}"},
+    )
+    assert me_keep.status_code == 200, me_keep.text
+
+    # Watch paired with the *other* (now-revoked) session does not.
+    me_gone = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
+    )
+    assert me_gone.status_code == 401
+
+
 def _register_and_login(client: httpx.Client, email: str, password: str) -> str:
     """Register a user and log in via cookie session. Returns access token."""
     r = client.post("/v1/auth/register", json={"email": email, "password": password})

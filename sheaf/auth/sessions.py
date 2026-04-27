@@ -25,6 +25,13 @@ def _user_sessions_key(user_id: uuid.UUID) -> str:
     return f"sheaf:user_sessions:{user_id}"
 
 
+def _session_children_key(parent_session_id: str) -> str:
+    """Set of child session ids spawned from a parent (e.g. a watch
+    companion session minted by a phone session). Used to cascade
+    revocation when the parent is deleted."""
+    return f"sheaf:session_children:{parent_session_id}"
+
+
 def _parse_client_name(user_agent: str, client_header: str | None = None) -> str:
     """Extract a friendly client name from headers.
 
@@ -61,8 +68,14 @@ async def create_session(
     ip: str | None = None,
     user_agent: str = "",
     client_header: str | None = None,
+    parent_session_id: str | None = None,
 ) -> str:
-    """Create a new session with metadata, return the session ID."""
+    """Create a new session with metadata, return the session ID.
+
+    If `parent_session_id` is given, the new session is registered as a child
+    of the parent so deleting the parent cascades to this session too. Used
+    for companion/wearable sessions minted from a primary device.
+    """
     r = await get_redis()
     session_id = secrets.token_urlsafe(32)
     now = datetime.now(UTC).isoformat()
@@ -70,22 +83,28 @@ async def create_session(
 
     ttl = settings.session_expire_hours * 3600
 
+    mapping = {
+        "user_id": str(user_id),
+        "created_at": now,
+        "created_ip": ip or "",
+        "last_active_at": now,
+        "last_active_ip": ip or "",
+        "user_agent": user_agent,
+        "client_name": client_name,
+        "nickname": "",
+    }
+    if parent_session_id:
+        mapping["parent_session_id"] = parent_session_id
+
     pipe = r.pipeline()
-    pipe.hset(
-        _session_key(session_id),
-        mapping={
-            "user_id": str(user_id),
-            "created_at": now,
-            "created_ip": ip or "",
-            "last_active_at": now,
-            "last_active_ip": ip or "",
-            "user_agent": user_agent,
-            "client_name": client_name,
-            "nickname": "",
-        },
-    )
+    pipe.hset(_session_key(session_id), mapping=mapping)
     pipe.expire(_session_key(session_id), ttl)
     pipe.sadd(_user_sessions_key(user_id), session_id)
+    if parent_session_id:
+        pipe.sadd(_session_children_key(parent_session_id), session_id)
+        # Children-set TTL tracks the longest-lived child; bump it on each
+        # add so it doesn't expire while a child is still alive.
+        pipe.expire(_session_children_key(parent_session_id), ttl)
     await pipe.execute()
 
     return session_id
@@ -147,10 +166,26 @@ async def list_user_sessions(user_id: uuid.UUID) -> list[dict]:
 
 
 async def delete_session(session_id: str) -> None:
-    """Delete a session and remove it from the user's session set."""
+    """Delete a session and any child sessions linked to it.
+
+    Children come from `create_session(parent_session_id=...)` — a phone
+    minting a watch companion session, etc. Cascading here means revoking
+    a primary session (logout, /sessions DELETE) also kills the wearable
+    bound to it, so the watch can't keep refreshing after the user has
+    explicitly killed the parent.
+    """
     r = await get_redis()
     # Get user_id before deleting so we can clean the set
     user_id_str = await r.hget(_session_key(session_id), "user_id")
+
+    # Cascade to children first so a partial failure leaves orphans rather
+    # than zombies that look like live sessions.
+    children_key = _session_children_key(session_id)
+    child_ids = await r.smembers(children_key)
+    for child_sid in child_ids:
+        await delete_session(child_sid)
+    await r.delete(children_key)
+
     await r.delete(_session_key(session_id))
     if user_id_str:
         await r.srem(_user_sessions_key(uuid.UUID(user_id_str)), session_id)
@@ -159,17 +194,27 @@ async def delete_session(session_id: str) -> None:
 async def delete_other_sessions(
     user_id: uuid.UUID, keep_session_id: str,
 ) -> int:
-    """Revoke all sessions for a user except the given one. Returns count revoked."""
+    """Revoke all sessions for a user except the given one. Returns count revoked.
+
+    A child session of the kept session also stays alive — useful for
+    change-password from a phone, where the user almost certainly wants
+    their paired watch to keep working without re-pairing.
+    """
     r = await get_redis()
     set_key = _user_sessions_key(user_id)
     session_ids = await r.smembers(set_key)
 
+    keep_children = await r.smembers(_session_children_key(keep_session_id))
+    keep_set = {keep_session_id, *keep_children}
+
     revoked = 0
     for sid in session_ids:
-        if sid == keep_session_id:
+        if sid in keep_set:
             continue
-        await r.delete(_session_key(sid))
-        await r.srem(set_key, sid)
+        # Use delete_session so any *other* parent's children also cascade —
+        # e.g. a stale phone session being revoked here pulls its watch with
+        # it instead of stranding the watch session as an orphan.
+        await delete_session(sid)
         revoked += 1
 
     return revoked
@@ -187,6 +232,7 @@ async def delete_all_user_sessions(user_id: uuid.UUID) -> int:
     pipe = r.pipeline()
     for sid in session_ids:
         pipe.delete(_session_key(sid))
+        pipe.delete(_session_children_key(sid))
     pipe.delete(set_key)
     await pipe.execute()
 
