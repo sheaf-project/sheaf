@@ -1,7 +1,12 @@
 import { useMemo } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { GroupCreate, GroupUpdate } from "@/types/api";
+import {
+  isDeleteQueued,
+  type DestructiveConfirm,
+  type GroupCreate,
+  type GroupUpdate,
+} from "@/types/api";
 import * as api from "@/lib/groups";
 
 export const groupKeys = {
@@ -68,10 +73,23 @@ export function useUpdateGroup() {
 export function useDeleteGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteGroup(id),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.deleteGroup(id, confirm),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: groupKeys.all });
-      toast.success("Group deleted");
+      if (isDeleteQueued(result)) {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Group scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+        );
+      } else {
+        toast.success("Group deleted");
+      }
     },
   });
 }

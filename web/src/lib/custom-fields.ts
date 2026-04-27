@@ -4,6 +4,8 @@ import type {
   CustomFieldUpdate,
   CustomFieldValue,
   CustomFieldValueSet,
+  DeleteResult,
+  DestructiveConfirm,
 } from "@/types/api";
 import { apiFetch } from "./api-client";
 
@@ -25,8 +27,11 @@ export function updateField(id: string, data: CustomFieldUpdate) {
   });
 }
 
-export function deleteField(id: string) {
-  return apiFetch<void>(`/v1/fields/${id}`, { method: "DELETE" });
+export function deleteField(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/fields/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }
 
 export function getMemberFieldValues(memberId: string) {

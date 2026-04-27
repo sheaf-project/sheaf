@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { MemberCreate, MemberUpdate } from "@/types/api";
+import {
+  isDeleteQueued,
+  type DestructiveConfirm,
+  type MemberCreate,
+  type MemberUpdate,
+} from "@/types/api";
 import * as api from "@/lib/members";
 
 export const memberKeys = {
@@ -54,11 +59,18 @@ export function useDeleteMember() {
       confirm,
     }: {
       id: string;
-      confirm?: { password?: string; totp_code?: string };
+      confirm?: DestructiveConfirm;
     }) => api.deleteMember(id, confirm),
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: memberKeys.all });
-      toast.success("Member deleted");
+      if (isDeleteQueued(result)) {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Member scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+        );
+      } else {
+        toast.success("Member deleted");
+      }
     },
   });
 }

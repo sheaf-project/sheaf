@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,6 +20,8 @@ class DateFormat(enum.StrEnum):
     YMD = "ymd"  # 2026-03-19
 
 
+# Name is historical. Now used across System Safety as the auth tier for all
+# safeguarded destructive actions, not just delete confirmation.
 class DeleteConfirmation(enum.StrEnum):
     NONE = "none"
     PASSWORD = "password"
@@ -47,6 +49,8 @@ class System(UUIDMixin, TimestampMixin, Base):
         default=PrivacyLevel.PRIVATE,
         nullable=False,
     )
+    # Historical name. Now the auth tier for all safeguarded destructive
+    # actions under System Safety (members, groups, tags, fields, fronts).
     delete_confirmation: Mapped[DeleteConfirmation] = mapped_column(
         Enum(DeleteConfirmation, values_callable=lambda e: [m.value for m in e]),
         default=DeleteConfirmation.NONE,
@@ -60,6 +64,27 @@ class System(UUIDMixin, TimestampMixin, Base):
     # When True, creating a new front automatically ends all currently open fronts.
     replace_fronts_default: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
+    )
+
+    # System Safety — grace period + per-category toggles for destructive actions.
+    # 0 days means no grace; paired with all category toggles off by default.
+    safety_grace_period_days: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    safety_applies_to_members: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    safety_applies_to_groups: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    safety_applies_to_tags: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    safety_applies_to_fields: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    safety_applies_to_fronts: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
 
     # Relationships

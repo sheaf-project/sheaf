@@ -1,6 +1,7 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -9,10 +10,16 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.group import Group
 from sheaf.models.member import Member
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
-from sheaf.schemas.member import MemberRead
+from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
+)
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
@@ -131,18 +138,45 @@ async def update_group(
 
 @router.delete(
     "/{group_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("groups:delete"))],
 )
 async def delete_group(
     group_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Response:
     system = await _get_user_system(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
     group = await _get_own_group(group_id, system, db)
+
+    if is_safeguarded(system, PendingActionType.GROUP_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.GROUP_DELETE,
+            target_id=group.id,
+            target_label=group.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(group)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{group_id}/members", response_model=list[MemberRead])

@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { CustomFieldCreate, CustomFieldUpdate, CustomFieldValueSet } from "@/types/api";
+import {
+  isDeleteQueued,
+  type CustomFieldCreate,
+  type CustomFieldUpdate,
+  type CustomFieldValueSet,
+  type DestructiveConfirm,
+} from "@/types/api";
 import * as api from "@/lib/custom-fields";
 import { memberKeys } from "./use-members";
 
@@ -42,10 +48,23 @@ export function useUpdateField() {
 export function useDeleteField() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteField(id),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.deleteField(id, confirm),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: fieldKeys.all });
-      toast.success("Field deleted");
+      if (isDeleteQueued(result)) {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Field scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+        );
+      } else {
+        toast.success("Field deleted");
+      }
     },
   });
 }

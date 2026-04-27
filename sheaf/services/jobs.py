@@ -521,6 +521,69 @@ async def _cleanup_job_logs(db: AsyncSession) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# System Safety — finalize pending destructive actions + safety-setting changes
+# ---------------------------------------------------------------------------
+
+
+async def _finalize_pending_actions(db: AsyncSession) -> dict:
+    """Execute pending destructive actions whose grace period has elapsed."""
+    from sheaf.models.pending_action import PendingAction, PendingActionStatus
+    from sheaf.services.system_safety import finalize_pending_action
+
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(PendingAction).where(
+            PendingAction.status == PendingActionStatus.PENDING,
+            PendingAction.finalize_after <= now,
+        )
+    )
+    pending = list(result.scalars().all())
+    if not pending:
+        return {"items_processed": 0}
+
+    detail_lines: list[str] = []
+    for row in pending:
+        try:
+            await finalize_pending_action(row, db)
+            detail_lines.append(f"{row.action_type} {row.target_label}")
+        except Exception as exc:
+            row.status = PendingActionStatus.ERRORED
+            row.error_message = str(exc)[:1000]
+            row.completed_at = datetime.now(UTC)
+            logger.exception("Failed to finalize pending action %s", row.id)
+
+    return {
+        "items_processed": len(pending),
+        "details": "\n".join(detail_lines) if detail_lines else None,
+    }
+
+
+async def _finalize_safety_changes(db: AsyncSession) -> dict:
+    """Apply deferred safety-setting loosenings whose grace period has elapsed."""
+    from sheaf.models.safety_change_request import (
+        SafetyChangeRequest,
+        SafetyChangeStatus,
+    )
+    from sheaf.services.system_safety import finalize_safety_change
+
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(SafetyChangeRequest).where(
+            SafetyChangeRequest.status == SafetyChangeStatus.PENDING,
+            SafetyChangeRequest.finalize_after <= now,
+        )
+    )
+    changes = list(result.scalars().all())
+    if not changes:
+        return {"items_processed": 0}
+
+    for row in changes:
+        await finalize_safety_change(row, db)
+
+    return {"items_processed": len(changes)}
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -580,6 +643,20 @@ def _register_all_jobs() -> None:
         description="Delete job run logs older than 30 days",
         func=_cleanup_job_logs,
         interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="finalize_pending_actions",
+        description="Execute System Safety pending destructive actions past their grace period",
+        func=_finalize_pending_actions,
+        interval_seconds=lambda: settings.job_check_interval_minutes * 60,
+    )
+
+    register_job(
+        name="finalize_safety_changes",
+        description="Apply deferred System Safety setting loosenings past their grace period",
+        func=_finalize_safety_changes,
+        interval_seconds=lambda: settings.job_check_interval_minutes * 60,
     )
 
     register_job(

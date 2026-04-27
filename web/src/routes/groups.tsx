@@ -7,10 +7,12 @@ import {
   useGroupMembers,
   useSetGroupMembers,
 } from "@/hooks/use-groups";
+import { useQuery } from "@tanstack/react-query";
+import { getMySystem } from "@/lib/systems";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { MemberSelect } from "@/components/member-select";
-import { ConfirmDialog } from "@/components/confirm-dialog";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -61,6 +63,10 @@ export function GroupsPage() {
   const createGroup = useCreateGroup();
   const updateGroup = useUpdateGroup();
   const deleteGroup = useDeleteGroup();
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Group | null>(null);
   const [deleting, setDeleting] = useState<Group | null>(null);
@@ -228,16 +234,18 @@ export function GroupsPage() {
       </Dialog>
 
       {/* Delete confirm */}
-      <ConfirmDialog
+      <DestructiveConfirmDialog
         open={!!deleting}
         onOpenChange={(open) => !open && setDeleting(null)}
         title="Delete group"
         description={`Are you sure you want to delete "${deleting?.name}"?`}
-        onConfirm={() =>
+        tier={system?.delete_confirmation ?? "none"}
+        onConfirm={(confirm) =>
           deleting &&
-          deleteGroup.mutate(deleting.id, {
-            onSuccess: () => setDeleting(null),
-          })
+          deleteGroup.mutate(
+            { id: deleting.id, confirm },
+            { onSuccess: () => setDeleting(null) },
+          )
         }
         loading={deleteGroup.isPending}
       />

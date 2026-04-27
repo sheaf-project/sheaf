@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { TagCreate, TagUpdate } from "@/types/api";
+import {
+  isDeleteQueued,
+  type DestructiveConfirm,
+  type TagCreate,
+  type TagUpdate,
+} from "@/types/api";
 import * as api from "@/lib/tags";
 
 export const tagKeys = {
@@ -40,10 +45,23 @@ export function useUpdateTag() {
 export function useDeleteTag() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteTag(id),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.deleteTag(id, confirm),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: tagKeys.all });
-      toast.success("Tag deleted");
+      if (isDeleteQueued(result)) {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Tag scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+        );
+      } else {
+        toast.success("Tag deleted");
+      }
     },
   });
 }

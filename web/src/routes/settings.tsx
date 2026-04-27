@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useTags, useCreateTag, useUpdateTag, useDeleteTag } from "@/hooks/use-tags";
 import { useCustomFields, useCreateField, useUpdateField, useDeleteField } from "@/hooks/use-custom-fields";
-import { getMySystem, updateMySystem, updateDeleteConfirmation, exportData } from "@/lib/systems";
+import { getMySystem, updateMySystem, exportData } from "@/lib/systems";
 import { getStorageUsage, cleanupFiles, listFiles, deleteFile, type UploadedFileInfo } from "@/lib/files";
 import { AvatarUpload } from "@/components/avatar-upload";
 import { PageHeader } from "@/components/page-header";
@@ -29,7 +29,9 @@ import { useUiScale } from "@/hooks/use-theme";
 import { TOTPSetup } from "@/components/totp-setup";
 import { ChangePassword } from "@/components/change-password";
 import { ChangeEmail } from "@/components/change-email";
-import type { ApiKey, ApiKeyCreated, DateFormat, DeleteConfirmation, FieldType, PrivacyLevel } from "@/types/api";
+import type { ApiKey, ApiKeyCreated, DateFormat, FieldType, PrivacyLevel } from "@/types/api";
+import { SystemSafetyCard } from "@/components/system-safety-card";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
 import { getSessions, renameSession, revokeSession, revokeOtherSessions, requestAccountDeletion, cancelDeletion, updateMe, getAuthConfig, getTrustedDevices, renameTrustedDevice, revokeTrustedDevice, revokeAllTrustedDevices, type Session, type TrustedDevice } from "@/lib/auth";
 import { listClientSettings, deleteClientSettings } from "@/lib/client-settings";
@@ -183,6 +185,10 @@ function SystemSettingsForm({
 
 function TagsManager() {
   const { data: tags } = useTags();
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
   const createTag = useCreateTag();
   const updateTag = useUpdateTag();
   const deleteTag = useDeleteTag();
@@ -191,6 +197,8 @@ function TagsManager() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
+  const [deletingTag, setDeletingTag] =
+    useState<{ id: string; name: string } | null>(null);
 
   function handleCreate(e: FormEvent) {
     e.preventDefault();
@@ -273,7 +281,7 @@ function TagsManager() {
                 onClick={() => startEdit(t)}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  deleteTag.mutate(t.id);
+                  setDeletingTag({ id: t.id, name: t.name });
                 }}
               >
                 <ColorDot color={t.color} />
@@ -288,12 +296,31 @@ function TagsManager() {
           </p>
         )}
       </CardContent>
+      <DestructiveConfirmDialog
+        open={!!deletingTag}
+        onOpenChange={(open) => !open && setDeletingTag(null)}
+        title="Delete tag"
+        description={`Are you sure you want to delete "${deletingTag?.name}"?`}
+        tier={system?.delete_confirmation ?? "none"}
+        onConfirm={(confirm) =>
+          deletingTag &&
+          deleteTag.mutate(
+            { id: deletingTag.id, confirm },
+            { onSuccess: () => setDeletingTag(null) },
+          )
+        }
+        loading={deleteTag.isPending}
+      />
     </Card>
   );
 }
 
 function CustomFieldsManager() {
   const { data: fields } = useCustomFields();
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
   const createField = useCreateField();
   const updateField = useUpdateField();
   const deleteField = useDeleteField();
@@ -301,7 +328,8 @@ function CustomFieldsManager() {
   const [newType, setNewType] = useState<FieldType>("text");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deletingField, setDeletingField] =
+    useState<{ id: string; name: string } | null>(null);
 
   function handleCreate(e: FormEvent) {
     e.preventDefault();
@@ -392,38 +420,14 @@ function CustomFieldsManager() {
                   {f.name}
                   <span className="ml-2 text-xs text-muted-foreground">{f.field_type}</span>
                 </span>
-                {deleteConfirmId === f.id ? (
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => {
-                        deleteField.mutate(f.id);
-                        setDeleteConfirmId(null);
-                      }}
-                    >
-                      Confirm
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setDeleteConfirmId(null)}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                ) : (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-                    onClick={() => setDeleteConfirmId(f.id)}
-                  >
-                    Delete
-                  </Button>
-                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+                  onClick={() => setDeletingField({ id: f.id, name: f.name })}
+                >
+                  Delete
+                </Button>
               </div>
             ),
           )}
@@ -434,125 +438,21 @@ function CustomFieldsManager() {
           </p>
         )}
       </CardContent>
-    </Card>
-  );
-}
-
-function DeleteConfirmationSetting() {
-  const { user } = useAuth();
-  const qc = useQueryClient();
-  const { data: system } = useQuery({
-    queryKey: ["system", "me"],
-    queryFn: getMySystem,
-  });
-  const mutation = useMutation({
-    mutationFn: updateDeleteConfirmation,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["system", "me"] });
-      toast.success("Delete confirmation updated");
-    },
-  });
-
-  const [pending, setPending] = useState<DeleteConfirmation | null>(null);
-  const [password, setPassword] = useState("");
-  const [totpCode, setTotpCode] = useState("");
-  const [error, setError] = useState("");
-
-  if (!system) return null;
-
-  function handleChange(value: DeleteConfirmation) {
-    if (value === system!.delete_confirmation) return;
-    setPending(value);
-    setPassword("");
-    setTotpCode("");
-    setError("");
-  }
-
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!pending) return;
-    setError("");
-    mutation.mutate(
-      { level: pending, password, totp_code: totpCode || undefined },
-      {
-        onSuccess: () => setPending(null),
-        onError: (err) => setError(err instanceof Error ? err.message : "Failed"),
-      },
-    );
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Delete confirmation</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          Require extra verification before deleting a member.
-        </p>
-        <Select
-          value={pending ?? system.delete_confirmation}
-          onValueChange={(v) => handleChange(v as DeleteConfirmation)}
-        >
-          <SelectTrigger className="w-48">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">No confirmation</SelectItem>
-            <SelectItem value="password">Require password</SelectItem>
-            {user?.totp_enabled && (
-              <SelectItem value="totp">Require TOTP</SelectItem>
-            )}
-            {user?.totp_enabled && (
-              <SelectItem value="both">Password + TOTP</SelectItem>
-            )}
-          </SelectContent>
-        </Select>
-
-        {pending && (
-          <form onSubmit={handleSubmit} className="space-y-3 border-t pt-3">
-            <p className="text-sm text-muted-foreground">
-              Confirm your identity to change this setting.
-            </p>
-            <div className="space-y-1">
-              <Label className="text-sm">Password</Label>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            {user?.totp_enabled && (
-              <div className="space-y-1">
-                <Label className="text-sm">TOTP code</Label>
-                <Input
-                  value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value)}
-                  placeholder="6-digit code"
-                  maxLength={6}
-                  autoComplete="off"
-                  required
-                />
-              </div>
-            )}
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <div className="flex gap-2">
-              <Button type="submit" size="sm" disabled={mutation.isPending}>
-                {mutation.isPending ? "Saving..." : "Confirm"}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setPending(null)}
-              >
-                Cancel
-              </Button>
-            </div>
-          </form>
-        )}
-      </CardContent>
+      <DestructiveConfirmDialog
+        open={!!deletingField}
+        onOpenChange={(open) => !open && setDeletingField(null)}
+        title="Delete custom field"
+        description={`Are you sure you want to delete "${deletingField?.name}"? All values set on members will be lost.`}
+        tier={system?.delete_confirmation ?? "none"}
+        onConfirm={(confirm) =>
+          deletingField &&
+          deleteField.mutate(
+            { id: deletingField.id, confirm },
+            { onSuccess: () => setDeletingField(null) },
+          )
+        }
+        loading={deleteField.isPending}
+      />
     </Card>
   );
 }
@@ -1676,11 +1576,15 @@ export function SettingsPage() {
         <SystemSettings />
         <TagsManager />
         <CustomFieldsManager />
-        <DeleteConfirmationSetting />
+        <div id="safety" className="scroll-mt-20">
+          <SystemSafetyCard />
+        </div>
         <DisplayPreferences />
         <FrontPreferences />
         <Separator />
-        <AccountInfo />
+        <div id="security" className="scroll-mt-20">
+          <AccountInfo />
+        </div>
         <ApiKeysCard />
         <ActiveSessionsCard />
         <TrustedDevicesCard />
