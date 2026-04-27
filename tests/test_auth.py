@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import httpx
@@ -67,6 +68,65 @@ def test_refresh_token(client: httpx.Client):
     resp = client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
     assert resp.status_code == 200
     assert "access_token" in resp.json()
+
+
+def test_refresh_token_via_cookie(client: httpx.Client):
+    """Frontend pattern: POST /refresh with empty body, refresh JWT comes from
+    the HttpOnly cookie set on register/login. Browsers will silently drop a
+    Secure cookie sent over HTTP, so we also assert the cookie's Secure flag
+    matches the server's base URL scheme — otherwise dev-over-HTTP refresh
+    breaks the moment the access token expires."""
+    email = f"refresh-cookie-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post("/v1/auth/register", json={"email": email, "password": "securepassword"})
+    assert resp.status_code == 201
+    refresh_header = next(
+        (h for h in resp.headers.get_list("set-cookie") if h.startswith("sheaf_refresh=")),
+        "",
+    )
+    assert refresh_header, "register must set sheaf_refresh cookie"
+    base_url = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
+    if base_url.startswith("http://"):
+        assert "Secure" not in refresh_header, (
+            "cookie must NOT be Secure when serving over HTTP — "
+            "browsers drop it and refresh silently breaks"
+        )
+    else:
+        assert "Secure" in refresh_header
+
+    assert client.cookies.get("sheaf_refresh"), "client should have stored sheaf_refresh"
+    cookie_resp = client.post("/v1/auth/refresh", json={})
+    assert cookie_resp.status_code == 200, cookie_resp.text
+    assert "access_token" in cookie_resp.json()
+
+
+def test_refresh_concurrent_replay_does_not_kill_session(client: httpx.Client):
+    """Two callers race to /refresh with the same refresh token (StrictMode
+    double-fire, parallel queries on page load, two tabs reloading at once).
+    Only one wins the GETDEL; the other historically tripped reuse-detection
+    and the session was nuked. The grace-window cache lets the loser replay
+    the same rotation result instead.
+    """
+    email = f"refresh-replay-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post("/v1/auth/register", json={"email": email, "password": "securepassword"})
+    assert resp.status_code == 201
+    original_refresh_jwt = resp.json()["refresh_token"]
+
+    # Winner consumes the jti and gets a new refresh.
+    r1 = client.post("/v1/auth/refresh", json={"refresh_token": original_refresh_jwt})
+    assert r1.status_code == 200, r1.text
+
+    # Loser arrives with the *same* original token — within the grace window
+    # this should replay rather than trigger session-kill.
+    r2 = client.post("/v1/auth/refresh", json={"refresh_token": original_refresh_jwt})
+    assert r2.status_code == 200, (
+        f"Concurrent /refresh duplicate should replay within the grace window, "
+        f"got {r2.status_code}: {r2.text}"
+    )
+
+    # Session must still be usable: hit /me with the winner's access token.
+    access = r1.json()["access_token"]
+    me = client.get("/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+    assert me.status_code == 200, me.text
 
 
 def _register_and_login(client: httpx.Client, email: str, password: str) -> str:

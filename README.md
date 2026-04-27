@@ -1,5 +1,10 @@
 # Sheaf
 
+[![CI](https://github.com/sheaf-project/sheaf/actions/workflows/ci.yml/badge.svg)](https://github.com/sheaf-project/sheaf/actions/workflows/ci.yml)
+![transrights](https://pride-badges.pony.workers.dev/static/v1?label=trans%20rights&stripeWidth=6&stripeColors=5BCEFA,F5A9B8,FFFFFF,F5A9B8,5BCEFA)
+![enbyware](https://pride-badges.pony.workers.dev/static/v1?label=enbyware&labelColor=%23555&stripeWidth=8&stripeColors=FCF434%2CFFFFFF%2C9C59D1%2C2C2C2C)
+![pluralmade](https://pride-badges.pony.workers.dev/static/v1?label=plural+made&labelColor=%23555&stripeWidth=8&stripeColors=2e0525%2C553578%2C7675c3%2C89c7b0%2Cf4ecbd)
+
 > *noun*: a bundle; in mathematics, a structure that describes how local pieces fit together into a coherent whole.
 
 Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
@@ -148,7 +153,7 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - File storage (filesystem / S3) with hotlink protection
 - Storage quotas and upload limits
 - Frontend build and serving
-- Reverse proxy setup (nginx, Caddy)
+- Reverse proxy setup (nginx, Caddy) and the `SHEAF_BASE_URL` / cookie-Secure relationship
 - Rate limiting and trusted proxies
 - Public test / demo mode (periodic non-admin wipe + warning banner)
 - Backups

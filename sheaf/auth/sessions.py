@@ -210,6 +210,18 @@ def _refresh_jti_key(jti: str) -> str:
     return f"sheaf:refresh:{jti}"
 
 
+def _refresh_rotation_key(jti: str) -> str:
+    return f"sheaf:refresh:rotation:{jti}"
+
+
+# Window during which a just-rotated refresh token can be replayed by a
+# concurrent caller that raced with the winner. Has to cover client-side
+# parallelism (StrictMode double-fire, multiple tabs, parallel queries on
+# page load) but stay short enough that real reuse-after-theft still trips
+# the kill-session path.
+REFRESH_ROTATION_GRACE_SECONDS = 10
+
+
 async def register_refresh_jti(jti: str, session_id: str, ttl_seconds: int) -> None:
     """Record a minted refresh token's jti so we can detect later reuse."""
     r = await get_redis()
@@ -226,10 +238,27 @@ async def consume_refresh_jti(jti: str) -> str | None:
     return await r.getdel(_refresh_jti_key(jti))
 
 
+async def cache_refresh_rotation(jti: str, new_refresh_token: str) -> None:
+    """After a successful rotation, cache the freshly-minted refresh token
+    keyed by the *old* jti for a brief grace window. A concurrent caller that
+    raced and lost the GETDEL can pick up this entry and replay the rotation
+    instead of getting the session nuked as suspected reuse."""
+    r = await get_redis()
+    await r.setex(_refresh_rotation_key(jti), REFRESH_ROTATION_GRACE_SECONDS, new_refresh_token)
+
+
+async def get_cached_refresh_rotation(jti: str) -> str | None:
+    """Return the cached new refresh token for a recently-consumed jti, or
+    None if the grace window has expired or no rotation was cached."""
+    r = await get_redis()
+    return await r.get(_refresh_rotation_key(jti))
+
+
 async def revoke_refresh_jti(jti: str) -> None:
     """Best-effort revoke of a refresh jti (e.g. on logout)."""
     r = await get_redis()
     await r.delete(_refresh_jti_key(jti))
+    await r.delete(_refresh_rotation_key(jti))
 
 
 # ---------------------------------------------------------------------------

@@ -218,7 +218,11 @@ INVITE_CODES_ENABLED=false
 # off (default) | required
 EMAIL_VERIFICATION=off
 
-# Required when email is enabled — used in verification/reset links
+# Public base URL of the instance — used for email links, the JWT issuer
+# claim, and to decide whether auth cookies carry the Secure flag. Required
+# when email is enabled; otherwise optional. Leave unset (or set to https://...)
+# in production. Set to an http:// URL only for plain-HTTP dev/LAN setups —
+# see "Reverse proxy / TLS" below.
 SHEAF_BASE_URL=https://sheaf.example.com
 ```
 
@@ -660,6 +664,20 @@ If you don't want uvicorn directly exposed on the network:
 ```env
 SHEAF_HOST=127.0.0.1
 ```
+
+### Cookie Secure flag and `SHEAF_BASE_URL`
+
+Auth cookies (`sheaf_session`, `sheaf_refresh`, trusted-device cookie) are marked `Secure` by default. Browsers silently drop Secure cookies on plain-HTTP origins, which breaks refresh-token rotation and login persistence.
+
+Sheaf decides based on `SHEAF_BASE_URL`:
+
+| `SHEAF_BASE_URL` | Cookie `Secure` flag | Use case |
+|---|---|---|
+| Unset / empty | **Set** | Production behind HTTPS reverse proxy (default) |
+| `https://...` | **Set** | Production with explicit base URL |
+| `http://...` | **Not set** | Plain-HTTP dev or trusted LAN only |
+
+If you serve the UI over plain HTTP (e.g. `http://sheaf.lan` for a home setup) and don't set `SHEAF_BASE_URL`, login appears to work but refresh fails the moment the access token expires. Either put TLS in front (recommended) or set `SHEAF_BASE_URL=http://your-host` to opt out of the Secure flag.
 
 ---
 

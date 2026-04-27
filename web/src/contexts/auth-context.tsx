@@ -1,6 +1,6 @@
 import { createContext, useCallback, useEffect, useState } from "react";
 import type { User } from "@/types/api";
-import { setAccessToken } from "@/lib/api-client";
+import { bootstrapAuth, setAccessToken } from "@/lib/api-client";
 import * as authApi from "@/lib/auth";
 
 interface AuthState {
@@ -30,18 +30,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Try silent refresh on mount using HttpOnly cookie
+  // Try silent refresh on mount using HttpOnly cookie. Routes through the
+  // shared single-flight in api-client so StrictMode's double-fire (and any
+  // other parallel callers — e.g. queries that mount with the provider)
+  // share one /v1/auth/refresh round-trip instead of racing to consume the
+  // same one-shot jti.
   useEffect(() => {
-    fetch("/v1/auth/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-      credentials: "same-origin",
-    })
-      .then(async (resp) => {
-        if (!resp.ok) throw new Error("refresh failed");
-        const data = await resp.json();
-        setAccessToken(data.access_token);
+    bootstrapAuth()
+      .then(async (token) => {
+        if (!token) {
+          setAccessToken(null);
+          return;
+        }
         const me = await authApi.getMe();
         setUser(me);
       })

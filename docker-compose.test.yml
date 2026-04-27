@@ -10,6 +10,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: test-jwt-secret-not-for-production
       SHEAF_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SHEAF_BASE_URL: "http://localhost:8001"
       SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
       ADMIN_AUTH_LEVEL: "${ADMIN_AUTH_LEVEL:-none}"
       REGISTRATION_MODE: open

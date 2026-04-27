@@ -144,7 +144,11 @@ class Settings(BaseSettings):
     invite_codes_enabled: bool = False  # Accept invite codes in open/approval modes too
     email_verification: str = "off"  # "off" or "required"
     password_reset_rate_limit_minutes: int = 15
-    sheaf_base_url: str = ""  # Required when email is enabled, e.g. "https://sheaf.example.com"
+    # Public base URL of the instance. Required when email is enabled (used in
+    # verification/reset links); also seeds the JWT issuer claim and decides
+    # whether auth cookies carry the Secure flag. Empty = assume HTTPS (Secure).
+    # An explicit http:// URL opts in to non-Secure cookies for plain-HTTP dev.
+    sheaf_base_url: str = ""
 
     # Admin dashboard step-up authentication level.
     # "none"     — any admin can access the dashboard immediately.

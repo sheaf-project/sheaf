@@ -12,6 +12,24 @@ export function getAccessToken(): string | null {
 }
 
 /**
+ * Run the silent-refresh on app boot through the same single-flight that
+ * apiFetch uses for 401-retry. Without this, StrictMode double-firing the
+ * mount effect (or any other parallel-on-mount path) would send two
+ * /v1/auth/refresh requests with the same cookie — the loser of the
+ * server-side GETDEL would historically be treated as reuse and kill the
+ * session. The backend now has a grace window for that, but deduping on
+ * the client too keeps the cookie rotation tidy.
+ */
+export async function bootstrapAuth(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken();
+  }
+  const token = await refreshPromise;
+  refreshPromise = null;
+  return token;
+}
+
+/**
  * Refresh the access token using the HttpOnly refresh cookie.
  * The cookie is sent automatically by the browser — no localStorage involved.
  */
