@@ -53,6 +53,8 @@ from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
+    SecondarySessionRequest,
+    SecondarySessionResponse,
     TokenRefresh,
     TokenResponse,
     TOTPSetupResponse,
@@ -1001,6 +1003,62 @@ async def revoke_other_sessions(
         )
     revoked = await delete_other_sessions(user.id, session_id)
     return {"revoked": revoked}
+
+
+@router.post(
+    "/sessions/secondary",
+    response_model=SecondarySessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[rate_limit(10, 3600, "user", fail_closed=True)],
+)
+async def create_secondary_session(
+    request: Request,
+    body: SecondarySessionRequest | None = None,
+    user: User = Depends(get_current_user),
+):
+    """Mint a child session + refresh token for a paired companion device.
+
+    Use case: an iOS app pairing a watchOS app. Both devices used to share
+    one refresh token, which serialised them through the one-shot rotation
+    and made the watch's offline-then-refresh path collide with the phone's.
+    The phone now calls this endpoint after login and ships the returned
+    tokens to the watch via WatchConnectivity, so each device rotates
+    independently.
+
+    The new session is registered as a child of the caller's session: when
+    the parent is revoked (logout, /sessions DELETE, change-password) the
+    child is cascaded automatically, matching the user expectation that
+    "kicking out my phone also kicks out its watch."
+    """
+    parent_sid = getattr(request.state, "session_id", None)
+    if not parent_sid:
+        # API-key callers don't have a session, and minting a child without
+        # a parent would defeat the cascade contract.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A session-bound caller is required to mint a secondary session",
+        )
+
+    client_name = (body.client_name if body and body.client_name else None) or (
+        request.headers.get("x-sheaf-client")
+    )
+
+    child_sid = await create_session(
+        user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        client_header=client_name,
+        parent_session_id=parent_sid,
+    )
+
+    refresh_token = await _mint_refresh_token(user.id, child_sid)
+    access_token = create_token(user.id, TokenType.ACCESS, session_id=child_sid)
+
+    return SecondarySessionResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        session_id=child_sid,
+    )
 
 
 # ---------------------------------------------------------------------------

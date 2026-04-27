@@ -26,6 +26,23 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class SecondarySessionResponse(TokenResponse):
+    """Tokens plus the session id, so the caller (typically a phone minting
+    a wearable companion session) can track the child for later management."""
+
+    session_id: str
+
+
+class SecondarySessionRequest(BaseModel):
+    """Optional metadata for a wearable/companion session.
+
+    `client_name` mirrors the X-Sheaf-Client header semantics — it's what
+    surfaces in /sessions UI as the device label.
+    """
+
+    client_name: str | None = None
+
+
 class TokenRefresh(BaseModel):
     refresh_token: str | None = None
 
