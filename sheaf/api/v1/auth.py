@@ -101,6 +101,16 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger("sheaf.auth")
 
 
+def _cookie_secure() -> bool:
+    """Whether to mark auth cookies as Secure.
+
+    Browsers silently drop Secure cookies on plain-HTTP origins, which would
+    break refresh-token rotation in HTTP dev setups. Default to Secure
+    (production-safe); only relax when sheaf_base_url is explicitly http://.
+    """
+    return not settings.sheaf_base_url.startswith("http://")
+
+
 @router.get("/config")
 async def get_auth_config():
     """Public endpoint returning registration settings for the login UI."""
@@ -375,7 +385,7 @@ async def register(
         key="sheaf_session",
         value=session_id,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="lax",
     )
 
@@ -384,7 +394,7 @@ async def register(
         key="sheaf_refresh",
         value=refresh_token,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="lax",
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/v1/auth",
@@ -831,7 +841,7 @@ async def login(
         key="sheaf_session",
         value=session_id,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="lax",
     )
 
@@ -840,7 +850,7 @@ async def login(
         key="sheaf_refresh",
         value=refresh_token,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="lax",
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/v1/auth",
@@ -865,7 +875,7 @@ async def login(
             key=TRUSTED_DEVICE_COOKIE,
             value=device_token,
             httponly=True,
-            secure=True,
+            secure=_cookie_secure(),
             samesite="lax",
             max_age=TRUSTED_DEVICE_TTL_DAYS * 86400,
             path="/v1/auth",
@@ -1173,7 +1183,7 @@ async def refresh(
         key="sheaf_refresh",
         value=new_refresh,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="lax",
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/v1/auth",

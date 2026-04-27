@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import httpx
@@ -67,6 +68,35 @@ def test_refresh_token(client: httpx.Client):
     resp = client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
     assert resp.status_code == 200
     assert "access_token" in resp.json()
+
+
+def test_refresh_token_via_cookie(client: httpx.Client):
+    """Frontend pattern: POST /refresh with empty body, refresh JWT comes from
+    the HttpOnly cookie set on register/login. Browsers will silently drop a
+    Secure cookie sent over HTTP, so we also assert the cookie's Secure flag
+    matches the server's base URL scheme — otherwise dev-over-HTTP refresh
+    breaks the moment the access token expires."""
+    email = f"refresh-cookie-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post("/v1/auth/register", json={"email": email, "password": "securepassword"})
+    assert resp.status_code == 201
+    refresh_header = next(
+        (h for h in resp.headers.get_list("set-cookie") if h.startswith("sheaf_refresh=")),
+        "",
+    )
+    assert refresh_header, "register must set sheaf_refresh cookie"
+    base_url = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
+    if base_url.startswith("http://"):
+        assert "Secure" not in refresh_header, (
+            "cookie must NOT be Secure when serving over HTTP — "
+            "browsers drop it and refresh silently breaks"
+        )
+    else:
+        assert "Secure" in refresh_header
+
+    assert client.cookies.get("sheaf_refresh"), "client should have stored sheaf_refresh"
+    cookie_resp = client.post("/v1/auth/refresh", json={})
+    assert cookie_resp.status_code == 200, cookie_resp.text
+    assert "access_token" in cookie_resp.json()
 
 
 def _register_and_login(client: httpx.Client, email: str, password: str) -> str:
