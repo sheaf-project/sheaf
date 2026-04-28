@@ -1,6 +1,7 @@
 # Sheaf
 
 [![CI](https://github.com/sheaf-project/sheaf/actions/workflows/ci.yml/badge.svg)](https://github.com/sheaf-project/sheaf/actions/workflows/ci.yml)
+![Discord](https://img.shields.io/discord/1483687251492868217)
 ![transrights](https://pride-badges.pony.workers.dev/static/v1?label=trans%20rights&stripeWidth=6&stripeColors=5BCEFA,F5A9B8,FFFFFF,F5A9B8,5BCEFA)
 ![enbyware](https://pride-badges.pony.workers.dev/static/v1?label=enbyware&labelColor=%23555&stripeWidth=8&stripeColors=FCF434%2CFFFFFF%2C9C59D1%2C2C2C2C)
 ![pluralmade](https://pride-badges.pony.workers.dev/static/v1?label=plural+made&labelColor=%23555&stripeWidth=8&stripeColors=2e0525%2C553578%2C7675c3%2C89c7b0%2Cf4ecbd)

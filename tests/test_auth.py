@@ -328,6 +328,295 @@ def test_secondary_session_change_password_keeps_paired_watch(
     assert me_gone.status_code == 401
 
 
+def _mint_secondary(
+    client: httpx.Client, parent_access: str, label: str = "Sheaf watchOS/1.0",
+) -> dict:
+    """Helper: ask the server for a child session under `parent_access` and
+    return the parsed response body."""
+    resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {parent_access}"},
+        json={"client_name": label},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_secondary_session_cascade_on_sessions_delete(client: httpx.Client):
+    """The /sessions/{id} DELETE path must cascade just like /logout. A user
+    revoking their phone session from the web `/sessions` UI is a different
+    code path than calling /logout on the phone, but the user expectation
+    is the same: the watch tied to it goes too. Without coverage here a
+    cascade regression in only one of the two paths could ship unnoticed."""
+    email = f"secondary-sessions-del-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    # Register-only (single primary session) so we have an unambiguous
+    # parent to address. _register_and_login would create two.
+    reg = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    assert reg.status_code == 201, reg.text
+    primary_access = reg.json()["access_token"]
+
+    # Use a *second* session (distinct phone-ish session) to revoke the
+    # first one's watch — mirroring the "kick this device off from somewhere
+    # else" UX. Log in to get an unrelated session.
+    fresh = httpx.Client(base_url=client.base_url)
+    try:
+        login = fresh.post(
+            "/v1/auth/login", json={"email": email, "password": "securepassword"},
+        )
+        assert login.status_code == 200
+        outsider_access = login.json()["access_token"]
+
+        # Mint the watch session from the *original* primary so we have a
+        # known parent-child pair.
+        watch = _mint_secondary(client, primary_access)
+        watch_access = watch["access_token"]
+
+        # Find the primary by elimination: list all sessions, drop the
+        # watch (known sid) and the outsider (cookie-marked is_current on
+        # `fresh`).
+        sessions = client.get(
+            "/v1/auth/sessions",
+            headers={"Authorization": f"Bearer {primary_access}"},
+        ).json()
+        outsider_sessions = fresh.get(
+            "/v1/auth/sessions",
+            headers={"Authorization": f"Bearer {outsider_access}"},
+        ).json()
+        outsider_ids = {s["id"] for s in outsider_sessions if s["is_current"]}
+        primary_sid_candidates = [
+            s["id"]
+            for s in sessions
+            if s["id"] != watch["session_id"] and s["id"] not in outsider_ids
+        ]
+        assert len(primary_sid_candidates) == 1, primary_sid_candidates
+        primary_sid = primary_sid_candidates[0]
+
+        # Revoke the parent from the outsider session.
+        revoke = fresh.delete(
+            f"/v1/auth/sessions/{primary_sid}",
+            headers={"Authorization": f"Bearer {outsider_access}"},
+        )
+        assert revoke.status_code == 204, revoke.text
+
+        # Watch dies along with the parent.
+        me_watch = client.get(
+            "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
+        )
+        assert me_watch.status_code == 401
+
+        # Outsider session is unaffected.
+        me_outsider = fresh.get(
+            "/v1/auth/me", headers={"Authorization": f"Bearer {outsider_access}"},
+        )
+        assert me_outsider.status_code == 200
+    finally:
+        fresh.close()
+
+
+def test_secondary_session_revoke_others_cascade_semantics(client: httpx.Client):
+    """The /sessions/revoke-others sweep must:
+      - keep the calling session AND its paired watch alive, and
+      - cascade-revoke the watch of any *other* session it kicks off.
+    Both halves matter: revoking a second laptop's session on a shared
+    account shouldn't leave that laptop's wearable still authorised."""
+    email = f"secondary-revoke-others-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    _register_and_login(client, email, "securepassword")
+
+    # Phone A and its watch.
+    phone_a = client.post(
+        "/v1/auth/login", json={"email": email, "password": "securepassword"},
+    )
+    assert phone_a.status_code == 200
+    phone_a_access = phone_a.json()["access_token"]
+    watch_a = _mint_secondary(client, phone_a_access, label="Watch A")
+    watch_a_access = watch_a["access_token"]
+
+    # Phone B and its watch (separate browser-equivalent client so the
+    # cookie session is independent).
+    other = httpx.Client(base_url=client.base_url)
+    try:
+        phone_b = other.post(
+            "/v1/auth/login", json={"email": email, "password": "securepassword"},
+        )
+        assert phone_b.status_code == 200
+        phone_b_access = phone_b.json()["access_token"]
+        watch_b = _mint_secondary(other, phone_b_access, label="Watch B")
+        watch_b_access = watch_b["access_token"]
+
+        # Phone A revokes everything else.
+        revoke = client.post(
+            "/v1/auth/sessions/revoke-others",
+            headers={"Authorization": f"Bearer {phone_a_access}"},
+        )
+        assert revoke.status_code == 200, revoke.text
+
+        # Watch A is paired with the kept session — stays alive.
+        me_a = client.get(
+            "/v1/auth/me", headers={"Authorization": f"Bearer {watch_a_access}"},
+        )
+        assert me_a.status_code == 200, me_a.text
+
+        # Phone B's session is gone, and so is its watch.
+        me_b_phone = other.get(
+            "/v1/auth/me", headers={"Authorization": f"Bearer {phone_b_access}"},
+        )
+        assert me_b_phone.status_code == 401
+        me_b_watch = other.get(
+            "/v1/auth/me", headers={"Authorization": f"Bearer {watch_b_access}"},
+        )
+        assert me_b_watch.status_code == 401, (
+            "Phone B's watch must die with phone B — revoke-others has to "
+            "cascade through to children of revoked siblings, not just "
+            "delete the parent rows."
+        )
+    finally:
+        other.close()
+
+
+def test_secondary_session_grandchild_cascade(client: httpx.Client):
+    """Cascade must traverse the full chain. A child minting its own child
+    (e.g. a hypothetical companion of a companion) must be killed when the
+    root session is revoked. Today nothing in the product mints
+    grandchildren, but the cascade contract has to hold or future features
+    layered on this primitive will silently leak sessions."""
+    email = f"secondary-grandchild-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    child = _mint_secondary(client, primary_access, label="Child")
+    grandchild = _mint_secondary(
+        client, child["access_token"], label="Grandchild",
+    )
+    grandchild_access = grandchild["access_token"]
+
+    logout = client.post(
+        "/v1/auth/logout",
+        headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert logout.status_code == 204
+
+    me = client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {grandchild_access}"},
+    )
+    assert me.status_code == 401, (
+        "Grandchild must be cascade-revoked when the root parent is "
+        "logged out, not just direct children."
+    )
+
+
+def test_secondary_session_multiple_children_all_cascade(client: httpx.Client):
+    """A single phone session might back several wearables (watch + future
+    companions) — the cascade has to reach all of them, not just the first
+    one Redis happens to return from SMEMBERS."""
+    email = f"secondary-multi-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    children = [
+        _mint_secondary(client, primary_access, label=f"Companion {i}")
+        for i in range(3)
+    ]
+
+    # All three must respond before the cascade.
+    for child in children:
+        me = client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {child['access_token']}"},
+        )
+        assert me.status_code == 200
+
+    logout = client.post(
+        "/v1/auth/logout",
+        headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert logout.status_code == 204
+
+    # And none of them after.
+    for child in children:
+        me = client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {child['access_token']}"},
+        )
+        assert me.status_code == 401, (
+            f"Child {child['session_id']} survived the cascade — "
+            f"multi-child revocation is broken."
+        )
+
+
+def test_secondary_session_concurrent_refresh_replay_window(
+    client: httpx.Client,
+):
+    """The replay-window grace that protects the phone's refresh from
+    concurrent racing has to apply to the watch's refresh too. The watch
+    can fire parallel /refresh calls (a complication update racing the
+    main app's request retry) and the second one must replay rather than
+    nuke the session — otherwise the very fix we shipped for the phone is
+    only half-built."""
+    email = f"secondary-watch-race-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    watch = _mint_secondary(client, primary_access)
+    watch_refresh = watch["refresh_token"]
+    watch_access = watch["access_token"]
+
+    # Two callers race the same watch refresh token.
+    r1 = client.post("/v1/auth/refresh", json={"refresh_token": watch_refresh})
+    assert r1.status_code == 200, r1.text
+    r2 = client.post("/v1/auth/refresh", json={"refresh_token": watch_refresh})
+    assert r2.status_code == 200, (
+        f"Concurrent /refresh on the watch's token should replay within "
+        f"the grace window, got {r2.status_code}: {r2.text}"
+    )
+
+    # Watch session is still alive.
+    me = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
+    )
+    assert me.status_code == 200, me.text
+
+
+def test_secondary_session_mint_after_parent_revoked_fails(
+    client: httpx.Client,
+):
+    """If the calling session was deleted out-of-band between the access
+    token being minted and the secondary-session call landing, the mint
+    must fail. Otherwise an attacker with a stolen access-token-but-dead-
+    session could spawn a fresh refresh JWT bound to a child session and
+    keep going indefinitely after the user thought they'd logged out
+    everywhere."""
+    email = f"secondary-after-revoke-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "securepassword"},
+    )
+    primary_access = resp.json()["access_token"]
+
+    logout = client.post(
+        "/v1/auth/logout",
+        headers={"Authorization": f"Bearer {primary_access}"},
+    )
+    assert logout.status_code == 204
+
+    # The access token JWT itself is still cryptographically valid until
+    # it expires, but its session is gone. The dependency layer enforces
+    # this — the secondary endpoint shouldn't be reachable.
+    mint = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {primary_access}"},
+        json={"client_name": "Sheaf watchOS/1.0"},
+    )
+    assert mint.status_code == 401, mint.text
+
+
 def _register_and_login(client: httpx.Client, email: str, password: str) -> str:
     """Register a user and log in via cookie session. Returns access token."""
     r = client.post("/v1/auth/register", json={"email": email, "password": password})
