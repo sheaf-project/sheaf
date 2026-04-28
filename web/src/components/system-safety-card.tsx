@@ -40,6 +40,8 @@ const categoryLabels: {
   { key: "applies_to_tags", label: "Tags", desc: "Deleting a tag" },
   { key: "applies_to_fields", label: "Custom fields", desc: "Deleting a custom field" },
   { key: "applies_to_fronts", label: "Front entries", desc: "Deleting a front entry" },
+  { key: "applies_to_journals", label: "Journal entries", desc: "Deleting a journal entry" },
+  { key: "applies_to_images", label: "Images", desc: "Deleting an uploaded image" },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -52,6 +54,14 @@ function changeSummary(changes: Record<string, unknown>): string {
     } else if (k.startsWith("safety_applies_to_")) {
       const cat = k.replace("safety_applies_to_", "");
       parts.push(`disable ${cat}`);
+    } else if (k === "journal_max_revisions") {
+      parts.push(
+        v === null ? "revision count cap → tier default" : `revision count cap → ${v}`,
+      );
+    } else if (k === "journal_max_revision_days") {
+      parts.push(
+        v === null ? "revision age cap → tier default" : `revision age cap → ${v} days`,
+      );
     } else {
       parts.push(`${k} → ${v}`);
     }
@@ -343,16 +353,20 @@ function PendingChangesList({ changes }: { changes: SafetyChangeRequest[] }) {
   );
 }
 
+const CATEGORY_KEYS = [
+  "applies_to_members",
+  "applies_to_groups",
+  "applies_to_tags",
+  "applies_to_fields",
+  "applies_to_fronts",
+  "applies_to_journals",
+  "applies_to_images",
+] as const;
+
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {
-  return (
-    a.grace_period_days !== b.grace_period_days ||
-    a.auth_tier !== b.auth_tier ||
-    a.applies_to_members !== b.applies_to_members ||
-    a.applies_to_groups !== b.applies_to_groups ||
-    a.applies_to_tags !== b.applies_to_tags ||
-    a.applies_to_fields !== b.applies_to_fields ||
-    a.applies_to_fronts !== b.applies_to_fronts
-  );
+  if (a.grace_period_days !== b.grace_period_days) return true;
+  if (a.auth_tier !== b.auth_tier) return true;
+  return CATEGORY_KEYS.some((k) => a[k] !== b[k]);
 }
 
 function diffFields(
@@ -363,13 +377,7 @@ function diffFields(
   if (current.grace_period_days !== draft.grace_period_days)
     patch.grace_period_days = draft.grace_period_days;
   if (current.auth_tier !== draft.auth_tier) patch.auth_tier = draft.auth_tier;
-  for (const key of [
-    "applies_to_members",
-    "applies_to_groups",
-    "applies_to_tags",
-    "applies_to_fields",
-    "applies_to_fronts",
-  ] as const) {
+  for (const key of CATEGORY_KEYS) {
     if (current[key] !== draft[key]) patch[key] = draft[key];
   }
   return patch;
@@ -388,13 +396,7 @@ function detectLoosening(
 ): boolean {
   if (draft.grace_period_days < current.grace_period_days) return true;
   if (tierStrength[draft.auth_tier] < tierStrength[current.auth_tier]) return true;
-  for (const key of [
-    "applies_to_members",
-    "applies_to_groups",
-    "applies_to_tags",
-    "applies_to_fields",
-    "applies_to_fronts",
-  ] as const) {
+  for (const key of CATEGORY_KEYS) {
     if (current[key] && !draft[key]) return true;
   }
   return false;

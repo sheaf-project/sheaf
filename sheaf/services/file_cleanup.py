@@ -5,24 +5,21 @@ or bio image, and deletes them from both storage and the database.
 """
 
 import logging
-import re
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.models.content_revision import ContentRevision
+from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
+from sheaf.services.markdown import extract_image_keys
 from sheaf.storage import get_storage
 
 logger = logging.getLogger("sheaf.cleanup")
-
-# Matches markdown image references: ![...](/v1/files/...)
-_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((/v1/files/[^)]+)\)")
-
-# All hosted file URLs start with this prefix
-_FILE_PREFIX = "/v1/files/"
 
 
 def _key_from_avatar(value: str | None) -> set[str]:
@@ -37,19 +34,7 @@ def _key_from_avatar(value: str | None) -> set[str]:
 
 def _extract_keys_from_markdown(text: str | None) -> set[str]:
     """Extract all hosted image keys from markdown image references."""
-    if not text:
-        return set()
-    keys = set()
-    for match in _MD_IMAGE_RE.finditer(text):
-        url = match.group(1)
-        # Markdown stores /v1/files/<key>?token=...&expires=... URLs
-        # Strip prefix and query params to get the bare storage key
-        if url.startswith(_FILE_PREFIX):
-            key = url[len(_FILE_PREFIX):]
-            if "?" in key:
-                key = key.split("?", 1)[0]
-            keys.add(key)
-    return keys
+    return set(extract_image_keys(text))
 
 
 async def find_orphaned_files(
@@ -90,6 +75,44 @@ async def find_orphaned_files(
     for avatar_url, description in result:
         referenced.update(_key_from_avatar(avatar_url))
         referenced.update(_extract_keys_from_markdown(description))
+
+    # Journal entries for this user's system. image_keys is pre-extracted
+    # at write so this is a fast set union, not a markdown re-scan.
+    result = await db.execute(
+        select(JournalEntry.image_keys)
+        .join(System, System.id == JournalEntry.system_id)
+        .where(System.user_id == user_id)
+    )
+    for (keys,) in result:
+        if keys:
+            referenced.update(keys)
+
+    # Content revisions linked to this user's targets (journal entries +
+    # member bios). Polymorphic — narrow by target_id rather than user_id
+    # because revisions store user_id only as a SET NULL backref.
+    target_ids: set[uuid.UUID] = set()
+    je_result = await db.execute(
+        select(JournalEntry.id)
+        .join(System, System.id == JournalEntry.system_id)
+        .where(System.user_id == user_id)
+    )
+    target_ids.update(row[0] for row in je_result.all())
+    m_result = await db.execute(
+        select(Member.id)
+        .join(System, System.id == Member.system_id)
+        .where(System.user_id == user_id)
+    )
+    target_ids.update(row[0] for row in m_result.all())
+
+    if target_ids:
+        rev_result = await db.execute(
+            select(ContentRevision.image_keys).where(
+                ContentRevision.target_id.in_(target_ids)
+            )
+        )
+        for (keys,) in rev_result:
+            if keys:
+                referenced.update(keys)
 
     orphaned_keys = uploaded_keys - referenced
     return [f for f in uploaded if f.key in orphaned_keys]

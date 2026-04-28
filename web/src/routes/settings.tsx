@@ -30,6 +30,7 @@ import { TOTPSetup } from "@/components/totp-setup";
 import { ChangePassword } from "@/components/change-password";
 import { ChangeEmail } from "@/components/change-email";
 import type { ApiKey, ApiKeyCreated, DateFormat, FieldType, PrivacyLevel } from "@/types/api";
+import { RevisionRetentionCard } from "@/components/revision-retention-card";
 import { SystemSafetyCard } from "@/components/system-safety-card";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
@@ -1578,6 +1579,9 @@ export function SettingsPage() {
         <CustomFieldsManager />
         <div id="safety" className="scroll-mt-20">
           <SystemSafetyCard />
+        </div>
+        <div id="retention" className="scroll-mt-20">
+          <RevisionRetentionCard />
         </div>
         <DisplayPreferences />
         <FrontPreferences />

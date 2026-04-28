@@ -86,6 +86,22 @@ class System(UUIDMixin, TimestampMixin, Base):
     safety_applies_to_fronts: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    safety_applies_to_journals: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    safety_applies_to_images: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Revision-history retention overrides. NULL = use the tier-default cap;
+    # a concrete value must be <= the tier max (validated at write time).
+    # Reductions route through SafetyChangeRequest (asymmetric loosening).
+    journal_max_revisions: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    journal_max_revision_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="system")

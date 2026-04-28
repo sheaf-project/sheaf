@@ -51,6 +51,8 @@ _EXTERNAL_TO_INTERNAL = {
     "applies_to_tags": "safety_applies_to_tags",
     "applies_to_fields": "safety_applies_to_fields",
     "applies_to_fronts": "safety_applies_to_fronts",
+    "applies_to_journals": "safety_applies_to_journals",
+    "applies_to_images": "safety_applies_to_images",
 }
 _INTERNAL_TO_EXTERNAL = {v: k for k, v in _EXTERNAL_TO_INTERNAL.items()}
 
@@ -64,6 +66,8 @@ def _settings_from_system(system: System) -> SystemSafetySettings:
         applies_to_tags=system.safety_applies_to_tags,
         applies_to_fields=system.safety_applies_to_fields,
         applies_to_fronts=system.safety_applies_to_fronts,
+        applies_to_journals=system.safety_applies_to_journals,
+        applies_to_images=system.safety_applies_to_images,
     )
 
 

@@ -86,6 +86,19 @@ class Settings(BaseSettings):
     member_limit_plus: int = 0  # unlimited
     member_limit_selfhosted: int = 0  # unlimited
 
+    # Revision-history retention caps per tier. 0 = unlimited.
+    # Covers both journal entries and member bios under a single cap.
+    journal_max_revisions_free: int = 10
+    journal_max_revisions_plus: int = 100
+    journal_max_revisions_selfhosted: int = 0
+    journal_max_revision_days_free: int = 30
+    journal_max_revision_days_plus: int = 365
+    journal_max_revision_days_selfhosted: int = 0
+    # How often the revision-retention GC sweep runs.
+    journal_gc_interval_hours: int = 6
+    # Notice period before a tier downgrade trims revision history.
+    tier_downgrade_grace_days: int = 14
+
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True

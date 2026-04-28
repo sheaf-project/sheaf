@@ -16,6 +16,8 @@ class SystemSafetySettings(BaseModel):
     applies_to_tags: bool
     applies_to_fields: bool
     applies_to_fronts: bool
+    applies_to_journals: bool
+    applies_to_images: bool
 
 
 class SystemSafetyUpdate(BaseModel):
@@ -28,6 +30,8 @@ class SystemSafetyUpdate(BaseModel):
     applies_to_tags: bool | None = None
     applies_to_fields: bool | None = None
     applies_to_fronts: bool | None = None
+    applies_to_journals: bool | None = None
+    applies_to_images: bool | None = None
 
     # Re-auth for loosening changes is checked against the *current* auth tier.
     password: str | None = None

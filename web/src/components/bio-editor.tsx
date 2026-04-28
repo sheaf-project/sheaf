@@ -1,12 +1,54 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeAutolinkHeadings from "rehype-autolink-headings";
+import rehypeHighlight from "rehype-highlight";
+import rehypeSlug from "rehype-slug";
+import hljsLightUrl from "highlight.js/styles/github.min.css?url";
+import hljsDarkUrl from "highlight.js/styles/github-dark.min.css?url";
+import { useTheme } from "@/hooks/use-theme";
 import { useShowImageBadges } from "@/hooks/use-preferences";
 import { ImagePickerDialog } from "@/components/image-picker";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ImagePlus, Bold, Italic, Link, Code, Tags, Tag } from "lucide-react";
+import {
+  Bold,
+  Code,
+  FileCode,
+  Heading2,
+  ImagePlus,
+  Italic,
+  Link,
+  List,
+  ListOrdered,
+  ListTodo,
+  Quote,
+  Strikethrough,
+  Tag,
+  Tags,
+} from "lucide-react";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
+
+const HLJS_LINK_ID = "hljs-theme-stylesheet";
+
+function useHljsTheme() {
+  const { theme } = useTheme();
+  useEffect(() => {
+    const href = theme === "dark" ? hljsDarkUrl : hljsLightUrl;
+    let link = document.getElementById(
+      HLJS_LINK_ID,
+    ) as HTMLLinkElement | null;
+    if (!link) {
+      link = document.createElement("link");
+      link.id = HLJS_LINK_ID;
+      link.rel = "stylesheet";
+      document.head.appendChild(link);
+    }
+    if (link.href !== new URL(href, document.baseURI).href) {
+      link.href = href;
+    }
+  }, [theme]);
+}
 
 function isHostedImage(src: string, cdnBase: string | null) {
   if (src.startsWith("/v1/files/")) return true;
@@ -24,6 +66,7 @@ function MarkdownPreview({
   const [defaultBadges] = useShowImageBadges();
   const showBadges = showBadgesOverride ?? defaultBadges;
   const [cdnBase, setCdnBase] = useState<string | null>(null);
+  useHljsTheme();
 
   useEffect(() => {
     getAuthConfig()
@@ -39,6 +82,14 @@ function MarkdownPreview({
     <div className="prose prose-sm dark:prose-invert max-w-none">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[
+          rehypeSlug,
+          [
+            rehypeAutolinkHeadings,
+            { behavior: "wrap", properties: { className: "heading-anchor" } },
+          ],
+          [rehypeHighlight, { detect: true, ignoreMissing: true }],
+        ]}
         components={{
           img: ({ src, alt, ...props }) => {
             const hosted = src ? isHostedImage(src, cdnBase) : false;
@@ -115,6 +166,47 @@ export function BioEditor({
     });
   }
 
+  function prefixLines(prefixFor: (i: number) => string) {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    // Expand selection to full lines so prefixes land at line starts.
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const nextNewline = value.indexOf("\n", end);
+    const lineEnd = nextNewline === -1 ? value.length : nextNewline;
+    const block = value.slice(lineStart, lineEnd);
+    const lines = block.length === 0 ? [""] : block.split("\n");
+    const out = lines.map((line, i) => prefixFor(i) + line).join("\n");
+    const newValue = value.slice(0, lineStart) + out + value.slice(lineEnd);
+    onChange(newValue);
+    requestAnimationFrame(() => {
+      ta.selectionStart = lineStart;
+      ta.selectionEnd = lineStart + out.length;
+      ta.focus();
+    });
+  }
+
+  function wrapBlock(fenceBefore: string, fenceAfter: string) {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const selected = value.slice(start, end);
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const leadNl = before.length === 0 || before.endsWith("\n") ? "" : "\n";
+    const trailNl = after.length === 0 || after.startsWith("\n") ? "" : "\n";
+    const block = `${leadNl}${fenceBefore}\n${selected}\n${fenceAfter}${trailNl}`;
+    onChange(before + block + after);
+    requestAnimationFrame(() => {
+      const cursor = start + leadNl.length + fenceBefore.length + 1;
+      ta.selectionStart = cursor;
+      ta.selectionEnd = cursor + selected.length;
+      ta.focus();
+    });
+  }
+
   return (
     <div className="space-y-1">
       <Tabs value={tab} onValueChange={setTab}>
@@ -124,7 +216,7 @@ export function BioEditor({
             <TabsTrigger value="preview" className="text-xs px-2 py-1">Preview</TabsTrigger>
           </TabsList>
           {tab === "write" && (
-            <div className="flex gap-0.5">
+            <div className="flex flex-wrap justify-end gap-0.5">
               <Button
                 type="button"
                 variant="ghost"
@@ -150,6 +242,66 @@ export function BioEditor({
                 variant="ghost"
                 size="sm"
                 className="h-7 w-7 p-0"
+                onClick={() => wrapSelection("~~", "~~")}
+                title="Strikethrough"
+              >
+                <Strikethrough className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => prefixLines(() => "## ")}
+                title="Heading"
+              >
+                <Heading2 className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => prefixLines(() => "- ")}
+                title="Bulleted list"
+              >
+                <List className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => prefixLines((i) => `${i + 1}. `)}
+                title="Numbered list"
+              >
+                <ListOrdered className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => prefixLines(() => "- [ ] ")}
+                title="Task list"
+              >
+                <ListTodo className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => prefixLines(() => "> ")}
+                title="Quote"
+              >
+                <Quote className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
                 onClick={() => insertAtCursor("[text](url)")}
                 title="Link"
               >
@@ -161,9 +313,19 @@ export function BioEditor({
                 size="sm"
                 className="h-7 w-7 p-0"
                 onClick={() => wrapSelection("`", "`")}
-                title="Code"
+                title="Inline code"
               >
                 <Code className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => wrapBlock("```", "```")}
+                title="Code block"
+              >
+                <FileCode className="h-3.5 w-3.5" />
               </Button>
               <Button
                 type="button"

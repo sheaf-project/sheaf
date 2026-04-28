@@ -10,7 +10,9 @@ from sheaf.api.v1 import (
     files,
     fronts,
     groups,
+    journals,
     members,
+    retention,
     sheaf_import,
     sp_import,
     system_safety,
@@ -60,6 +62,14 @@ v1_router.include_router(
 v1_router.include_router(
     custom_fields.router,
     dependencies=[Depends(require_scope("fields:read"))],
+)
+v1_router.include_router(
+    journals.router,
+    dependencies=[Depends(require_scope("members:read"))],
+)
+v1_router.include_router(
+    retention.router,
+    dependencies=[Depends(require_scope("system:read"))],
 )
 v1_router.include_router(
     export.router,

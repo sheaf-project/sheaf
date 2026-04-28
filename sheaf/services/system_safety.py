@@ -24,6 +24,7 @@ from sheaf.crypto import decrypt
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.front import Front
 from sheaf.models.group import Group
+from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
 from sheaf.models.pending_action import (
     PendingAction,
@@ -36,6 +37,7 @@ from sheaf.models.safety_change_request import (
 )
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.tag import Tag
+from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
 
 # Categories that safety can apply to — kept in one place so the API,
@@ -46,6 +48,8 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "tags",
     "fields",
     "fronts",
+    "journals",
+    "images",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {
@@ -54,6 +58,8 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.TAG_DELETE: "tags",
     PendingActionType.FIELD_DELETE: "fields",
     PendingActionType.FRONT_DELETE: "fronts",
+    PendingActionType.JOURNAL_DELETE: "journals",
+    PendingActionType.IMAGE_DELETE: "images",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -62,6 +68,8 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.TAG_DELETE: Tag,
     PendingActionType.FIELD_DELETE: CustomFieldDefinition,
     PendingActionType.FRONT_DELETE: Front,
+    PendingActionType.JOURNAL_DELETE: JournalEntry,
+    PendingActionType.IMAGE_DELETE: UploadedFile,
 }
 
 
@@ -131,6 +139,9 @@ class SafetyChangeSplit:
     deferred: dict[str, Any]
 
 
+_RETENTION_FIELDS = ("journal_max_revisions", "journal_max_revision_days")
+
+
 def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChangeSplit:
     """Split proposed updates into immediate (tighten) vs. deferred (loosen).
 
@@ -138,12 +149,15 @@ def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChang
       - grace period reduced
       - delete_confirmation tier strength reduced
       - any safety_applies_to_<category> flipped True -> False
+      - revision-retention cap reduced (None -> N or N -> M with M<N)
     """
     applied: dict[str, Any] = {}
     deferred: dict[str, Any] = {}
 
     for field, new_value in updates.items():
-        if new_value is None:
+        # For retention fields, None is a valid value meaning "clear override".
+        # For everything else, None means "field not provided in update".
+        if new_value is None and field not in _RETENTION_FIELDS:
             continue
         current = getattr(system, field, None)
         if current == new_value:
@@ -163,6 +177,17 @@ def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChang
                 applied[field] = new_value
         elif field.startswith("safety_applies_to_"):
             if current is True and new_value is False:
+                deferred[field] = new_value
+            else:
+                applied[field] = new_value
+        elif field in _RETENTION_FIELDS:
+            # None = "use tier default" — treat as +infinity so going from a
+            # concrete cap to None is loosening; setting from None to a cap
+            # is tightening (unless tier max is lower, which is enforced
+            # separately at the router).
+            new_eff = float("inf") if new_value is None else new_value
+            cur_eff = float("inf") if current is None else current
+            if new_eff < cur_eff:
                 deferred[field] = new_value
             else:
                 applied[field] = new_value
@@ -267,12 +292,46 @@ async def finalize_pending_action(
         return
 
     target = await db.get(model, pending.target_id)
-    # Verify scope — guard against target reparented somehow.
-    if target is not None and getattr(target, "system_id", None) == pending.system_id:
+    if target is not None and await _target_in_scope(target, pending, db):
+        # Polymorphic content_revisions can't FK on target — cascade in app.
+        if pending.action_type == PendingActionType.JOURNAL_DELETE:
+            from sheaf.services.journals import delete_revisions_for
+
+            await delete_revisions_for("journal_entry", target.id, db)
+        elif pending.action_type == PendingActionType.MEMBER_DELETE:
+            from sheaf.services.journals import delete_revisions_for
+
+            await delete_revisions_for("member_bio", target.id, db)
+        # Image deletes need to drop the storage blob alongside the DB row;
+        # the immediate-delete path does the same. An orphaned blob from a
+        # storage failure is recoverable; a stuck pending action isn't.
+        if pending.action_type == PendingActionType.IMAGE_DELETE:
+            import contextlib
+
+            from sheaf.storage import get_storage
+
+            with contextlib.suppress(Exception):
+                await get_storage().delete(target.key)
         await db.delete(target)
 
     pending.status = PendingActionStatus.COMPLETED
     pending.completed_at = datetime.now(UTC)
+
+
+async def _target_in_scope(
+    target: Any, pending: PendingAction, db: AsyncSession
+) -> bool:
+    """Verify the target still belongs to the system that queued the action.
+
+    Most targets carry system_id directly. UploadedFile is user-scoped, so
+    we resolve through the system's user_id.
+    """
+    if hasattr(target, "system_id"):
+        return target.system_id == pending.system_id
+    if hasattr(target, "user_id"):
+        system = await db.get(System, pending.system_id)
+        return system is not None and target.user_id == system.user_id
+    return False
 
 
 # ---------------------------------------------------------------------------

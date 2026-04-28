@@ -14,11 +14,13 @@ import {
   Sun,
   Moon,
   Shield,
+  BookOpen,
 } from "lucide-react";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/members", label: "Members", icon: Users },
+  { to: "/journals", label: "Journals", icon: BookOpen },
   { to: "/fronts", label: "Fronts", icon: Clock },
   { to: "/groups", label: "Groups", icon: FolderOpen },
   { to: "/settings", label: "Settings", icon: Settings },
