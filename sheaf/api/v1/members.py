@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.database import get_db
+from sheaf.models.content_revision import ContentRevisionTarget
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
 from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
+from sheaf.services.journals import capture_revision, delete_revisions_for
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -124,6 +126,19 @@ async def update_member(
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
     update_data = body.model_dump(exclude_unset=True)
+    if (
+        "description" in update_data
+        and update_data["description"] != member.description
+    ):
+        await capture_revision(
+            db=db,
+            target_type=ContentRevisionTarget.MEMBER_BIO,
+            target_id=member.id,
+            user=user,
+            system_id=system.id,
+            title=None,
+            body=member.description or "",
+        )
     for key, value in update_data.items():
         setattr(member, key, value)
     await db.commit()
@@ -169,6 +184,7 @@ async def delete_member(
             },
         )
 
+    await delete_revisions_for(ContentRevisionTarget.MEMBER_BIO, member.id, db)
     await db.delete(member)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

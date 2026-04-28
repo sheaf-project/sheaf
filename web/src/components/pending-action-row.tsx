@@ -7,6 +7,8 @@ const actionLabels: Record<PendingActionType, string> = {
   tag_delete: "Delete tag",
   field_delete: "Delete custom field",
   front_delete: "Delete front entry",
+  journal_delete: "Delete journal entry",
+  image_delete: "Delete image",
 };
 
 function timeRemaining(finalizeAfter: string): string {

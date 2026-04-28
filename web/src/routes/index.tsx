@@ -7,6 +7,8 @@ import { FrontsPage } from "./fronts";
 import { GroupsPage } from "./groups";
 import { SettingsPage } from "./settings";
 import { ImportPage } from "./import";
+import { JournalsPage } from "./journals";
+import { JournalDetailPage } from "./journals.$id";
 import { AdminLayout } from "./admin/_layout";
 import { VerifyEmailPage } from "./verify-email";
 import { ForgotPasswordPage } from "./forgot-password";
@@ -40,6 +42,8 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardPage /> },
       { path: "members", element: <MembersPage /> },
+      { path: "journals", element: <JournalsPage /> },
+      { path: "journals/:entryId", element: <JournalDetailPage /> },
       { path: "fronts", element: <FrontsPage /> },
       { path: "groups", element: <GroupsPage /> },
       { path: "settings", element: <SettingsPage /> },

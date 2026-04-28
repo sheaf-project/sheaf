@@ -2,19 +2,27 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.api.v1.members import _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.files import resolve_avatar_url, verify_file_token
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
+from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.file_cleanup import cleanup_orphaned_files
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
+)
 from sheaf.storage import get_storage
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -239,10 +247,12 @@ async def list_files(
 @router.delete("/{file_id}", dependencies=[Depends(require_scope("members:write"))])
 async def delete_file(
     file_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a specific uploaded file."""
+    """Delete a specific uploaded file. Subject to System Safety image-delete
+    grace + re-auth when the `images` category is enabled."""
     result = await db.execute(
         select(UploadedFile).where(
             UploadedFile.id == file_id,
@@ -252,6 +262,33 @@ async def delete_file(
     file = result.scalar_one_or_none()
     if file is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    system = await _get_user_system(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
+
+    if is_safeguarded(system, PendingActionType.IMAGE_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.IMAGE_DELETE,
+            target_id=file.id,
+            target_label=file.key,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
 
     storage = get_storage()
     await storage.delete(file.key)

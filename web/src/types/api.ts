@@ -212,7 +212,9 @@ export type PendingActionType =
   | "group_delete"
   | "tag_delete"
   | "field_delete"
-  | "front_delete";
+  | "front_delete"
+  | "journal_delete"
+  | "image_delete";
 
 export type PendingActionStatus =
   | "pending"
@@ -254,6 +256,8 @@ export interface SystemSafetySettings {
   applies_to_tags: boolean;
   applies_to_fields: boolean;
   applies_to_fronts: boolean;
+  applies_to_journals: boolean;
+  applies_to_images: boolean;
 }
 
 export interface SystemSafetyUpdate {
@@ -264,6 +268,8 @@ export interface SystemSafetyUpdate {
   applies_to_tags?: boolean;
   applies_to_fields?: boolean;
   applies_to_fronts?: boolean;
+  applies_to_journals?: boolean;
+  applies_to_images?: boolean;
   password?: string;
   totp_code?: string;
 }
@@ -293,6 +299,98 @@ export function isDeleteQueued(r: DeleteResult): r is DeleteQueued {
 }
 
 export interface DestructiveConfirm {
+  password?: string;
+  totp_code?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Journals + Revision History
+// ---------------------------------------------------------------------------
+
+export type JournalVisibility = "system" | "member_private" | "public";
+
+export interface JournalEntry {
+  id: string;
+  system_id: string;
+  member_id: string | null;
+  title: string | null;
+  body: string;
+  visibility: JournalVisibility;
+  author_user_id: string | null;
+  author_member_ids: string[];
+  author_member_names: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalEntryWithCount extends JournalEntry {
+  revision_count: number;
+}
+
+export interface JournalEntryCreate {
+  member_id?: string | null;
+  title?: string | null;
+  body: string;
+  visibility?: JournalVisibility;
+  author_member_ids?: string[];
+}
+
+export interface JournalEntryUpdate {
+  title?: string | null;
+  body?: string;
+  visibility?: JournalVisibility;
+  author_member_ids?: string[];
+}
+
+export interface JournalListResponse {
+  items: JournalEntry[];
+  next_cursor: string | null;
+}
+
+export type ContentRevisionTarget = "journal_entry" | "member_bio";
+
+export interface ContentRevision {
+  id: string;
+  target_type: ContentRevisionTarget;
+  target_id: string;
+  user_id: string | null;
+  editor_member_ids: string[];
+  editor_member_names: string[];
+  title: string | null;
+  body: string;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Revision retention
+// ---------------------------------------------------------------------------
+
+export type RetentionTrimStatus = "pending" | "cancelled" | "completed";
+
+export interface RetentionTrimNotice {
+  id: string;
+  requested_at: string;
+  effective_at: string;
+  from_tier: string;
+  to_tier: string;
+  reason: string;
+  status: RetentionTrimStatus;
+}
+
+// 0 = unlimited on either tier_max or override.
+export interface RetentionSettings {
+  effective_max_revisions: number;
+  effective_max_days: number;
+  tier_max_revisions: number;
+  tier_max_days: number;
+  override_revisions: number | null;
+  override_days: number | null;
+  trim_notice: RetentionTrimNotice | null;
+}
+
+export interface RetentionUpdate {
+  max_revisions?: number | null;
+  max_revision_days?: number | null;
   password?: string;
   totp_code?: string;
 }

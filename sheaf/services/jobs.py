@@ -387,6 +387,13 @@ async def _prune_free_tier_fronts(db: AsyncSession) -> dict:
     return await prune_free_tier_fronts(db)
 
 
+async def _gc_revisions(db: AsyncSession) -> dict:
+    """Wrapper around the revision-history retention sweep."""
+    from sheaf.services.retention import gc_revisions
+
+    return await gc_revisions(db)
+
+
 # ---------------------------------------------------------------------------
 # SES event processing (bounces + complaints)
 # ---------------------------------------------------------------------------
@@ -636,6 +643,13 @@ def _register_all_jobs() -> None:
         func=_prune_free_tier_fronts,
         interval_seconds=lambda: settings.retention_check_interval_hours * 3600,
         enabled=lambda: settings.sheaf_mode == SheafMode.SAAS,
+    )
+
+    register_job(
+        name="gc_revisions",
+        description="Trim journal/bio revision history to per-user effective caps",
+        func=_gc_revisions,
+        interval_seconds=lambda: settings.journal_gc_interval_hours * 3600,
     )
 
     register_job(

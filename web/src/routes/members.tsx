@@ -1,4 +1,5 @@
 import { type FormEvent, lazy, Suspense, useMemo, useState } from "react";
+import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
@@ -10,7 +11,7 @@ const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => (
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
-import { Pencil } from "lucide-react";
+import { BookOpen, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -332,10 +333,18 @@ function MemberView({
         <DialogHeader>
           <div className="flex items-center justify-between">
             <DialogTitle className="sr-only">{member.name}</DialogTitle>
-            <Button variant="ghost" size="sm" onClick={onEdit}>
-              <Pencil className="h-3.5 w-3.5 mr-1" />
-              Edit
-            </Button>
+            <div className="flex gap-1">
+              <Button variant="ghost" size="sm" asChild>
+                <Link to={`/journals?member_id=${member.id}`}>
+                  <BookOpen className="h-3.5 w-3.5 mr-1" />
+                  Journal
+                </Link>
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onEdit}>
+                <Pencil className="h-3.5 w-3.5 mr-1" />
+                Edit
+              </Button>
+            </div>
           </div>
         </DialogHeader>
         <div className="space-y-4">
