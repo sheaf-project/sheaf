@@ -8,13 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.database import get_db
-from sheaf.models.content_revision import ContentRevisionTarget
+from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
+from sheaf.schemas.journal import ContentRevisionRead, RestoreRevisionRequest
 from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
-from sheaf.services.journals import capture_revision, delete_revisions_for
+from sheaf.services.journals import (
+    capture_revision,
+    delete_revisions_for,
+    restore_member_bio_revision,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -188,3 +193,54 @@ async def delete_member(
     await db.delete(member)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/{member_id}/revisions",
+    response_model=list[ContentRevisionRead],
+)
+async def list_bio_revisions(
+    member_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    member = await _get_own_member(member_id, system, db)
+    result = await db.execute(
+        select(ContentRevision)
+        .where(
+            ContentRevision.target_type
+            == ContentRevisionTarget.MEMBER_BIO.value,
+            ContentRevision.target_id == member.id,
+        )
+        .order_by(ContentRevision.created_at.desc())
+    )
+    return [ContentRevisionRead.model_validate(r) for r in result.scalars().all()]
+
+
+@router.post(
+    "/{member_id}/restore-revision",
+    response_model=MemberRead,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def restore_bio_revision(
+    member_id: uuid.UUID,
+    body: RestoreRevisionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    member = await _get_own_member(member_id, system, db)
+    revision = await db.get(ContentRevision, body.revision_id)
+    if (
+        revision is None
+        or revision.target_type != ContentRevisionTarget.MEMBER_BIO.value
+        or revision.target_id != member.id
+    ):
+        raise HTTPException(status_code=404, detail="Revision not found")
+    await restore_member_bio_revision(
+        db=db, user=user, member=member, revision=revision
+    )
+    await db.commit()
+    await db.refresh(member)
+    return member

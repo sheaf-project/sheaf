@@ -1,4 +1,5 @@
 import type {
+  ContentRevision,
   DeleteResult,
   DestructiveConfirm,
   Member,
@@ -33,5 +34,16 @@ export function deleteMember(id: string, confirm?: DestructiveConfirm) {
   return apiFetch<DeleteResult>(`/v1/members/${id}`, {
     method: "DELETE",
     ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
+}
+
+export function listMemberBioRevisions(id: string) {
+  return apiFetch<ContentRevision[]>(`/v1/members/${id}/revisions`);
+}
+
+export function restoreMemberBioRevision(id: string, revisionId: string) {
+  return apiFetch<Member>(`/v1/members/${id}/restore-revision`, {
+    method: "POST",
+    body: JSON.stringify({ revision_id: revisionId }),
   });
 }

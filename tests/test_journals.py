@@ -263,59 +263,97 @@ def test_cannot_read_other_users_entry(client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
-# Bio revision capture
+# Bio revision capture + list + restore
 # ---------------------------------------------------------------------------
 
 
-def test_bio_edit_captures_revision(client: httpx.Client):
-    email = _register(client)
-    member = client.post(
+def test_bio_edit_captures_revision(auth_client: httpx.Client):
+    member = auth_client.post(
         "/v1/members", json={"name": "Z", "description": "v1 bio"}
     ).json()
-    client.patch(
+    auth_client.patch(
         f"/v1/members/{member['id']}", json={"description": "v2 bio"}
     )
 
-    # Read the revisions table directly — there's no public bio-revision
-    # endpoint in v1 (revisions are only listed via journal entries).
-    revs = _read_member_bio_revisions(email, member["id"])
+    revs = auth_client.get(f"/v1/members/{member['id']}/revisions").json()
     assert len(revs) == 1
     assert revs[0]["body"] == "v1 bio"
+    assert revs[0]["target_type"] == "member_bio"
 
 
-def _read_member_bio_revisions(user_email: str, member_id: str) -> list[dict]:
-    from sqlalchemy import select
+def test_bio_revisions_isolated_per_member(auth_client: httpx.Client):
+    a = auth_client.post(
+        "/v1/members", json={"name": "A", "description": "a-v1"}
+    ).json()
+    b = auth_client.post(
+        "/v1/members", json={"name": "B", "description": "b-v1"}
+    ).json()
+    auth_client.patch(f"/v1/members/{a['id']}", json={"description": "a-v2"})
+    auth_client.patch(f"/v1/members/{b['id']}", json={"description": "b-v2"})
 
-    from sheaf.crypto import blind_index
+    a_revs = auth_client.get(f"/v1/members/{a['id']}/revisions").json()
+    b_revs = auth_client.get(f"/v1/members/{b['id']}/revisions").json()
+    assert [r["body"] for r in a_revs] == ["a-v1"]
+    assert [r["body"] for r in b_revs] == ["b-v1"]
 
-    async def _run() -> list[dict]:
-        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-        from sqlalchemy.orm import sessionmaker
 
-        from sheaf.config import settings
-        from sheaf.models.content_revision import ContentRevision
+def test_bio_revisions_cross_tenant_404(client: httpx.Client):
+    _register(client)
+    member = client.post(
+        "/v1/members", json={"name": "Z", "description": "x"}
+    ).json()
+    client.patch(f"/v1/members/{member['id']}", json={"description": "y"})
 
-        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
-        engine = create_async_engine(db_url)
-        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        try:
-            async with async_session() as db:
-                result = await db.execute(
-                    select(ContentRevision)
-                    .where(
-                        ContentRevision.target_type == "member_bio",
-                        ContentRevision.target_id == uuid.UUID(member_id),
-                    )
-                    .order_by(ContentRevision.created_at)
-                )
-                rows = list(result.scalars().all())
-                return [{"id": str(r.id), "body": r.body, "title": r.title} for r in rows]
-        finally:
-            await engine.dispose()
+    other = httpx.Client(base_url=str(client.base_url))
+    _register(other)
+    resp = other.get(f"/v1/members/{member['id']}/revisions")
+    assert resp.status_code == 404
+    other.close()
 
-    # Quiet the unused-arg warning — email is the lookup that asserts the row exists
-    blind_index(user_email)
-    return asyncio.run(_run())
+
+def test_restore_bio_revision(auth_client: httpx.Client):
+    member = auth_client.post(
+        "/v1/members", json={"name": "Z", "description": "v1 bio"}
+    ).json()
+    auth_client.patch(f"/v1/members/{member['id']}", json={"description": "v2 bio"})
+
+    revs = auth_client.get(f"/v1/members/{member['id']}/revisions").json()
+    revision_id = revs[0]["id"]
+
+    resp = auth_client.post(
+        f"/v1/members/{member['id']}/restore-revision",
+        json={"revision_id": revision_id},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["description"] == "v1 bio"
+
+    # Pre-restore content captured as a new revision; original revision row
+    # remains in place.
+    revs_after = auth_client.get(f"/v1/members/{member['id']}/revisions").json()
+    assert len(revs_after) == 2
+    bodies = sorted(r["body"] for r in revs_after)
+    assert bodies == ["v1 bio", "v2 bio"]
+
+
+def test_restore_bio_rejects_journal_revision(auth_client: httpx.Client):
+    member = auth_client.post(
+        "/v1/members", json={"name": "Z", "description": "v1"}
+    ).json()
+    auth_client.patch(f"/v1/members/{member['id']}", json={"description": "v2"})
+
+    entry = auth_client.post(
+        "/v1/journals", json={"body": "journal-v1"}
+    ).json()
+    auth_client.patch(
+        f"/v1/journals/{entry['id']}", json={"body": "journal-v2"}
+    )
+    journal_revs = auth_client.get(f"/v1/journals/{entry['id']}/revisions").json()
+
+    resp = auth_client.post(
+        f"/v1/members/{member['id']}/restore-revision",
+        json={"revision_id": journal_revs[0]["id"]},
+    )
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

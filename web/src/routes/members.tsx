@@ -4,14 +4,16 @@ import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
+import { listMemberBioRevisions, restoreMemberBioRevision } from "@/lib/members";
 import { AvatarUpload } from "@/components/avatar-upload";
+import { ContentRevisionList } from "@/components/content-revision-list";
 
 const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
-import { BookOpen, Pencil } from "lucide-react";
+import { BookOpen, History, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -313,6 +315,9 @@ function MemberView({
 }) {
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(member.id);
+  const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
+  const dateFormat = system?.date_format ?? "ymd";
+  const [showRevisions, setShowRevisions] = useState(false);
 
   const fieldDisplay = useMemo(() => {
     if (!fields || !values) return [];
@@ -339,6 +344,15 @@ function MemberView({
                   <BookOpen className="h-3.5 w-3.5 mr-1" />
                   Journal
                 </Link>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowRevisions((v) => !v)}
+                aria-pressed={showRevisions}
+              >
+                <History className="h-3.5 w-3.5 mr-1" />
+                History
               </Button>
               <Button variant="ghost" size="sm" onClick={onEdit}>
                 <Pencil className="h-3.5 w-3.5 mr-1" />
@@ -379,6 +393,25 @@ function MemberView({
               <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
                 <MarkdownPreview content={member.description} />
               </Suspense>
+            </div>
+          )}
+
+          {/* Bio revisions */}
+          {showRevisions && (
+            <div className="rounded-md border px-3 py-2">
+              <ContentRevisionList
+                targetId={member.id}
+                currentBody={member.description ?? ""}
+                queryKey={["member", member.id, "revisions"]}
+                list={listMemberBioRevisions}
+                restore={restoreMemberBioRevision}
+                invalidateOnRestore={[
+                  ["members"],
+                  ["member", member.id, "revisions"],
+                ]}
+                emptyMessage="No bio revisions yet. Edits to the bio will appear here."
+                dateFormat={dateFormat}
+              />
             </div>
           )}
 

@@ -312,3 +312,30 @@ async def restore_journal_revision(
     entry.image_keys = extract_image_keys(revision.body)
     entry.updated_at = datetime.now(UTC)
     return entry
+
+
+async def restore_member_bio_revision(
+    *,
+    db: AsyncSession,
+    user: User,
+    member: Member,
+    revision: ContentRevision,
+) -> Member:
+    """Restore a member's bio from a revision.
+
+    Same forward-action semantics as `restore_journal_revision`: captures the
+    current bio as a new revision, then overwrites `member.description` with
+    the revision body. Image keys for member bios are tracked through the
+    revision rows themselves (the member table has no `image_keys` column).
+    """
+    await capture_revision(
+        db=db,
+        target_type=ContentRevisionTarget.MEMBER_BIO,
+        target_id=member.id,
+        user=user,
+        system_id=member.system_id,
+        title=None,
+        body=member.description or "",
+    )
+    member.description = revision.body or None
+    return member

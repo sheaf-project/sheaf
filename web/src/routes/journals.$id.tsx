@@ -11,7 +11,7 @@ import {
   JournalEntryEditor,
   type JournalEntryEditorValue,
 } from "@/components/journal-entry-editor";
-import { JournalRevisionList } from "@/components/journal-revision-list";
+import { ContentRevisionList } from "@/components/content-revision-list";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,7 +27,13 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMembers } from "@/hooks/use-members";
 import { formatDateTime } from "@/lib/date-format";
-import { deleteJournal, getJournal, updateJournal } from "@/lib/journals";
+import {
+  deleteJournal,
+  getJournal,
+  listRevisions,
+  restoreRevision,
+  updateJournal,
+} from "@/lib/journals";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 import { isDeleteQueued } from "@/types/api";
@@ -146,6 +152,26 @@ export function JournalDetailPage() {
         )}
       </p>
 
+      {showRevisions && !editing && (
+        <Card className="mb-4">
+          <CardContent className="p-4">
+            <ContentRevisionList
+              targetId={entry.id}
+              currentBody={entry.body}
+              queryKey={["journal", entry.id, "revisions"]}
+              list={listRevisions}
+              restore={restoreRevision}
+              invalidateOnRestore={[
+                ["journal", entry.id],
+                ["journal", entry.id, "revisions"],
+              ]}
+              emptyMessage="No revisions yet. Edits to this entry will appear here."
+              dateFormat={dateFormat}
+            />
+          </CardContent>
+        </Card>
+      )}
+
       {editing ? (
         <Card>
           <CardContent className="p-4">
@@ -172,17 +198,6 @@ export function JournalDetailPage() {
             >
               <MarkdownPreview content={entry.body} />
             </Suspense>
-          </CardContent>
-        </Card>
-      )}
-
-      {showRevisions && !editing && (
-        <Card className="mt-4">
-          <CardContent className="p-4">
-            <JournalRevisionList
-              entryId={entry.id}
-              dateFormat={dateFormat}
-            />
           </CardContent>
         </Card>
       )}
