@@ -10,12 +10,14 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.crypto import blind_index, encrypt
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members, member_tags
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
+from sheaf.services.custom_fields import encrypt_field_value
 
 logger = logging.getLogger("sheaf.import.sheaf")
 
@@ -122,12 +124,19 @@ async def run_import(
 
     for m_data in export_members:
         old_id = m_data.get("id", "")
+        plaintext_name = (m_data.get("name") or "unnamed")[:100]
+        plaintext_description = m_data.get("description")
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
-            name=(m_data.get("name") or "unnamed")[:100],
+            name=encrypt(plaintext_name),
+            name_hash=blind_index(plaintext_name),
             display_name=_trunc(m_data.get("display_name"), 100),
-            description=m_data.get("description"),
+            description=(
+                encrypt(plaintext_description)
+                if plaintext_description is not None
+                else None
+            ),
             pronouns=_trunc(m_data.get("pronouns"), 100),
             avatar_url=_trunc(m_data.get("avatar_url"), 500),
             color=_trunc(m_data.get("color"), 7),
@@ -205,7 +214,7 @@ async def run_import(
                     id=uuid.uuid4(),
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=v_data.get("value"),
+                    value=encrypt_field_value(v_data.get("value")),
                 )
                 db.add(cfv)
 

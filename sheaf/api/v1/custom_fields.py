@@ -20,11 +20,24 @@ from sheaf.schemas.custom_field import (
     CustomFieldValueSet,
 )
 from sheaf.schemas.member import MemberDeleteConfirm
+from sheaf.services.custom_fields import (
+    decrypt_field_value,
+    encrypt_field_value,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
     verify_destructive_auth,
 )
+
+
+def _value_read(v: CustomFieldValue) -> CustomFieldValueRead:
+    """Build CustomFieldValueRead with decrypted value."""
+    return CustomFieldValueRead.model_validate({
+        "field_id": v.field_id,
+        "member_id": v.member_id,
+        "value": decrypt_field_value(v.value),
+    })
 
 router = APIRouter(tags=["custom fields"])
 
@@ -192,7 +205,7 @@ async def get_member_field_values(
     result = await db.execute(
         select(CustomFieldValue).where(CustomFieldValue.member_id == member_id)
     )
-    return result.scalars().all()
+    return [_value_read(v) for v in result.scalars().all()]
 
 
 @router.put(
@@ -230,7 +243,7 @@ async def set_member_field_values(
             detail="One or more field IDs are invalid",
         )
 
-    # Upsert values
+    # Upsert values. Stored value is the encrypted JSON-serialised plaintext.
     for item in body:
         existing = await db.execute(
             select(CustomFieldValue).where(
@@ -239,14 +252,15 @@ async def set_member_field_values(
             )
         )
         value = existing.scalar_one_or_none()
+        encrypted = encrypt_field_value(item.value)
         if value is not None:
-            value.value = item.value
+            value.value = encrypted
         else:
             db.add(
                 CustomFieldValue(
                     field_id=item.field_id,
                     member_id=member_id,
-                    value=item.value,
+                    value=encrypted,
                 )
             )
 
@@ -256,4 +270,4 @@ async def set_member_field_values(
     result = await db.execute(
         select(CustomFieldValue).where(CustomFieldValue.member_id == member_id)
     )
-    return result.scalars().all()
+    return [_value_read(v) for v in result.scalars().all()]

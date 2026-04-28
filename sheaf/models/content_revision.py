@@ -48,7 +48,9 @@ class ContentRevision(UUIDMixin, Base):
     )
 
     # Captured content as it was before the edit that produced this revision.
-    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # title and body are encrypted at application level — store ciphertext.
+    # image_keys stays plaintext (orphan cleanup needs to read it without keys).
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
     image_keys: Mapped[list] = mapped_column(

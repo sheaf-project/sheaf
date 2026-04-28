@@ -14,6 +14,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
+from sheaf.crypto import decrypt, encrypt
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
@@ -92,6 +93,10 @@ async def capture_revision(
 ) -> ContentRevision:
     """Insert a content_revisions row capturing the *outgoing* content.
 
+    `title` and `body` are *plaintext* — encrypted at write time.
+    image_keys is extracted from the plaintext body, then stored unencrypted
+    so orphan cleanup can read it without key access.
+
     Caller is responsible for then overwriting the target row with the new
     content and committing.
     """
@@ -105,12 +110,62 @@ async def capture_revision(
         user_id=user.id,
         editor_member_ids=editor_ids,
         editor_member_names=editor_names,
-        title=title,
-        body=body,
+        title=encrypt(title) if title is not None else None,
+        body=encrypt(body),
         image_keys=extract_image_keys(body),
     )
     db.add(revision)
     return revision
+
+
+def revision_plaintext(revision: ContentRevision) -> tuple[str | None, str]:
+    """Decrypt a revision's title/body to plaintext."""
+    title = decrypt(revision.title) if revision.title is not None else None
+    body = decrypt(revision.body) if revision.body else ""
+    return title, body
+
+
+def decrypt_revision_for_read(revision: ContentRevision) -> dict:
+    """Build a dict suitable for ContentRevisionRead.model_validate(...)."""
+    title, body = revision_plaintext(revision)
+    return {
+        "id": revision.id,
+        "target_type": revision.target_type,
+        "target_id": revision.target_id,
+        "user_id": revision.user_id,
+        "editor_member_ids": revision.editor_member_ids,
+        "editor_member_names": revision.editor_member_names,
+        "title": title,
+        "body": body,
+        "image_keys": revision.image_keys,
+        "created_at": revision.created_at,
+    }
+
+
+def entry_plaintext(entry: JournalEntry) -> tuple[str | None, str]:
+    """Decrypt a journal entry's title/body to plaintext."""
+    title = decrypt(entry.title) if entry.title is not None else None
+    body = decrypt(entry.body) if entry.body else ""
+    return title, body
+
+
+def decrypt_entry_for_read(entry: JournalEntry) -> dict:
+    """Build a dict suitable for JournalEntryRead.model_validate(...)."""
+    title, body = entry_plaintext(entry)
+    return {
+        "id": entry.id,
+        "system_id": entry.system_id,
+        "member_id": entry.member_id,
+        "title": title,
+        "body": body,
+        "visibility": entry.visibility,
+        "author_user_id": entry.author_user_id,
+        "author_member_ids": entry.author_member_ids,
+        "author_member_names": entry.author_member_names,
+        "image_keys": entry.image_keys,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+    }
 
 
 async def delete_revisions_for(
@@ -190,7 +245,10 @@ async def resolve_author_snapshot(
     for mid in ordered:
         member = by_id[mid]
         ids.append(str(member.id))
-        names.append(member.display_name or member.name)
+        # display_name is plaintext; name is ciphertext — decrypt for the
+        # snapshot. Author-name snapshots are display strings, not lookups,
+        # so we store them in plaintext (same as how they're shown to users).
+        names.append(member.display_name or decrypt(member.name))
     return ids, names
 
 
@@ -212,6 +270,9 @@ async def create_journal_entry(
 ) -> JournalEntry:
     """Create a journal entry with a fronting snapshot at write time.
 
+    `title` and `body` are *plaintext* — stored encrypted; image_keys is
+    extracted from the plaintext and stored unencrypted for orphan cleanup.
+
     If `author_member_ids` is provided, those override the fronting snapshot
     (used when the user explicitly picks authors in the UI). Otherwise we
     snapshot whoever is currently fronting.
@@ -227,8 +288,8 @@ async def create_journal_entry(
     entry = JournalEntry(
         system_id=system.id,
         member_id=member_id,
-        title=title,
-        body=body,
+        title=encrypt(title) if title is not None else None,
+        body=encrypt(body),
         visibility=visibility,
         author_user_id=user.id,
         author_member_ids=author_ids,
@@ -251,12 +312,17 @@ async def update_journal_entry(
 ) -> JournalEntry:
     """Apply an update to an entry, capturing a revision if content changed.
 
+    `title` and `body` are *plaintext* (None = unchanged). Comparison against
+    the existing entry decrypts the stored ciphertext so no-op nonce rerolls
+    don't trigger spurious revision captures.
+
     Author edits don't trigger revision capture — revisions track title/body
     only. An empty list (`[]`) clears authors back to "account fallback".
     `None` means "don't touch authors".
     """
-    content_changed = (title is not None and title != entry.title) or (
-        body is not None and body != entry.body
+    current_title, current_body = entry_plaintext(entry)
+    content_changed = (title is not None and title != current_title) or (
+        body is not None and body != current_body
     )
     if content_changed:
         await capture_revision(
@@ -265,13 +331,13 @@ async def update_journal_entry(
             target_id=entry.id,
             user=user,
             system_id=entry.system_id,
-            title=entry.title,
-            body=entry.body,
+            title=current_title,
+            body=current_body,
         )
     if title is not None:
-        entry.title = title
+        entry.title = encrypt(title)
     if body is not None:
-        entry.body = body
+        entry.body = encrypt(body)
         entry.image_keys = extract_image_keys(body)
     if visibility is not None:
         entry.visibility = visibility
@@ -298,18 +364,20 @@ async def restore_journal_revision(
     overwrites the entry with the chosen revision's content. The chosen
     revision row is left in place — restore is a forward action, not a rewind.
     """
+    current_title, current_body = entry_plaintext(entry)
     await capture_revision(
         db=db,
         target_type=ContentRevisionTarget.JOURNAL_ENTRY,
         target_id=entry.id,
         user=user,
         system_id=entry.system_id,
-        title=entry.title,
-        body=entry.body,
+        title=current_title,
+        body=current_body,
     )
-    entry.title = revision.title
-    entry.body = revision.body
-    entry.image_keys = extract_image_keys(revision.body)
+    revision_title, revision_body = revision_plaintext(revision)
+    entry.title = encrypt(revision_title) if revision_title is not None else None
+    entry.body = encrypt(revision_body)
+    entry.image_keys = extract_image_keys(revision_body)
     entry.updated_at = datetime.now(UTC)
     return entry
 
@@ -328,6 +396,9 @@ async def restore_member_bio_revision(
     the revision body. Image keys for member bios are tracked through the
     revision rows themselves (the member table has no `image_keys` column).
     """
+    current_description = (
+        decrypt(member.description) if member.description is not None else ""
+    )
     await capture_revision(
         db=db,
         target_type=ContentRevisionTarget.MEMBER_BIO,
@@ -335,7 +406,8 @@ async def restore_member_bio_revision(
         user=user,
         system_id=member.system_id,
         title=None,
-        body=member.description or "",
+        body=current_description,
     )
-    member.description = revision.body or None
+    _, revision_body = revision_plaintext(revision)
+    member.description = encrypt(revision_body) if revision_body else None
     return member

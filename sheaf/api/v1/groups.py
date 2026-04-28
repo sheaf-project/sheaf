@@ -15,6 +15,7 @@ from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
+from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -194,7 +195,7 @@ async def get_group_members(
     group = result.scalar_one_or_none()
     if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return group.members
+    return [decrypt_member_for_read(m) for m in group.members]
 
 
 @router.put(
@@ -233,4 +234,4 @@ async def set_group_members(
 
     group.members = members
     await db.commit()
-    return members
+    return [decrypt_member_for_read(m) for m in members]

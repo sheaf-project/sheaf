@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.crypto import blind_index, encrypt
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
 from sheaf.models.group import Group
@@ -30,6 +31,7 @@ from sheaf.schemas.sp_import import (
     SPPreviewMember,
     SPPreviewSummary,
 )
+from sheaf.services.custom_fields import encrypt_field_value
 
 logger = logging.getLogger("sheaf.import")
 
@@ -124,12 +126,19 @@ async def run_import(
 
     for sp_m in sp_members:
         sp_id = sp_m.get("_id", "")
+        plaintext_name = (sp_m.get("name") or "unnamed")[:100]
+        plaintext_description = sp_m.get("desc")
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
-            name=(sp_m.get("name") or "unnamed")[:100],
+            name=encrypt(plaintext_name),
+            name_hash=blind_index(plaintext_name),
             display_name=_truncate(sp_m.get("displayName"), 100),
-            description=sp_m.get("desc"),
+            description=(
+                encrypt(plaintext_description)
+                if plaintext_description is not None
+                else None
+            ),
             pronouns=_truncate(sp_m.get("pronouns"), 100),
             avatar_url=_truncate(sp_m.get("avatarUrl"), 500),
             color=_normalize_color(sp_m.get("color")),
@@ -144,11 +153,18 @@ async def run_import(
     if options.custom_fronts:
         for sp_cf in _get_collection(data, "frontStatuses"):
             sp_id = sp_cf.get("_id", "")
+            plaintext_cf_name = (sp_cf.get("name") or "unnamed")[:100]
+            plaintext_cf_description = _prefix_custom_front_desc(sp_cf.get("desc"))
             member = Member(
                 id=uuid.uuid4(),
                 system_id=system.id,
-                name=(sp_cf.get("name") or "unnamed")[:100],
-                description=_prefix_custom_front_desc(sp_cf.get("desc")),
+                name=encrypt(plaintext_cf_name),
+                name_hash=blind_index(plaintext_cf_name),
+                description=(
+                    encrypt(plaintext_cf_description)
+                    if plaintext_cf_description is not None
+                    else None
+                ),
                 color=_normalize_color(sp_cf.get("color")),
                 avatar_url=_truncate(sp_cf.get("avatarUrl"), 500),
                 privacy=_map_privacy(sp_cf.get("private", True)),
@@ -200,7 +216,7 @@ async def run_import(
                     id=uuid.uuid4(),
                     field_id=field_def.id,
                     member_id=member.id,
-                    value={"v": str(raw_value)},
+                    value=encrypt_field_value({"v": str(raw_value)}),
                 )
                 db.add(cfv)
 

@@ -214,9 +214,13 @@ async def snapshot_current_fronts(
         .distinct()
     )
     members = result.scalars().all()
+    # Member.name is encrypted; decrypt for the display-snapshot. display_name
+    # is plaintext and used as-is when set.
+    from sheaf.crypto import decrypt
+
     return (
         [str(m.id) for m in members],
-        [m.display_name or m.name for m in members],
+        [m.display_name or decrypt(m.name) for m in members],
     )
 
 

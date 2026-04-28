@@ -35,7 +35,10 @@ from sheaf.schemas.journal import (
 )
 from sheaf.services.journals import (
     create_journal_entry,
+    decrypt_entry_for_read,
+    decrypt_revision_for_read,
     delete_revisions_for,
+    entry_plaintext,
     restore_journal_revision,
     revision_count_for,
     update_journal_entry,
@@ -68,8 +71,9 @@ async def _verify_member_in_system(
 
 def _label_for(entry: JournalEntry) -> str:
     """Pending-action label — title if set, else timestamp fallback."""
-    if entry.title:
-        return entry.title
+    title, _ = entry_plaintext(entry)
+    if title:
+        return title
     return f"Untitled — {entry.created_at.date().isoformat()}"
 
 
@@ -104,7 +108,10 @@ async def list_journals(
     rows = list(result.scalars().all())
     next_cursor = rows[limit].created_at if len(rows) > limit else None
     return JournalListResponse(
-        items=[JournalEntryRead.model_validate(r) for r in rows[:limit]],
+        items=[
+            JournalEntryRead.model_validate(decrypt_entry_for_read(r))
+            for r in rows[:limit]
+        ],
         next_cursor=next_cursor,
     )
 
@@ -138,7 +145,7 @@ async def create_entry(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(entry)
-    return entry
+    return JournalEntryRead.model_validate(decrypt_entry_for_read(entry))
 
 
 @router.get("/{entry_id}", response_model=JournalEntryReadWithCount)
@@ -152,7 +159,7 @@ async def get_entry(
     count = await revision_count_for(
         ContentRevisionTarget.JOURNAL_ENTRY, entry.id, db
     )
-    payload = JournalEntryReadWithCount.model_validate(entry)
+    payload = JournalEntryReadWithCount.model_validate(decrypt_entry_for_read(entry))
     payload.revision_count = count
     return payload
 
@@ -185,7 +192,7 @@ async def patch_entry(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(entry)
-    return entry
+    return JournalEntryRead.model_validate(decrypt_entry_for_read(entry))
 
 
 @router.delete(
@@ -256,7 +263,10 @@ async def list_revisions(
         )
         .order_by(ContentRevision.created_at.desc())
     )
-    return [ContentRevisionRead.model_validate(r) for r in result.scalars().all()]
+    return [
+        ContentRevisionRead.model_validate(decrypt_revision_for_read(r))
+        for r in result.scalars().all()
+    ]
 
 
 @router.post(
@@ -284,4 +294,4 @@ async def restore_revision(
     )
     await db.commit()
     await db.refresh(entry)
-    return entry
+    return JournalEntryRead.model_validate(decrypt_entry_for_read(entry))
