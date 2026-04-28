@@ -10,6 +10,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.crypto import decrypt
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
@@ -74,6 +75,10 @@ async def find_orphaned_files(
     )
     for avatar_url, description in result:
         referenced.update(_key_from_avatar(avatar_url))
+        # Member.description is encrypted at rest; decrypt for the markdown
+        # scan. This runs in the app container which has the key.
+        if description is not None:
+            description = decrypt(description)
         referenced.update(_extract_keys_from_markdown(description))
 
     # Journal entries for this user's system. image_keys is pre-extracted

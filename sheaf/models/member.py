@@ -60,8 +60,18 @@ class Member(UUIDMixin, TimestampMixin, Base):
         index=True,
     )
 
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Encrypted at application level — store ciphertext.
+    # Length is generous to accommodate the base64-encoded
+    # nonce+ciphertext+tag for a 100-char plaintext.
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Blind index on the *plaintext* name (keyed HMAC-SHA-256, normalised).
+    # Used for exact-match lookups within a system (e.g. autocomplete dedup).
+    # Not unique — duplicate names within a system are allowed.
+    name_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True, server_default=""
+    )
     display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Encrypted at application level — store ciphertext.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     pronouns: Mapped[str | None] = mapped_column(String(100), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

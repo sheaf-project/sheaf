@@ -12,6 +12,8 @@ from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
+from sheaf.services.custom_fields import field_value_plaintext
+from sheaf.services.members import member_plaintext
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -30,11 +32,15 @@ async def export_all(
     if system is None:
         return {"system": None, "members": [], "fronts": [], "groups": [], "tags": [], "fields": []}
 
-    # Members
+    # Members. Member.name is encrypted ciphertext, so DB-side ORDER BY on
+    # it is meaningless — sort in Python after decrypting names below.
     members_result = await db.execute(
-        select(Member).where(Member.system_id == system.id).order_by(Member.name)
+        select(Member).where(Member.system_id == system.id)
     )
-    members = members_result.scalars().all()
+    members_with_plaintext = [
+        (m, *member_plaintext(m)) for m in members_result.scalars().all()
+    ]
+    members_with_plaintext.sort(key=lambda t: t[1].casefold())
 
     # Fronts with members
     fronts_result = await db.execute(
@@ -83,9 +89,9 @@ async def export_all(
         "members": [
             {
                 "id": str(m.id),
-                "name": m.name,
+                "name": name,
                 "display_name": m.display_name,
-                "description": m.description,
+                "description": description,
                 "pronouns": m.pronouns,
                 "avatar_url": m.avatar_url,
                 "color": m.color,
@@ -93,7 +99,7 @@ async def export_all(
                 "privacy": m.privacy.value,
                 "created_at": m.created_at.isoformat(),
             }
-            for m in members
+            for (m, name, description) in members_with_plaintext
         ],
         "fronts": [
             {
@@ -135,7 +141,7 @@ async def export_all(
                 "values": [
                     {
                         "member_id": str(v.member_id),
-                        "value": v.value,
+                        "value": field_value_plaintext(v),
                     }
                     for v in fd.values
                 ],

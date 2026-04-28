@@ -29,7 +29,10 @@ class JournalEntry(UUIDMixin, TimestampMixin, Base):
         index=True,
     )
 
-    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Encrypted at application level — store ciphertext.
+    # title and body are encrypted; image_keys stays plaintext so orphan
+    # cleanup and read-time URL rewrites don't require key access.
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
     # v1 only honors "system". "member_private" and "public" are reserved
