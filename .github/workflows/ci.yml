@@ -92,6 +92,21 @@ jobs:
             build_args: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # ancestor check on tag pushes needs full history
+
+      # Tag pushes must point at a commit already on main. GitHub's deployment
+      # branch policy is name-pattern only and can't enforce this; checking
+      # here means a v* tag pushed from an unmerged branch fails before any
+      # image is built or signed.
+      - name: Validate tag is on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tagged commit $GITHUB_SHA is not on main — merge first, then tag"
+            exit 1
+          fi
 
       - uses: docker/setup-qemu-action@v3
 
