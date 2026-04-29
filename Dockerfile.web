@@ -8,10 +8,26 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
 COPY web/ ./
+
+# Build provenance — passed through to Vite so the bundle can show its
+# build origin. ARGs do not cross stages; redeclare in the runtime stage.
+ARG GIT_COMMIT=
+ARG GIT_TAG=
+ARG BUILD_TIME=
+ENV VITE_GIT_COMMIT=${GIT_COMMIT}
+ENV VITE_GIT_TAG=${GIT_TAG}
+ENV VITE_BUILD_TIME=${BUILD_TIME}
+
 RUN npm run build
 
 FROM nginx:1.27
 
 COPY --from=build /build/dist /usr/share/nginx/html
+
+ARG GIT_COMMIT=
+ARG GIT_TAG=
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+LABEL org.opencontainers.image.version=${GIT_TAG}
+LABEL org.opencontainers.image.source=https://github.com/sheaf-project/sheaf
 
 EXPOSE 80 443

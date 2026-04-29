@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from sheaf import __version__
 from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI):
     _validate_settings()
     # Eagerly initialise encryption key so we get the warning at startup
     settings.get_encryption_key()
-    logger.info("Sheaf %s starting in %s mode", "0.1.0", settings.sheaf_mode.value)
+    logger.info("Sheaf %s starting in %s mode", __version__, settings.sheaf_mode.value)
 
     await _promote_admin_emails()
 
@@ -87,7 +88,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Sheaf",
     description="Open-source plural system tracking",
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/v1/docs",
     redoc_url="/v1/redoc",

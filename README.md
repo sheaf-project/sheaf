@@ -159,6 +159,12 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - Public test / demo mode (periodic non-admin wipe + warning banner)
 - Backups
 
+## Verifying your build
+
+Sheaf publishes signed Docker images and a verifiable frontend bundle so users can confirm a running instance corresponds to the public source. Image signatures use sigstore/cosign keyless OIDC (no key material to manage; signatures tied to the GitHub Actions workflow identity, recorded in Rekor's public transparency log). The frontend ships with Subresource Integrity hashes and a published build manifest, so a browser-side verifier can confirm byte-for-byte that loaded JavaScript matches the published source.
+
+See **[docs/VERIFYING.md](docs/VERIFYING.md)** for the trust model, how to run `cosign verify`, how to compare the served `build-manifest.json` against your own `npm run build`, and what the design explicitly does *not* claim (no hardware attestation; backend behaviour beyond the served frontend is operator-attested).
+
 ## Development
 
 ```bash

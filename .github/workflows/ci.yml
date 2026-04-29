@@ -116,7 +116,11 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: ${{ matrix.build_args }}
+          build-args: |
+            ${{ matrix.build_args }}
+            GIT_COMMIT=${{ github.sha }}
+            GIT_TAG=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_started_at }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
