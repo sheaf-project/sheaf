@@ -52,7 +52,7 @@ export function RetentionTrimNoticeBanner() {
         {timeRemaining(notice.effective_at)}.
       </span>
       <Link
-        to="/settings"
+        to="/settings/safety"
         className={cn("shrink-0 underline text-xs", config.text)}
       >
         Review

@@ -92,7 +92,7 @@ function Banner({
       <Icon className={cn("h-4 w-4 shrink-0", config.iconColor)} />
       <span className={cn("flex-1 min-w-0", config.text)}>{message}</span>
       <Link
-        to="/settings"
+        to="/settings/safety"
         className={cn("shrink-0 underline text-xs", config.text)}
       >
         Review

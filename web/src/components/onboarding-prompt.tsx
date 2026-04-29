@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Shield, KeyRound } from "lucide-react";
+import { Shield, KeyRound, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { apiFetch } from "@/lib/api-client";
 
@@ -56,9 +56,9 @@ export function OnboardingPrompt() {
     }
   }
 
-  async function goTo(hash: string) {
+  async function goTo(path: string) {
     await markComplete();
-    navigate(`/settings${hash}`);
+    navigate(path);
   }
 
   return (
@@ -78,14 +78,21 @@ export function OnboardingPrompt() {
             desc="Add an extra step at sign-in, and unlock the TOTP-based auth tiers for destructive actions."
             enabled={!user.totp_enabled}
             badge={user.totp_enabled ? "Already on" : undefined}
-            onClick={() => goTo("#security")}
+            onClick={() => goTo("/settings/account")}
           />
           <OptionRow
             icon={<Shield className="h-4 w-4" />}
             title="Configure System Safety"
             desc="Optional grace periods and re-auth prompts before members, groups, tags, fields, or front entries can be deleted."
             enabled
-            onClick={() => goTo("#safety")}
+            onClick={() => goTo("/settings/safety")}
+          />
+          <OptionRow
+            icon={<Upload className="h-4 w-4" />}
+            title="Import existing data"
+            desc="Coming from SimplyPlural or another Sheaf account? Bring your members, fronts, and history across."
+            enabled
+            onClick={() => goTo("/import")}
           />
         </div>
         <DialogFooter>
