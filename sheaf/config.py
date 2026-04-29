@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # Mode
     sheaf_mode: SheafMode = SheafMode.SELFHOSTED
 
+    # Build provenance — populated by Docker build args at image build time.
+    # Empty when running from source (dev) or from an image built without CI.
+    sheaf_git_commit: str = ""
+    sheaf_git_tag: str = ""
+    sheaf_build_time: str = ""
+
     # aaS settings
     free_tier_front_retention_days: int = 30
     retention_check_interval_hours: int = 6

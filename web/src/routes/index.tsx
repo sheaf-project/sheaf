@@ -7,6 +7,7 @@ import { FrontsPage } from "./fronts";
 import { GroupsPage } from "./groups";
 import { SettingsPage } from "./settings";
 import { ImportPage } from "./import";
+import { AboutPage } from "./about";
 import { JournalsPage } from "./journals";
 import { JournalDetailPage } from "./journals.$id";
 import { AdminLayout } from "./admin/_layout";
@@ -48,6 +49,7 @@ export const router = createBrowserRouter([
       { path: "groups", element: <GroupsPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "import", element: <ImportPage /> },
+      { path: "about", element: <AboutPage /> },
       {
         path: "admin",
         element: <AdminLayout />,

@@ -23,6 +23,19 @@ RUN if [ "$INCLUDE_DEV_TOOLS" = "true" ]; then \
 
 RUN mkdir -p /app/data && chown sheaf:sheaf /app/data
 
+# Build provenance — populated by CI (or `docker build --build-arg`).
+# Late in the file so the heavyweight pip-install cache layer survives
+# unrelated commit changes.
+ARG GIT_COMMIT=
+ARG GIT_TAG=
+ARG BUILD_TIME=
+ENV SHEAF_GIT_COMMIT=${GIT_COMMIT}
+ENV SHEAF_GIT_TAG=${GIT_TAG}
+ENV SHEAF_BUILD_TIME=${BUILD_TIME}
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+LABEL org.opencontainers.image.version=${GIT_TAG}
+LABEL org.opencontainers.image.source=https://github.com/sheaf-project/sheaf
+
 USER sheaf
 
 EXPOSE 8000

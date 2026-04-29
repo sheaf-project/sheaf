@@ -18,11 +18,15 @@ from sheaf.api.v1 import (
     system_safety,
     systems,
     tags,
+    version,
     webhooks,
 )
 from sheaf.auth.dependencies import require_scope
 
 v1_router = APIRouter(prefix="/v1")
+
+# Public (no auth): build provenance for verifiability tooling.
+v1_router.include_router(version.router)
 
 # Auth, admin, announcements: no scope enforcement
 v1_router.include_router(auth.router)

@@ -153,6 +153,29 @@ If you're coming from SimplyPlural, we're especially interested in hearing about
 - If your change adds an API endpoint, add a test.
 - Don't include unrelated formatting changes, refactors, or dependency bumps.
 
+## Cutting a release
+
+Releases are tag-driven and gated on a manual approval. The workflow:
+
+1. Bump the version in `pyproject.toml` and `web/package.json` to match the target tag (e.g. `0.1.1`).
+2. Move the `## [Unreleased]` section in `CHANGELOG.md` to a new `## [v0.1.1]` heading. The release workflow extracts that section verbatim into the GitHub release body.
+3. Land those changes on `main` via PR.
+4. Tag and push: `git tag v0.1.1 && git push --tags`.
+5. The CI workflow's `docker` job builds, signs, and attests the images. Then the `release` job pauses for human approval — the request shows up under repo Actions → workflow run → "Review deployments". Approving creates the GitHub release and uploads the frontend tarball + build manifest.
+6. If the tag's version doesn't match `pyproject.toml`, the release job fails before publishing — re-tag rather than overriding.
+
+`v0.x.y` releases are tagged as GitHub prereleases automatically (until `v1.0.0`).
+
+### One-time repo setup
+
+The manual gate requires a configured GitHub Environment:
+
+1. Repo Settings → Environments → New environment named `release`.
+2. Enable "Required reviewers" and add the maintainers who can sign off on releases.
+3. Optionally add a deployment protection rule (e.g. only allow `refs/tags/v*`).
+
+Without the environment, the release job runs with no approval gate. Create it before cutting any tag you actually want to publish.
+
 ## Architecture notes
 
 Before making significant changes, it helps to understand a few design decisions:
