@@ -6,7 +6,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
-## [v0.1.0]
+## [v0.1.0] - 2026-04-29
 
 First public beta. The features below are the baseline that subsequent releases build on.
 
