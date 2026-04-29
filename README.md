@@ -1,7 +1,9 @@
 # Sheaf
 
-[![CI](https://github.com/sheaf-project/sheaf/actions/workflows/ci.yml/badge.svg)](https://github.com/sheaf-project/sheaf/actions/workflows/ci.yml)
-![Discord](https://img.shields.io/discord/1483687251492868217)
+![GitHub Release](https://img.shields.io/github/v/release/sheaf-project/sheaf?include_prereleases&sort=semver&display_name=release&style=plastic&link=https%3A%2F%2Fgithub.com%2Fsheaf-project%2Fsheaf%2Freleases%2F)
+![Discord](https://img.shields.io/discord/1483687251492868217?style=plastic&logo=discord&label=Discord&link=https%3A%2F%2Fdiscord.com%2Finvite%2FWFaKQPzFx8)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sheaf-project/sheaf/ci.yml?branch=main&style=plastic&logo=github&label=CI)
+
 ![transrights](https://pride-badges.pony.workers.dev/static/v1?label=trans%20rights&stripeWidth=6&stripeColors=5BCEFA,F5A9B8,FFFFFF,F5A9B8,5BCEFA)
 ![enbyware](https://pride-badges.pony.workers.dev/static/v1?label=enbyware&labelColor=%23555&stripeWidth=8&stripeColors=FCF434%2CFFFFFF%2C9C59D1%2C2C2C2C)
 ![pluralmade](https://pride-badges.pony.workers.dev/static/v1?label=plural+made&labelColor=%23555&stripeWidth=8&stripeColors=2e0525%2C553578%2C7675c3%2C89c7b0%2Cf4ecbd)
@@ -161,7 +163,7 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 
 ## Verifying your build
 
-Sheaf publishes signed Docker images and a verifiable frontend bundle so users can confirm a running instance corresponds to the public source. Image signatures use sigstore/cosign keyless OIDC (no key material to manage; signatures tied to the GitHub Actions workflow identity, recorded in Rekor's public transparency log). The frontend ships with Subresource Integrity hashes and a published build manifest, so a browser-side verifier can confirm byte-for-byte that loaded JavaScript matches the published source.
+Sheaf publishes signed Docker images and a verifiable frontend bundle so users can confirm a running instance corresponds to the public source. Image signatures use [sigstore/cosign](https://github.com/sigstore/cosign) keyless OIDC (no key material to manage; signatures tied to the GitHub Actions workflow identity, recorded in Rekor's public transparency log). The frontend ships with Subresource Integrity hashes and a published build manifest, so a browser-side verifier can confirm byte-for-byte that loaded JavaScript matches the published source.
 
 See **[docs/VERIFYING.md](docs/VERIFYING.md)** for the trust model, how to run `cosign verify`, how to compare the served `build-manifest.json` against your own `npm run build`, and what the design explicitly does *not* claim (no hardware attestation; backend behaviour beyond the served frontend is operator-attested).
 
