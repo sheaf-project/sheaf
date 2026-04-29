@@ -1,0 +1,50 @@
+# Changelog
+
+All notable changes to Sheaf are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and Sheaf adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+`v0.x.y` releases are betas — APIs and database schema may still change. The first stable release will be `v1.0.0`.
+
+## [Unreleased]
+
+## [v0.1.0]
+
+First public beta. The features below are the baseline that subsequent releases build on.
+
+### Plural system tracking
+
+- Members with name, pronouns, role, description, color, avatar, custom fields, tags, groups, and per-member privacy.
+- Front log: who's currently fronting, history, and timeline view.
+- Journals: per-member and system-wide markdown entries with image embeds, fronting snapshots, revision history with retention.
+- System Safety: configurable grace periods on destructive actions (member/journal/image deletes, retention loosening) with re-auth.
+- Encrypted at rest: member name, descriptions, journal content, custom field values, email, TOTP secrets — all application-level encrypted; lookups use blind indexes.
+
+### Auth & accounts
+
+- Argon2id password hashing, optional TOTP, trusted-device enrolment.
+- HttpOnly refresh-cookie sessions with reuse-detection grace window.
+- API keys with per-resource scopes; admin scopes are admin-gated.
+- Account deletion with grace period; admin promotion via env-driven email list.
+
+### Self-hosting & operations
+
+- Multi-arch Docker images on GHCR for the backend (`sheaf`) and frontend (`sheaf-web`); `docker compose` reference setup.
+- Postgres + Redis required; Alembic runs `upgrade head` on container start.
+- Storage adapters: local disk and S3-compatible.
+- Email adapters: SMTP, SES, SendGrid (optional dependencies).
+- `SHEAF_MODE` flag toggles selfhosted vs SaaS behaviour without forking.
+
+### Build verifiability
+
+- `/v1/version` endpoint reports the running commit, tag, and build time.
+- Multi-arch Docker images on GHCR signed via `sigstore/cosign` keyless OIDC.
+- SPDX SBOMs published as Sigstore attestations against each image.
+- Frontend bundle protected by sha384 SRI integrity attributes.
+- `build-manifest.json` listing every dist file's hash, also published as a Sigstore attestation against the `sheaf-web` image.
+- `/about` page surfaces backend + frontend build provenance and a manifest summary.
+- `scripts/verify-release.sh` automates `/v1/version` → cosign verification.
+- See [docs/VERIFYING.md](docs/VERIFYING.md) for the full trust model.
+
+### Releases
+
+- Tag-driven release workflow with a manual approval gate via the `release` GitHub Environment.
+- Release assets: signed Docker images on GHCR, frontend tarball, build manifest, SPDX SBOM attestations.

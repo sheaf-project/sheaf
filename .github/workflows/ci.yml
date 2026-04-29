@@ -196,3 +196,74 @@ jobs:
             --predicate web/dist/build-manifest.json \
             --type custom \
             "$REF"
+
+  # Manual-approval gate for tag pushes. Image signing happens unconditionally
+  # in the docker job above; this job pauses for human approval before
+  # publishing the GitHub release page and uploading verifiable artefacts.
+  # Configure repo Settings → Environments → "release" with required reviewers.
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [docker]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pyproject.toml version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PY=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "(.*)"/\1/')
+          if [ "$TAG" != "$PY" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PY}"
+            exit 1
+          fi
+          echo "ok: tag ${GITHUB_REF_NAME} matches pyproject.toml ${PY}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        env:
+          VITE_GIT_COMMIT: ${{ github.sha }}
+          VITE_GIT_TAG: ${{ github.ref_name }}
+          VITE_BUILD_TIME: ${{ github.event.head_commit.timestamp || github.run_started_at }}
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Package frontend tarball
+        run: |
+          tar czf "web-dist-${GITHUB_REF_NAME}.tar.gz" -C web/dist .
+
+      # Extract this version's section out of CHANGELOG.md for the release
+      # body. Falls through to empty if the section is missing — auto-notes
+      # still get appended either way.
+      - name: Extract changelog section
+        run: |
+          awk -v ver="${GITHUB_REF_NAME}" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release-body.md || true
+          if [ ! -s release-body.md ]; then
+            echo "(no CHANGELOG.md section for ${GITHUB_REF_NAME})" > release-body.md
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-body.md
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          files: |
+            web-dist-${{ github.ref_name }}.tar.gz
+            web/dist/build-manifest.json
