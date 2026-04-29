@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getActiveAnnouncements, type Announcement } from "@/lib/announcements";
+import {
+  getActiveAnnouncements,
+  getLoggedOutAnnouncements,
+  type Announcement,
+} from "@/lib/announcements";
 import { apiFetch } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
@@ -87,14 +91,51 @@ export function AnnouncementBanners() {
   );
 }
 
+export function LoggedOutAnnouncementBanners() {
+  const { data: announcements } = useQuery({
+    queryKey: ["announcements", "logged-out"],
+    queryFn: getLoggedOutAnnouncements,
+    staleTime: 60 * 1000,
+  });
+
+  const [sessionDismissed, setSessionDismissed] = useState<Set<string>>(
+    new Set(),
+  );
+
+  if (!announcements?.length) return null;
+
+  const visible = announcements.filter((a) => !sessionDismissed.has(a.id));
+  if (!visible.length) return null;
+
+  function handleDismiss(id: string) {
+    setSessionDismissed((prev) => new Set(prev).add(id));
+  }
+
+  return (
+    <div className="flex flex-col">
+      {visible.map((a) => (
+        <AnnouncementBanner
+          key={a.id}
+          announcement={a}
+          onDismiss={() => handleDismiss(a.id)}
+          onDontShowAgain={() => handleDismiss(a.id)}
+          showDontShowAgain={false}
+        />
+      ))}
+    </div>
+  );
+}
+
 function AnnouncementBanner({
   announcement,
   onDismiss,
   onDontShowAgain,
+  showDontShowAgain = true,
 }: {
   announcement: Announcement;
   onDismiss: () => void;
   onDontShowAgain: () => void;
+  showDontShowAgain?: boolean;
 }) {
   const config = severityConfig[announcement.severity] ?? severityConfig.info;
   const Icon = config.icon;
@@ -116,14 +157,16 @@ function AnnouncementBanner({
       </div>
       {announcement.dismissible && (
         <div className="flex items-center gap-1 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs opacity-70 hover:opacity-100"
-            onClick={onDontShowAgain}
-          >
-            Don't show again
-          </Button>
+          {showDontShowAgain && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs opacity-70 hover:opacity-100"
+              onClick={onDontShowAgain}
+            >
+              Don't show again
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"

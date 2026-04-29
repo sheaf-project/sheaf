@@ -26,6 +26,9 @@ class ServerAnnouncement(UUIDMixin, TimestampMixin, Base):
     )
     dismissible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    visible_while_logged_out: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),

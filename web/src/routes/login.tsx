@@ -12,6 +12,7 @@ import { PasswordField } from "@/components/password-field";
 import { Captcha } from "@/components/captcha";
 import { Logo } from "@/components/logo";
 import { LegalFooter } from "@/components/legal-footer";
+import { LoggedOutAnnouncementBanners } from "@/components/announcement-banners";
 import { ApiError } from "@/lib/api-client";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
 import { Sun, Moon } from "lucide-react";
@@ -85,6 +86,7 @@ export function LoginPage() {
 
   return (
     <div className="relative flex min-h-screen flex-col bg-background">
+      <LoggedOutAnnouncementBanners />
       <Button
         variant="ghost"
         size="icon"

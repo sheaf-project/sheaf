@@ -186,3 +186,89 @@ def test_non_dismissible_announcement(
             assert ann["dismissible"] is False
             assert ann["severity"] == "critical"
             break
+
+
+# ---------------------------------------------------------------------------
+# Logged-out (unauthenticated) public endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_logged_out_endpoint_no_auth_required(client: httpx.Client):
+    resp = client.get("/v1/announcements/public")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_logged_out_endpoint_filters_by_flag(
+    admin_client: httpx.Client, client: httpx.Client
+):
+    admin_client.post(
+        "/v1/admin/announcements",
+        json={
+            "title": "Login-Page Banner",
+            "body": "Visible while logged out",
+            "visible_while_logged_out": True,
+        },
+    )
+    admin_client.post(
+        "/v1/admin/announcements",
+        json={
+            "title": "Internal Only",
+            "body": "Authenticated users only",
+        },
+    )
+
+    resp = client.get("/v1/announcements/public")
+    assert resp.status_code == 200
+    titles = [a["title"] for a in resp.json()]
+    assert "Login-Page Banner" in titles
+    assert "Internal Only" not in titles
+
+
+def test_logged_out_endpoint_excludes_inactive(
+    admin_client: httpx.Client, client: httpx.Client
+):
+    create = admin_client.post(
+        "/v1/admin/announcements",
+        json={
+            "title": "Hidden Login Banner",
+            "body": "inactive",
+            "visible_while_logged_out": True,
+            "active": False,
+        },
+    )
+    assert create.status_code == 201
+
+    resp = client.get("/v1/announcements/public")
+    assert resp.status_code == 200
+    titles = [a["title"] for a in resp.json()]
+    assert "Hidden Login Banner" not in titles
+
+
+def test_admin_create_persists_visible_while_logged_out(admin_client: httpx.Client):
+    resp = admin_client.post(
+        "/v1/admin/announcements",
+        json={
+            "title": "Flagged",
+            "body": "Body",
+            "visible_while_logged_out": True,
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["visible_while_logged_out"] is True
+
+
+def test_admin_update_visible_while_logged_out(admin_client: httpx.Client):
+    create = admin_client.post(
+        "/v1/admin/announcements",
+        json={"title": "Toggle Me", "body": "Body"},
+    )
+    ann_id = create.json()["id"]
+    assert create.json()["visible_while_logged_out"] is False
+
+    patch = admin_client.patch(
+        f"/v1/admin/announcements/{ann_id}",
+        json={"visible_while_logged_out": True},
+    )
+    assert patch.status_code == 200
+    assert patch.json()["visible_while_logged_out"] is True
