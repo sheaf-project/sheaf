@@ -43,7 +43,7 @@ INSTANCE="${1:-}"
 
 require curl   "https://curl.se/"
 require jq     "https://stedolan.github.io/jq/"
-require cosign "https://docs.sigstore.dev/cosign/installation/"
+require cosign "https://docs.sigstore.dev/cosign/system_config/installation/"
 
 INSTANCE="${INSTANCE%/}"
 REGISTRY="ghcr.io/sheaf-project"

@@ -57,7 +57,7 @@ When you verify a signature, you're checking: "This image digest was signed by t
 
 ### How to verify (manual)
 
-Install [cosign](https://docs.sigstore.dev/cosign/installation/), then:
+Install [cosign](https://docs.sigstore.dev/cosign/system_config/installation/), then:
 
 ```sh
 # 1. Find out what commit the instance is running.
