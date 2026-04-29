@@ -1,8 +1,8 @@
 # Sheaf
 
-![GitHub Release](https://img.shields.io/github/v/release/sheaf-project/sheaf?include_prereleases&sort=semver&display_name=release&style=plastic&link=https%3A%2F%2Fgithub.com%2Fsheaf-project%2Fsheaf%2Freleases%2F)
-![Discord](https://img.shields.io/discord/1483687251492868217?style=plastic&logo=discord&label=Discord&link=https%3A%2F%2Fdiscord.com%2Finvite%2FWFaKQPzFx8)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sheaf-project/sheaf/ci.yml?branch=main&style=plastic&logo=github&label=CI)
+[![GitHub Release](https://img.shields.io/github/v/release/sheaf-project/sheaf?include_prereleases&sort=semver&display_name=release&style=plastic&link=https%3A%2F%2Fgithub.com%2Fsheaf-project%2Fsheaf%2Freleases%2F)](https://github.com/sheaf-project/sheaf/releases)
+[![Discord](https://img.shields.io/discord/1483687251492868217?style=plastic&logo=discord&label=Discord&link=https%3A%2F%2Fdiscord.com%2Finvite%2FWFaKQPzFx8)](https://discord.com/invite/WFaKQPzFx8)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sheaf-project/sheaf/ci.yml?branch=main&style=plastic&logo=github&label=CI)](https://github.com/sheaf-project/sheaf/actions)
 
 ![transrights](https://pride-badges.pony.workers.dev/static/v1?label=trans%20rights&stripeWidth=6&stripeColors=5BCEFA,F5A9B8,FFFFFF,F5A9B8,5BCEFA)
 ![enbyware](https://pride-badges.pony.workers.dev/static/v1?label=enbyware&labelColor=%23555&stripeWidth=8&stripeColors=FCF434%2CFFFFFF%2C9C59D1%2C2C2C2C)
