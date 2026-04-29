@@ -4,7 +4,12 @@ import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { FRONTEND_BUILD, getBackendVersion, shortSha } from "@/lib/version";
+import {
+  FRONTEND_BUILD,
+  getBackendVersion,
+  getBuildManifest,
+  shortSha,
+} from "@/lib/version";
 
 const REPO = "sheaf-project/sheaf";
 const REGISTRY = "ghcr.io/sheaf-project";
@@ -22,6 +27,11 @@ export function AboutPage() {
   const { data: backend, isLoading } = useQuery({
     queryKey: ["version", "backend"],
     queryFn: getBackendVersion,
+  });
+  const { data: manifest, error: manifestError } = useQuery({
+    queryKey: ["version", "manifest"],
+    queryFn: getBuildManifest,
+    retry: false,
   });
 
   const frontendCommit = FRONTEND_BUILD.gitCommit;
@@ -107,6 +117,59 @@ export function AboutPage() {
             <p className="text-muted-foreground">
               One side reports no build provenance — likely a dev build or an
               image built outside the official CI pipeline.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-3">
+            Bundle integrity
+            {manifest && (
+              <Badge variant="outline">{manifest.files.length} files</Badge>
+            )}
+            {manifestError && (
+              <Badge variant="outline">unavailable</Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {manifest && (
+            <>
+              <p className="text-muted-foreground">
+                Every JS/CSS file in the served bundle has a sha384 integrity
+                hash injected into <code>index.html</code> and listed in{" "}
+                <a
+                  href="/build-manifest.json"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-foreground"
+                >
+                  /build-manifest.json
+                </a>
+                . Browsers will refuse to run a script whose hash doesn't match
+                — and the manifest itself records what those hashes should be
+                at build time.
+              </p>
+              <Field
+                label="Manifest tag"
+                value={manifest.git_tag || null}
+              />
+              <Field
+                label="Manifest commit"
+                value={manifest.git_commit || null}
+              />
+              <Field
+                label="Manifest built"
+                value={manifest.build_time || null}
+              />
+            </>
+          )}
+          {manifestError && (
+            <p className="text-muted-foreground">
+              No build manifest at <code>/build-manifest.json</code> — likely a
+              dev build or an image built outside CI.
             </p>
           )}
         </CardContent>
