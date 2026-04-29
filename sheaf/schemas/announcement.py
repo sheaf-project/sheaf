@@ -10,6 +10,7 @@ class AnnouncementCreate(BaseModel):
     severity: str = Field(default="info", pattern=r"^(info|warning|critical)$")
     dismissible: bool = True
     active: bool = True
+    visible_while_logged_out: bool = False
     starts_at: datetime | None = None
     expires_at: datetime | None = None
 
@@ -20,6 +21,7 @@ class AnnouncementUpdate(BaseModel):
     severity: str | None = Field(default=None, pattern=r"^(info|warning|critical)$")
     dismissible: bool | None = None
     active: bool | None = None
+    visible_while_logged_out: bool | None = None
     starts_at: datetime | None = None
     expires_at: datetime | None = None
     clear_starts_at: bool = False
@@ -45,5 +47,6 @@ class AnnouncementRead(AnnouncementPublic):
     """Admin schema — includes internal fields."""
 
     active: bool
+    visible_while_logged_out: bool
     created_by: uuid.UUID | None
     updated_at: datetime

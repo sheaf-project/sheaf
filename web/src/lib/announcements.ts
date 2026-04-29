@@ -7,6 +7,7 @@ export interface Announcement {
   severity: "info" | "warning" | "critical";
   dismissible: boolean;
   active: boolean;
+  visible_while_logged_out: boolean;
   created_by: string | null;
   starts_at: string | null;
   expires_at: string | null;
@@ -20,6 +21,7 @@ export interface AnnouncementCreate {
   severity?: string;
   dismissible?: boolean;
   active?: boolean;
+  visible_while_logged_out?: boolean;
   starts_at?: string | null;
   expires_at?: string | null;
 }
@@ -30,6 +32,7 @@ export interface AnnouncementUpdate {
   severity?: string;
   dismissible?: boolean;
   active?: boolean;
+  visible_while_logged_out?: boolean;
   starts_at?: string | null;
   expires_at?: string | null;
   clear_starts_at?: boolean;
@@ -39,6 +42,11 @@ export interface AnnouncementUpdate {
 // Public — active announcements for the current user
 export function getActiveAnnouncements() {
   return apiFetch<Announcement[]>("/v1/announcements");
+}
+
+// Unauthenticated — announcements flagged visible while logged out
+export function getLoggedOutAnnouncements() {
+  return apiFetch<Announcement[]>("/v1/announcements/public");
 }
 
 // Admin — all announcements

@@ -48,6 +48,7 @@ async def create_announcement(
         severity=body.severity,
         dismissible=body.dismissible,
         active=body.active,
+        visible_while_logged_out=body.visible_while_logged_out,
         created_by=admin.id,
         starts_at=body.starts_at,
         expires_at=body.expires_at,
@@ -83,6 +84,8 @@ async def update_announcement(
         announcement.dismissible = body.dismissible
     if body.active is not None:
         announcement.active = body.active
+    if body.visible_while_logged_out is not None:
+        announcement.visible_while_logged_out = body.visible_while_logged_out
     if body.clear_starts_at:
         announcement.starts_at = None
     elif body.starts_at is not None:
@@ -115,30 +118,29 @@ async def delete_announcement(
 
 
 # ---------------------------------------------------------------------------
-# Public endpoint — active announcements for authenticated users
+# Public endpoints — active announcements
 # ---------------------------------------------------------------------------
 
 public_router = APIRouter(prefix="/announcements", tags=["announcements"])
 
 
-@public_router.get("", response_model=list[AnnouncementPublic])
-async def get_active_announcements(
-    _: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get active announcements. Filters by starts_at/expires_at."""
+async def _active_announcements(
+    db: AsyncSession, *, only_logged_out: bool
+) -> list[ServerAnnouncement]:
     now = datetime.now(UTC)
-    result = await db.execute(
-        select(ServerAnnouncement)
-        .where(
-            ServerAnnouncement.active == True,  # noqa: E712
-        )
-        .order_by(
-            # Critical first, then warning, then info
-            ServerAnnouncement.severity.desc(),
-            ServerAnnouncement.created_at.desc(),
-        )
+    stmt = select(ServerAnnouncement).where(
+        ServerAnnouncement.active == True,  # noqa: E712
     )
+    if only_logged_out:
+        stmt = stmt.where(
+            ServerAnnouncement.visible_while_logged_out == True,  # noqa: E712
+        )
+    stmt = stmt.order_by(
+        # Critical first, then warning, then info
+        ServerAnnouncement.severity.desc(),
+        ServerAnnouncement.created_at.desc(),
+    )
+    result = await db.execute(stmt)
     announcements = []
     for a in result.scalars().all():
         if a.starts_at and a.starts_at > now:
@@ -147,3 +149,20 @@ async def get_active_announcements(
             continue
         announcements.append(a)
     return announcements
+
+
+@public_router.get("", response_model=list[AnnouncementPublic])
+async def get_active_announcements(
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get active announcements for authenticated users."""
+    return await _active_announcements(db, only_logged_out=False)
+
+
+@public_router.get("/public", response_model=list[AnnouncementPublic])
+async def get_logged_out_announcements(
+    db: AsyncSession = Depends(get_db),
+):
+    """Active announcements flagged visible_while_logged_out — no auth."""
+    return await _active_announcements(db, only_logged_out=True)
