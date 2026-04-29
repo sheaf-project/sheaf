@@ -45,7 +45,7 @@ What you can't check from this alone: that the running backend is *actually* ser
 
 ### How it works (high level)
 
-When Sheaf releases a new version, GitHub Actions builds the Docker image and uses **[sigstore/cosign](https://docs.sigstore.dev/cosign/installation/)** to sign it. Cosign uses what's called *keyless OIDC signing*:
+When Sheaf releases a new version, GitHub Actions builds the Docker image and uses **[sigstore/cosign](https://github.com/sigstore/cosign)** to sign it. Cosign uses what's called *keyless OIDC signing*:
 
 - There's no private key sitting somewhere that could leak or be otherwise obtained via legal or covert methods.
 - Instead, every signature is tied to the GitHub Actions workflow that produced it ("this was signed by `https://github.com/sheaf-project/sheaf/.github/workflows/ci.yml` running on tag `v0.1.1`").
