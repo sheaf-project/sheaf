@@ -97,6 +97,8 @@ async def ensure_dev_announcement(db: AsyncSession) -> None:
     """Create a non-dismissible dev-mode warning banner if one doesn't exist.
 
     Called once at startup from the lifespan hook when sheaf_dev is installed.
+    Existing rows from older versions get backfilled to set
+    visible_while_logged_out=True so the banner shows on the login page too.
     """
     from sheaf.models.announcement import ServerAnnouncement
 
@@ -106,7 +108,12 @@ async def ensure_dev_announcement(db: AsyncSession) -> None:
             ServerAnnouncement.title == "Development Instance",
         )
     )
-    if result.scalar_one_or_none() is not None:
+    existing = result.scalar_one_or_none()
+    if existing is not None:
+        if not existing.visible_while_logged_out:
+            existing.visible_while_logged_out = True
+            await db.commit()
+            logger.info("Patched dev-mode announcement to visible_while_logged_out")
         return
 
     announcement = ServerAnnouncement(
@@ -118,6 +125,7 @@ async def ensure_dev_announcement(db: AsyncSession) -> None:
         severity="warning",
         dismissible=False,
         active=True,
+        visible_while_logged_out=True,
     )
     db.add(announcement)
     await db.commit()

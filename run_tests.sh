@@ -15,6 +15,11 @@ TEST_DB_URL="postgresql+asyncpg://sheaf:sheaftest@localhost:5433/sheaf"
 BUILD_FLAG="--build"
 FAILED=()
 
+# Total config count (kept in sync with the configs run below). Update when
+# adding/removing a config so the "[N/TOTAL]" progress prefix stays accurate.
+TOTAL_CONFIGS=8
+CONFIG_INDEX=0
+
 # The conftest fixtures query the DB directly with blind_index() — keyed
 # HMAC derived from the encryption key — so the host-side pytest must share
 # the same key as the container set in docker-compose.test.yml.
@@ -59,9 +64,10 @@ run_config() {
     local sheaf_mode="$3"
     local marks_expr="${4:-}"   # marks expression passed to -m; empty = run all
 
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
     echo ""
     echo "================================================================"
-    echo "Config: $name  (ADMIN_AUTH_LEVEL=$admin_auth_level  SHEAF_MODE=$sheaf_mode)"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: $name  (ADMIN_AUTH_LEVEL=$admin_auth_level  SHEAF_MODE=$sheaf_mode)"
     echo "================================================================"
 
     ADMIN_AUTH_LEVEL="$admin_auth_level" SHEAF_MODE="$sheaf_mode" \
@@ -124,9 +130,10 @@ run_config "selfhosted/admin_auth_totp" "totp" "selfhosted" \
 run_config "saas/none" "none" "saas"
 
 # 5. Rate limiting — low limits so tests can trigger 429s
+CONFIG_INDEX=$((CONFIG_INDEX + 1))
 echo ""
 echo "================================================================"
-echo "Config: selfhosted/rate_limit"
+echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/rate_limit"
 echo "================================================================"
 
 ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
@@ -148,9 +155,10 @@ else
 fi
 
 # 6. Image uploads globally disabled
+CONFIG_INDEX=$((CONFIG_INDEX + 1))
 echo ""
 echo "================================================================"
-echo "Config: selfhosted/uploads_disabled"
+echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/uploads_disabled"
 echo "================================================================"
 
 ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_IMAGE_UPLOADS=false \
@@ -171,9 +179,10 @@ else
 fi
 
 # 7. Bio images disabled (avatars still allowed)
+CONFIG_INDEX=$((CONFIG_INDEX + 1))
 echo ""
 echo "================================================================"
-echo "Config: selfhosted/bio_uploads_disabled"
+echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/bio_uploads_disabled"
 echo "================================================================"
 
 ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_BIO_IMAGES=false \
@@ -194,9 +203,10 @@ else
 fi
 
 # 8. External images disabled (hosted uploads still allowed)
+CONFIG_INDEX=$((CONFIG_INDEX + 1))
 echo ""
 echo "================================================================"
-echo "Config: selfhosted/external_images_disabled"
+echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/external_images_disabled"
 echo "================================================================"
 
 ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_EXTERNAL_IMAGES=false \

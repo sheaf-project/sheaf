@@ -101,6 +101,11 @@ function AnnouncementRow({ announcement }: { announcement: Announcement }) {
               Non-dismissible
             </Badge>
           )}
+          {announcement.visible_while_logged_out && (
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+              Logged-out
+            </Badge>
+          )}
         </div>
         <p className="text-xs text-muted-foreground line-clamp-2">
           {announcement.body}
@@ -191,6 +196,9 @@ function EditAnnouncementForm({
   const [body, setBody] = useState(announcement.body);
   const [severity, setSeverity] = useState<string>(announcement.severity);
   const [dismissible, setDismissible] = useState(announcement.dismissible);
+  const [visibleWhileLoggedOut, setVisibleWhileLoggedOut] = useState(
+    announcement.visible_while_logged_out,
+  );
 
   const save = useMutation({
     mutationFn: () =>
@@ -199,6 +207,7 @@ function EditAnnouncementForm({
         body,
         severity,
         dismissible,
+        visible_while_logged_out: visibleWhileLoggedOut,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "announcements"] });
@@ -250,6 +259,16 @@ function EditAnnouncementForm({
           Dismissible
         </Label>
       </div>
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="edit-logged-out"
+          checked={visibleWhileLoggedOut}
+          onCheckedChange={(c) => setVisibleWhileLoggedOut(c === true)}
+        />
+        <Label htmlFor="edit-logged-out" className="text-xs">
+          Visible while logged out (shows on login page)
+        </Label>
+      </div>
       <div className="flex gap-2">
         <Button
           size="sm"
@@ -271,15 +290,23 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
   const [body, setBody] = useState("");
   const [severity, setSeverity] = useState("info");
   const [dismissible, setDismissible] = useState(true);
+  const [visibleWhileLoggedOut, setVisibleWhileLoggedOut] = useState(false);
 
   const create = useMutation({
     mutationFn: () =>
-      createAnnouncement({ title, body, severity, dismissible }),
+      createAnnouncement({
+        title,
+        body,
+        severity,
+        dismissible,
+        visible_while_logged_out: visibleWhileLoggedOut,
+      }),
     onSuccess: () => {
       setTitle("");
       setBody("");
       setSeverity("info");
       setDismissible(true);
+      setVisibleWhileLoggedOut(false);
       onCreated();
       toast.success("Announcement created");
     },
@@ -329,15 +356,25 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
             maxLength={2000}
           />
         </div>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="ann-dismissible"
+            checked={dismissible}
+            onCheckedChange={(c) => setDismissible(c === true)}
+          />
+          <Label htmlFor="ann-dismissible" className="text-xs">
+            Dismissible (users can hide this)
+          </Label>
+        </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Checkbox
-              id="ann-dismissible"
-              checked={dismissible}
-              onCheckedChange={(c) => setDismissible(c === true)}
+              id="ann-logged-out"
+              checked={visibleWhileLoggedOut}
+              onCheckedChange={(c) => setVisibleWhileLoggedOut(c === true)}
             />
-            <Label htmlFor="ann-dismissible" className="text-xs">
-              Dismissible (users can hide this)
+            <Label htmlFor="ann-logged-out" className="text-xs">
+              Visible while logged out (shows on login page)
             </Label>
           </div>
           <Button
