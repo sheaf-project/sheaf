@@ -69,6 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # sigstore/cosign keyless OIDC
     strategy:
       fail-fast: false
       matrix:
@@ -111,6 +115,7 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -125,3 +130,36 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # Sign by digest. cosign stores the signature at <repo>:sha256-DIGEST.sig
+      # so a single sign call covers every tag pointing at the same digest.
+      - name: Sign image
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            -a "git_sha=${{ github.sha }}" \
+            -a "git_ref=${{ github.ref }}" \
+            -a "workflow=${{ github.workflow }}" \
+            -a "run_id=${{ github.run_id }}" \
+            "$REF"
+
+      - name: Generate SBOM (SPDX)
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        run: syft "$REF" -o spdx-json > sbom.spdx.json
+
+      - name: Attest SBOM
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "$REF"
