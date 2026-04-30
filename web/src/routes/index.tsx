@@ -5,7 +5,14 @@ import { DashboardPage } from "./dashboard";
 import { MembersPage } from "./members";
 import { FrontsPage } from "./fronts";
 import { GroupsPage } from "./groups";
-import { SettingsPage } from "./settings";
+import { SettingsLayout } from "./settings/_layout";
+import { SettingsIndex } from "./settings/index";
+import { SettingsSystemPage } from "./settings/system";
+import { SettingsSafetyPage } from "./settings/safety";
+import { SettingsAccountPage } from "./settings/account";
+import { SettingsAppearancePage } from "./settings/appearance";
+import { SettingsDataPage } from "./settings/data";
+import { SettingsDangerPage } from "./settings/danger";
 import { ImportPage } from "./import";
 import { AboutPage } from "./about";
 import { JournalsPage } from "./journals";
@@ -47,7 +54,19 @@ export const router = createBrowserRouter([
       { path: "journals/:entryId", element: <JournalDetailPage /> },
       { path: "fronts", element: <FrontsPage /> },
       { path: "groups", element: <GroupsPage /> },
-      { path: "settings", element: <SettingsPage /> },
+      {
+        path: "settings",
+        element: <SettingsLayout />,
+        children: [
+          { index: true, element: <SettingsIndex /> },
+          { path: "system", element: <SettingsSystemPage /> },
+          { path: "safety", element: <SettingsSafetyPage /> },
+          { path: "account", element: <SettingsAccountPage /> },
+          { path: "appearance", element: <SettingsAppearancePage /> },
+          { path: "data", element: <SettingsDataPage /> },
+          { path: "danger", element: <SettingsDangerPage /> },
+        ],
+      },
       { path: "import", element: <ImportPage /> },
       { path: "about", element: <AboutPage /> },
       {
