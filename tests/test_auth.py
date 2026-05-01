@@ -155,7 +155,6 @@ def test_secondary_session_mints_independent_session(client: httpx.Client):
     body = secondary_resp.json()
     assert body["access_token"] and body["refresh_token"]
     assert body["session_id"]
-    watch_access = body["access_token"]
     watch_refresh = body["refresh_token"]
 
     # Both sessions show up in /sessions, distinct ids.
