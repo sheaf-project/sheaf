@@ -61,11 +61,17 @@ async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
   });
 }
 
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   const raw = atob(base64);
-  const out = new Uint8Array(raw.length);
+  // Allocate an ArrayBuffer explicitly: TS 5.7+ widens
+  // `new Uint8Array(n)` to Uint8Array<ArrayBufferLike>, which includes
+  // SharedArrayBuffer and so isn't assignable to BufferSource (what the
+  // PushManager.subscribe applicationServerKey expects). Allocating the
+  // buffer ourselves narrows the type to Uint8Array<ArrayBuffer>.
+  const buf = new ArrayBuffer(raw.length);
+  const out = new Uint8Array(buf);
   for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
   return out;
 }
