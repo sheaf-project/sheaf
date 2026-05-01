@@ -70,7 +70,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-> **Important:** If you let Sheaf auto-generate the encryption key, it's saved to `data/encryption.key` inside the Docker volume. **Back this up.** If you lose it, all encrypted data (emails, TOTP secrets) is unrecoverable.
+> **Important:** If you let Sheaf auto-generate the encryption key, it's saved to `data/encryption.key` inside the Docker volume. **Back this up. If you lose it, all sensiive user data (emails, TOTP secrets, and all member information) is unrecoverable.**
 
 ## Web UI
 
