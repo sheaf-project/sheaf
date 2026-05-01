@@ -2,9 +2,10 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf import __version__
@@ -160,3 +161,28 @@ app.include_router(v1_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# RFC 9116 security.txt. The contact and policy point at the upstream project
+# because that's where Sheaf-software vulnerabilities should be reported;
+# operator-specific issues (instance config, infra) are outside the scope of
+# this file and would use the operator's own channels.
+def _security_txt_body() -> str:
+    expires = (datetime.now(UTC) + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = [
+        "Contact: mailto:sheaf-security@lupine.systems",
+        f"Expires: {expires}",
+        "Encryption: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x0315B7582C0B170DE1C1AC48722EB40ADED799AE",
+        "Preferred-Languages: en",
+        "Policy: https://github.com/sheaf-project/sheaf/blob/main/SECURITY.md",
+    ]
+    if settings.sheaf_base_url:
+        canonical = settings.sheaf_base_url.rstrip("/") + "/.well-known/security.txt"
+        lines.append(f"Canonical: {canonical}")
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/.well-known/security.txt", include_in_schema=False)
+@app.get("/security.txt", include_in_schema=False)
+async def security_txt() -> PlainTextResponse:
+    return PlainTextResponse(_security_txt_body(), media_type="text/plain; charset=utf-8")
