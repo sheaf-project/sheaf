@@ -75,14 +75,19 @@ async def lifespan(app: FastAPI):
         pass
 
     from sheaf.services.jobs import job_runner_loop
+    from sheaf.services.notifications.dispatcher import dispatcher_loop
 
     jobs_task = asyncio.create_task(job_runner_loop())
+    dispatcher_task = asyncio.create_task(dispatcher_loop())
 
     yield
 
     jobs_task.cancel()
+    dispatcher_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await jobs_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await dispatcher_task
     logger.info("Sheaf shutting down")
 
 

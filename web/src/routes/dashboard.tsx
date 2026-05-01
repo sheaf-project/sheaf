@@ -1,18 +1,11 @@
 import { useState } from "react";
-import { useCurrentFronts, useCreateFront, useUpdateFront } from "@/hooks/use-fronts";
+import { useCurrentFronts, useUpdateFront } from "@/hooks/use-fronts";
 import { useMembers } from "@/hooks/use-members";
 import { PageHeader } from "@/components/page-header";
-import { MemberSelect } from "@/components/member-select";
 import { ColorDot } from "@/components/color-dot";
+import { StartFrontDialog } from "@/components/start-front-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { timeAgo } from "@/lib/utils";
@@ -20,25 +13,10 @@ import { timeAgo } from "@/lib/utils";
 export function DashboardPage() {
   const { data: fronts, isLoading: frontsLoading } = useCurrentFronts();
   const { data: members } = useMembers();
-  const createFront = useCreateFront();
   const updateFront = useUpdateFront();
   const [showStartFront, setShowStartFront] = useState(false);
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
   const memberMap = new Map(members?.map((m) => [m.id, m]) ?? []);
-
-  function handleStartFront() {
-    if (selectedMembers.length === 0) return;
-    createFront.mutate(
-      { member_ids: selectedMembers },
-      {
-        onSuccess: () => {
-          setShowStartFront(false);
-          setSelectedMembers([]);
-        },
-      },
-    );
-  }
 
   function handleEndFront(id: string) {
     updateFront.mutate({
@@ -123,30 +101,7 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <Dialog open={showStartFront} onOpenChange={setShowStartFront}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Start front</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Select who is fronting. Pick multiple for co-fronting.
-          </p>
-          <MemberSelect
-            selected={selectedMembers}
-            onChange={setSelectedMembers}
-            className="py-2"
-            showGroupFilter
-          />
-          <DialogFooter>
-            <Button
-              onClick={handleStartFront}
-              disabled={selectedMembers.length === 0 || createFront.isPending}
-            >
-              {createFront.isPending ? "Starting..." : "Start"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <StartFrontDialog open={showStartFront} onOpenChange={setShowStartFront} />
     </>
   );
 }

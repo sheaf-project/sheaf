@@ -16,6 +16,10 @@ from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.front import FrontCreate, FrontRead, FrontUpdate
 from sheaf.schemas.member import MemberDeleteConfirm
+from sheaf.services.notifications.events import (
+    emit_front_change,
+    snapshot_front_state,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -104,6 +108,8 @@ async def create_front(
             detail="One or more member IDs are invalid",
         )
 
+    before_state = await snapshot_front_state(db, system.id)
+
     # Resolve replace_fronts: explicit value beats system default
     should_replace = (
         body.replace_fronts if body.replace_fronts is not None else system.replace_fronts_default
@@ -116,6 +122,28 @@ async def create_front(
         now = datetime.now(UTC)
         for f in open_fronts.scalars().all():
             f.ended_at = now
+    else:
+        # Block exact-set duplicates: if an open front already has this exact
+        # member set, two fronts with the same composition has no useful
+        # semantics (notifications, current-front queries, etc. would treat
+        # them as redundant). Different compositions are still allowed; the
+        # owner can keep {Alice} fronting and add {Alice, Bob} alongside.
+        new_set = set(body.member_ids)
+        existing = await db.execute(
+            select(Front)
+            .options(selectinload(Front.members))
+            .where(Front.system_id == system.id, Front.ended_at.is_(None))
+        )
+        for f in existing.scalars().all():
+            if {m.id for m in f.members} == new_set:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "A front with these exact members is already active. "
+                        "Either end the existing front first, or pick a "
+                        "different combination."
+                    ),
+                )
 
     front = Front(
         system_id=system.id,
@@ -123,6 +151,13 @@ async def create_front(
         members=members,
     )
     db.add(front)
+    await db.flush()
+
+    after_state = await snapshot_front_state(db, system.id)
+    await emit_front_change(
+        db, system_id=system.id, before=before_state, after=after_state
+    )
+
     await db.commit()
     await db.refresh(front, ["members"])
     return _front_to_read(front)
@@ -149,6 +184,8 @@ async def update_front(
     if front is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Front not found")
 
+    before_state = await snapshot_front_state(db, system.id)
+
     if body.ended_at is not None:
         front.ended_at = body.ended_at
 
@@ -166,6 +203,13 @@ async def update_front(
                 detail="One or more member IDs are invalid",
             )
         front.members = members
+
+    await db.flush()
+
+    after_state = await snapshot_front_state(db, system.id)
+    await emit_front_change(
+        db, system_id=system.id, before=before_state, after=after_state
+    )
 
     await db.commit()
     await db.refresh(front, ["members"])

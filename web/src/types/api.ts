@@ -406,3 +406,178 @@ export interface RetentionUpdate {
   password?: string;
   totp_code?: string;
 }
+
+// ---- notifications -------------------------------------------------------
+
+export type DestinationType = "web_push" | "webhook" | "ntfy" | "pushover";
+export type DestinationState =
+  | "pending_registration"
+  | "active"
+  | "disabled"
+  | "pending_verification"
+  | "declined_or_expired";
+export type PayloadSensitivity = "full" | "minimal" | "bare";
+export type CofrontRedaction = "count" | "someone" | "suppress";
+export type RuleAction = "include" | "exclude";
+export type IncludePrivate = "inherit" | "yes" | "no";
+
+export interface WatchToken {
+  id: string;
+  system_id: string;
+  label: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+  channel_count: number;
+}
+
+export interface WatchTokenCreate {
+  label?: string | null;
+}
+
+export interface WatchTokenUpdate {
+  label?: string | null;
+}
+
+export interface QuietHours {
+  start: string;
+  end: string;
+  tz?: string;
+}
+
+export interface GroupRuleSpec {
+  group_id: string;
+  rule: RuleAction;
+  include_private?: IncludePrivate;
+}
+
+export interface MemberRuleSpec {
+  member_id: string;
+  rule: RuleAction;
+}
+
+export interface NotificationChannel {
+  id: string;
+  watch_token_id: string;
+  name: string;
+  destination_type: DestinationType;
+  destination_state: DestinationState;
+  destination_config: Record<string, unknown>;
+  event_type: string;
+  activation_code_expires_at: string | null;
+  redeemed_at: string | null;
+  redeemed_by_account_id: string | null;
+  base_all_members: boolean;
+  base_include_private: boolean;
+  trigger_on_start: boolean;
+  trigger_on_stop: boolean;
+  trigger_on_cofront_change: boolean;
+  cofront_redaction: CofrontRedaction;
+  payload_sensitivity: PayloadSensitivity;
+  debounce_seconds: number;
+  aggregation_window_seconds: number;
+  quiet_hours: QuietHours | null;
+  group_rules: GroupRuleSpec[];
+  member_rules: MemberRuleSpec[];
+  last_delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChannelCreate {
+  name: string;
+  destination_type: DestinationType;
+  destination_config?: Record<string, unknown>;
+  webhook_secret?: string | null;
+  base_all_members?: boolean;
+  base_include_private?: boolean;
+  trigger_on_start?: boolean;
+  trigger_on_stop?: boolean;
+  trigger_on_cofront_change?: boolean;
+  cofront_redaction?: CofrontRedaction;
+  payload_sensitivity?: PayloadSensitivity;
+  debounce_seconds?: number;
+  aggregation_window_seconds?: number;
+  quiet_hours?: QuietHours | null;
+  group_rules?: GroupRuleSpec[];
+  member_rules?: MemberRuleSpec[];
+}
+
+export interface ChannelUpdate {
+  name?: string;
+  destination_config?: Record<string, unknown>;
+  webhook_secret?: string | null;
+  base_all_members?: boolean;
+  base_include_private?: boolean;
+  trigger_on_start?: boolean;
+  trigger_on_stop?: boolean;
+  trigger_on_cofront_change?: boolean;
+  cofront_redaction?: CofrontRedaction;
+  payload_sensitivity?: PayloadSensitivity;
+  debounce_seconds?: number;
+  aggregation_window_seconds?: number;
+  quiet_hours?: QuietHours | null;
+  group_rules?: GroupRuleSpec[];
+  member_rules?: MemberRuleSpec[];
+}
+
+export interface ChannelCreateResponse {
+  channel: NotificationChannel;
+  activation_url: string | null;
+  activation_expires_at: string | null;
+}
+
+export interface ReissueActivationResponse {
+  activation_url: string;
+  activation_expires_at: string;
+}
+
+export interface PreviewMember {
+  member_id: string;
+  name: string;
+  is_private: boolean;
+  attribution: string;
+}
+
+export interface PreviewResponse {
+  included: PreviewMember[];
+  excluded: PreviewMember[];
+  warnings: string[];
+}
+
+export interface TestDispatchResponse {
+  delivered: boolean;
+  error: string | null;
+}
+
+export interface ManageChannelView {
+  channel_id: string;
+  channel_name: string;
+  system_label: string | null;
+  destination_type: string;
+  destination_state: string;
+}
+
+export interface ReceivingChannelView {
+  channel_id: string;
+  channel_name: string;
+  system_label: string | null;
+  destination_type: string;
+  destination_state: string;
+  redeemed_at: string | null;
+  last_delivered_at: string | null;
+}
+
+export interface RedeemRequest {
+  activation_code: string;
+  push_subscription?: {
+    endpoint: string;
+    keys: Record<string, string>;
+  };
+}
+
+export interface RedeemResponse {
+  management_url: string;
+  channel_name: string;
+  system_label: string | null;
+}

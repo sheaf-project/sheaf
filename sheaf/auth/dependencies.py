@@ -24,6 +24,7 @@ _ALL_SCOPES = {
     "tags:read", "tags:write", "tags:delete",
     "fields:read", "fields:write", "fields:delete",
     "export:read",
+    "notifications:read", "notifications:write",
     "admin:read", "admin:write",
 }
 

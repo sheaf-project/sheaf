@@ -12,6 +12,8 @@ from sheaf.api.v1 import (
     groups,
     journals,
     members,
+    notification_channels,
+    notifications_public,
     retention,
     sheaf_import,
     sp_import,
@@ -19,6 +21,7 @@ from sheaf.api.v1 import (
     systems,
     tags,
     version,
+    watch_tokens,
     webhooks,
 )
 from sheaf.auth.dependencies import require_scope
@@ -91,5 +94,17 @@ v1_router.include_router(
     dependencies=[Depends(require_scope("import:write"))],
 )
 v1_router.include_router(webhooks.router)
+
+# Notifications: owner-side (auth+scope), recipient-side (public)
+v1_router.include_router(
+    watch_tokens.router,
+    dependencies=[Depends(require_scope("notifications:read"))],
+)
+v1_router.include_router(
+    notification_channels.router,
+    dependencies=[Depends(require_scope("notifications:read"))],
+)
+v1_router.include_router(notifications_public.router)
+
 # File serve catch-all MUST be last — {path:path} would shadow other routes
 v1_router.include_router(files.serve_router)
