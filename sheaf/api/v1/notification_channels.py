@@ -273,19 +273,20 @@ async def create_channel(
     db.add(channel)
     await db.flush()
 
+    # delete-orphan cascade is on the relationships; mutate via the
+    # collections so SQLAlchemy treats the new children as belonging to
+    # the channel rather than as detached rows it should clean up.
     for r in body.group_rules:
-        db.add(
+        channel.group_rules.append(
             NotificationChannelGroupRule(
-                channel_id=channel.id,
                 group_id=r.group_id,
                 rule=r.rule,
                 include_private=r.include_private,
             )
         )
     for r in body.member_rules:
-        db.add(
+        channel.member_rules.append(
             NotificationChannelMemberRule(
-                channel_id=channel.id,
                 member_id=r.member_id,
                 rule=r.rule,
             )
@@ -377,13 +378,18 @@ async def update_channel(
     if body.quiet_hours is not None:
         channel.quiet_hours = body.quiet_hours.model_dump()
 
+    # The channel relationships use cascade="all, delete-orphan", so we have
+    # to mutate the in-memory collection rather than constructing standalone
+    # rows with a channel_id and db.add()-ing them. delete-orphan would mark
+    # those standalone rows as orphans (not in the collection) and the
+    # commit would delete them right after the inserts. Using the
+    # collection makes SQLAlchemy treat the new rows as legitimate children.
     if body.group_rules is not None:
         channel.group_rules.clear()
         await db.flush()
         for r in body.group_rules:
-            db.add(
+            channel.group_rules.append(
                 NotificationChannelGroupRule(
-                    channel_id=channel.id,
                     group_id=r.group_id,
                     rule=r.rule,
                     include_private=r.include_private,
@@ -393,9 +399,8 @@ async def update_channel(
         channel.member_rules.clear()
         await db.flush()
         for r in body.member_rules:
-            db.add(
+            channel.member_rules.append(
                 NotificationChannelMemberRule(
-                    channel_id=channel.id,
                     member_id=r.member_id,
                     rule=r.rule,
                 )
@@ -525,18 +530,16 @@ async def duplicate_channel(
     db.add(clone)
     await db.flush()
     for r in src.group_rules:
-        db.add(
+        clone.group_rules.append(
             NotificationChannelGroupRule(
-                channel_id=clone.id,
                 group_id=r.group_id,
                 rule=r.rule,
                 include_private=r.include_private,
             )
         )
     for r in src.member_rules:
-        db.add(
+        clone.member_rules.append(
             NotificationChannelMemberRule(
-                channel_id=clone.id,
                 member_id=r.member_id,
                 rule=r.rule,
             )
@@ -641,7 +644,6 @@ async def preview_channel(
         if body.group_rules is not None:
             channel.group_rules = [
                 NotificationChannelGroupRule(
-                    channel_id=channel.id,
                     group_id=r.group_id,
                     rule=r.rule,
                     include_private=r.include_private,
@@ -651,7 +653,6 @@ async def preview_channel(
         if body.member_rules is not None:
             channel.member_rules = [
                 NotificationChannelMemberRule(
-                    channel_id=channel.id,
                     member_id=r.member_id,
                     rule=r.rule,
                 )
@@ -725,12 +726,12 @@ async def add_group_rule(
     db: AsyncSession = Depends(get_db),
 ) -> ChannelRead:
     channel = await _load_owned_channel(db, user, channel_id)
-    # Replace any existing rule for this group.
+    # Replace any existing rule for this group, then append via the
+    # collection so delete-orphan doesn't immediately undo the insert.
     channel.group_rules[:] = [r for r in channel.group_rules if r.group_id != body.group_id]
     await db.flush()
-    db.add(
+    channel.group_rules.append(
         NotificationChannelGroupRule(
-            channel_id=channel.id,
             group_id=body.group_id,
             rule=body.rule,
             include_private=body.include_private,
@@ -771,9 +772,8 @@ async def add_member_rule(
     channel = await _load_owned_channel(db, user, channel_id)
     channel.member_rules[:] = [r for r in channel.member_rules if r.member_id != body.member_id]
     await db.flush()
-    db.add(
+    channel.member_rules.append(
         NotificationChannelMemberRule(
-            channel_id=channel.id,
             member_id=body.member_id,
             rule=body.rule,
         )
