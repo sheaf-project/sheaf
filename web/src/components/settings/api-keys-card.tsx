@@ -15,26 +15,60 @@ interface ScopeResource {
   label: string;
   hasDelete?: boolean;
   readOnly?: boolean;
+  writeOnly?: boolean;
 }
 
-const SCOPE_RESOURCES: ScopeResource[] = [
-  { key: "system", label: "System" },
-  { key: "members", label: "Members", hasDelete: true },
-  { key: "fronts", label: "Fronts", hasDelete: true },
-  { key: "groups", label: "Groups", hasDelete: true },
-  { key: "tags", label: "Tags", hasDelete: true },
-  { key: "fields", label: "Custom fields", hasDelete: true },
-  { key: "export", label: "Data export", readOnly: true },
+interface ScopeGroup {
+  heading: string;
+  resources: ScopeResource[];
+}
+
+const SCOPE_GROUPS: ScopeGroup[] = [
+  {
+    heading: "Data",
+    resources: [
+      { key: "members", label: "Members", hasDelete: true },
+      { key: "fronts", label: "Fronts", hasDelete: true },
+      { key: "groups", label: "Groups", hasDelete: true },
+      { key: "tags", label: "Tags", hasDelete: true },
+      { key: "fields", label: "Custom fields", hasDelete: true },
+      { key: "journals", label: "Journals", hasDelete: true },
+    ],
+  },
+  {
+    heading: "Configuration",
+    resources: [
+      { key: "system", label: "System" },
+      { key: "settings", label: "Client settings", hasDelete: true },
+    ],
+  },
+  {
+    heading: "Notifications",
+    resources: [
+      { key: "notifications", label: "Notifications", hasDelete: true },
+    ],
+  },
+  {
+    heading: "Import & Export",
+    resources: [
+      { key: "import", label: "Data import", writeOnly: true },
+      { key: "export", label: "Data export", readOnly: true },
+    ],
+  },
 ];
+
+const ALL_RESOURCES: ScopeResource[] = SCOPE_GROUPS.flatMap((g) => g.resources);
 
 type ScopeLevel = "none" | "read" | "write" | "write+delete";
 
 function scopesFromLevels(levels: Record<string, ScopeLevel>, isAdmin: boolean, adminLevel: ScopeLevel): string[] {
   const scopes: string[] = [];
-  for (const { key, readOnly, hasDelete } of SCOPE_RESOURCES) {
+  for (const { key, readOnly, writeOnly, hasDelete } of ALL_RESOURCES) {
     const level = levels[key] ?? "none";
     if (level === "none") continue;
-    if (readOnly) {
+    if (writeOnly) {
+      scopes.push(`${key}:write`);
+    } else if (readOnly) {
       scopes.push(`${key}:read`);
     } else if (level === "read") {
       scopes.push(`${key}:read`);
@@ -55,20 +89,27 @@ function ScopeRow({
   value,
   onChange,
   readOnly,
+  writeOnly,
   hasDelete,
 }: {
   label: string;
   value: ScopeLevel;
   onChange: (v: ScopeLevel) => void;
   readOnly?: boolean;
+  writeOnly?: boolean;
   hasDelete?: boolean;
 }) {
-  const options: { v: ScopeLevel; label: string }[] = [
-    { v: "none", label: "None" },
-    { v: "read", label: "Read" },
-    ...(!readOnly ? [{ v: "write" as ScopeLevel, label: "Read+Write" }] : []),
-    ...(hasDelete ? [{ v: "write+delete" as ScopeLevel, label: "Write+Delete" }] : []),
-  ];
+  const options: { v: ScopeLevel; label: string }[] = writeOnly
+    ? [
+        { v: "none", label: "None" },
+        { v: "write", label: "Write" },
+      ]
+    : [
+        { v: "none", label: "None" },
+        { v: "read", label: "Read" },
+        ...(!readOnly ? [{ v: "write" as ScopeLevel, label: "Read+Write" }] : []),
+        ...(hasDelete ? [{ v: "write+delete" as ScopeLevel, label: "Write+Delete" }] : []),
+      ];
   return (
     <div className="flex items-center justify-between py-1.5 text-sm">
       <span className="w-32 text-muted-foreground">{label}</span>
@@ -187,26 +228,43 @@ export function ApiKeysCard() {
             </div>
             <div className="space-y-1">
               <Label className="text-sm">Scopes</Label>
-              <div className="divide-y rounded-md border px-3">
-                {SCOPE_RESOURCES.map(({ key, label, readOnly, hasDelete }) => (
-                  <ScopeRow
-                    key={key}
-                    label={label}
-                    value={levels[key] ?? "none"}
-                    onChange={(v) => setLevel(key, v)}
-                    readOnly={readOnly}
-                    hasDelete={hasDelete}
-                  />
+              <div className="rounded-md border px-3">
+                {SCOPE_GROUPS.map((group, gi) => (
+                  <div
+                    key={group.heading}
+                    className={gi > 0 ? "border-t pt-2 mt-2" : ""}
+                  >
+                    <div className="py-1.5 text-xs text-muted-foreground font-medium uppercase tracking-wide">
+                      {group.heading}
+                    </div>
+                    <div className="divide-y">
+                      {group.resources.map(
+                        ({ key, label, readOnly, writeOnly, hasDelete }) => (
+                          <ScopeRow
+                            key={key}
+                            label={label}
+                            value={levels[key] ?? "none"}
+                            onChange={(v) => setLevel(key, v)}
+                            readOnly={readOnly}
+                            writeOnly={writeOnly}
+                            hasDelete={hasDelete}
+                          />
+                        ),
+                      )}
+                    </div>
+                  </div>
                 ))}
                 {user?.is_admin && (
-                  <>
-                    <div className="py-1.5 text-xs text-muted-foreground font-medium">Admin</div>
+                  <div className="border-t pt-2 mt-2">
+                    <div className="py-1.5 text-xs text-muted-foreground font-medium uppercase tracking-wide">
+                      Admin
+                    </div>
                     <ScopeRow
                       label="Admin"
                       value={adminLevel}
                       onChange={setAdminLevel}
                     />
-                  </>
+                  </div>
                 )}
               </div>
             </div>

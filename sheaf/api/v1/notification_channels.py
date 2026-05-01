@@ -413,7 +413,7 @@ async def update_channel(
 @router.delete(
     "/channels/{channel_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_scope("notifications:write"))],
+    dependencies=[Depends(require_scope("notifications:delete"))],
 )
 async def delete_channel(
     channel_id: uuid.UUID,

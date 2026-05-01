@@ -153,7 +153,7 @@ async def update_watch_token(
 @router.delete(
     "/watch-tokens/{token_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_scope("notifications:write"))],
+    dependencies=[Depends(require_scope("notifications:delete"))],
 )
 async def revoke_watch_token(
     token_id: uuid.UUID,
