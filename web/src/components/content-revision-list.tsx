@@ -241,7 +241,14 @@ export function ContentRevisionList({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 text-xs"
+                        className="h-7 w-7 p-0"
+                        title={
+                          unpinMut.isPending &&
+                          unpinMut.variables?.revisionId === rev.id
+                            ? "Unpinning…"
+                            : "Unpin"
+                        }
+                        aria-label="Unpin"
                         onClick={() => {
                           if (safetyEnabled) {
                             setUnpinConfirm(rev);
@@ -254,26 +261,25 @@ export function ContentRevisionList({
                           unpinMut.variables?.revisionId === rev.id
                         }
                       >
-                        <PinOff className="h-3 w-3 mr-1" />
-                        {unpinMut.isPending &&
-                        unpinMut.variables?.revisionId === rev.id
-                          ? "Unpinning…"
-                          : "Unpin"}
+                        <PinOff className="h-3 w-3" />
                       </Button>
                     ) : (
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 text-xs"
+                        className="h-7 w-7 p-0"
+                        title={
+                          pinMut.isPending && pinMut.variables === rev.id
+                            ? "Pinning…"
+                            : "Pin"
+                        }
+                        aria-label="Pin"
                         onClick={() => pinMut.mutate(rev.id)}
                         disabled={
                           pinMut.isPending && pinMut.variables === rev.id
                         }
                       >
-                        <Pin className="h-3 w-3 mr-1" />
-                        {pinMut.isPending && pinMut.variables === rev.id
-                          ? "Pinning…"
-                          : "Pin"}
+                        <Pin className="h-3 w-3" />
                       </Button>
                     )
                   )}
