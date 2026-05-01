@@ -1533,7 +1533,8 @@ async def create_api_key(
         expires_at=body.expires_at,
     )
     db.add(api_key)
-    await db.flush()
+    await db.commit()
+    await db.refresh(api_key)
 
     return ApiKeyCreated(
         id=str(api_key.id),
