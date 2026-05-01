@@ -31,7 +31,10 @@ from sheaf.schemas.journal import (
     JournalEntryReadWithCount,
     JournalEntryUpdate,
     JournalListResponse,
+    PinRevisionRequest,
     RestoreRevisionRequest,
+    UnpinRevisionRequest,
+    UnpinRevisionResponse,
 )
 from sheaf.services.journals import (
     create_journal_entry,
@@ -39,8 +42,10 @@ from sheaf.services.journals import (
     decrypt_revision_for_read,
     delete_revisions_for,
     entry_plaintext,
+    pin_revision,
     restore_journal_revision,
     revision_count_for,
+    unpin_revision_immediate,
     update_journal_entry,
 )
 from sheaf.services.system_safety import (
@@ -295,3 +300,82 @@ async def restore_revision(
     await db.commit()
     await db.refresh(entry)
     return JournalEntryRead.model_validate(decrypt_entry_for_read(entry))
+
+
+@router.post(
+    "/{entry_id}/pin-revision",
+    response_model=ContentRevisionRead,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def pin_journal_revision(
+    entry_id: uuid.UUID,
+    body: PinRevisionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    entry = await _get_own_entry(entry_id, system.id, db)
+    revision = await db.get(ContentRevision, body.revision_id)
+    if (
+        revision is None
+        or revision.target_type != ContentRevisionTarget.JOURNAL_ENTRY.value
+        or revision.target_id != entry.id
+    ):
+        raise HTTPException(status_code=404, detail="Revision not found")
+    try:
+        await pin_revision(db=db, user=user, system=system, revision=revision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(revision)
+    return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision))
+
+
+@router.post(
+    "/{entry_id}/unpin-revision",
+    response_model=UnpinRevisionResponse,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def unpin_journal_revision(
+    entry_id: uuid.UUID,
+    body: UnpinRevisionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    entry = await _get_own_entry(entry_id, system.id, db)
+    revision = await db.get(ContentRevision, body.revision_id)
+    if (
+        revision is None
+        or revision.target_type != ContentRevisionTarget.JOURNAL_ENTRY.value
+        or revision.target_id != entry.id
+    ):
+        raise HTTPException(status_code=404, detail="Revision not found")
+    if revision.pinned_at is None:
+        raise HTTPException(status_code=409, detail="Revision is not pinned")
+
+    if is_safeguarded(system, PendingActionType.REVISION_UNPIN):
+        verify_destructive_auth(user, system, body.password, body.totp_code)
+        title, _ = entry_plaintext(entry)
+        target_label = f"Pinned revision: {title or 'Untitled entry'}"
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.REVISION_UNPIN,
+            target_id=revision.id,
+            target_label=target_label,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return UnpinRevisionResponse(
+            pending_action_id=pending.id,
+            finalize_after=pending.finalize_after,
+        )
+
+    unpin_revision_immediate(revision)
+    await db.commit()
+    await db.refresh(revision)
+    return UnpinRevisionResponse(
+        revision=ContentRevisionRead.model_validate(decrypt_revision_for_read(revision)),
+    )

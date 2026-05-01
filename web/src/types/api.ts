@@ -214,7 +214,8 @@ export type PendingActionType =
   | "field_delete"
   | "front_delete"
   | "journal_delete"
-  | "image_delete";
+  | "image_delete"
+  | "revision_unpin";
 
 export type PendingActionStatus =
   | "pending"
@@ -258,6 +259,8 @@ export interface SystemSafetySettings {
   applies_to_fronts: boolean;
   applies_to_journals: boolean;
   applies_to_images: boolean;
+  applies_to_revisions: boolean;
+  auto_pin_first_revision: boolean;
 }
 
 export interface SystemSafetyUpdate {
@@ -270,6 +273,8 @@ export interface SystemSafetyUpdate {
   applies_to_fronts?: boolean;
   applies_to_journals?: boolean;
   applies_to_images?: boolean;
+  applies_to_revisions?: boolean;
+  auto_pin_first_revision?: boolean;
   password?: string;
   totp_code?: string;
 }
@@ -359,6 +364,13 @@ export interface ContentRevision {
   title: string | null;
   body: string;
   created_at: string;
+  pinned_at: string | null;
+}
+
+export interface UnpinRevisionResponse {
+  revision: ContentRevision | null;
+  pending_action_id: string | null;
+  finalize_after: string | null;
 }
 
 // ---------------------------------------------------------------------------

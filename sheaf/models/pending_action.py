@@ -17,6 +17,7 @@ class PendingActionType(StrEnum):
     FRONT_DELETE = "front_delete"
     JOURNAL_DELETE = "journal_delete"
     IMAGE_DELETE = "image_delete"
+    REVISION_UNPIN = "revision_unpin"
 
 
 class PendingActionStatus(StrEnum):

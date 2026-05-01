@@ -4,7 +4,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
-import { listMemberBioRevisions, restoreMemberBioRevision } from "@/lib/members";
+import {
+  listMemberBioRevisions,
+  pinMemberBioRevision,
+  restoreMemberBioRevision,
+  unpinMemberBioRevision,
+} from "@/lib/members";
+import { getSystemSafety } from "@/lib/system-safety";
 import { AvatarUpload } from "@/components/avatar-upload";
 import { ContentRevisionList } from "@/components/content-revision-list";
 
@@ -316,6 +322,7 @@ function MemberView({
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(member.id);
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
+  const { data: safety } = useQuery({ queryKey: ["system-safety"], queryFn: getSystemSafety });
   const dateFormat = system?.date_format ?? "ymd";
   const [showRevisions, setShowRevisions] = useState(false);
 
@@ -405,9 +412,17 @@ function MemberView({
                 queryKey={["member", member.id, "revisions"]}
                 list={listMemberBioRevisions}
                 restore={restoreMemberBioRevision}
+                pin={pinMemberBioRevision}
+                unpin={unpinMemberBioRevision}
+                safetyEnabled={
+                  !!safety?.settings.applies_to_revisions &&
+                  (safety?.settings.grace_period_days ?? 0) > 0
+                }
+                authTier={safety?.settings.auth_tier ?? "none"}
                 invalidateOnRestore={[
                   ["members"],
                   ["member", member.id, "revisions"],
+                  ["system-safety"],
                 ]}
                 emptyMessage="No bio revisions yet. Edits to the bio will appear here."
                 dateFormat={dateFormat}

@@ -5,6 +5,7 @@ import type {
   Member,
   MemberCreate,
   MemberUpdate,
+  UnpinRevisionResponse,
 } from "@/types/api";
 import { apiFetch } from "./api-client";
 
@@ -45,5 +46,23 @@ export function restoreMemberBioRevision(id: string, revisionId: string) {
   return apiFetch<Member>(`/v1/members/${id}/restore-revision`, {
     method: "POST",
     body: JSON.stringify({ revision_id: revisionId }),
+  });
+}
+
+export function pinMemberBioRevision(id: string, revisionId: string) {
+  return apiFetch<ContentRevision>(`/v1/members/${id}/pin-revision`, {
+    method: "POST",
+    body: JSON.stringify({ revision_id: revisionId }),
+  });
+}
+
+export function unpinMemberBioRevision(
+  id: string,
+  revisionId: string,
+  confirm?: DestructiveConfirm,
+) {
+  return apiFetch<UnpinRevisionResponse>(`/v1/members/${id}/unpin-revision`, {
+    method: "POST",
+    body: JSON.stringify({ revision_id: revisionId, ...(confirm ?? {}) }),
   });
 }

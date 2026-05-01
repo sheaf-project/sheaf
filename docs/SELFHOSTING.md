@@ -404,6 +404,51 @@ RETENTION_CHECK_INTERVAL_HOURS=6
 
 ---
 
+## Revision history retention
+
+Member bios and journal entries capture a revision on every edit. The rolling sweep keeps the newest N revisions per target and trims anything older than M days. Both caps apply per-tier (0 = unlimited):
+
+```env
+JOURNAL_MAX_REVISIONS_FREE=10
+JOURNAL_MAX_REVISIONS_PLUS=100
+JOURNAL_MAX_REVISIONS_SELFHOSTED=0
+JOURNAL_MAX_REVISION_DAYS_FREE=30
+JOURNAL_MAX_REVISION_DAYS_PLUS=365
+JOURNAL_MAX_REVISION_DAYS_SELFHOSTED=0
+
+# How often the sweep runs.
+JOURNAL_GC_INTERVAL_HOURS=6
+
+# Notice period before a tier downgrade actually trims older revisions.
+TIER_DOWNGRADE_GRACE_DAYS=14
+```
+
+Per-system overrides (Settings -> Safety -> Revision retention) can lower the cap below the tier max but never raise it. Reductions made while System Safety is active are deferred through the grace flow before applying.
+
+### Pinned revisions
+
+Pinned revisions are exempt from the rolling sweep, so they form a separate per-target storage budget. The cap applies per journal entry / per member bio (0 = unlimited):
+
+```env
+PINNED_REVISION_MAX_PER_TARGET_FREE=3
+PINNED_REVISION_MAX_PER_TARGET_PLUS=5
+PINNED_REVISION_MAX_PER_TARGET_SELFHOSTED=10
+```
+
+The `auto_pin_first_revision` toggle (per-system, default on) auto-pins the first captured revision so casual users get baseline protection against history-spam eviction without UI discovery. The `applies_to_revisions` Safety toggle gates whether unpin requires re-auth + grace.
+
+---
+
+## System Safety
+
+Optional grace + re-auth on destructive actions: member/group/tag/field/front/journal/image deletes, plus revision unpin. Configured per-system in Settings -> Safety, no env vars: each system picks its own grace period (0 disables), auth tier (none / password / TOTP / both), and which categories the policy applies to.
+
+Tightening (longer grace, stronger auth tier, enabling more categories) takes effect immediately. Loosening (shorter grace, weaker auth, disabling categories, lowering revision caps, disabling auto-pin) requires re-auth and is deferred behind the current grace period as a `SafetyChangeRequest` the user can cancel before it finalizes.
+
+Pending destructive actions and pending safety changes are visible in Settings -> Safety. Both can be cancelled before `finalize_after`.
+
+---
+
 ## Member limits
 
 Per-tier member limits (0 = unlimited). These are only enforced in `saas` mode or when overridden per-user via the admin UI.

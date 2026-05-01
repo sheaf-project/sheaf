@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     # Notice period before a tier downgrade trims revision history.
     tier_downgrade_grace_days: int = 14
 
+    # Pinned-revision caps per tier (per target — i.e. per journal entry or
+    # member bio). 0 = unlimited. Pinned revisions are exempt from the rolling
+    # retention sweep and form a separate budget from the count/day caps above.
+    pinned_revision_max_per_target_free: int = 3
+    pinned_revision_max_per_target_plus: int = 5
+    pinned_revision_max_per_target_selfhosted: int = 10
+
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True

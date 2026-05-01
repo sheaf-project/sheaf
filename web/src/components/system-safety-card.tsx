@@ -42,6 +42,7 @@ const categoryLabels: {
   { key: "applies_to_fronts", label: "Front entries", desc: "Deleting a front entry" },
   { key: "applies_to_journals", label: "Journal entries", desc: "Deleting a journal entry" },
   { key: "applies_to_images", label: "Images", desc: "Deleting an uploaded image" },
+  { key: "applies_to_revisions", label: "Revision pins", desc: "Unpinning a protected revision" },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -54,6 +55,8 @@ function changeSummary(changes: Record<string, unknown>): string {
     } else if (k.startsWith("safety_applies_to_")) {
       const cat = k.replace("safety_applies_to_", "");
       parts.push(`disable ${cat}`);
+    } else if (k === "auto_pin_first_revision") {
+      parts.push(v === false ? "disable auto-pin first revision" : "enable auto-pin first revision");
     } else if (k === "journal_max_revisions") {
       parts.push(
         v === null ? "revision count cap → tier default" : `revision count cap → ${v}`,
@@ -231,6 +234,24 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
           ))}
         </div>
       </div>
+      <div className="space-y-2 border-t pt-3">
+        <Label className="text-sm">Revision pinning</Label>
+        <label className="flex items-start gap-2 text-sm cursor-pointer">
+          <Checkbox
+            checked={draft.auto_pin_first_revision}
+            onCheckedChange={(v) => setField("auto_pin_first_revision", Boolean(v))}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-medium">Auto-pin original revision</span>
+            <span className="block text-xs text-muted-foreground">
+              When a journal entry or member bio is first edited, automatically
+              pin the captured original. Pinned revisions are exempt from the
+              rolling history cap.
+            </span>
+          </span>
+        </label>
+      </div>
       {needsReauth && (
         <div className="space-y-3 border-t pt-3">
           <p className="text-sm text-muted-foreground">
@@ -361,11 +382,13 @@ const CATEGORY_KEYS = [
   "applies_to_fronts",
   "applies_to_journals",
   "applies_to_images",
+  "applies_to_revisions",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {
   if (a.grace_period_days !== b.grace_period_days) return true;
   if (a.auth_tier !== b.auth_tier) return true;
+  if (a.auto_pin_first_revision !== b.auto_pin_first_revision) return true;
   return CATEGORY_KEYS.some((k) => a[k] !== b[k]);
 }
 
@@ -377,6 +400,8 @@ function diffFields(
   if (current.grace_period_days !== draft.grace_period_days)
     patch.grace_period_days = draft.grace_period_days;
   if (current.auth_tier !== draft.auth_tier) patch.auth_tier = draft.auth_tier;
+  if (current.auto_pin_first_revision !== draft.auto_pin_first_revision)
+    patch.auto_pin_first_revision = draft.auto_pin_first_revision;
   for (const key of CATEGORY_KEYS) {
     if (current[key] !== draft[key]) patch[key] = draft[key];
   }
@@ -396,6 +421,7 @@ function detectLoosening(
 ): boolean {
   if (draft.grace_period_days < current.grace_period_days) return true;
   if (tierStrength[draft.auth_tier] < tierStrength[current.auth_tier]) return true;
+  if (current.auto_pin_first_revision && !draft.auto_pin_first_revision) return true;
   for (const key of CATEGORY_KEYS) {
     if (current[key] && !draft[key]) return true;
   }

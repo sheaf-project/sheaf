@@ -92,6 +92,17 @@ class System(UUIDMixin, TimestampMixin, Base):
     safety_applies_to_images: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    safety_applies_to_revisions: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Auto-pin the first captured revision for each journal entry / member bio.
+    # Independent of safety_applies_to_revisions: even without grace+re-auth on
+    # unpin, an auto-pin defends against the spam-eviction attack because the
+    # rolling retention sweep skips pinned rows.
+    auto_pin_first_revision: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
 
     # Revision-history retention overrides. NULL = use the tier-default cap;
     # a concrete value must be <= the tier max (validated at write time).
@@ -100,6 +111,9 @@ class System(UUIDMixin, TimestampMixin, Base):
         Integer, nullable=True
     )
     journal_max_revision_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    pinned_revision_max_per_target: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
 

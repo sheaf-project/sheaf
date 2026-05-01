@@ -30,6 +30,10 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Groups** — Organize members into groups with nesting (subsystems)
 - **Tags** — Flexible member tagging
 - **Custom fields** — Define your own fields (text, number, date, boolean, select) with per-field privacy
+- **Journals** — Per-member or system-wide markdown journal entries with edit history
+- **Revision history** — Member bios and journal entries are versioned, with tier-aware retention caps
+- **Revision pinning** — Pin specific revisions to protect them from automatic trim, with optional re-auth + grace on unpin
+- **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
 - **SimplyPlural import** — Import your SP export with granular control (select specific members, toggle front history, etc.)
 - **File storage** — File uploads with filesystem or S3-compatible backends
 - **Data export**
@@ -39,6 +43,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Registration modes** — Open, approval-required, invite-only, or closed
 - **Email verification** — Optional required verification with configurable flow
 - **Account deletion** — Self-service with configurable grace period
+- **Field-level encryption** — Member names/bios, journal titles/bodies, and revision history encrypted at rest with XChaCha20-Poly1305
 - **Eye-friendly** — Default dark, with Dark Reader compatibility and a clear light toggle
 
 ## FAQ
@@ -128,6 +133,11 @@ Key endpoints:
 | `GET/POST /v1/tags` | Tags |
 | `GET/POST /v1/fields` | Custom field definitions |
 | `PUT /v1/members/{id}/fields` | Set custom field values |
+| `GET/POST /v1/journals` | List/create journal entries |
+| `GET /v1/journals/{id}/revisions` | Edit history for an entry |
+| `POST /v1/journals/{id}/pin-revision` | Pin a revision (exempt from trim) |
+| `POST /v1/journals/{id}/unpin-revision` | Unpin (immediate or queued behind grace) |
+| `GET/PATCH /v1/system/safety` | System Safety settings + pending actions |
 | `POST /v1/import/simplyplural` | Import SP data |
 | `POST /v1/import/sheaf` | Import Sheaf export |
 | `GET /v1/export` | Export all data |
@@ -155,6 +165,8 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - Account deletion with configurable grace period
 - File storage (filesystem / S3) with hotlink protection
 - Storage quotas and upload limits
+- Revision-history retention caps and pinned-revision tier knobs
+- System Safety (destructive-action grace, re-auth, per-category toggles)
 - Frontend build and serving
 - Reverse proxy setup (nginx, Caddy) and the `SHEAF_BASE_URL` / cookie-Secure relationship
 - Rate limiting and trusted proxies
@@ -191,7 +203,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [ ] Named fronts — save a named combination of members and make them searchable in the start front dialog
 - [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
 - [ ] Front change notifications (WebSocket push)
-- [ ] Journals/notes (per-member, encrypted at rest)
+- [x] Journals/notes (per-member, encrypted at rest)
 - [ ] PluralKit bidirectional sync
 - [ ] Friend/trust system (cross-system visibility controls)
 - [ ] Per-field-per-member privacy overrides

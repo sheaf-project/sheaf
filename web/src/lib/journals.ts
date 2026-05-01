@@ -7,6 +7,7 @@ import type {
   JournalEntryUpdate,
   JournalEntryWithCount,
   JournalListResponse,
+  UnpinRevisionResponse,
 } from "@/types/api";
 import { apiFetch } from "./api-client";
 
@@ -60,5 +61,23 @@ export function restoreRevision(id: string, revisionId: string) {
   return apiFetch<JournalEntry>(`/v1/journals/${id}/restore-revision`, {
     method: "POST",
     body: JSON.stringify({ revision_id: revisionId }),
+  });
+}
+
+export function pinJournalRevision(id: string, revisionId: string) {
+  return apiFetch<ContentRevision>(`/v1/journals/${id}/pin-revision`, {
+    method: "POST",
+    body: JSON.stringify({ revision_id: revisionId }),
+  });
+}
+
+export function unpinJournalRevision(
+  id: string,
+  revisionId: string,
+  confirm?: DestructiveConfirm,
+) {
+  return apiFetch<UnpinRevisionResponse>(`/v1/journals/${id}/unpin-revision`, {
+    method: "POST",
+    body: JSON.stringify({ revision_id: revisionId, ...(confirm ?? {}) }),
   });
 }
