@@ -3,29 +3,19 @@ import { useQuery } from "@tanstack/react-query";
 import {
   useCurrentFronts,
   useFronts,
-  useCreateFront,
   useUpdateFront,
   useDeleteFront,
 } from "@/hooks/use-fronts";
 import { useMembers } from "@/hooks/use-members";
 import { PageHeader } from "@/components/page-header";
-import { MemberSelect } from "@/components/member-select";
 import { ColorDot } from "@/components/color-dot";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { StartFrontDialog } from "@/components/start-front-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { formatDateTime } from "@/lib/utils";
 import { getMySystem } from "@/lib/systems";
 
@@ -34,37 +24,12 @@ export function FrontsPage() {
   const { data: history, isLoading: historyLoading } = useFronts();
   const { data: members } = useMembers();
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
-  const createFront = useCreateFront();
   const updateFront = useUpdateFront();
   const deleteFront = useDeleteFront();
   const [showStart, setShowStart] = useState(false);
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
-  const [replaceFronts, setReplaceFronts] = useState<boolean | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const memberMap = new Map(members?.map((m) => [m.id, m]) ?? []);
-
-  // Initialise replaceFronts from system setting when dialog opens
-  const effectiveReplace = replaceFronts ?? (system?.replace_fronts_default ?? true);
-
-  function handleOpen() {
-    setReplaceFronts(null); // reset to system default each time
-    setSelectedMembers([]);
-    setShowStart(true);
-  }
-
-  function handleStartFront() {
-    if (selectedMembers.length === 0) return;
-    createFront.mutate(
-      { member_ids: selectedMembers, replace_fronts: effectiveReplace },
-      {
-        onSuccess: () => {
-          setShowStart(false);
-          setSelectedMembers([]);
-        },
-      },
-    );
-  }
 
   function handleEndFront(id: string) {
     updateFront.mutate({ id, data: { ended_at: new Date().toISOString() } });
@@ -85,7 +50,7 @@ export function FrontsPage() {
   return (
     <>
       <PageHeader title="Fronts">
-        <Button onClick={handleOpen}>Start front</Button>
+        <Button onClick={() => setShowStart(true)}>Start front</Button>
       </PageHeader>
 
       {/* Current */}
@@ -169,41 +134,7 @@ export function FrontsPage() {
         <p className="text-muted-foreground">No front history yet.</p>
       )}
 
-      {/* Start dialog */}
-      <Dialog open={showStart} onOpenChange={setShowStart}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Start front</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Select who is fronting. Pick multiple for co-fronting.
-          </p>
-          <MemberSelect
-            selected={selectedMembers}
-            onChange={setSelectedMembers}
-            className="py-2"
-            showGroupFilter
-          />
-          <div className="flex items-center gap-2 pt-1">
-            <Checkbox
-              id="replace-fronts"
-              checked={effectiveReplace}
-              onCheckedChange={(v) => setReplaceFronts(v === true)}
-            />
-            <Label htmlFor="replace-fronts" className="text-sm font-normal cursor-pointer">
-              End all current fronts
-            </Label>
-          </div>
-          <DialogFooter>
-            <Button
-              onClick={handleStartFront}
-              disabled={selectedMembers.length === 0 || createFront.isPending}
-            >
-              {createFront.isPending ? "Starting..." : "Start"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <StartFrontDialog open={showStart} onOpenChange={setShowStart} />
 
       {/* Delete confirm */}
       <DestructiveConfirmDialog
