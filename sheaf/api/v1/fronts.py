@@ -122,6 +122,28 @@ async def create_front(
         now = datetime.now(UTC)
         for f in open_fronts.scalars().all():
             f.ended_at = now
+    else:
+        # Block exact-set duplicates: if an open front already has this exact
+        # member set, two fronts with the same composition has no useful
+        # semantics (notifications, current-front queries, etc. would treat
+        # them as redundant). Different compositions are still allowed; the
+        # owner can keep {Alice} fronting and add {Alice, Bob} alongside.
+        new_set = set(body.member_ids)
+        existing = await db.execute(
+            select(Front)
+            .options(selectinload(Front.members))
+            .where(Front.system_id == system.id, Front.ended_at.is_(None))
+        )
+        for f in existing.scalars().all():
+            if {m.id for m in f.members} == new_set:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "A front with these exact members is already active. "
+                        "Either end the existing front first, or pick a "
+                        "different combination."
+                    ),
+                )
 
     front = Front(
         system_id=system.id,

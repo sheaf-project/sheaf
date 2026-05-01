@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { useCreateFront } from "@/hooks/use-fronts";
+import { ApiError } from "@/lib/api-client";
 import { getMySystem } from "@/lib/systems";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -38,33 +39,49 @@ export function StartFrontDialog({
     wasOpen: boolean;
     members: string[];
     replaceFronts: boolean | null;
-  }>({ wasOpen: false, members: [], replaceFronts: null });
+    error: string | null;
+  }>({ wasOpen: false, members: [], replaceFronts: null, error: null });
 
-  let { members: selectedMembers, replaceFronts } = draft;
+  let { members: selectedMembers, replaceFronts, error } = draft;
   if (open && !draft.wasOpen) {
     selectedMembers = [];
     replaceFronts = null;
-    setDraft({ wasOpen: true, members: [], replaceFronts: null });
+    error = null;
+    setDraft({
+      wasOpen: true,
+      members: [],
+      replaceFronts: null,
+      error: null,
+    });
   } else if (!open && draft.wasOpen) {
     setDraft({ ...draft, wasOpen: false });
   }
 
   const setSelectedMembers = (m: string[]) =>
-    setDraft((d) => ({ ...d, members: m }));
+    setDraft((d) => ({ ...d, members: m, error: null }));
   const setReplaceFronts = (r: boolean | null) =>
-    setDraft((d) => ({ ...d, replaceFronts: r }));
+    setDraft((d) => ({ ...d, replaceFronts: r, error: null }));
 
   const effectiveReplace =
     replaceFronts ?? (system?.replace_fronts_default ?? true);
 
   function handleStart() {
     if (selectedMembers.length === 0) return;
+    setDraft((d) => ({ ...d, error: null }));
     createFront.mutate(
       { member_ids: selectedMembers, replace_fronts: effectiveReplace },
       {
         onSuccess: () => {
           onOpenChange(false);
           onStarted?.();
+        },
+        onError: (err) => {
+          // 409 = duplicate front. Show inline so the user can fix it
+          // without a toast that disappears. Other errors fall through to
+          // the global toast handler in apiFetch.
+          if (err instanceof ApiError && err.status === 409) {
+            setDraft((d) => ({ ...d, error: err.detail }));
+          }
         },
       },
     );
@@ -98,6 +115,11 @@ export function StartFrontDialog({
             End all current fronts
           </Label>
         </div>
+        {error && (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
         <DialogFooter>
           <Button
             onClick={handleStart}
