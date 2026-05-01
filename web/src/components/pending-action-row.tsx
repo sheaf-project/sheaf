@@ -9,6 +9,7 @@ const actionLabels: Record<PendingActionType, string> = {
   front_delete: "Delete front entry",
   journal_delete: "Delete journal entry",
   image_delete: "Delete image",
+  revision_unpin: "Unpin revision",
 };
 
 function timeRemaining(finalizeAfter: string): string {

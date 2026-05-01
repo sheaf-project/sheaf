@@ -22,6 +22,10 @@ interface Props {
   tier: DeleteConfirmation;
   onConfirm: (confirm?: DestructiveConfirm) => void;
   loading?: boolean;
+  /** Verb shown on the confirm button. Defaults to "Delete". */
+  actionLabel?: string;
+  /** Verb shown on the confirm button while loading. Defaults to "Deleting...". */
+  actionLabelLoading?: string;
 }
 
 export function DestructiveConfirmDialog({
@@ -32,6 +36,8 @@ export function DestructiveConfirmDialog({
   tier,
   onConfirm,
   loading,
+  actionLabel = "Delete",
+  actionLabelLoading = "Deleting...",
 }: Props) {
   const { user } = useAuth();
   const [password, setPassword] = useState("");
@@ -103,7 +109,7 @@ export function DestructiveConfirmDialog({
             onClick={handleConfirm}
             disabled={disabled}
           >
-            {loading ? "Deleting..." : "Delete"}
+            {loading ? actionLabelLoading : actionLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

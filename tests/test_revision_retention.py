@@ -317,6 +317,9 @@ def test_on_tier_change_upgrade_cancels_existing_notice():
 def test_gc_revisions_trims_to_count_cap(client: httpx.Client):
     email = _register(client)
     _set_user_tier_via_db(email, "free")  # cap = 10
+    # This test is about the rolling count cap in isolation; opt out of
+    # auto-pin so the trim count matches what the cap would do alone.
+    _set_system_safety_via_db(email, auto_pin_first_revision=False)
 
     # Create one entry and edit it 15 times to generate 15 revisions.
     entry = client.post("/v1/journals", json={"body": "v0"}).json()
@@ -373,8 +376,10 @@ def test_gc_revisions_grace_window_defers_trim():
         assert resp.status_code == 201
         c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
 
-        # Create 15 revisions while on PLUS (cap 100, no trimming yet)
+        # Create 15 revisions while on PLUS (cap 100, no trimming yet).
+        # Disable auto-pin so we exercise the rolling cap in isolation.
         _set_user_tier_via_db(email, "plus")
+        _set_system_safety_via_db(email, auto_pin_first_revision=False)
         entry = c.post("/v1/journals", json={"body": "v0"}).json()
         for i in range(1, 16):
             c.patch(f"/v1/journals/{entry['id']}", json={"body": f"v{i}"})

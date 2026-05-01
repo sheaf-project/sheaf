@@ -14,13 +14,21 @@ from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
-from sheaf.schemas.journal import ContentRevisionRead, RestoreRevisionRequest
+from sheaf.schemas.journal import (
+    ContentRevisionRead,
+    PinRevisionRequest,
+    RestoreRevisionRequest,
+    UnpinRevisionRequest,
+    UnpinRevisionResponse,
+)
 from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
 from sheaf.services.journals import (
     capture_revision,
     decrypt_revision_for_read,
     delete_revisions_for,
+    pin_revision,
     restore_member_bio_revision,
+    unpin_revision_immediate,
 )
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.system_safety import (
@@ -274,3 +282,82 @@ async def restore_bio_revision(
     await db.commit()
     await db.refresh(member)
     return decrypt_member_for_read(member)
+
+
+@router.post(
+    "/{member_id}/pin-revision",
+    response_model=ContentRevisionRead,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def pin_bio_revision(
+    member_id: uuid.UUID,
+    body: PinRevisionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    member = await _get_own_member(member_id, system, db)
+    revision = await db.get(ContentRevision, body.revision_id)
+    if (
+        revision is None
+        or revision.target_type != ContentRevisionTarget.MEMBER_BIO.value
+        or revision.target_id != member.id
+    ):
+        raise HTTPException(status_code=404, detail="Revision not found")
+    try:
+        await pin_revision(db=db, user=user, system=system, revision=revision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(revision)
+    return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision))
+
+
+@router.post(
+    "/{member_id}/unpin-revision",
+    response_model=UnpinRevisionResponse,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def unpin_bio_revision(
+    member_id: uuid.UUID,
+    body: UnpinRevisionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    member = await _get_own_member(member_id, system, db)
+    revision = await db.get(ContentRevision, body.revision_id)
+    if (
+        revision is None
+        or revision.target_type != ContentRevisionTarget.MEMBER_BIO.value
+        or revision.target_id != member.id
+    ):
+        raise HTTPException(status_code=404, detail="Revision not found")
+    if revision.pinned_at is None:
+        raise HTTPException(status_code=409, detail="Revision is not pinned")
+
+    if is_safeguarded(system, PendingActionType.REVISION_UNPIN):
+        verify_destructive_auth(user, system, body.password, body.totp_code)
+        member_name, _ = member_plaintext(member)
+        target_label = f"Pinned bio revision: {member_name or 'Unnamed member'}"
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.REVISION_UNPIN,
+            target_id=revision.id,
+            target_label=target_label,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return UnpinRevisionResponse(
+            pending_action_id=pending.id,
+            finalize_after=pending.finalize_after,
+        )
+
+    unpin_revision_immediate(revision)
+    await db.commit()
+    await db.refresh(revision)
+    return UnpinRevisionResponse(
+        revision=ContentRevisionRead.model_validate(decrypt_revision_for_read(revision)),
+    )

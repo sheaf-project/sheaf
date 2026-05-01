@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import verify_code
 from sheaf.crypto import decrypt
+from sheaf.models.content_revision import ContentRevision
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.front import Front
 from sheaf.models.group import Group
@@ -50,6 +51,7 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "fronts",
     "journals",
     "images",
+    "revisions",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {
@@ -60,6 +62,7 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.FRONT_DELETE: "fronts",
     PendingActionType.JOURNAL_DELETE: "journals",
     PendingActionType.IMAGE_DELETE: "images",
+    PendingActionType.REVISION_UNPIN: "revisions",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -70,6 +73,7 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.FRONT_DELETE: Front,
     PendingActionType.JOURNAL_DELETE: JournalEntry,
     PendingActionType.IMAGE_DELETE: UploadedFile,
+    PendingActionType.REVISION_UNPIN: ContentRevision,
 }
 
 
@@ -139,7 +143,11 @@ class SafetyChangeSplit:
     deferred: dict[str, Any]
 
 
-_RETENTION_FIELDS = ("journal_max_revisions", "journal_max_revision_days")
+_RETENTION_FIELDS = (
+    "journal_max_revisions",
+    "journal_max_revision_days",
+    "pinned_revision_max_per_target",
+)
 
 
 def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChangeSplit:
@@ -175,7 +183,7 @@ def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChang
                 deferred[field] = new_value
             else:
                 applied[field] = new_value
-        elif field.startswith("safety_applies_to_"):
+        elif field.startswith("safety_applies_to_") or field == "auto_pin_first_revision":
             if current is True and new_value is False:
                 deferred[field] = new_value
             else:
@@ -287,7 +295,11 @@ def has_pending_action_for_target(
 async def finalize_pending_action(
     pending: PendingAction, db: AsyncSession
 ) -> None:
-    """Execute the queued delete. Idempotent: missing target marks completed."""
+    """Execute the queued action. Idempotent: missing target marks completed.
+
+    Most action types are deletes, with cascade/blob cleanup as needed.
+    REVISION_UNPIN clears the pin flag in place rather than deleting.
+    """
     model = _MODEL_BY_ACTION.get(pending.action_type)
     if model is None:
         pending.status = PendingActionStatus.ERRORED
@@ -297,26 +309,31 @@ async def finalize_pending_action(
 
     target = await db.get(model, pending.target_id)
     if target is not None and await _target_in_scope(target, pending, db):
-        # Polymorphic content_revisions can't FK on target — cascade in app.
-        if pending.action_type == PendingActionType.JOURNAL_DELETE:
-            from sheaf.services.journals import delete_revisions_for
+        if pending.action_type == PendingActionType.REVISION_UNPIN:
+            from sheaf.services.journals import unpin_revision_immediate
 
-            await delete_revisions_for("journal_entry", target.id, db)
-        elif pending.action_type == PendingActionType.MEMBER_DELETE:
-            from sheaf.services.journals import delete_revisions_for
+            unpin_revision_immediate(target)
+        else:
+            # Polymorphic content_revisions can't FK on target — cascade in app.
+            if pending.action_type == PendingActionType.JOURNAL_DELETE:
+                from sheaf.services.journals import delete_revisions_for
 
-            await delete_revisions_for("member_bio", target.id, db)
-        # Image deletes need to drop the storage blob alongside the DB row;
-        # the immediate-delete path does the same. An orphaned blob from a
-        # storage failure is recoverable; a stuck pending action isn't.
-        if pending.action_type == PendingActionType.IMAGE_DELETE:
-            import contextlib
+                await delete_revisions_for("journal_entry", target.id, db)
+            elif pending.action_type == PendingActionType.MEMBER_DELETE:
+                from sheaf.services.journals import delete_revisions_for
 
-            from sheaf.storage import get_storage
+                await delete_revisions_for("member_bio", target.id, db)
+            # Image deletes need to drop the storage blob alongside the DB row;
+            # the immediate-delete path does the same. An orphaned blob from a
+            # storage failure is recoverable; a stuck pending action isn't.
+            if pending.action_type == PendingActionType.IMAGE_DELETE:
+                import contextlib
 
-            with contextlib.suppress(Exception):
-                await get_storage().delete(target.key)
-        await db.delete(target)
+                from sheaf.storage import get_storage
+
+                with contextlib.suppress(Exception):
+                    await get_storage().delete(target.key)
+            await db.delete(target)
 
     pending.status = PendingActionStatus.COMPLETED
     pending.completed_at = datetime.now(UTC)
@@ -328,8 +345,17 @@ async def _target_in_scope(
     """Verify the target still belongs to the system that queued the action.
 
     Most targets carry system_id directly. UploadedFile is user-scoped, so
-    we resolve through the system's user_id.
+    we resolve through the system's user_id. ContentRevision is polymorphic —
+    walk to its target row and read system_id there.
     """
+    if isinstance(target, ContentRevision):
+        if target.target_type == "journal_entry":
+            entry = await db.get(JournalEntry, target.target_id)
+            return entry is not None and entry.system_id == pending.system_id
+        if target.target_type == "member_bio":
+            member = await db.get(Member, target.target_id)
+            return member is not None and member.system_id == pending.system_id
+        return False
     if hasattr(target, "system_id"):
         return target.system_id == pending.system_id
     if hasattr(target, "user_id"):

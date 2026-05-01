@@ -178,6 +178,9 @@ async def _trim_target_group(
 
     `max_revisions=0` means unlimited (no count cap).
     `max_days=0` means unlimited (no age cap).
+
+    Pinned revisions (pinned_at IS NOT NULL) are exempt from both caps. They
+    form a separate budget bounded by the per-target pin cap, not this sweep.
     """
     if max_revisions == 0 and max_days == 0:
         return 0
@@ -187,6 +190,7 @@ async def _trim_target_group(
         .where(
             ContentRevision.target_type == target_type,
             ContentRevision.target_id == target_id,
+            ContentRevision.pinned_at.is_(None),
         )
         .order_by(ContentRevision.created_at.desc())
     )

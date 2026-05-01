@@ -97,6 +97,10 @@ async def capture_revision(
     image_keys is extracted from the plaintext body, then stored unencrypted
     so orphan cleanup can read it without key access.
 
+    If this is the first revision captured for the target AND the system has
+    `auto_pin_first_revision=True`, the new row is pinned. Defends against
+    spam-eviction even when the destructive-action grace flow is off.
+
     Caller is responsible for then overwriting the target row with the new
     content and committing.
     """
@@ -104,6 +108,14 @@ async def capture_revision(
         target_type.value if isinstance(target_type, ContentRevisionTarget) else target_type
     )
     editor_ids, editor_names = await snapshot_current_fronts(system_id, db)
+
+    existing_count = await revision_count_for(target_type_str, target_id, db)
+    pinned_at: datetime | None = None
+    if existing_count == 0:
+        system = await db.get(System, system_id)
+        if system is not None and system.auto_pin_first_revision:
+            pinned_at = datetime.now(UTC)
+
     revision = ContentRevision(
         target_type=target_type_str,
         target_id=target_id,
@@ -113,8 +125,84 @@ async def capture_revision(
         title=encrypt(title) if title is not None else None,
         body=encrypt(body),
         image_keys=extract_image_keys(body),
+        pinned_at=pinned_at,
     )
     db.add(revision)
+    return revision
+
+
+# ---------------------------------------------------------------------------
+# Pinning
+# ---------------------------------------------------------------------------
+
+
+_TIER_PIN_CAP = {
+    UserTier.FREE: lambda: settings.pinned_revision_max_per_target_free,
+    UserTier.PLUS: lambda: settings.pinned_revision_max_per_target_plus,
+    UserTier.SELF_HOSTED: lambda: settings.pinned_revision_max_per_target_selfhosted,
+}
+
+
+def tier_pin_cap(tier: UserTier | str) -> int:
+    """Per-target pinned-revision cap for a tier. 0 = unlimited."""
+    key = UserTier(tier) if not isinstance(tier, UserTier) else tier
+    return _TIER_PIN_CAP.get(key, lambda: 0)()
+
+
+def effective_pin_cap(user: User, system: System) -> int:
+    """Per-target pinned-revision cap actually in force. 0 = unlimited."""
+    return _combine_cap(tier_pin_cap(user.tier), system.pinned_revision_max_per_target)
+
+
+async def count_pinned_for_target(
+    target_type: ContentRevisionTarget | str,
+    target_id: uuid.UUID,
+    db: AsyncSession,
+) -> int:
+    target_type_str = (
+        target_type.value if isinstance(target_type, ContentRevisionTarget) else target_type
+    )
+    from sqlalchemy import func
+
+    result = await db.execute(
+        select(func.count())
+        .select_from(ContentRevision)
+        .where(
+            ContentRevision.target_type == target_type_str,
+            ContentRevision.target_id == target_id,
+            ContentRevision.pinned_at.is_not(None),
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def pin_revision(
+    *,
+    db: AsyncSession,
+    user: User,
+    system: System,
+    revision: ContentRevision,
+) -> ContentRevision:
+    """Mark a revision as pinned. Raises ValueError if already pinned or at cap."""
+    if revision.pinned_at is not None:
+        raise ValueError("Revision is already pinned")
+    cap = effective_pin_cap(user, system)
+    if cap > 0:
+        current = await count_pinned_for_target(
+            revision.target_type, revision.target_id, db
+        )
+        if current >= cap:
+            raise ValueError(
+                f"Pin cap reached ({current}/{cap}) for this target — "
+                "unpin one first"
+            )
+    revision.pinned_at = datetime.now(UTC)
+    return revision
+
+
+def unpin_revision_immediate(revision: ContentRevision) -> ContentRevision:
+    """Clear the pin flag in-place. Caller commits."""
+    revision.pinned_at = None
     return revision
 
 
@@ -139,6 +227,7 @@ def decrypt_revision_for_read(revision: ContentRevision) -> dict:
         "body": body,
         "image_keys": revision.image_keys,
         "created_at": revision.created_at,
+        "pinned_at": revision.pinned_at,
     }
 
 

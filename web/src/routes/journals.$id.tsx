@@ -31,7 +31,9 @@ import {
   deleteJournal,
   getJournal,
   listRevisions,
+  pinJournalRevision,
   restoreRevision,
+  unpinJournalRevision,
   updateJournal,
 } from "@/lib/journals";
 import { getSystemSafety } from "@/lib/system-safety";
@@ -161,9 +163,17 @@ export function JournalDetailPage() {
               queryKey={["journal", entry.id, "revisions"]}
               list={listRevisions}
               restore={restoreRevision}
+              pin={pinJournalRevision}
+              unpin={unpinJournalRevision}
+              safetyEnabled={
+                !!safety?.settings.applies_to_revisions &&
+                (safety?.settings.grace_period_days ?? 0) > 0
+              }
+              authTier={safety?.settings.auth_tier ?? "none"}
               invalidateOnRestore={[
                 ["journal", entry.id],
                 ["journal", entry.id, "revisions"],
+                ["system-safety"],
               ]}
               emptyMessage="No revisions yet. Edits to this entry will appear here."
               dateFormat={dateFormat}

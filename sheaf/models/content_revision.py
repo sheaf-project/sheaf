@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -63,6 +63,12 @@ class ContentRevision(UUIDMixin, Base):
         nullable=False,
     )
 
+    # NULL = not pinned. NOT NULL timestamp doubles as flag + UI sort.
+    # Pinned revisions are exempt from the rolling retention sweep.
+    pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     __table_args__ = (
         Index(
             "ix_content_revisions_target",
@@ -72,4 +78,11 @@ class ContentRevision(UUIDMixin, Base):
         ),
         Index("ix_content_revisions_created", "created_at"),
         Index("ix_content_revisions_user", "user_id"),
+        Index(
+            "ix_content_revisions_pinned",
+            "target_type",
+            "target_id",
+            "pinned_at",
+            postgresql_where=text("pinned_at IS NOT NULL"),
+        ),
     )

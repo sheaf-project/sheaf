@@ -99,6 +99,7 @@ class ContentRevisionRead(BaseModel):
     title: str | None
     body: str
     created_at: datetime
+    pinned_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -109,3 +110,26 @@ class ContentRevisionRead(BaseModel):
 
 class RestoreRevisionRequest(BaseModel):
     revision_id: uuid.UUID
+
+
+class PinRevisionRequest(BaseModel):
+    revision_id: uuid.UUID
+
+
+class UnpinRevisionRequest(BaseModel):
+    revision_id: uuid.UUID
+    password: str | None = None
+    totp_code: str | None = None
+
+
+class UnpinRevisionResponse(BaseModel):
+    """Returned from /unpin-revision.
+
+    `pending_action` is set when the system has revision-safety enabled with
+    a positive grace period. Otherwise the unpin is immediate and `revision`
+    is the now-unpinned row.
+    """
+
+    revision: ContentRevisionRead | None = None
+    pending_action_id: uuid.UUID | None = None
+    finalize_after: datetime | None = None
