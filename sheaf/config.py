@@ -268,6 +268,34 @@ class Settings(BaseSettings):
     # trade-off you may not want unless under active credential-stuffing.
     captcha_on_login: bool = False
 
+    # Front-change notifications
+    notifications_dispatch_interval_seconds: int = 5
+    activation_code_ttl_days: int = 7
+    # VAPID keys for web push. Generate with `vapid --gen` (py-vapid) or any
+    # WebPush helper. Empty = web_push destination type is rejected.
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    # Contact URI for push services (mailto:ops@example.com or https://...).
+    # Required when web push is enabled.
+    vapid_subject: str = ""
+    # Pushover app token (issued by pushover.net). Empty = Pushover destination
+    # type is rejected with 501.
+    pushover_app_token: str = ""
+    # Username + avatar URL Discord renders for our webhook deliveries.
+    # avatar URL must be publicly reachable PNG/JPEG (Discord rejects SVG).
+    # Empty avatar = falls back to the webhook's default avatar; empty
+    # username = "Sheaf".
+    discord_webhook_username: str = "Sheaf"
+    discord_webhook_avatar_url: str = ""
+    # User-Agent sent for outbound webhook deliveries.
+    webhook_user_agent: str = "Sheaf-Notifications/1.0"
+    # How many concurrent dispatches per destination type. Cheap to raise;
+    # bound by your egress + downstream rate limits.
+    notifications_concurrency_web_push: int = 10
+    notifications_concurrency_webhook: int = 5
+    notifications_concurrency_ntfy: int = 5
+    notifications_concurrency_pushover: int = 5
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

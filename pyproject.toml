@@ -25,6 +25,8 @@ dependencies = [
     "email-validator>=2.1.0",
     "aiofiles>=24.1.0",
     "altcha>=0.2.0",
+    "httpx>=0.28.0",
+    "pywebpush>=2.0.0",
 ]
 
 [project.optional-dependencies]

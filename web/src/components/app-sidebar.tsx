@@ -15,6 +15,7 @@ import {
   Moon,
   Shield,
   BookOpen,
+  Bell,
 } from "lucide-react";
 
 const navItems = [
@@ -23,6 +24,7 @@ const navItems = [
   { to: "/journals", label: "Journals", icon: BookOpen },
   { to: "/fronts", label: "Fronts", icon: Clock },
   { to: "/groups", label: "Groups", icon: FolderOpen },
+  { to: "/notifications", label: "Notifications", icon: Bell },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

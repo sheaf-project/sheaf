@@ -17,6 +17,10 @@ import { ImportPage } from "./import";
 import { AboutPage } from "./about";
 import { JournalsPage } from "./journals";
 import { JournalDetailPage } from "./journals.$id";
+import { NotificationsPage } from "./notifications";
+import { NotificationChannelPage } from "./notifications.$channelId";
+import { NotificationsRedeemPage } from "./notifications.redeem";
+import { NotificationsManagePage } from "./notifications.manage.$mgmtToken";
 import { AdminLayout } from "./admin/_layout";
 import { VerifyEmailPage } from "./verify-email";
 import { ForgotPasswordPage } from "./forgot-password";
@@ -46,6 +50,14 @@ export const router = createBrowserRouter([
     element: <ResetPasswordPage />,
   },
   {
+    path: "/notifications/redeem",
+    element: <NotificationsRedeemPage />,
+  },
+  {
+    path: "/notifications/manage/:mgmtToken",
+    element: <NotificationsManagePage />,
+  },
+  {
     element: <AppLayout />,
     children: [
       { index: true, element: <DashboardPage /> },
@@ -54,6 +66,8 @@ export const router = createBrowserRouter([
       { path: "journals/:entryId", element: <JournalDetailPage /> },
       { path: "fronts", element: <FrontsPage /> },
       { path: "groups", element: <GroupsPage /> },
+      { path: "notifications", element: <NotificationsPage /> },
+      { path: "notifications/:channelId", element: <NotificationChannelPage /> },
       {
         path: "settings",
         element: <SettingsLayout />,

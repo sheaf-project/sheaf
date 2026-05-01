@@ -74,6 +74,7 @@ _VALID_SCOPES = {
     "tags:read", "tags:write", "tags:delete",
     "fields:read", "fields:write", "fields:delete",
     "settings:read", "settings:write", "settings:delete",
+    "notifications:read", "notifications:write",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
