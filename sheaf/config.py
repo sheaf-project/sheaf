@@ -356,6 +356,21 @@ def _validate_settings() -> None:
         )
         sys.exit(1)
 
+    # Legal links: not required to start, but strongly encouraged for any
+    # public-facing instance. Missing links mean users can't see what they're
+    # agreeing to and operators may have GDPR/consent compliance gaps.
+    if not settings.terms_url:
+        logger.warning(
+            "TERMS_URL is not set. The login/registration page will not show a "
+            "Terms of Service link. Strongly recommended for public instances."
+        )
+    if not settings.privacy_url:
+        logger.warning(
+            "PRIVACY_URL is not set. The login/registration page will not show a "
+            "Privacy Policy link. Strongly recommended for public instances, and "
+            "may be required under GDPR/CCPA depending on jurisdiction."
+        )
+
     if settings.captcha_provider and settings.captcha_provider != "altcha":
         logger.critical(
             "CAPTCHA_PROVIDER=%s is not recognised. Supported: altcha. "
