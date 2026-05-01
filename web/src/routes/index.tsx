@@ -17,6 +17,7 @@ import { ImportPage } from "./import";
 import { AboutPage } from "./about";
 import { JournalsPage } from "./journals";
 import { JournalDetailPage } from "./journals.$id";
+import { NotFoundPage } from "./not-found";
 import { NotificationsPage } from "./notifications";
 import { NotificationChannelPage } from "./notifications.$channelId";
 import { NotificationsRedeemPage } from "./notifications.redeem";
@@ -95,6 +96,10 @@ export const router = createBrowserRouter([
           { path: "jobs", element: <AdminJobsPage /> },
         ],
       },
+      // Catch-all under AppLayout: unknown paths render the 404 inside the
+      // normal app chrome (sidebar etc) for signed-in users; AppLayout
+      // already redirects to /login for everyone else.
+      { path: "*", element: <NotFoundPage /> },
     ],
   },
 ]);
