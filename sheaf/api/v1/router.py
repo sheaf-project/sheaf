@@ -72,7 +72,7 @@ v1_router.include_router(
 )
 v1_router.include_router(
     journals.router,
-    dependencies=[Depends(require_scope("members:read"))],
+    dependencies=[Depends(require_scope("journals:read"))],
 )
 v1_router.include_router(
     retention.router,

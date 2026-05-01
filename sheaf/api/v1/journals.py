@@ -125,7 +125,7 @@ async def list_journals(
     "",
     response_model=JournalEntryRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("journals:write"))],
 )
 async def create_entry(
     body: JournalEntryCreate,
@@ -172,7 +172,7 @@ async def get_entry(
 @router.patch(
     "/{entry_id}",
     response_model=JournalEntryRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("journals:write"))],
 )
 async def patch_entry(
     entry_id: uuid.UUID,
@@ -202,7 +202,7 @@ async def patch_entry(
 
 @router.delete(
     "/{entry_id}",
-    dependencies=[Depends(require_scope("members:delete"))],
+    dependencies=[Depends(require_scope("journals:delete"))],
 )
 async def delete_entry(
     entry_id: uuid.UUID,
@@ -277,7 +277,7 @@ async def list_revisions(
 @router.post(
     "/{entry_id}/restore-revision",
     response_model=JournalEntryRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("journals:write"))],
 )
 async def restore_revision(
     entry_id: uuid.UUID,
@@ -305,7 +305,7 @@ async def restore_revision(
 @router.post(
     "/{entry_id}/pin-revision",
     response_model=ContentRevisionRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("journals:write"))],
 )
 async def pin_journal_revision(
     entry_id: uuid.UUID,
@@ -334,7 +334,7 @@ async def pin_journal_revision(
 @router.post(
     "/{entry_id}/unpin-revision",
     response_model=UnpinRevisionResponse,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("journals:write"))],
 )
 async def unpin_journal_revision(
     entry_id: uuid.UUID,

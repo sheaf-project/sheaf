@@ -190,3 +190,138 @@ def test_invalid_scope_name_rejected(auth_client: httpx.Client):
         json={"name": "bad", "scopes": ["notascope:read"]},
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Journals scope: separated from members:* so a key for journal automation
+# doesn't get full member edit/delete rights.
+# ---------------------------------------------------------------------------
+
+def test_journals_write_can_create_entry(auth_client: httpx.Client):
+    plaintext = _create_key(auth_client, scopes=["journals:write"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.post("/v1/journals", json={"body": "hello journal"})
+    assert resp.status_code == 201
+
+
+def test_members_write_does_not_grant_journals_write(auth_client: httpx.Client):
+    """A members:write key must NOT be able to create journal entries —
+    journals are a separate resource with their own scope."""
+    plaintext = _create_key(auth_client, scopes=["members:write"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.post("/v1/journals", json={"body": "should not work"})
+    assert resp.status_code == 403
+
+
+def test_journals_read_can_list(auth_client: httpx.Client):
+    plaintext = _create_key(auth_client, scopes=["journals:read"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.get("/v1/journals")
+    assert resp.status_code == 200
+
+
+def test_journals_read_cannot_create(auth_client: httpx.Client):
+    plaintext = _create_key(auth_client, scopes=["journals:read"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.post("/v1/journals", json={"body": "nope"})
+    assert resp.status_code == 403
+
+
+def test_journals_write_cannot_delete(auth_client: httpx.Client):
+    """Write does not imply delete on journals."""
+    entry_id = auth_client.post(
+        "/v1/journals", json={"body": "to be deleted"}
+    ).json()["id"]
+
+    plaintext = _create_key(auth_client, scopes=["journals:write"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.request(
+            "DELETE",
+            f"/v1/journals/{entry_id}",
+            json={"password": "testpassword123"},
+        )
+    assert resp.status_code == 403
+
+
+def test_journals_delete_can_delete(auth_client: httpx.Client):
+    entry_id = auth_client.post(
+        "/v1/journals", json={"body": "to be deleted"}
+    ).json()["id"]
+
+    plaintext = _create_key(auth_client, scopes=["journals:delete"])["key"]
+    with _key_client(plaintext) as c:
+        # Use httpx.request() rather than .delete() because httpx forbids a
+        # JSON body on DELETE shortcuts; the JournalEntryDeleteConfirm body
+        # carries the password/totp re-auth that some configs require.
+        resp = c.request(
+            "DELETE",
+            f"/v1/journals/{entry_id}",
+            json={"password": "testpassword123"},
+        )
+    # 204 immediate or 202 if safeguarded; either means the scope passed.
+    assert resp.status_code in (204, 202), resp.text
+
+
+# ---------------------------------------------------------------------------
+# Notifications scope: write/delete split.
+# ---------------------------------------------------------------------------
+
+def _create_watch_token_for(client: httpx.Client) -> str:
+    """Helper: create a watch token under the auth_client's system."""
+    sid = client.get("/v1/systems/me").json()["id"]
+    tok = client.post(
+        f"/v1/systems/{sid}/watch-tokens", json={"label": "scope-test"}
+    )
+    assert tok.status_code == 201, tok.text
+    return tok.json()["id"]
+
+
+def test_notifications_write_cannot_delete_channel(auth_client: httpx.Client):
+    """notifications:write must NOT grant channel deletion."""
+    token_id = _create_watch_token_for(auth_client)
+    chan_id = auth_client.post(
+        f"/v1/watch-tokens/{token_id}/channels",
+        json={
+            "name": "scope-test",
+            "destination_type": "ntfy",
+            "destination_config": {
+                "server_url": "https://ntfy.sh",
+                "topic": "scope-test-topic",
+            },
+        },
+    ).json()["channel"]["id"]
+
+    plaintext = _create_key(auth_client, scopes=["notifications:write"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.delete(f"/v1/channels/{chan_id}")
+    assert resp.status_code == 403
+
+
+def test_notifications_delete_can_delete_channel(auth_client: httpx.Client):
+    token_id = _create_watch_token_for(auth_client)
+    chan_id = auth_client.post(
+        f"/v1/watch-tokens/{token_id}/channels",
+        json={
+            "name": "scope-test-2",
+            "destination_type": "ntfy",
+            "destination_config": {
+                "server_url": "https://ntfy.sh",
+                "topic": "scope-test-topic-2",
+            },
+        },
+    ).json()["channel"]["id"]
+
+    plaintext = _create_key(
+        auth_client, scopes=["notifications:read", "notifications:delete"]
+    )["key"]
+    with _key_client(plaintext) as c:
+        resp = c.delete(f"/v1/channels/{chan_id}")
+    assert resp.status_code == 204
+
+
+def test_notifications_write_cannot_revoke_watch_token(auth_client: httpx.Client):
+    token_id = _create_watch_token_for(auth_client)
+    plaintext = _create_key(auth_client, scopes=["notifications:write"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.delete(f"/v1/watch-tokens/{token_id}")
+    assert resp.status_code == 403
