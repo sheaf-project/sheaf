@@ -1,11 +1,9 @@
 """Front-change event emission.
 
 Called from `sheaf/api/v1/fronts.py` inside the same DB transaction as the
-mutation. Computes per-channel deltas (started, stopped, cofront_changes)
-and writes one outbox row per (event, channel) for any channel whose
-matching `trigger_on_*` is true and whose watch token is not revoked.
-
-Per-member resolution (and payload shaping) happens at dispatch time, not
+mutation. Aggregates the entire fronting-state transition into one outbox
+row per matching channel — even when many members move at once. Per-member
+visibility resolution + payload rendering happen at dispatch time, not
 here, so owner config changes between enqueue and dispatch take effect.
 """
 
@@ -14,7 +12,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,16 +24,14 @@ from sheaf.models.notification_channel import (
 from sheaf.models.notification_outbox import NotificationOutboxRow
 from sheaf.models.watch_token import WatchToken
 
-EventKind = Literal["start", "stop", "cofront_change"]
-
 
 @dataclass(frozen=True, slots=True)
 class FrontState:
     """Snapshot of who is currently fronting at a point in time.
 
     `cofronters_by_member` maps each fronting member to the set of *other*
-    members fronting alongside them (used to detect co-front composition
-    changes per watched member).
+    members fronting alongside them (used to detect whether any persisted
+    member's co-fronter set changed across the transition).
     """
 
     fronting_member_ids: frozenset[uuid.UUID]
@@ -45,59 +40,25 @@ class FrontState:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _Delta:
-    kind: EventKind
-    member_id: uuid.UUID
-    cofronters_added: frozenset[uuid.UUID] = frozenset()
-    cofronters_removed: frozenset[uuid.UUID] = frozenset()
-
-
-def compute_deltas(before: FrontState, after: FrontState) -> list[_Delta]:
-    """Compute the set of (member, event_kind) deltas implied by a transition.
-
-    - `start`: in `after.fronting_member_ids` but not `before`.
-    - `stop`: in `before` but not `after`.
-    - `cofront_change`: fronting in *both* states, but the set of OTHER
-      fronters changed (any add/remove). Reorder alone does not fire.
-    """
-    deltas: list[_Delta] = []
-
-    started = after.fronting_member_ids - before.fronting_member_ids
-    stopped = before.fronting_member_ids - after.fronting_member_ids
+def _has_cofront_change(before: FrontState, after: FrontState) -> bool:
+    """True if any member fronting in both states had their co-fronter set
+    change. Used to gate `trigger_on_cofront_change` channels at enqueue
+    time without naming any specific member."""
     persisted = before.fronting_member_ids & after.fronting_member_ids
-
-    for mid in sorted(started):
-        deltas.append(_Delta(kind="start", member_id=mid))
-
-    for mid in sorted(stopped):
-        deltas.append(_Delta(kind="stop", member_id=mid))
-
-    for mid in sorted(persisted):
-        before_co = before.cofronters_by_member.get(mid, frozenset())
-        after_co = after.cofronters_by_member.get(mid, frozenset())
-        added = after_co - before_co
-        removed = before_co - after_co
-        if added or removed:
-            deltas.append(
-                _Delta(
-                    kind="cofront_change",
-                    member_id=mid,
-                    cofronters_added=frozenset(added),
-                    cofronters_removed=frozenset(removed),
-                )
-            )
-
-    return deltas
+    for mid in persisted:
+        if before.cofronters_by_member.get(
+            mid, frozenset()
+        ) != after.cofronters_by_member.get(mid, frozenset()):
+            return True
+    return False
 
 
-def make_state(open_fronts_with_members: list[tuple[uuid.UUID, list[uuid.UUID]]]) -> FrontState:
+def make_state(
+    open_fronts_with_members: list[tuple[uuid.UUID, list[uuid.UUID]]],
+) -> FrontState:
     """Build a FrontState from a list of `(front_id, member_ids)` tuples for
-    currently-open fronts.
-
-    `member_ids` is the list of members in that front. A member can appear
-    in multiple open fronts (rare but legal); we union them.
-    """
+    currently-open fronts. A member can appear in multiple open fronts; we
+    union them."""
     fronting: set[uuid.UUID] = set()
     cofronters: dict[uuid.UUID, set[uuid.UUID]] = {}
 
@@ -113,14 +74,6 @@ def make_state(open_fronts_with_members: list[tuple[uuid.UUID, list[uuid.UUID]]]
     )
 
 
-def _trigger_field(kind: EventKind) -> str:
-    return {
-        "start": "trigger_on_start",
-        "stop": "trigger_on_stop",
-        "cofront_change": "trigger_on_cofront_change",
-    }[kind]
-
-
 async def emit_front_change(
     db: AsyncSession,
     *,
@@ -130,13 +83,18 @@ async def emit_front_change(
     event_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> int:
-    """Compute deltas and write outbox rows for any matching active channel.
+    """Aggregate the state transition and write outbox rows.
 
-    Returns the number of outbox rows enqueued. Caller must `commit()` the
-    session.
+    A switch with N members moving produces ONE row per channel — the row's
+    payload carries the full before/after fronting sets, and the dispatcher
+    renders a single aggregated message at delivery time.
+
+    Returns the number of outbox rows enqueued. Caller commits the session.
     """
-    deltas = compute_deltas(before, after)
-    if not deltas:
+    started = bool(after.fronting_member_ids - before.fronting_member_ids)
+    stopped = bool(before.fronting_member_ids - after.fronting_member_ids)
+    cofront_changed = _has_cofront_change(before, after)
+    if not (started or stopped or cofront_changed):
         return 0
 
     event_id = event_id or uuid.uuid4()
@@ -158,41 +116,34 @@ async def emit_front_change(
     if not channels:
         return 0
 
+    payload = {
+        "fronting_before": sorted(str(m) for m in before.fronting_member_ids),
+        "fronting_after": sorted(str(m) for m in after.fronting_member_ids),
+    }
+
     enqueued = 0
-    for delta in deltas:
-        trigger_attr = _trigger_field(delta.kind)
-        for channel in channels:
-            if not getattr(channel, trigger_attr):
-                continue
-            payload = _build_event_payload(delta, before, after)
-            row = NotificationOutboxRow(
-                event_id=event_id,
-                channel_id=channel.id,
-                event_type="front_change",
-                event_payload=payload,
-                enqueued_at=now,
-                deliver_after=now,
-            )
-            db.add(row)
-            enqueued += 1
+    for channel in channels:
+        # Skip channels whose enabled triggers don't match this transition.
+        # Triggering on start matches if any member started, etc. Channels
+        # with no enabled triggers are effectively muted.
+        if not (
+            (channel.trigger_on_start and started)
+            or (channel.trigger_on_stop and stopped)
+            or (channel.trigger_on_cofront_change and cofront_changed)
+        ):
+            continue
+        row = NotificationOutboxRow(
+            event_id=event_id,
+            channel_id=channel.id,
+            event_type="front_change",
+            event_payload=payload,
+            enqueued_at=now,
+            deliver_after=now,
+        )
+        db.add(row)
+        enqueued += 1
 
     return enqueued
-
-
-def _build_event_payload(delta: _Delta, before: FrontState, after: FrontState) -> dict:
-    """Pre-resolution event payload. Member names + privacy + filter
-    decisions are resolved at dispatch time, not enqueue time."""
-    payload: dict = {
-        "kind": delta.kind,
-        "member_id": str(delta.member_id),
-    }
-    if delta.kind == "cofront_change":
-        payload["cofronters_added"] = sorted(str(m) for m in delta.cofronters_added)
-        payload["cofronters_removed"] = sorted(str(m) for m in delta.cofronters_removed)
-        payload["cofronters_after"] = sorted(
-            str(m) for m in after.cofronters_by_member.get(delta.member_id, frozenset())
-        )
-    return payload
 
 
 async def snapshot_front_state(

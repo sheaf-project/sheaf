@@ -205,6 +205,94 @@ With `EMAIL_BACKEND=none`, email-dependent features (verification, password rese
 
 ---
 
+## Front-change notifications
+
+System owners can invite recipients (partners, friends, therapists, bots) to receive a notification whenever fronts change. Recipients don't need a Sheaf account — anonymous push subscriptions and webhook URLs both work. Owners pre-configure the entire channel (filters, triggers, payload sensitivity, delivery shaping); recipients only get pinged for what the owner allows.
+
+v1 supports four destination types:
+- **Web push** — browser notifications. Recipient redeems a one-time activation link, grants permission, done.
+- **Webhook** — POST to a URL with a configurable payload format: `json` (Sheaf's structured schema, HMAC-signed), `discord` (Discord webhook shape with avatar/username), `slack` (Slack webhook shape), or `plaintext` (title + body). SSRF-guarded; private IP ranges and IMDS are rejected at request time and re-validated on every dispatch.
+- **ntfy** — POST to any [ntfy](https://ntfy.sh) server (the public one or self-hosted).
+- **Pushover** — for the [Pushover](https://pushover.net) mobile app.
+
+Notification setup is per-destination — Sheaf works fine with none configured; only the destination types you set up will be available to owners.
+
+### Web push
+
+Generate a VAPID keypair once and keep it stable across deploys (rotating breaks every browser subscription):
+
+```sh
+pip install py-vapid
+vapid --gen
+```
+
+That writes `private_key.pem` and prints the `applicationServerKey` (base64url public key). Mount the PEM into the container or paste it inline as `VAPID_PRIVATE_KEY`:
+
+```env
+VAPID_PUBLIC_KEY=BPaJk...   # the applicationServerKey base64url string
+VAPID_PRIVATE_KEY=/app/data/vapid_private.pem  # path or PEM literal
+VAPID_SUBJECT=mailto:ops@example.com
+```
+
+`VAPID_SUBJECT` is the contact URI surfaced to push services (Mozilla, Google) so they can reach you if a subscription misbehaves. Use a real `mailto:` or `https://` URL.
+
+When VAPID isn't configured, the web_push destination type is unavailable; the dispatcher treats missing VAPID as transient (channels won't auto-disable while you're getting it set up).
+
+### Pushover
+
+Register a Pushover application at <https://pushover.net/apps> and put the resulting app token in:
+
+```env
+PUSHOVER_APP_TOKEN=axxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Each recipient supplies their own user_key per channel at create time. Without `PUSHOVER_APP_TOKEN`, the destination type is rejected with 501.
+
+### Discord webhook display
+
+Owners can choose `format=discord` on a webhook channel. These two settings control how the bot renders in Discord:
+
+```env
+DISCORD_WEBHOOK_USERNAME=Sheaf
+DISCORD_WEBHOOK_AVATAR_URL=  # publicly reachable PNG/JPEG; SVG rejected
+```
+
+Empty avatar = falls back to the `/sheaf-icon.png` served by the frontend. Empty username = "Sheaf".
+
+### Webhook plumbing
+
+```env
+WEBHOOK_USER_AGENT=Sheaf-Notifications/1.0
+```
+
+Identifies Sheaf in webhook receiver logs. Bump the version if you fork or patch the dispatch code so receivers can tell.
+
+### Dispatcher tuning
+
+```env
+NOTIFICATIONS_DISPATCH_INTERVAL_SECONDS=5
+ACTIVATION_CODE_TTL_DAYS=7
+
+NOTIFICATIONS_CONCURRENCY_WEB_PUSH=10
+NOTIFICATIONS_CONCURRENCY_WEBHOOK=5
+NOTIFICATIONS_CONCURRENCY_NTFY=5
+NOTIFICATIONS_CONCURRENCY_PUSHOVER=5
+```
+
+The dispatcher polls the outbox every `NOTIFICATIONS_DISPATCH_INTERVAL_SECONDS`. Lower = snappier delivery, higher = less DB churn. 5s is fine for most self-hosters.
+
+Per-destination concurrency caps how many deliveries run in parallel. Raise if you have many recipients on one destination type and your egress can take it; lower if a downstream is rate-limiting you.
+
+### Aggregation behaviour
+
+A single front change — even if many members move at once — produces **one notification per channel**, not one per affected member. A switch from `{Alice, Bob}` to `{Cara, Dani, Eli}` becomes one message describing all five names (filtered by the channel's per-member visibility rules). This avoids fan-out hitting webhook rate limits and keeps recipients' phones from buzzing N times for what was logically one event.
+
+### Multi-instance deploys
+
+The dispatcher currently runs in every app process and uses Postgres `SELECT FOR UPDATE SKIP LOCKED` to claim outbox rows safely across workers. Multi-replica deploys are not yet officially supported — leader election is on the post-launch roadmap.
+
+---
+
 ## Registration
 
 ```env
