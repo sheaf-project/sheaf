@@ -2,6 +2,8 @@ import type {
   ChannelCreate,
   ChannelCreateResponse,
   ChannelUpdate,
+  DeleteResult,
+  DestructiveConfirm,
   GroupRuleSpec,
   MemberRuleSpec,
   NotificationChannel,
@@ -39,8 +41,14 @@ export function updateWatchToken(tokenId: string, data: WatchTokenUpdate) {
   });
 }
 
-export function revokeWatchToken(tokenId: string) {
-  return apiFetch<void>(`/v1/watch-tokens/${tokenId}`, { method: "DELETE" });
+export function revokeWatchToken(
+  tokenId: string,
+  confirm?: DestructiveConfirm,
+) {
+  return apiFetch<DeleteResult>(`/v1/watch-tokens/${tokenId}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }
 
 // ---- channels ------------------------------------------------------------
@@ -69,8 +77,14 @@ export function updateChannel(channelId: string, data: ChannelUpdate) {
   });
 }
 
-export function deleteChannel(channelId: string) {
-  return apiFetch<void>(`/v1/channels/${channelId}`, { method: "DELETE" });
+export function deleteChannel(
+  channelId: string,
+  confirm?: DestructiveConfirm,
+) {
+  return apiFetch<DeleteResult>(`/v1/channels/${channelId}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }
 
 export function enableChannel(channelId: string) {

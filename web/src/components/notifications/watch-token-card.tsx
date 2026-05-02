@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { Pause, Play, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -9,8 +12,10 @@ import {
   useRevokeWatchToken,
   useToggleChannel,
 } from "@/hooks/use-notifications";
+import { getMySystem } from "@/lib/systems";
 import type {
   ChannelCreateResponse,
+  DestructiveConfirm,
   NotificationChannel,
   WatchToken,
 } from "@/types/api";
@@ -45,8 +50,13 @@ export function WatchTokenCard({
   systemId: string;
 }) {
   const { data: channels } = useChannels(token.id);
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
   const revoke = useRevokeWatchToken(systemId);
   const [showNew, setShowNew] = useState(false);
+  const [showRevoke, setShowRevoke] = useState(false);
   const [activationModal, setActivationModal] =
     useState<ChannelCreateResponse | null>(null);
 
@@ -79,15 +89,7 @@ export function WatchTokenCard({
                 size="icon"
                 variant="ghost"
                 aria-label="Revoke watcher"
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Revoke "${token.label ?? "this watcher"}"? Existing channels stop delivering immediately. This is reversible by editing the watcher's revoked state.`,
-                    )
-                  ) {
-                    revoke.mutate(token.id);
-                  }
-                }}
+                onClick={() => setShowRevoke(true)}
               >
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
@@ -124,6 +126,35 @@ export function WatchTokenCard({
         url={activationModal?.activation_url ?? null}
         expiresAt={activationModal?.activation_expires_at ?? null}
         channelName={activationModal?.channel.name ?? "the recipient"}
+      />
+      <DestructiveConfirmDialog
+        open={showRevoke}
+        onOpenChange={setShowRevoke}
+        title="Revoke watcher"
+        description={`Revoke "${token.label ?? "this watcher"}"? Channels stop delivering. This is reversible by clearing revoked_at.`}
+        tier={system?.delete_confirmation ?? "none"}
+        loading={revoke.isPending}
+        actionLabel="Revoke"
+        actionLabelLoading="Revoking..."
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          revoke.mutate(
+            { id: token.id, confirm },
+            {
+              onSuccess: (resp) => {
+                setShowRevoke(false);
+                if (
+                  resp &&
+                  typeof resp === "object" &&
+                  "pending_action_id" in resp
+                ) {
+                  toast.success(
+                    "Revocation queued. Cancel from System Safety before it finalizes.",
+                  );
+                }
+              },
+            },
+          );
+        }}
       />
     </Card>
   );

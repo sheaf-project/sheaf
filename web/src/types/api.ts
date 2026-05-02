@@ -215,7 +215,9 @@ export type PendingActionType =
   | "front_delete"
   | "journal_delete"
   | "image_delete"
-  | "revision_unpin";
+  | "revision_unpin"
+  | "watch_token_revoke"
+  | "channel_delete";
 
 export type PendingActionStatus =
   | "pending"
@@ -260,6 +262,7 @@ export interface SystemSafetySettings {
   applies_to_journals: boolean;
   applies_to_images: boolean;
   applies_to_revisions: boolean;
+  applies_to_notifications: boolean;
   auto_pin_first_revision: boolean;
 }
 
@@ -274,6 +277,7 @@ export interface SystemSafetyUpdate {
   applies_to_journals?: boolean;
   applies_to_images?: boolean;
   applies_to_revisions?: boolean;
+  applies_to_notifications?: boolean;
   auto_pin_first_revision?: boolean;
   password?: string;
   totp_code?: string;

@@ -56,10 +56,17 @@ export function useUpdateWatchToken(systemId: string | undefined) {
 export function useRevokeWatchToken(systemId: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.revokeWatchToken(id),
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: { password?: string; totp_code?: string };
+    }) => api.revokeWatchToken(id, confirm),
     onSuccess: () => {
       if (systemId) {
         qc.invalidateQueries({ queryKey: notificationKeys.tokens(systemId) });
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
       }
       toast.success("Watcher revoked");
     },
@@ -114,9 +121,16 @@ export function useUpdateChannel(channelId: string | undefined) {
 export function useDeleteChannel() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (channelId: string) => api.deleteChannel(channelId),
+    mutationFn: ({
+      channelId,
+      confirm,
+    }: {
+      channelId: string;
+      confirm?: { password?: string; totp_code?: string };
+    }) => api.deleteChannel(channelId, confirm),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["channels"] });
+      qc.invalidateQueries({ queryKey: ["system-safety"] });
       toast.success("Channel deleted");
     },
   });

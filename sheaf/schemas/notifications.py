@@ -23,6 +23,11 @@ class WatchTokenUpdate(BaseModel):
     label: str | None = Field(default=None, max_length=120)
 
 
+class WatchTokenRevokeConfirm(BaseModel):
+    password: str | None = None
+    totp_code: str | None = None
+
+
 class WatchTokenRead(BaseModel):
     id: uuid.UUID
     system_id: uuid.UUID
@@ -135,6 +140,11 @@ class ChannelRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ChannelDeleteConfirm(BaseModel):
+    password: str | None = None
+    totp_code: str | None = None
 
 
 class ChannelCreateResponse(BaseModel):

@@ -27,6 +27,7 @@ from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
+from sheaf.models.notification_channel import NotificationChannel
 from sheaf.models.pending_action import (
     PendingAction,
     PendingActionStatus,
@@ -40,6 +41,7 @@ from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
+from sheaf.models.watch_token import WatchToken
 
 # Categories that safety can apply to — kept in one place so the API,
 # schemas, and finalize dispatcher all agree on the set.
@@ -52,6 +54,7 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "journals",
     "images",
     "revisions",
+    "notifications",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {
@@ -63,6 +66,8 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.JOURNAL_DELETE: "journals",
     PendingActionType.IMAGE_DELETE: "images",
     PendingActionType.REVISION_UNPIN: "revisions",
+    PendingActionType.WATCH_TOKEN_REVOKE: "notifications",
+    PendingActionType.CHANNEL_DELETE: "notifications",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -74,6 +79,8 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.JOURNAL_DELETE: JournalEntry,
     PendingActionType.IMAGE_DELETE: UploadedFile,
     PendingActionType.REVISION_UNPIN: ContentRevision,
+    PendingActionType.WATCH_TOKEN_REVOKE: WatchToken,
+    PendingActionType.CHANNEL_DELETE: NotificationChannel,
 }
 
 
@@ -313,6 +320,11 @@ async def finalize_pending_action(
             from sheaf.services.journals import unpin_revision_immediate
 
             unpin_revision_immediate(target)
+        elif pending.action_type == PendingActionType.WATCH_TOKEN_REVOKE:
+            # Soft-revoke: matches the immediate revoke path, channels stay in
+            # DB but the dispatcher skips them. Idempotent if already revoked.
+            if target.revoked_at is None:
+                target.revoked_at = datetime.now(UTC)
         else:
             # Polymorphic content_revisions can't FK on target — cascade in app.
             if pending.action_type == PendingActionType.JOURNAL_DELETE:
@@ -356,6 +368,10 @@ async def _target_in_scope(
             member = await db.get(Member, target.target_id)
             return member is not None and member.system_id == pending.system_id
         return False
+    if isinstance(target, NotificationChannel):
+        # Channels don't carry system_id directly; resolve via watch token.
+        token = await db.get(WatchToken, target.watch_token_id)
+        return token is not None and token.system_id == pending.system_id
     if hasattr(target, "system_id"):
         return target.system_id == pending.system_id
     if hasattr(target, "user_id"):
