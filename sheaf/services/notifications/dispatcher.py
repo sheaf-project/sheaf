@@ -154,26 +154,26 @@ async def _process_row(
             await _requeue(db, row, qh_end, reason="quiet_hours")
             return
 
-        # Resolve watched-member visibility.
-        watched_id = uuid.UUID(row.event_payload["member_id"])
-        watched = await _load_member_with_groups(db, watched_id)
-        if watched is None:
-            await _drop(db, row, "watched member missing")
+        # Legacy per-delta payloads (rows enqueued before the aggregated
+        # rewrite) are unrenderable here; drop them rather than half-render.
+        # Rows are short-lived so this only matters during a deploy window.
+        payload = row.event_payload
+        if "kind" in payload or "fronting_before" not in payload:
+            await _drop(db, row, "legacy payload format dropped on upgrade")
             return
 
-        result = resolve_member_visibility(
-            channel,
-            watched,
-            [g.id for g in watched.groups],
-        )
-        if not result.included:
-            await _drop(db, row, f"resolution: not included ({result.attribution})")
-            return
-
-        # Build name lookup for any participants we need to render.
-        member_ids = {watched_id}
-        for s in row.event_payload.get("cofronters_after", []):
+        # Resolve every member in the before/after sets so the renderer can
+        # decide what to name and what to redact, per the channel's filter
+        # config and cofront_redaction policy.
+        member_ids: set[uuid.UUID] = set()
+        for s in payload.get("fronting_before", []):
             member_ids.add(uuid.UUID(s))
+        for s in payload.get("fronting_after", []):
+            member_ids.add(uuid.UUID(s))
+        if not member_ids:
+            await _drop(db, row, "empty fronting set")
+            return
+
         member_names, visible_set = await _resolve_members(
             db, channel, member_ids
         )
@@ -182,12 +182,12 @@ async def _process_row(
 
         message = _render(
             channel,
-            payload=row.event_payload,
+            payload=payload,
             member_names=member_names,
             visible_member_ids=visible_set,
         )
         if message.suppress:
-            await _drop(db, row, "payload suppressed (cofront redaction)")
+            await _drop(db, row, "no visible content for this channel")
             return
 
         sem = sems.get(channel.destination_type)
@@ -239,17 +239,6 @@ async def _load_channel(
             selectinload(NotificationChannel.group_rules),
             selectinload(NotificationChannel.member_rules),
         )
-    )
-    return result.scalar_one_or_none()
-
-
-async def _load_member_with_groups(
-    db: AsyncSession, member_id: uuid.UUID
-) -> Member | None:
-    result = await db.execute(
-        select(Member)
-        .where(Member.id == member_id)
-        .options(selectinload(Member.groups))
     )
     return result.scalar_one_or_none()
 

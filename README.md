@@ -202,7 +202,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 ## Roadmap
 - [ ] Named fronts — save a named combination of members and make them searchable in the start front dialog
 - [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
-- [ ] Front change notifications (WebSocket push)
+- [x] Front-change notifications — web push, webhook (json/discord/slack/plaintext), ntfy, Pushover. Per-channel filters with three-layer member visibility (base + group rules + member overrides), payload sensitivity, debounce, quiet hours.
 - [x] Journals/notes (per-member, encrypted at rest)
 - [ ] PluralKit bidirectional sync
 - [ ] Friend/trust system (cross-system visibility controls)
@@ -212,7 +212,6 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [x] API keys with granular scopes (for scripts and integrations)
 - [x] Admin UI (user management, maintenance operations)
 - [x] Signed image URLs with S3 presign support (hotlink protection)
-- [ ] Webhooks for switch/fronter notification
 - [ ] Custom-defined user tiers by server admin instead of placeholder free/plus/selfhosted
 - [ ] Android+iOS apps (in progress — API-first, OpenAPI spec available for client generation)
 - [ ] Prometheus-compatible /metrics endpoint

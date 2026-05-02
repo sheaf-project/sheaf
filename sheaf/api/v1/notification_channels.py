@@ -4,7 +4,6 @@ send-test + live preview."""
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -646,10 +645,11 @@ async def send_test(
         title="Sheaf test notification",
         body=f"This is a test from your channel '{channel.name}'.",
     )
+    # Test deliveries deliberately don't update channel.last_delivered_at:
+    # otherwise clicking "send test" silently muted real front-change events
+    # for the next debounce_seconds window, which looked like a missing-
+    # notification bug.
     outcome = await deliver(channel, message, event_id=str(uuid.uuid4()))
-    if outcome.ok:
-        channel.last_delivered_at = datetime.now(UTC)
-        await db.commit()
     return TestDispatchResponse(delivered=outcome.ok, error=outcome.error)
 
 
