@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router";
 import { ArrowLeft, Copy, Pause, Play, RefreshCw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { ActivationLinkModal } from "@/components/notifications/activation-link-modal";
 import { DeliveryCard } from "@/components/notifications/delivery-card";
 import { DestinationIcon } from "@/components/notifications/destination-icon";
@@ -27,9 +29,11 @@ import {
   useToggleChannel,
   useUpdateChannel,
 } from "@/hooks/use-notifications";
+import { getMySystem } from "@/lib/systems";
 import type {
   ChannelCreateResponse,
   ChannelUpdate,
+  DestructiveConfirm,
   NotificationChannel,
 } from "@/types/api";
 
@@ -84,10 +88,16 @@ export function NotificationChannelPage() {
   const sendTest = useSendTest();
   const toggle = useToggleChannel();
 
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
+
   const [draftState, setDraftState] = useState<{
     channelUpdatedAt: string | null;
     draft: ChannelUpdate;
   }>({ channelUpdatedAt: null, draft: {} });
+  const [showDelete, setShowDelete] = useState(false);
   const [activationModal, setActivationModal] =
     useState<ChannelCreateResponse | null>(null);
   const [reissueModal, setReissueModal] = useState<{
@@ -199,17 +209,7 @@ export function NotificationChannelPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => {
-            if (
-              confirm(
-                `Delete channel "${channel.name}"? This stops deliveries immediately and removes the channel.`,
-              )
-            ) {
-              del.mutate(channel.id, {
-                onSuccess: () => navigate("/notifications"),
-              });
-            }
-          }}
+          onClick={() => setShowDelete(true)}
         >
           <Trash2 className="mr-1 h-4 w-4 text-destructive" />
           Delete
@@ -301,6 +301,34 @@ export function NotificationChannelPage() {
         url={reissueModal?.url ?? null}
         expiresAt={reissueModal?.expires ?? null}
         channelName={channel.name}
+      />
+      <DestructiveConfirmDialog
+        open={showDelete}
+        onOpenChange={setShowDelete}
+        title="Delete channel"
+        description={`Delete channel "${channel.name}"? This stops deliveries immediately and removes the channel.`}
+        tier={system?.delete_confirmation ?? "none"}
+        loading={del.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          del.mutate(
+            { channelId: channel.id, confirm },
+            {
+              onSuccess: (resp) => {
+                setShowDelete(false);
+                if (
+                  resp &&
+                  typeof resp === "object" &&
+                  "pending_action_id" in resp
+                ) {
+                  toast.success(
+                    "Deletion queued. Cancel from System Safety before it finalizes.",
+                  );
+                }
+                navigate("/notifications");
+              },
+            },
+          );
+        }}
       />
     </>
   );

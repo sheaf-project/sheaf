@@ -18,6 +18,8 @@ class PendingActionType(StrEnum):
     JOURNAL_DELETE = "journal_delete"
     IMAGE_DELETE = "image_delete"
     REVISION_UNPIN = "revision_unpin"
+    WATCH_TOKEN_REVOKE = "watch_token_revoke"
+    CHANNEL_DELETE = "channel_delete"
 
 
 class PendingActionStatus(StrEnum):

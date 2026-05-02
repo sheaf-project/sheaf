@@ -43,6 +43,11 @@ const categoryLabels: {
   { key: "applies_to_journals", label: "Journal entries", desc: "Deleting a journal entry" },
   { key: "applies_to_images", label: "Images", desc: "Deleting an uploaded image" },
   { key: "applies_to_revisions", label: "Revision pins", desc: "Unpinning a protected revision" },
+  {
+    key: "applies_to_notifications",
+    label: "Notifications",
+    desc: "Deleting a channel or revoking a watcher",
+  },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -383,6 +388,7 @@ const CATEGORY_KEYS = [
   "applies_to_journals",
   "applies_to_images",
   "applies_to_revisions",
+  "applies_to_notifications",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {

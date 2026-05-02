@@ -10,6 +10,8 @@ const actionLabels: Record<PendingActionType, string> = {
   journal_delete: "Delete journal entry",
   image_delete: "Delete image",
   revision_unpin: "Unpin revision",
+  watch_token_revoke: "Revoke watcher",
+  channel_delete: "Delete notification channel",
 };
 
 function timeRemaining(finalizeAfter: string): string {

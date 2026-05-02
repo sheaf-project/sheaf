@@ -24,12 +24,14 @@ from sheaf.models.notification_channel import (
 )
 from sheaf.models.notification_channel_group_rule import NotificationChannelGroupRule
 from sheaf.models.notification_channel_member_rule import NotificationChannelMemberRule
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 from sheaf.schemas.notifications import (
     ChannelCreate,
     ChannelCreateResponse,
+    ChannelDeleteConfirm,
     ChannelRead,
     ChannelUpdate,
     GroupRuleSpec,
@@ -51,6 +53,11 @@ from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.resolution import (
     build_group_name_lookup,
     resolve_member_visibility,
+)
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
 )
 
 router = APIRouter(prefix="", tags=["notifications"])
@@ -412,15 +419,44 @@ async def update_channel(
 
 @router.delete(
     "/channels/{channel_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("notifications:delete"))],
 )
 async def delete_channel(
     channel_id: uuid.UUID,
+    body: ChannelDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     channel = await _load_owned_channel(db, user, channel_id)
+    system = await _system_for_user(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
+
+    if is_safeguarded(system, PendingActionType.CHANNEL_DELETE):
+        from fastapi.responses import JSONResponse
+
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.CHANNEL_DELETE,
+            target_id=channel.id,
+            target_label=channel.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(channel)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

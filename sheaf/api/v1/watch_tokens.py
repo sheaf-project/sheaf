@@ -12,13 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.notification_channel import NotificationChannel
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 from sheaf.schemas.notifications import (
     WatchTokenCreate,
     WatchTokenRead,
+    WatchTokenRevokeConfirm,
     WatchTokenUpdate,
+)
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
 )
 
 router = APIRouter(prefix="", tags=["notifications"])
@@ -152,11 +159,11 @@ async def update_watch_token(
 
 @router.delete(
     "/watch-tokens/{token_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_scope("notifications:delete"))],
 )
 async def revoke_watch_token(
     token_id: uuid.UUID,
+    body: WatchTokenRevokeConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -164,7 +171,41 @@ async def revoke_watch_token(
     them. Owner can revoke and re-issue a fresh token if a recipient
     relationship has gone bad."""
     token = await _load_owned_token(db, user, token_id)
-    if token.revoked_at is None:
-        token.revoked_at = datetime.now(UTC)
+    system = await _get_user_system(user, db)
+    verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+    )
+
+    # Already revoked -> idempotent 204 regardless of safety state. Skipping
+    # the safeguard branch here means re-revoking doesn't queue a duplicate
+    # pending action and doesn't lock the owner out of the no-op call.
+    if token.revoked_at is not None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    if is_safeguarded(system, PendingActionType.WATCH_TOKEN_REVOKE):
+        from fastapi.responses import JSONResponse
+
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.WATCH_TOKEN_REVOKE,
+            target_id=token.id,
+            target_label=token.label or f"Watcher {token.id}",
+        )
         await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
+    token.revoked_at = datetime.now(UTC)
+    await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
