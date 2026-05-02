@@ -20,6 +20,7 @@ import {
   useCreateWatchToken,
   useWatchTokens,
 } from "@/hooks/use-notifications";
+import { getMyPushoverUsage } from "@/lib/notifications";
 import { getMySystem } from "@/lib/systems";
 
 export function NotificationsPage() {
@@ -28,6 +29,10 @@ export function NotificationsPage() {
     queryFn: getMySystem,
   });
   const { data: tokens, isLoading } = useWatchTokens(system?.id);
+  const { data: pushoverUsage } = useQuery({
+    queryKey: ["notifications", "my-pushover-usage"],
+    queryFn: getMyPushoverUsage,
+  });
   const createToken = useCreateWatchToken(system?.id);
   const [showNew, setShowNew] = useState(false);
   const [label, setLabel] = useState("");
@@ -67,6 +72,33 @@ export function NotificationsPage() {
             and each channel has its own filters &mdash; you control what each
             recipient is allowed to see, per-member.
           </p>
+
+          {pushoverUsage && pushoverUsage.enforced && (
+            <div className="mb-4 max-w-prose rounded-md border bg-muted/30 px-3 py-2 text-xs">
+              <p>
+                <strong>Pushover (shared app):</strong>{" "}
+                <span
+                  className={
+                    pushoverUsage.count >= pushoverUsage.cap
+                      ? "text-destructive"
+                      : ""
+                  }
+                >
+                  {pushoverUsage.count.toLocaleString()} /{" "}
+                  {pushoverUsage.cap.toLocaleString()}
+                </span>{" "}
+                deliveries this month ({pushoverUsage.month}, {pushoverUsage.tier} tier).
+                {pushoverUsage.count >= pushoverUsage.cap && (
+                  <>
+                    {" "}
+                    Cap reached &mdash; further Pushover deliveries are paused
+                    until next month, or until you paste your own Pushover app
+                    token in a channel's Advanced config.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
 
           {isLoading ? (
             <div className="space-y-3">

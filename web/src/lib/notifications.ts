@@ -154,6 +154,31 @@ export function removeMemberRule(channelId: string, memberId: string) {
   );
 }
 
+// ---- server config + per-user usage --------------------------------------
+
+export interface NotificationsServerConfig {
+  pushover: {
+    shared_app_available: boolean;
+    shared_app_min_debounce_seconds: number;
+  };
+}
+
+export function getNotificationsServerConfig() {
+  return apiFetch<NotificationsServerConfig>("/v1/notifications/server-config");
+}
+
+export interface MyPushoverUsage {
+  month: string;
+  tier: string;
+  count: number;
+  cap: number;
+  enforced: boolean;
+}
+
+export function getMyPushoverUsage() {
+  return apiFetch<MyPushoverUsage>("/v1/notifications/pushover-usage");
+}
+
 // ---- receiving (recipient-side, account-bound) ---------------------------
 
 export function listReceiving() {

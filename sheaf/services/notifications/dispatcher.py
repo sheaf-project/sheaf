@@ -195,9 +195,17 @@ async def _process_row(
             await _drop(db, row, f"no handler for {channel.destination_type}")
             return
 
+        # Resolve channel owner for handlers that need per-user accounting
+        # (currently just Pushover's per-user monthly cap on the shared app).
+        owner_user_id, owner_tier = await _resolve_channel_owner(db, channel)
+
         async with sem:
             outcome = await deliver(
-                channel, message, event_id=str(row.event_id)
+                channel,
+                message,
+                event_id=str(row.event_id),
+                owner_user_id=owner_user_id,
+                owner_tier=owner_tier,
             )
 
         if outcome.ok:
@@ -241,6 +249,29 @@ async def _load_channel(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def _resolve_channel_owner(
+    db: AsyncSession, channel: NotificationChannel
+) -> tuple[uuid.UUID | None, str | None]:
+    """Walk channel -> watch_token -> system -> user to surface (user_id,
+    tier) for handlers that enforce per-user quotas. Returns (None, None)
+    if any link is missing — handlers should treat that as "skip the
+    per-user check, fall back to deployment cap only"."""
+    from sheaf.models.system import System
+    from sheaf.models.user import User
+
+    if channel.watch_token is None:
+        return None, None
+    result = await db.execute(
+        select(User.id, User.tier)
+        .join(System, System.user_id == User.id)
+        .where(System.id == channel.watch_token.system_id)
+    )
+    row = result.first()
+    if row is None:
+        return None, None
+    return row.id, row.tier
 
 
 async def _resolve_members(

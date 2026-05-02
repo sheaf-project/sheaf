@@ -29,6 +29,7 @@ import {
   useToggleChannel,
   useUpdateChannel,
 } from "@/hooks/use-notifications";
+import { getNotificationsServerConfig } from "@/lib/notifications";
 import { getMySystem } from "@/lib/systems";
 import type {
   ChannelCreateResponse,
@@ -92,6 +93,10 @@ export function NotificationChannelPage() {
     queryKey: ["system", "me"],
     queryFn: getMySystem,
   });
+  const { data: serverCfg } = useQuery({
+    queryKey: ["notifications", "server-config"],
+    queryFn: getNotificationsServerConfig,
+  });
 
   const [draftState, setDraftState] = useState<{
     channelUpdatedAt: string | null;
@@ -119,6 +124,21 @@ export function NotificationChannelPage() {
     () => (channel ? isDraftDirty(channel, draft) : false),
     [channel, draft],
   );
+
+  // Pre-flight: a Pushover channel on the shared deployment app token must
+  // satisfy the operator's debounce floor. Catch this client-side so the
+  // user gets a friendly inline message instead of the backend's 400.
+  const debounceFloorViolation = useMemo(() => {
+    if (!channel || channel.destination_type !== "pushover") return null;
+    if (channel.destination_config?.app_token) return null; // BYO is exempt
+    const floor = serverCfg?.pushover.shared_app_min_debounce_seconds ?? 0;
+    if (floor <= 0) return null;
+    const effective =
+      draft.debounce_seconds !== undefined
+        ? draft.debounce_seconds
+        : channel.debounce_seconds;
+    return effective < floor ? floor : null;
+  }, [channel, draft.debounce_seconds, serverCfg]);
 
   if (isLoading || !channel) {
     return (
@@ -277,13 +297,24 @@ export function NotificationChannelPage() {
         <LivePreviewCard channel={channel} draft={draft} />
       </div>
 
-      <div className="sticky bottom-0 mt-6 flex items-center justify-end gap-2 border-t bg-background/95 backdrop-blur px-4 py-3 -mx-4">
+      <div className="sticky bottom-0 mt-6 flex flex-wrap items-center justify-end gap-2 border-t bg-background/95 backdrop-blur px-4 py-3 -mx-4">
+        {debounceFloorViolation !== null && (
+          <p className="mr-auto text-xs text-destructive">
+            Debounce must be at least {debounceFloorViolation}s on the
+            shared Pushover app.
+          </p>
+        )}
         {dirty && (
           <Button variant="ghost" onClick={reset}>
             Discard changes
           </Button>
         )}
-        <Button disabled={!dirty || update.isPending} onClick={save}>
+        <Button
+          disabled={
+            !dirty || update.isPending || debounceFloorViolation !== null
+          }
+          onClick={save}
+        >
           {update.isPending ? "Saving..." : "Save changes"}
         </Button>
       </div>

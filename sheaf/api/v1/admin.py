@@ -131,6 +131,28 @@ async def get_stats(
     }
 
 
+@router.get("/pushover-usage")
+async def get_pushover_usage(_: User = Depends(get_admin_user)):
+    """Current month's shared-app Pushover delivery count vs the configured
+    monthly cap. Channels with a BYO destination_config.app_token aren't
+    counted here — they hit the recipient's own Pushover quota."""
+    from datetime import UTC, datetime
+
+    from sheaf.services.notifications.pushover_counter import (
+        get_monthly_count,
+    )
+
+    count = await get_monthly_count()
+    cap = settings.pushover_max_per_month
+    return {
+        "month": datetime.now(UTC).strftime("%Y-%m"),
+        "count": count,
+        "cap": cap,
+        # Convenience: when cap=0 we don't enforce, surface that explicitly.
+        "enforced": cap > 0,
+    }
+
+
 # ---------------------------------------------------------------------------
 # User management
 # ---------------------------------------------------------------------------
