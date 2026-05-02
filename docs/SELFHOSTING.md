@@ -248,6 +248,42 @@ PUSHOVER_APP_TOKEN=axxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 Each recipient supplies their own user_key per channel at create time. Without `PUSHOVER_APP_TOKEN`, the destination type is rejected with 501.
 
+#### Cost shape
+
+As of May 2026, [Pushover gives each account a pooled 10,000 messages/month free](https://blog.pushover.net/posts/2026/4/app-limits) across all apps the account owns. Paid upgrades are one-off purchases at $50/10k, $115/25k, $200/50k, $300/100k, $1000/500k, applied at the account level.
+
+Sheaf runs one app per instance, so one Sheaf instance = one Pushover account's quota. If you expect to push past 10k/month, the simplest option is a one-off upgrade — they apply automatically since the account quota is what we hit.
+
+[Pushover for Teams](https://pushover.net/teams) is a separate $5/user/month subscription product for organizations; team accounts get a 25k/month free limit instead of 10k, but the team subscription only makes sense if you also need its user-management features. For pure quota expansion an individual one-off upgrade is much cheaper.
+
+Three sets of settings cap shared-app exposure:
+
+```env
+PUSHOVER_MAX_PER_MONTH=10000                     # deployment-wide ceiling
+PUSHOVER_SHARED_APP_MIN_DEBOUNCE_SECONDS=1800    # 30-min minimum debounce
+PUSHOVER_USER_MAX_PER_MONTH_FREE=100             # per-Sheaf-user, by tier
+PUSHOVER_USER_MAX_PER_MONTH_PLUS=1000
+PUSHOVER_USER_MAX_PER_MONTH_SELF_HOSTED=0        # 0 = unlimited for that tier
+```
+
+Three checks happen for every shared-app Pushover delivery:
+
+1. **Per-user tier cap.** Each Sheaf user has a monthly allowance based on their tier. 0 disables the per-user check for that tier. Hitting the user's cap transient-fails their deliveries until the next calendar month. Counter at `pushover:usage:user:{user_id}:YYYY-MM`. Surfaced to the user via `GET /v1/notifications/pushover-usage` and shown on their notifications page.
+2. **Deployment-wide cap.** `PUSHOVER_MAX_PER_MONTH` caps total instance usage. Counter at `pushover:usage:YYYY-MM`. Surfaced on `/admin` and at `GET /v1/admin/pushover-usage`. Set to 0 to disable Sheaf-side tracking entirely (Pushover's own 429s become the only ceiling).
+3. **Debounce floor.** `PUSHOVER_SHARED_APP_MIN_DEBOUNCE_SECONDS` is enforced at channel create/update time, so users can't configure under it. Without this floor, one chatty system could burn the whole instance quota in a day. 30 minutes is the default. Surfaced via `GET /v1/notifications/server-config` so the UI can render the floor in the channel form.
+
+All three apply only to channels using the deployment's shared `PUSHOVER_APP_TOKEN`. BYO channels (recipient-supplied `destination_config.app_token`) bypass all of them.
+
+#### BYO Pushover app (recipient-side)
+
+Recipients who want their own Pushover quota (or just don't want to compete for the shared one) can create a free Pushover account, register an application at <https://pushover.net/apps/build>, and paste its API token into the channel's "Advanced" config:
+
+- The channel uses the BYO app token instead of the deployment's
+- Counts toward the recipient's own account quota (10k/month free, pooled across any other Pushover apps they run), not yours
+- Both `PUSHOVER_MAX_PER_MONTH` and `PUSHOVER_SHARED_APP_MIN_DEBOUNCE_SECONDS` no longer apply — the recipient sets debounce wherever they want
+
+This is the pressure-relief valve when you start hitting the shared cap regularly. Document it for power users.
+
 ### Discord webhook display
 
 Owners can choose `format=discord` on a webhook channel. These two settings control how the bot renders in Discord:

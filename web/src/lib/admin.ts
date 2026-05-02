@@ -85,6 +85,17 @@ export function getStorageStats() {
   return apiFetch<{ total_bytes: number; total_files: number; users_with_files: number }>("/v1/admin/storage/stats");
 }
 
+export interface PushoverUsage {
+  month: string;
+  count: number;
+  cap: number;
+  enforced: boolean;
+}
+
+export function getPushoverUsage() {
+  return apiFetch<PushoverUsage>("/v1/admin/pushover-usage");
+}
+
 export function getPendingApprovals() {
   return apiFetch<PendingUser[]>("/v1/admin/approvals");
 }

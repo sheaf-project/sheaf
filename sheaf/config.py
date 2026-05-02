@@ -278,9 +278,33 @@ class Settings(BaseSettings):
     # Contact URI for push services (mailto:ops@example.com or https://...).
     # Required when web push is enabled.
     vapid_subject: str = ""
-    # Pushover app token (issued by pushover.net). Empty = Pushover destination
-    # type is rejected with 501.
+    # Pushover app token (issued by pushover.net) used for the shared,
+    # deployment-wide Pushover app. Empty = Pushover destination type is
+    # rejected with 501 unless a recipient supplies their own app_token via
+    # the channel's destination_config (BYO mode bypasses both the absent
+    # default and the monthly cap).
     pushover_app_token: str = ""
+    # Monthly cap on shared-app Pushover deliveries. Pushover charges per app
+    # per month: 10000 free, then $50/10k extra (one-off, not subscription).
+    # Sheaf tracks deployment-wide usage in Redis keyed by YYYY-MM and
+    # transient-fails shared-app deliveries once the cap is hit. Channels
+    # with BYO app_token bypass this counter entirely. Set to 0 to disable
+    # tracking and let Pushover-side enforcement be the only ceiling.
+    pushover_max_per_month: int = 10000
+    # Minimum debounce_seconds for shared-app Pushover channels. One chatty
+    # system can otherwise burn the whole monthly cap for everyone on the
+    # instance — 30 minutes is a reasonable baseline that still lets active
+    # users get reasonably timely pings without budget runaway. BYO channels
+    # are exempt; they get whatever debounce the recipient configured.
+    pushover_shared_app_min_debounce_seconds: int = 1800
+    # Per-user-tier monthly Pushover allowance on the shared app. Stops one
+    # Sheaf user from burning everyone else's allotment within the global
+    # cap. 0 = unlimited (per-user check skipped for that tier; the
+    # deployment-wide cap is the only ceiling). BYO channels bypass this
+    # too — they're on the recipient's own Pushover quota, not ours.
+    pushover_user_max_per_month_free: int = 100
+    pushover_user_max_per_month_plus: int = 1000
+    pushover_user_max_per_month_self_hosted: int = 0
     # Username + avatar URL Discord renders for our webhook deliveries.
     # avatar URL must be publicly reachable PNG/JPEG (Discord rejects SVG).
     # Empty avatar = falls back to the webhook's default avatar; empty

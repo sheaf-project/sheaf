@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from hashlib import sha256
 
@@ -53,8 +54,20 @@ def permanent(error: str) -> DeliveryResult:
 
 
 async def deliver(
-    channel: NotificationChannel, message: RenderedMessage, *, event_id: str
+    channel: NotificationChannel,
+    message: RenderedMessage,
+    *,
+    event_id: str,
+    owner_user_id: uuid.UUID | None = None,
+    owner_tier: str | None = None,
 ) -> DeliveryResult:
+    """Dispatch a rendered message via the channel's destination handler.
+
+    `owner_user_id` + `owner_tier` are only used by Pushover for per-user
+    monthly cap enforcement on the shared deployment app token. Pass them
+    on real dispatcher-driven deliveries; pass None for synthetic test
+    sends (which still hit the deployment cap but skip the per-user one).
+    """
     dtype = DestinationType(channel.destination_type)
     if dtype == DestinationType.WEB_PUSH:
         return await _deliver_web_push(channel, message)
@@ -63,7 +76,9 @@ async def deliver(
     if dtype == DestinationType.NTFY:
         return await _deliver_ntfy(channel, message)
     if dtype == DestinationType.PUSHOVER:
-        return await _deliver_pushover(channel, message)
+        return await _deliver_pushover(
+            channel, message, owner_user_id=owner_user_id, owner_tier=owner_tier
+        )
     return permanent(f"unsupported destination type {dtype}")
 
 
@@ -264,21 +279,61 @@ async def _deliver_ntfy(
 
 
 async def _deliver_pushover(
-    channel: NotificationChannel, message: RenderedMessage
+    channel: NotificationChannel,
+    message: RenderedMessage,
+    *,
+    owner_user_id: uuid.UUID | None = None,
+    owner_tier: str | None = None,
 ) -> DeliveryResult:
-    if not settings.pushover_app_token:
-        # Server config issue: transient so the channel doesn't get
-        # auto-disabled before the operator notices.
-        return transient("Pushover app token not configured")
-
     cfg = channel.destination_config or {}
     user_key = cfg.get("user_key")
     if not user_key:
         return permanent("missing pushover user_key")
 
+    # BYO mode: recipient supplies their own Pushover application token.
+    # That bypasses both shared-app caps (deployment-wide and per-user) and
+    # the operator's debounce floor — the recipient is on their own quota.
+    byo_token = cfg.get("app_token")
+    using_shared = not byo_token
+    app_token = byo_token or settings.pushover_app_token
+
+    if not app_token:
+        # No token at all (BYO empty AND server not configured). Transient
+        # so a later config fix lets pending deliveries through without
+        # auto-disabling the channel.
+        return transient("Pushover app token not configured")
+
+    if using_shared:
+        from sheaf.services.notifications.pushover_counter import (
+            increment_monthly_count,
+            increment_user_monthly_count,
+            is_over_cap,
+            is_user_over_cap,
+        )
+
+        # Per-user cap first: a user who's already over their own allotment
+        # shouldn't even be charged against the deployment counter, since
+        # their delivery is going to fail anyway.
+        if owner_user_id is not None and await is_user_over_cap(
+            owner_user_id, owner_tier
+        ):
+            return transient(
+                "your monthly Pushover allotment on this instance is "
+                "reached; the operator can raise your tier's cap, or you "
+                "can set destination_config.app_token to your own Pushover "
+                "application to bypass the shared-app limit"
+            )
+
+        if await is_over_cap():
+            return transient(
+                "shared Pushover app monthly cap reached; "
+                "ask the operator or set destination_config.app_token "
+                "to your own Pushover app to bypass"
+            )
+
     url = "https://api.pushover.net/1/messages.json"
     data = {
-        "token": settings.pushover_app_token,
+        "token": app_token,
         "user": user_key,
         "title": message.title,
         "message": message.body,
@@ -293,6 +348,17 @@ async def _deliver_pushover(
             return transient(f"pushover network error: {exc}")
 
     if 200 <= resp.status_code < 300:
+        # Only count toward the caps on successful shared-app deliveries,
+        # so retries of a failed call don't burn budget twice.
+        if using_shared:
+            from sheaf.services.notifications.pushover_counter import (
+                increment_monthly_count,
+                increment_user_monthly_count,
+            )
+
+            await increment_monthly_count()
+            if owner_user_id is not None:
+                await increment_user_monthly_count(owner_user_id)
         return SUCCESS
     if resp.status_code == 400:
         # Pushover returns 400 for invalid user/app keys: permanent.

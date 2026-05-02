@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -9,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getNotificationsServerConfig } from "@/lib/notifications";
 import type { NotificationChannel, PayloadSensitivity } from "@/types/api";
 
 export function DeliveryCard({
@@ -18,6 +21,21 @@ export function DeliveryCard({
   channel: NotificationChannel;
   onChange: (patch: Partial<NotificationChannel>) => void;
 }) {
+  const { data: serverCfg } = useQuery({
+    queryKey: ["notifications", "server-config"],
+    queryFn: getNotificationsServerConfig,
+  });
+  // Pushover channels using the shared deployment app token can't drop
+  // debounce below the operator's floor — surface that here so the user
+  // doesn't get rejected at save time.
+  const usingSharedPushover =
+    channel.destination_type === "pushover" &&
+    !(channel.destination_config?.app_token);
+  const debounceFloor =
+    usingSharedPushover
+      ? (serverCfg?.pushover.shared_app_min_debounce_seconds ?? 0)
+      : 0;
+
   const quietEnabled = !!channel.quiet_hours;
   const qh = channel.quiet_hours ?? { start: "22:00", end: "07:00", tz: "UTC" };
 
@@ -57,16 +75,35 @@ export function DeliveryCard({
             <Label>Debounce (seconds)</Label>
             <Input
               type="number"
-              min={0}
+              min={debounceFloor}
               max={86400}
               value={channel.debounce_seconds}
+              aria-invalid={
+                debounceFloor > 0 && channel.debounce_seconds < debounceFloor
+              }
               onChange={(e) =>
                 onChange({ debounce_seconds: Number(e.target.value || 0) })
               }
             />
-            <p className="text-xs text-muted-foreground">
-              Minimum gap between deliveries on this channel.
-            </p>
+            {debounceFloor > 0 && channel.debounce_seconds < debounceFloor ? (
+              <p className="text-xs text-destructive">
+                This instance requires at least {debounceFloor} seconds (
+                {Math.round(debounceFloor / 60)} min) between deliveries on
+                the shared Pushover app. Raise this value, or set your own
+                Pushover app token to bypass the shared-app limit.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Minimum gap between deliveries on this channel.
+                {debounceFloor > 0 && (
+                  <>
+                    {" "}
+                    Shared Pushover app requires at least{" "}
+                    {Math.round(debounceFloor / 60)} min.
+                  </>
+                )}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">

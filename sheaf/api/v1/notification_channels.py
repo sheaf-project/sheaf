@@ -4,6 +4,7 @@ send-test + live preview."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -213,6 +214,31 @@ def _validate_direct_config(body_type: str, config: dict) -> None:
         )
 
 
+def _validate_pushover_debounce(
+    destination_type: str, destination_config: dict, debounce_seconds: int
+) -> None:
+    """Reject Pushover channels using the shared deployment app token if
+    they're configured below the floor. BYO-app channels are exempt — the
+    recipient is on their own quota.
+    """
+    if destination_type != DestinationType.PUSHOVER.value:
+        return
+    if (destination_config or {}).get("app_token"):
+        return  # BYO mode: no floor.
+    floor = settings.pushover_shared_app_min_debounce_seconds
+    if floor > 0 and debounce_seconds < floor:
+        minutes = round(floor / 60)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This instance requires at least {minutes} minutes "
+                f"between deliveries on the shared Pushover app. "
+                f"Raise the debounce, or set your own Pushover app token "
+                f"in the channel's Advanced config to bypass this limit."
+            ),
+        )
+
+
 # ---------- create / list / read / update / delete -------------------------
 
 
@@ -238,6 +264,11 @@ async def create_channel(
     _validate_destination(body.destination_type)
     if body.destination_type in _DIRECT_TYPES:
         _validate_direct_config(body.destination_type, body.destination_config)
+    _validate_pushover_debounce(
+        body.destination_type,
+        body.destination_config or {},
+        body.debounce_seconds,
+    )
 
     channel = NotificationChannel(
         id=uuid.uuid4(),
@@ -367,6 +398,20 @@ async def update_channel(
                 detail="webhook_secret only valid for webhook channels",
             )
         channel.webhook_secret_encrypted = encrypt(body.webhook_secret)
+    # Re-check the pushover debounce floor against the merged config +
+    # whichever debounce ends up applying after this PATCH. Either could
+    # change independently — caller might raise debounce while keeping the
+    # shared app, or add a BYO app_token while lowering debounce.
+    final_debounce = (
+        body.debounce_seconds
+        if body.debounce_seconds is not None
+        else channel.debounce_seconds
+    )
+    _validate_pushover_debounce(
+        channel.destination_type,
+        channel.destination_config or {},
+        final_debounce,
+    )
     for field in (
         "base_all_members",
         "base_include_private",
@@ -841,6 +886,52 @@ async def remove_member_rule(
 # account, the channel binds to their user_id. These endpoints let that user
 # see and manage every channel they're receiving (across all systems they
 # subscribe to) without juggling per-channel capability URLs.
+
+
+@router.get("/notifications/server-config")
+async def get_notifications_server_config():
+    """Public-shape config the channel-creation UI needs to render correctly.
+
+    Surfaces the shared-app debounce floor + whether a deployment-wide
+    Pushover app token is configured. The UI uses this to set the
+    debounce_seconds input's minimum and decide whether to require a BYO
+    app_token. No secrets here — just operator-set policy that recipients
+    will hit at submit time anyway.
+    """
+    return {
+        "pushover": {
+            "shared_app_available": bool(settings.pushover_app_token),
+            "shared_app_min_debounce_seconds": (
+                settings.pushover_shared_app_min_debounce_seconds
+            ),
+        },
+    }
+
+
+@router.get("/notifications/pushover-usage")
+async def get_my_pushover_usage(
+    user: User = Depends(get_current_user),
+):
+    """Current month's shared-app Pushover usage for the calling user.
+
+    Counts only deliveries that hit the deployment's shared app token.
+    BYO channels (recipient supplied their own destination_config.app_token)
+    aren't tracked here — they're on the recipient's own Pushover quota.
+    """
+    from sheaf.services.notifications.pushover_counter import (
+        cap_for_tier,
+        get_user_monthly_count,
+    )
+
+    count = await get_user_monthly_count(user.id)
+    cap = cap_for_tier(user.tier)
+    return {
+        "month": datetime.now(UTC).strftime("%Y-%m"),
+        "tier": user.tier,
+        "count": count,
+        "cap": cap,
+        "enforced": cap > 0,
+    }
 
 
 @router.get("/notifications/receiving", response_model=list[ReceivingChannelView])

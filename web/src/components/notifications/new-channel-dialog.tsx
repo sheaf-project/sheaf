@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useCreateChannel } from "@/hooks/use-notifications";
+import { getNotificationsServerConfig } from "@/lib/notifications";
 import type { ChannelCreate, ChannelCreateResponse, DestinationType } from "@/types/api";
 
 export function NewChannelDialog({
@@ -32,6 +34,13 @@ export function NewChannelDialog({
   onCreated?: (resp: ChannelCreateResponse) => void;
 }) {
   const create = useCreateChannel(tokenId);
+  const { data: serverCfg } = useQuery({
+    queryKey: ["notifications", "server-config"],
+    queryFn: getNotificationsServerConfig,
+  });
+  const minDebounce =
+    serverCfg?.pushover.shared_app_min_debounce_seconds ?? 0;
+  const sharedAppAvailable = serverCfg?.pushover.shared_app_available ?? true;
 
   const [name, setName] = useState("");
   const [type, setType] = useState<DestinationType>("web_push");
@@ -43,6 +52,8 @@ export function NewChannelDialog({
   const [ntfyServer, setNtfyServer] = useState("https://ntfy.sh");
   const [ntfyTopic, setNtfyTopic] = useState("");
   const [pushoverUserKey, setPushoverUserKey] = useState("");
+  const [pushoverAppToken, setPushoverAppToken] = useState("");
+  const [pushoverAdvanced, setPushoverAdvanced] = useState(false);
 
   function reset() {
     setName("");
@@ -53,6 +64,8 @@ export function NewChannelDialog({
     setNtfyServer("https://ntfy.sh");
     setNtfyTopic("");
     setPushoverUserKey("");
+    setPushoverAppToken("");
+    setPushoverAdvanced(false);
   }
 
   function handleSubmit(e: FormEvent) {
@@ -63,6 +76,12 @@ export function NewChannelDialog({
       base_all_members: true,
       trigger_on_start: true,
     };
+    // For shared-app Pushover channels, start at the operator's floor so
+    // the user doesn't get rejected on create with the schema default of
+    // 30s. BYO channels skip this — they're on the recipient's own quota.
+    if (type === "pushover" && !pushoverAppToken.trim() && minDebounce > 0) {
+      data.debounce_seconds = minDebounce;
+    }
     if (type === "webhook") {
       data.destination_config = { url: webhookUrl, format: webhookFormat };
       // HMAC only meaningful for json/plaintext; the discord/slack endpoints
@@ -76,7 +95,11 @@ export function NewChannelDialog({
     } else if (type === "ntfy") {
       data.destination_config = { server_url: ntfyServer, topic: ntfyTopic };
     } else if (type === "pushover") {
-      data.destination_config = { user_key: pushoverUserKey };
+      const cfg: Record<string, string> = { user_key: pushoverUserKey };
+      if (pushoverAppToken.trim()) {
+        cfg.app_token = pushoverAppToken.trim();
+      }
+      data.destination_config = cfg;
     }
 
     create.mutate(data, {
@@ -199,15 +222,67 @@ export function NewChannelDialog({
           )}
 
           {type === "pushover" && (
-            <div className="space-y-2">
-              <Label>User key</Label>
-              <Input
-                value={pushoverUserKey}
-                onChange={(e) => setPushoverUserKey(e.target.value)}
-                placeholder="From your Pushover dashboard"
-                required
-              />
-            </div>
+            <>
+              <div className="space-y-2">
+                <Label>User key</Label>
+                <Input
+                  value={pushoverUserKey}
+                  onChange={(e) => setPushoverUserKey(e.target.value)}
+                  placeholder="From your Pushover dashboard"
+                  required
+                />
+              </div>
+              {!sharedAppAvailable && !pushoverAppToken && (
+                <p className="text-xs text-destructive">
+                  This instance has no shared Pushover app configured —
+                  you'll need to bring your own app token below.
+                </p>
+              )}
+              <div className="space-y-2 rounded-md border bg-muted/30 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => setPushoverAdvanced((v) => !v)}
+                  className="flex w-full items-center justify-between text-left text-sm font-medium"
+                >
+                  <span>Advanced: bring your own Pushover app</span>
+                  <span className="text-xs text-muted-foreground">
+                    {pushoverAdvanced ? "−" : "+"}
+                  </span>
+                </button>
+                {pushoverAdvanced && (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      Pushover gives each account a 10,000 messages/month
+                      free quota across all the apps it owns. This instance
+                      shares one app across all recipients, so it caps
+                      total monthly traffic, applies per-user allowances by
+                      tier, and enforces a longer minimum debounce
+                      {minDebounce > 0
+                        ? ` (${Math.round(minDebounce / 60)} min)`
+                        : ""}
+                      . Create your own free Pushover application at{" "}
+                      <a
+                        href="https://pushover.net/apps/build"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline"
+                      >
+                        pushover.net/apps/build
+                      </a>{" "}
+                      and paste its API token below to bypass all of those
+                      — you'll hit your own account's 10k/month free pool
+                      instead.
+                    </p>
+                    <Label className="text-xs">App token (optional)</Label>
+                    <Input
+                      value={pushoverAppToken}
+                      onChange={(e) => setPushoverAppToken(e.target.value)}
+                      placeholder="a-30-char-pushover-app-token"
+                    />
+                  </>
+                )}
+              </div>
+            </>
           )}
 
           {type === "web_push" && (
