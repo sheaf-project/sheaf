@@ -19,6 +19,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -329,10 +330,14 @@ async def _drop(
 
 def _quiet_hours_end(quiet_hours: dict | None, now: datetime) -> datetime | None:
     """If `now` is inside the channel's quiet-hours window, return the next
-    timestamp at which dispatch is allowed. Else None.
+    UTC timestamp at which dispatch is allowed. Else None.
 
-    Window format: `{"start": "22:00", "end": "07:00", "tz": "UTC"}`.
-    Crosses-midnight is allowed (start > end). Timezone defaults to UTC.
+    Window format: `{"start": "22:00", "end": "07:00", "tz": "Europe/Berlin"}`.
+    Comparisons happen in the channel's tz so DST shifts move the window
+    correctly (a "10 PM to 7 AM Berlin" channel keeps doing the right
+    thing across the spring/autumn changeovers). Returned timestamp is
+    converted back to UTC for the outbox row's deliver_after column.
+    Crosses-midnight is allowed (start > end).
     """
     if not quiet_hours:
         return None
@@ -346,23 +351,32 @@ def _quiet_hours_end(quiet_hours: dict | None, now: datetime) -> datetime | None
     except ValueError:
         return None
 
-    # All comparisons in UTC for v1.
-    now_utc = now.astimezone(UTC)
-    today = now_utc.date()
-    start_dt = datetime.combine(today, start_t, tzinfo=UTC)
-    end_dt = datetime.combine(today, end_t, tzinfo=UTC)
+    tz_name = quiet_hours.get("tz") or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        # Bad tz somehow stored despite the schema validator (or older row
+        # written before validation existed). Don't crash dispatch — fall
+        # back to UTC so we still respect SOME window boundary.
+        logger.warning("quiet_hours has unknown tz %r; falling back to UTC", tz_name)
+        tz = UTC
+
+    now_local = now.astimezone(tz)
+    today = now_local.date()
+    start_dt = datetime.combine(today, start_t, tzinfo=tz)
+    end_dt = datetime.combine(today, end_t, tzinfo=tz)
 
     if start_t <= end_t:
         # Same-day window.
-        if start_dt <= now_utc < end_dt:
-            return end_dt
+        if start_dt <= now_local < end_dt:
+            return end_dt.astimezone(UTC)
         return None
 
-    # Crosses midnight: e.g. 22:00 → 07:00 means [22:00, 24:00) U [00:00, 07:00).
-    if now_utc >= start_dt:
+    # Crosses midnight: e.g. 22:00 -> 07:00 means [22:00, 24:00) U [00:00, 07:00).
+    if now_local >= start_dt:
         # In the late-evening half; window ends tomorrow at end_t.
-        return end_dt + timedelta(days=1)
-    if now_utc < end_dt:
+        return (end_dt + timedelta(days=1)).astimezone(UTC)
+    if now_local < end_dt:
         # In the early-morning half; window ends today at end_t.
-        return end_dt
+        return end_dt.astimezone(UTC)
     return None
