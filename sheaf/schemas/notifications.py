@@ -9,8 +9,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---- watch tokens ---------------------------------------------------------
 
@@ -62,7 +63,16 @@ class MemberRuleSpec(BaseModel):
 class QuietHours(BaseModel):
     start: str  # "HH:MM"
     end: str  # "HH:MM"
-    tz: str = "UTC"
+    tz: str = "UTC"  # IANA name, e.g. "Europe/Berlin"
+
+    @field_validator("tz")
+    @classmethod
+    def _validate_tz(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"unknown IANA timezone: {v!r}") from exc
+        return v
 
 
 class ChannelCreate(BaseModel):

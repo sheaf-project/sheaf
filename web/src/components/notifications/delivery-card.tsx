@@ -37,7 +37,30 @@ export function DeliveryCard({
       : 0;
 
   const quietEnabled = !!channel.quiet_hours;
-  const qh = channel.quiet_hours ?? { start: "22:00", end: "07:00", tz: "UTC" };
+  // Default new quiet-hours configs to the recipient's browser timezone —
+  // the most useful guess. Existing channels keep whatever's stored.
+  const browserTz = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      return "UTC";
+    }
+  })();
+  const qh =
+    channel.quiet_hours ?? { start: "22:00", end: "07:00", tz: browserTz };
+
+  // Full IANA list, alphabetised. Modern browsers all support
+  // supportedValuesOf("timeZone"); older ones get a small fallback.
+  const tzList = (() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fn = (Intl as any).supportedValuesOf;
+      if (typeof fn === "function") return fn("timeZone") as string[];
+    } catch {
+      // fall through
+    }
+    return ["UTC", browserTz];
+  })();
 
   return (
     <Card>
@@ -162,9 +185,29 @@ export function DeliveryCard({
                   }
                 />
               </div>
+              <div className="col-span-2 space-y-1">
+                <Label className="text-xs">Timezone</Label>
+                <Select
+                  value={qh.tz}
+                  onValueChange={(v) =>
+                    onChange({ quiet_hours: { ...qh, tz: v } })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {tzList.map((tz) => (
+                      <SelectItem key={tz} value={tz}>
+                        {tz}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <p className="col-span-2 text-xs text-muted-foreground">
-                In UTC for v1. Events landing inside the window are deferred to
-                the end time.
+                Events landing inside the window are deferred to the end
+                time. DST transitions in the chosen timezone are honoured.
               </p>
             </div>
           )}
