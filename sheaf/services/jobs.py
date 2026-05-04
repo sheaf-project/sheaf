@@ -124,6 +124,12 @@ async def job_runner_loop() -> None:
             if not job.enabled():
                 continue
 
+            interval = job.interval_seconds()
+            if interval <= 0:
+                # Treat non-positive intervals as "disabled" — prevents a
+                # misconfigured 0 from running the job every tick.
+                continue
+
             try:
                 async with async_session_factory() as db:
                     last_success = await _get_last_success(name, db)
@@ -131,7 +137,7 @@ async def job_runner_loop() -> None:
                     # Run if never run before, or if enough time has elapsed
                     if last_success is not None:
                         elapsed = (datetime.now(UTC) - last_success).total_seconds()
-                        if elapsed < job.interval_seconds():
+                        if elapsed < interval:
                             continue
 
                     logger.info("Running job: %s", name)
