@@ -5,7 +5,7 @@ def test_export_empty_system(auth_client: httpx.Client):
     resp = auth_client.get("/v1/export")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["version"] == "1"
+    assert data["version"] == "2"
     assert data["system"]["name"] == "My System"
     assert data["members"] == []
     assert data["fronts"] == []

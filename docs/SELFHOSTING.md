@@ -488,6 +488,84 @@ MAX_UPLOAD_SIZE_MB=5
 
 ---
 
+## Data exports
+
+Three flavours of "give me my data", differing by scope and gating:
+
+| Endpoint | Scope | Gate | Format |
+|---|---|---|---|
+| `GET /v1/export` | Plural-system content (Article 20) | Session/JWT only | Sync JSON |
+| `POST /v1/account/data` | Account identity + audit (Article 15) | Password + TOTP-if-enrolled | Sync JSON |
+| `POST /v1/export/jobs` | Plural-system + image bytes | Password + TOTP-if-enrolled | Async zip |
+
+The two POST endpoints **always** require step-up auth regardless of the system's `delete_confirmation` setting — they're the highest-value reads for an attacker with a hijacked session, and we don't let users opt out.
+
+### Async export jobs
+
+The user requests a backup, the worker assembles a zip in the background, the user gets an email when it's ready (and sees the job in Settings → Data export). The file is kept for 72 hours then auto-deleted.
+
+```env
+EXPORT_JOB_TTL_HOURS=72                  # how long a built file is kept
+EXPORT_MAX_CONCURRENT_PER_USER=1         # one in-flight job per user
+```
+
+### S3-backed exports: use a dedicated bucket
+
+If you're running with `STORAGE_BACKEND=s3`, the main `S3_BUCKET` is typically CDN-fronted (e.g. behind Cloudflare for free image egress). **Don't put exports in that bucket** — exports contain decrypted journal content + member names + everything else, and routing them through a CDN means cleartext personal data passes through CDN TLS termination even with presigned URLs (signatures prevent caching, but bytes still flow through CDN's network).
+
+Set up a separate bucket and point Sheaf at it:
+
+```env
+S3_EXPORT_BUCKET=sheaf-exports
+S3_EXPORT_ENDPOINT=https://s3.eu-central-1.amazonaws.com   # direct, not via CDN
+# S3_EXPORT_PRESIGN_ENDPOINT=  # only set if presign URL needs different host
+```
+
+Apply an S3 lifecycle expiry rule on the bucket as belt-and-braces — if Sheaf's cleanup worker silently fails, S3 still cleans up:
+
+```json
+{
+  "Rules": [{
+    "ID": "expire-sheaf-exports",
+    "Status": "Enabled",
+    "Filter": {"Prefix": "exports/"},
+    "Expiration": {"Days": 4}
+  }]
+}
+```
+
+(4 days = 72h app TTL + 1 day grace.)
+
+A storage class like Standard-IA is appropriate since objects are short-lived, if you want to save pennies. Block public ACLs on this bucket; downloads always go through Sheaf's authenticated endpoint via presigned URL.
+
+#### Encryption at rest
+
+Set bucket default encryption rather than asking Sheaf to specify it per-object — Sheaf intentionally doesn't pass `ServerSideEncryption` headers, because MinIO rejects them when KMS isn't configured (AWS S3 silently uses the bucket default).
+
+For AWS S3:
+
+```sh
+aws s3api put-bucket-encryption \
+  --bucket sheaf-exports \
+  --server-side-encryption-configuration '{
+    "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+  }'
+```
+
+For MinIO with KMS configured: set bucket encryption via `mc encrypt set sse-s3 <alias>/sheaf-exports`. For MinIO without KMS: the underlying disk is your encryption boundary; the data is still application-layer-encrypted in the database for sensitive fields, and the export zips are short-lived.
+
+### Filesystem deployments
+
+When `STORAGE_BACKEND=filesystem`, exports live at `/app/data/exports/{user_id}/{job_id}.zip`. Same cleanup worker handles pruning. No CDN concerns since bytes never leave the box.
+
+### Image re-import asymmetry
+
+The export-with-images zip contains JSON references AND the image bytes. The import path accepts JSON only — it does NOT auto-restore image attachments from the zip. The export UI tells users this explicitly. Re-importing the zip into another Sheaf instance brings the text content (members, journals, etc.) but image attachments need to be re-uploaded by hand.
+
+This is intentional: auto re-import would require re-keying every image (server generates UUIDs, not filename-based), rewriting `image_keys` references across members/journals/revisions, re-running quota/dedup/virus-scan/EXIF-stripping, and handling cross-backend migration. Demand is probably low — GDPR compliance and personal backup don't need it.
+
+---
+
 ## API keys
 
 Users can create named, scoped API keys from Settings → API Keys. These allow programmatic access without sharing session credentials.

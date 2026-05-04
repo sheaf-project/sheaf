@@ -320,6 +320,31 @@ class Settings(BaseSettings):
     notifications_concurrency_ntfy: int = 5
     notifications_concurrency_pushover: int = 5
 
+    # Async data export jobs
+    # Lifetime of a generated export file before it's auto-deleted from
+    # storage and the job row marked EXPIRED. 72h gives the user three days
+    # to grab it; long enough for "I'll do this from my desktop later",
+    # short enough to limit blast radius if a download URL leaks.
+    export_job_ttl_hours: int = 72
+    # How often the cleanup worker sweeps for expired jobs.
+    export_cleanup_interval_seconds: int = 3600
+    # How many jobs the build worker processes per tick.
+    export_build_interval_seconds: int = 10
+    # Per-user concurrency: refuse a new export request when one is still
+    # pending/running. Stops users (or attackers with a hijacked session)
+    # from queueing many large exports back-to-back.
+    export_max_concurrent_per_user: int = 1
+    # Optional dedicated S3 bucket for exports. Strongly recommended in
+    # production: lets you set an S3 lifecycle expiry rule (belt-and-braces
+    # with the cleanup worker) AND lets you point exports at an endpoint
+    # that bypasses any CDN fronting on your image bucket — exports
+    # contain decrypted personal data that shouldn't pass through CDN
+    # TLS termination. When unset, exports fall back to the main
+    # `s3_bucket` (fine for dev, not recommended for production).
+    s3_export_bucket: str = ""
+    s3_export_endpoint: str = ""
+    s3_export_presign_endpoint: str = ""
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"

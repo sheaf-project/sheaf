@@ -340,7 +340,14 @@ Uploads can be disabled server-wide (`ALLOW_IMAGE_UPLOADS=false`). When disabled
 | POST | `/import/simplyplural` | Run SP import |
 | POST | `/import/sheaf/preview` | Preview Sheaf import |
 | POST | `/import/sheaf` | Run Sheaf import |
-| GET | `/export` | Export all data as JSON |
+| GET | `/export` | Export plural system content as JSON (sync, Article 20) |
+| POST | `/export/jobs` | Queue async export with image bytes (zip) |
+| GET | `/export/jobs` | List your async export jobs |
+| GET | `/export/jobs/{id}` | Job status |
+| GET | `/export/jobs/{id}/download` | Download the zip when done |
+| POST | `/account/data` | Account data (Article 15 right of access) |
+
+The two POST endpoints (`/export/jobs` and `/account/data`) require step-up auth in the request body (`{password, totp_code}`) and refuse API-key authentication. They're the highest-value reads for a hijacked session, so the gate applies regardless of the system's `delete_confirmation` setting.
 
 ## Limits
 

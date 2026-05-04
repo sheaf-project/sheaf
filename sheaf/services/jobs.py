@@ -591,6 +591,30 @@ async def _finalize_safety_changes(db: AsyncSession) -> dict:
 
 
 # ---------------------------------------------------------------------------
+async def _build_export_jobs(db: AsyncSession) -> dict:
+    """Pick up one pending export job per tick and assemble its zip.
+
+    The export builder manages its own session because the build phase is
+    long enough that we don't want to hold a DB connection idle while
+    streaming image bytes through. The db param here is unused; kept for
+    job-runner signature consistency.
+    """
+    from sheaf.services.export_builder import run_build_tick
+
+    del db
+    handled = await run_build_tick()
+    return {"items_processed": handled}
+
+
+async def _cleanup_export_jobs(db: AsyncSession) -> dict:
+    """Sweep expired DONE jobs: delete files, mark rows EXPIRED."""
+    from sheaf.services.export_builder import run_cleanup_tick
+
+    del db
+    handled = await run_cleanup_tick()
+    return {"items_processed": handled}
+
+
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -679,6 +703,20 @@ def _register_all_jobs() -> None:
         func=_process_ses_events,
         interval_seconds=lambda: settings.job_check_interval_minutes * 60,
         enabled=lambda: bool(settings.ses_events_queue_url),
+    )
+
+    register_job(
+        name="build_export_jobs",
+        description="Assemble pending data-export zips and persist them",
+        func=_build_export_jobs,
+        interval_seconds=lambda: settings.export_build_interval_seconds,
+    )
+
+    register_job(
+        name="cleanup_export_jobs",
+        description="Delete expired export artefacts and mark rows EXPIRED",
+        func=_cleanup_export_jobs,
+        interval_seconds=lambda: settings.export_cleanup_interval_seconds,
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images

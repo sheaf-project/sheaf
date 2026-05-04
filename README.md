@@ -36,7 +36,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
 - **SimplyPlural import** — Import your SP export with granular control (select specific members, toggle front history, etc.)
 - **File storage** — File uploads with filesystem or S3-compatible backends
-- **Data export**
+- **Data export** — sync JSON (Article 20 portability), async zip with image bytes, and a separate Article 15 endpoint covering everything we know about your account
 - **2FA** — Optional TOTP with recovery codes
 - **API keys** — Scoped, named keys (`sk_…`) for scripts and integrations
 - **Admin dashboard** — User management, invite codes, storage audit, background job monitoring, optional step-up auth
@@ -140,7 +140,9 @@ Key endpoints:
 | `GET/PATCH /v1/system/safety` | System Safety settings + pending actions |
 | `POST /v1/import/simplyplural` | Import SP data |
 | `POST /v1/import/sheaf` | Import Sheaf export |
-| `GET /v1/export` | Export all data |
+| `GET /v1/export` | Export plural system content (sync JSON) |
+| `POST /v1/export/jobs` | Queue an async backup including image bytes |
+| `POST /v1/account/data` | Article 15 — everything we know about your account |
 | `POST /v1/files/upload` | Upload avatar |
 
 Full interactive docs: `http://your-instance/v1/docs`
