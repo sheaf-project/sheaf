@@ -5,6 +5,7 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.email_suppression import EmailSuppression
 from sheaf.models.email_verification import EmailVerification
+from sheaf.models.export_job import ExportJob, ExportJobStatus
 from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.invite_code import InviteCode
@@ -53,6 +54,8 @@ __all__ = [
     "DestinationType",
     "EmailSuppression",
     "EmailVerification",
+    "ExportJob",
+    "ExportJobStatus",
     "FieldType",
     "Front",
     "Group",

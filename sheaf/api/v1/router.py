@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from sheaf.api.v1 import (
+    account,
     admin,
     announcements,
     auth,
@@ -34,6 +35,10 @@ v1_router.include_router(version.router)
 # Auth, admin, announcements: no scope enforcement
 v1_router.include_router(auth.router)
 v1_router.include_router(admin.router)
+# Account-level (Article 15 etc.) — session/JWT auth only, body-gated
+# step-up. Lives outside the scope-gated section since API key access
+# is refused inline by the endpoint.
+v1_router.include_router(account.router)
 v1_router.include_router(announcements.admin_router)
 v1_router.include_router(announcements.public_router)
 v1_router.include_router(
