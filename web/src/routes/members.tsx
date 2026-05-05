@@ -5,14 +5,21 @@ import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import {
+  getMemberTags,
   listMemberBioRevisions,
   pinMemberBioRevision,
   restoreMemberBioRevision,
+  setMemberTags,
   unpinMemberBioRevision,
 } from "@/lib/members";
+import { listTags } from "@/lib/tags";
 import { getSystemSafety } from "@/lib/system-safety";
 import { AvatarUpload } from "@/components/avatar-upload";
+import { Badge } from "@/components/ui/badge";
+import { ColorDot } from "@/components/color-dot";
 import { ContentRevisionList } from "@/components/content-revision-list";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
@@ -310,6 +317,115 @@ function DeleteMemberDialog({
   );
 }
 
+function MemberTagsEditor({ memberId }: { memberId: string }) {
+  const qc = useQueryClient();
+  const { data: allTags } = useQuery({ queryKey: ["tags"], queryFn: listTags });
+  const { data: memberTags } = useQuery({
+    queryKey: ["member", memberId, "tags"],
+    queryFn: () => getMemberTags(memberId),
+  });
+  const setTags = useMutation({
+    mutationFn: (tagIds: string[]) => setMemberTags(memberId, tagIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["member", memberId, "tags"] });
+      // Tag-side member lists may now disagree with what's on the server,
+      // since editing here is the symmetric counterpart of /v1/tags/{id}/members.
+      qc.invalidateQueries({ queryKey: ["tags"] });
+      setEditing(false);
+      toast.success("Tags updated");
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Failed to update tags"),
+  });
+  const [editing, setEditing] = useState(false);
+  const [draftIds, setDraftIds] = useState<string[]>([]);
+
+  const currentIds = memberTags?.map((t) => t.id) ?? [];
+
+  function startEdit() {
+    setDraftIds(currentIds);
+    setEditing(true);
+  }
+
+  function toggle(tagId: string) {
+    setDraftIds((d) =>
+      d.includes(tagId) ? d.filter((id) => id !== tagId) : [...d, tagId],
+    );
+  }
+
+  if (!allTags || allTags.length === 0) {
+    return null; // No tags configured — hide the section entirely.
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <Label className="text-xs text-muted-foreground">Tags</Label>
+        {!editing ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs"
+            onClick={startEdit}
+          >
+            Edit
+          </Button>
+        ) : (
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs"
+              onClick={() => setEditing(false)}
+              disabled={setTags.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 text-xs"
+              onClick={() => setTags.mutate(draftIds)}
+              disabled={setTags.isPending}
+            >
+              {setTags.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {editing
+          ? allTags.map((t) => {
+              const selected = draftIds.includes(t.id);
+              return (
+                <Badge
+                  key={t.id}
+                  variant={selected ? "default" : "outline"}
+                  className="cursor-pointer gap-1.5"
+                  onClick={() => toggle(t.id)}
+                >
+                  <ColorDot color={t.color} />
+                  {t.name}
+                </Badge>
+              );
+            })
+          : memberTags && memberTags.length > 0
+            ? memberTags.map((t) => (
+                <Badge key={t.id} variant="outline" className="gap-1.5">
+                  <ColorDot color={t.color} />
+                  {t.name}
+                </Badge>
+              ))
+            : (
+              <span className="text-xs text-muted-foreground">
+                No tags assigned.
+              </span>
+            )}
+      </div>
+    </div>
+  );
+}
+
+
 function MemberView({
   member,
   onEdit,
@@ -441,6 +557,9 @@ function MemberView({
               ))}
             </div>
           )}
+
+          {/* Tags */}
+          <MemberTagsEditor memberId={member.id} />
         </div>
       </DialogContent>
     </Dialog>

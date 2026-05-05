@@ -59,6 +59,10 @@ class MemberDeleteConfirm(BaseModel):
     totp_code: str | None = None
 
 
+class MemberTagUpdate(BaseModel):
+    tag_ids: list[uuid.UUID]
+
+
 class MemberRead(BaseModel):
     id: uuid.UUID
     system_id: uuid.UUID

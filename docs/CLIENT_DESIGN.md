@@ -309,6 +309,10 @@ All resource endpoints require authentication. With API keys, the appropriate sc
 | POST | `/tags` | `tags:write` |
 | PATCH | `/tags/{id}` | `tags:write` |
 | DELETE | `/tags/{id}` | `tags:delete` |
+| GET | `/tags/{id}/members` | `tags:read` |
+| PUT | `/tags/{id}/members` | `tags:write` |
+| GET | `/members/{id}/tags` | `tags:read` |
+| PUT | `/members/{id}/tags` | `tags:write` |
 | GET | `/fields` | `fields:read` |
 | POST | `/fields` | `fields:write` |
 | PATCH | `/fields/{id}` | `fields:write` |

@@ -23,3 +23,7 @@ class TagRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TagMemberUpdate(BaseModel):
+    member_ids: list[uuid.UUID]

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
@@ -13,6 +14,7 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
+from sheaf.models.tag import Tag
 from sheaf.models.user import User, UserTier
 from sheaf.schemas.journal import (
     ContentRevisionRead,
@@ -21,7 +23,14 @@ from sheaf.schemas.journal import (
     UnpinRevisionRequest,
     UnpinRevisionResponse,
 )
-from sheaf.schemas.member import MemberCreate, MemberDeleteConfirm, MemberRead, MemberUpdate
+from sheaf.schemas.member import (
+    MemberCreate,
+    MemberDeleteConfirm,
+    MemberRead,
+    MemberTagUpdate,
+    MemberUpdate,
+)
+from sheaf.schemas.tag import TagRead
 from sheaf.services.journals import (
     capture_revision,
     decrypt_revision_for_read,
@@ -228,6 +237,77 @@ async def delete_member(
     await db.delete(member)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{member_id}/tags", response_model=list[TagRead])
+async def get_member_tags(
+    member_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the tags this member is currently labelled with."""
+    system = await _get_user_system(user, db)
+    result = await db.execute(
+        select(Member)
+        .options(selectinload(Member.tags))
+        .where(Member.id == member_id, Member.system_id == system.id)
+    )
+    member = result.scalar_one_or_none()
+    if member is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found"
+        )
+    return sorted(member.tags, key=lambda t: t.name.casefold())
+
+
+@router.put(
+    "/{member_id}/tags",
+    response_model=list[TagRead],
+    dependencies=[Depends(require_scope("tags:write"))],
+)
+async def set_member_tags(
+    member_id: uuid.UUID,
+    body: MemberTagUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace this member's full tag set with the body-supplied list.
+
+    Mirrors `PUT /v1/tags/{tag_id}/members` from the other side. Either
+    endpoint can be used to manage the m2m; pick whichever matches the
+    UI you're in (member-edit form vs tag-management page).
+    """
+    system = await _get_user_system(user, db)
+    result = await db.execute(
+        select(Member)
+        .options(selectinload(Member.tags))
+        .where(Member.id == member_id, Member.system_id == system.id)
+    )
+    member = result.scalar_one_or_none()
+    if member is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found"
+        )
+
+    if body.tag_ids:
+        tag_result = await db.execute(
+            select(Tag).where(
+                Tag.id.in_(body.tag_ids),
+                Tag.system_id == system.id,
+            )
+        )
+        tags = list(tag_result.scalars().all())
+        if len(tags) != len(set(body.tag_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="One or more tag IDs are invalid",
+            )
+    else:
+        tags = []
+
+    member.tags = tags
+    await db.commit()
+    return sorted(tags, key=lambda t: t.name.casefold())
 
 
 @router.get(
