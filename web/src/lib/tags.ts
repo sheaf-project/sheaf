@@ -1,6 +1,7 @@
 import type {
   DeleteResult,
   DestructiveConfirm,
+  Member,
   Tag,
   TagCreate,
   TagUpdate,
@@ -29,5 +30,16 @@ export function deleteTag(id: string, confirm?: DestructiveConfirm) {
   return apiFetch<DeleteResult>(`/v1/tags/${id}`, {
     method: "DELETE",
     ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
+}
+
+export function getTagMembers(id: string) {
+  return apiFetch<Member[]>(`/v1/tags/${id}/members`);
+}
+
+export function setTagMembers(id: string, memberIds: string[]) {
+  return apiFetch<Member[]>(`/v1/tags/${id}/members`, {
+    method: "PUT",
+    body: JSON.stringify({ member_ids: memberIds }),
   });
 }

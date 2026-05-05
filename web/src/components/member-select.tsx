@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMembers } from "@/hooks/use-members";
 import { useAllGroupMembers, useGroups } from "@/hooks/use-groups";
+import { useAllTagMembers, useTags } from "@/hooks/use-tags";
 import { ColorDot } from "./color-dot";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -21,9 +22,12 @@ export function MemberSelect({
 }: Props) {
   const { data: members } = useMembers();
   const { data: groups } = useGroups();
+  const { data: tags } = useTags();
   const groupMemberMap = useAllGroupMembers();
+  const tagMemberMap = useAllTagMembers();
   const [search, setSearch] = useState("");
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [activeTagId, setActiveTagId] = useState<string | null>(null);
 
   if (!members) return null;
 
@@ -37,10 +41,14 @@ export function MemberSelect({
 
   const activeGroupMembers =
     activeGroupId !== null ? groupMemberMap.get(activeGroupId) : null;
+  const activeTagMembers =
+    activeTagId !== null ? tagMemberMap.get(activeTagId) : null;
   const searchLower = search.trim().toLowerCase();
 
   const filtered = members.filter((m) => {
+    // Group + tag filters AND together — "in this group AND tagged this".
     if (activeGroupMembers && !activeGroupMembers.has(m.id)) return false;
+    if (activeTagMembers && !activeTagMembers.has(m.id)) return false;
     if (searchLower) {
       return (
         m.name.toLowerCase().includes(searchLower) ||
@@ -51,6 +59,7 @@ export function MemberSelect({
   });
 
   const hasGroups = showGroupFilter && (groups?.length ?? 0) > 0;
+  const hasTags = showGroupFilter && (tags?.length ?? 0) > 0;
 
   return (
     <div className={cn("space-y-2", className)}>
@@ -61,7 +70,7 @@ export function MemberSelect({
             className="cursor-pointer select-none"
             onClick={() => setActiveGroupId(null)}
           >
-            All
+            All groups
           </Badge>
           {groups!.map((g) => (
             <Badge
@@ -74,6 +83,30 @@ export function MemberSelect({
             >
               {g.color && <ColorDot color={g.color} />}
               {g.name}
+            </Badge>
+          ))}
+        </div>
+      )}
+      {hasTags && (
+        <div className="flex flex-wrap gap-1.5">
+          <Badge
+            variant={activeTagId === null ? "default" : "outline"}
+            className="cursor-pointer select-none"
+            onClick={() => setActiveTagId(null)}
+          >
+            All tags
+          </Badge>
+          {tags!.map((t) => (
+            <Badge
+              key={t.id}
+              variant={activeTagId === t.id ? "default" : "outline"}
+              className="cursor-pointer select-none gap-1.5"
+              onClick={() =>
+                setActiveTagId(activeTagId === t.id ? null : t.id)
+              }
+            >
+              {t.color && <ColorDot color={t.color} />}
+              {t.name}
             </Badge>
           ))}
         </div>

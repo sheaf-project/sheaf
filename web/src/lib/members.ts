@@ -5,6 +5,7 @@ import type {
   Member,
   MemberCreate,
   MemberUpdate,
+  Tag,
   UnpinRevisionResponse,
 } from "@/types/api";
 import { apiFetch } from "./api-client";
@@ -64,5 +65,16 @@ export function unpinMemberBioRevision(
   return apiFetch<UnpinRevisionResponse>(`/v1/members/${id}/unpin-revision`, {
     method: "POST",
     body: JSON.stringify({ revision_id: revisionId, ...(confirm ?? {}) }),
+  });
+}
+
+export function getMemberTags(id: string) {
+  return apiFetch<Tag[]>(`/v1/members/${id}/tags`);
+}
+
+export function setMemberTags(id: string, tagIds: string[]) {
+  return apiFetch<Tag[]>(`/v1/members/${id}/tags`, {
+    method: "PUT",
+    body: JSON.stringify({ tag_ids: tagIds }),
   });
 }

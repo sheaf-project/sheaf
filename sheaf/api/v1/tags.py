@@ -4,15 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
-from sheaf.schemas.member import MemberDeleteConfirm
-from sheaf.schemas.tag import TagCreate, TagRead, TagUpdate
+from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
+from sheaf.schemas.tag import TagCreate, TagMemberUpdate, TagRead, TagUpdate
+from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -102,6 +105,73 @@ async def update_tag(
     await db.commit()
     await db.refresh(tag)
     return tag
+
+
+@router.get("/{tag_id}/members", response_model=list[MemberRead])
+async def get_tag_members(
+    tag_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    result = await db.execute(
+        select(Tag)
+        .options(selectinload(Tag.members))
+        .where(Tag.id == tag_id, Tag.system_id == system.id)
+    )
+    tag = result.scalar_one_or_none()
+    if tag is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found"
+        )
+    return [decrypt_member_for_read(m) for m in tag.members]
+
+
+@router.put(
+    "/{tag_id}/members",
+    response_model=list[MemberRead],
+    dependencies=[Depends(require_scope("tags:write"))],
+)
+async def set_tag_members(
+    tag_id: uuid.UUID,
+    body: TagMemberUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the tag's full member set with the body-supplied list.
+
+    Mirrors `PUT /v1/groups/{group_id}/members` — full-replace semantics
+    keep the API symmetric and avoid subtle bugs around partial updates.
+    For a single add/remove, the caller should fetch first and re-PUT.
+    """
+    system = await _get_user_system(user, db)
+    result = await db.execute(
+        select(Tag)
+        .options(selectinload(Tag.members))
+        .where(Tag.id == tag_id, Tag.system_id == system.id)
+    )
+    tag = result.scalar_one_or_none()
+    if tag is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found"
+        )
+
+    member_result = await db.execute(
+        select(Member).where(
+            Member.id.in_(body.member_ids),
+            Member.system_id == system.id,
+        )
+    )
+    members = list(member_result.scalars().all())
+    if len(members) != len(set(body.member_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more member IDs are invalid",
+        )
+
+    tag.members = members
+    await db.commit()
+    return [decrypt_member_for_read(m) for m in members]
 
 
 @router.delete(

@@ -66,3 +66,110 @@ def test_tag_crud(auth_client: httpx.Client):
 
     resp = auth_client.get(f"/v1/tags/{tag_id}")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tag membership (tag-side and member-side endpoints — symmetric m2m)
+# ---------------------------------------------------------------------------
+
+
+def test_set_tag_members(auth_client: httpx.Client):
+    m1 = _create_member(auth_client, "TagMem1")
+    m2 = _create_member(auth_client, "TagMem2")
+    tag_id = auth_client.post("/v1/tags", json={"name": "creative"}).json()["id"]
+
+    resp = auth_client.put(
+        f"/v1/tags/{tag_id}/members",
+        json={"member_ids": [m1, m2]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()) == 2
+
+    listed = auth_client.get(f"/v1/tags/{tag_id}/members")
+    assert listed.status_code == 200
+    assert {m["id"] for m in listed.json()} == {m1, m2}
+
+
+def test_set_tag_members_replaces(auth_client: httpx.Client):
+    """PUT semantics — body replaces the full set, not additive."""
+    m1 = _create_member(auth_client, "TagReplace1")
+    m2 = _create_member(auth_client, "TagReplace2")
+    tag_id = auth_client.post("/v1/tags", json={"name": "label"}).json()["id"]
+
+    auth_client.put(f"/v1/tags/{tag_id}/members", json={"member_ids": [m1, m2]})
+    auth_client.put(f"/v1/tags/{tag_id}/members", json={"member_ids": [m1]})
+
+    listed = auth_client.get(f"/v1/tags/{tag_id}/members").json()
+    assert {m["id"] for m in listed} == {m1}
+
+
+def test_set_tag_members_rejects_unknown_member(auth_client: httpx.Client):
+    import uuid
+
+    tag_id = auth_client.post("/v1/tags", json={"name": "bad"}).json()["id"]
+    resp = auth_client.put(
+        f"/v1/tags/{tag_id}/members",
+        json={"member_ids": [str(uuid.uuid4())]},
+    )
+    assert resp.status_code == 400
+
+
+def test_set_tag_members_clears_with_empty_list(auth_client: httpx.Client):
+    m1 = _create_member(auth_client, "TagClear1")
+    tag_id = auth_client.post("/v1/tags", json={"name": "temp"}).json()["id"]
+
+    auth_client.put(f"/v1/tags/{tag_id}/members", json={"member_ids": [m1]})
+    auth_client.put(f"/v1/tags/{tag_id}/members", json={"member_ids": []})
+
+    listed = auth_client.get(f"/v1/tags/{tag_id}/members").json()
+    assert listed == []
+
+
+def test_member_side_tag_endpoints(auth_client: httpx.Client):
+    """The /v1/members/{id}/tags endpoint is the symmetric counterpart of
+    /v1/tags/{id}/members. Setting from one side should be visible from
+    the other."""
+    member_id = _create_member(auth_client, "MemberTagSide")
+    t1 = auth_client.post("/v1/tags", json={"name": "primary"}).json()["id"]
+    t2 = auth_client.post("/v1/tags", json={"name": "creative"}).json()["id"]
+
+    # Initially no tags.
+    initial = auth_client.get(f"/v1/members/{member_id}/tags").json()
+    assert initial == []
+
+    # Set both via member-side PUT.
+    resp = auth_client.put(
+        f"/v1/members/{member_id}/tags",
+        json={"tag_ids": [t1, t2]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert {t["id"] for t in resp.json()} == {t1, t2}
+
+    # Visible from tag-side GET on either tag.
+    t1_members = auth_client.get(f"/v1/tags/{t1}/members").json()
+    assert any(m["id"] == member_id for m in t1_members)
+
+    # Clear from member side.
+    auth_client.put(
+        f"/v1/members/{member_id}/tags", json={"tag_ids": []}
+    )
+    assert auth_client.get(f"/v1/members/{member_id}/tags").json() == []
+
+    # Set from tag side; member-side GET picks it up.
+    auth_client.put(
+        f"/v1/tags/{t1}/members", json={"member_ids": [member_id]}
+    )
+    assert {t["id"] for t in auth_client.get(
+        f"/v1/members/{member_id}/tags"
+    ).json()} == {t1}
+
+
+def test_member_side_tag_set_rejects_unknown_tag(auth_client: httpx.Client):
+    import uuid
+
+    member_id = _create_member(auth_client, "BadTagSet")
+    resp = auth_client.put(
+        f"/v1/members/{member_id}/tags",
+        json={"tag_ids": [str(uuid.uuid4())]},
+    )
+    assert resp.status_code == 400
