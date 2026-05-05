@@ -40,6 +40,7 @@ class SystemUpdate(BaseModel):
     privacy: PrivacyLevel | None = None
     date_format: DateFormat | None = None
     replace_fronts_default: bool | None = None
+    coalesce_contiguous_fronts: bool | None = None
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -63,6 +64,7 @@ class SystemRead(BaseModel):
     delete_confirmation: DeleteConfirmation
     date_format: DateFormat
     replace_fronts_default: bool
+    coalesce_contiguous_fronts: bool
     created_at: datetime
     updated_at: datetime
 

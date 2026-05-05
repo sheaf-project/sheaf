@@ -52,6 +52,7 @@ export interface System {
   delete_confirmation: DeleteConfirmation;
   date_format: DateFormat;
   replace_fronts_default: boolean;
+  coalesce_contiguous_fronts: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +66,7 @@ export interface SystemUpdate {
   privacy?: PrivacyLevel;
   date_format?: DateFormat;
   replace_fronts_default?: boolean;
+  coalesce_contiguous_fronts?: boolean;
 }
 
 export interface Member {
@@ -110,6 +112,18 @@ export interface Front {
   started_at: string;
   ended_at: string | null;
   member_ids: string[];
+  // Per-member effective "fronting since" timestamp, keyed by member id.
+  // For open fronts on /v1/fronts/current with the system's
+  // coalesce_contiguous_fronts toggle on, this walks back through
+  // contiguous front entries (each ending exactly when the next began)
+  // so a member who went solo -> cofront keeps their original
+  // fronting-since instead of resetting on the new entry. Closed-front
+  // history endpoints always return the literal entry started_at here.
+  member_since: Record<string, string>;
+  // Members whose walk-back hit the safety depth cap. The corresponding
+  // `member_since` entry is a lower bound, not the true chain start —
+  // render with a "> X ago" prefix.
+  member_since_capped: string[];
 }
 
 export interface FrontCreate {
