@@ -79,6 +79,7 @@ export interface Member {
   avatar_url: string | null;
   color: string | null;
   birthday: string | null;
+  pluralkit_id: string | null;
   privacy: PrivacyLevel;
   created_at: string;
   updated_at: string;
@@ -92,6 +93,7 @@ export interface MemberCreate {
   avatar_url?: string | null;
   color?: string | null;
   birthday?: string | null;
+  pluralkit_id?: string | null;
   privacy?: PrivacyLevel;
 }
 
@@ -103,6 +105,7 @@ export interface MemberUpdate {
   avatar_url?: string | null;
   color?: string | null;
   birthday?: string | null;
+  pluralkit_id?: string | null;
   privacy?: PrivacyLevel;
 }
 

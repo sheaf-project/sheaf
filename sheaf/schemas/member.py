@@ -20,6 +20,7 @@ class MemberCreate(BaseModel):
     avatar_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     birthday: str | None = Field(default=None, max_length=10)
+    pluralkit_id: str | None = Field(default=None, max_length=8)
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
 
     @field_validator("avatar_url", mode="before")
@@ -41,6 +42,7 @@ class MemberUpdate(BaseModel):
     avatar_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     birthday: str | None = Field(default=None, max_length=10)
+    pluralkit_id: str | None = Field(default=None, max_length=8)
     privacy: PrivacyLevel | None = None
 
     @field_validator("avatar_url", mode="before")
@@ -73,6 +75,7 @@ class MemberRead(BaseModel):
     avatar_url: str | None
     color: str | None
     birthday: str | None
+    pluralkit_id: str | None
     privacy: PrivacyLevel
     created_at: datetime
     updated_at: datetime

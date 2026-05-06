@@ -10,7 +10,8 @@ export function DataImportCard() {
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground mb-3">
-          Supported formats: SimplyPlural, Sheaf
+          Supported sources: SimplyPlural (export file), PluralKit (export file
+          or live API via your <code>pk;token</code>), Sheaf (export file).
         </p>
         <Link to="/import">
           <Button variant="outline">Import data</Button>

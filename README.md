@@ -34,7 +34,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Revision history** — Member bios and journal entries are versioned, with tier-aware retention caps
 - **Revision pinning** — Pin specific revisions to protect them from automatic trim, with optional re-auth + grace on unpin
 - **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
-- **SimplyPlural import** — Import your SP export with granular control (select specific members, toggle front history, etc.)
+- **SimplyPlural / PluralKit import** — Import your SP export, your PluralKit export file, or pull live from PluralKit using your `pk;token`. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
 - **File storage** — File uploads with filesystem or S3-compatible backends
 - **Data export** — sync JSON (Article 20 portability), async zip with image bytes, and a separate Article 15 endpoint covering everything we know about your account
 - **2FA** — Optional TOTP with recovery codes
@@ -139,6 +139,8 @@ Key endpoints:
 | `POST /v1/journals/{id}/unpin-revision` | Unpin (immediate or queued behind grace) |
 | `GET/PATCH /v1/system/safety` | System Safety settings + pending actions |
 | `POST /v1/import/simplyplural` | Import SP data |
+| `POST /v1/import/pluralkit` | Import PK export file |
+| `POST /v1/import/pluralkit-api` | Import PK system via token |
 | `POST /v1/import/sheaf` | Import Sheaf export |
 | `GET /v1/export` | Export plural system content (sync JSON) |
 | `POST /v1/export/jobs` | Queue an async backup including image bytes |
@@ -206,6 +208,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
 - [x] Front-change notifications — web push, webhook (json/discord/slack/plaintext), ntfy, Pushover. Per-channel filters with three-layer member visibility (base + group rules + member overrides), payload sensitivity, debounce, quiet hours.
 - [x] Journals/notes (per-member, encrypted at rest)
+- [x] PluralKit one-shot import (file or live API via `pk;token`)
 - [ ] PluralKit bidirectional sync
 - [ ] Friend/trust system (cross-system visibility controls)
 - [ ] Per-field-per-member privacy overrides

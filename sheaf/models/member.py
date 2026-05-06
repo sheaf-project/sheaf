@@ -78,6 +78,11 @@ class Member(UUIDMixin, TimestampMixin, Base):
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     # Stored as "MM-DD" or "YYYY-MM-DD" to support year-optional birthdays
     birthday: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # PluralKit member HID (5-7 lowercase letters/digits). Stored for users who
+    # cross-reference between Sheaf and PluralKit; populated by the PK import,
+    # editable manually. Not unique within a system; we don't validate against
+    # PluralKit's namespace ourselves.
+    pluralkit_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
     privacy: Mapped[PrivacyLevel] = mapped_column(
         Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,
