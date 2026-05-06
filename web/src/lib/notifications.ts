@@ -59,6 +59,10 @@ export function listChannels(tokenId: string) {
   );
 }
 
+export function listAllChannels() {
+  return apiFetch<NotificationChannel[]>("/v1/channels");
+}
+
 export function createChannel(tokenId: string, data: ChannelCreate) {
   return apiFetch<ChannelCreateResponse>(
     `/v1/watch-tokens/${tokenId}/channels`,

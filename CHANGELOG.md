@@ -6,6 +6,18 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Reminders
+
+A new reminders surface alongside notification channels. Two trigger types share one data model and ride existing notification channels for delivery.
+
+- **Automated timers**: fire after a front-change event. Choose a specific member (or "any"), a side of the transition (start / stop / either), and a delay in minutes/hours. The reminder dispatches `delay_seconds` after the matching front change. Useful for member-bound self-care cues, medication routines, partner/therapist coordination pings.
+- **Repeated reminders**: cron-style schedule. UI exposes a structured daily / weekly / monthly + time-of-day picker; an "Advanced" toggle takes a raw 5-field cron expression for power users. Each reminder has its own IANA timezone.
+- **Member-scoped repeated reminders**: by default, reminders fire system-wide on schedule. Optionally scope a reminder to specific members so it only fires when one of them is currently fronting. When the schedule fires while no scoped member is fronting and `digest_when_absent=true` (default), the missed firings queue (capped at 5) and drain as a single digest notification when one of the scoped members next starts fronting.
+- API: `POST/GET/PATCH/DELETE /v1/reminders`, gated by the existing `notifications:read` and `notifications:write` scopes (a caller permitted to manage notification destinations also manages reminders that ride them). New `GET /v1/channels` flat-list endpoint for picking a channel without traversing watch tokens.
+- Backend: shared `notification_outbox` rows with `event_type="reminder"`. The dispatcher branches on event_type and skips member-resolution / filter / debounce / quiet-hours for reminders — they were scheduled at a specific time on purpose. Per-channel concurrency limits still apply.
+- Frontend: new `/reminders` route in the sidebar between Notifications and Settings, with a list view and a single create/edit dialog covering both kinds.
+- Title and body are encrypted at rest, matching the existing convention for member descriptions and journal entries.
+
 ### Front-time analytics
 
 - New `GET /v1/analytics/fronting` endpoint, gated by the existing `fronts:read` scope. Returns per-member time-on-front summaries over a configurable window (defaults to last 30 days, capped at 5 years).

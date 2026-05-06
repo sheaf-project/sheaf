@@ -117,7 +117,7 @@ function MemberForm({
           <Input
             value={emoji}
             onChange={(e) => setEmoji(e.target.value)}
-            placeholder="🦊"
+            placeholder=""
             maxLength={8}
             className="w-20 text-center"
           />
