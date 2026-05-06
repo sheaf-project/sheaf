@@ -143,6 +143,24 @@ export interface FrontCreate {
   custom_status?: string | null;
 }
 
+export interface MemberFrontingStats {
+  member_id: string;
+  is_custom_front: boolean;
+  total_seconds: number;
+  percent_of_window: number;
+  session_count: number;
+  longest_session_seconds: number;
+  hour_of_day_seconds: number[]; // 24 entries, indexed 0..23 in the requested tz
+}
+
+export interface FrontingAnalytics {
+  since: string;
+  until: string;
+  tz: string;
+  window_seconds: number;
+  members: MemberFrontingStats[];
+}
+
 export interface FrontUpdate {
   ended_at?: string | null;
   member_ids?: string[];
