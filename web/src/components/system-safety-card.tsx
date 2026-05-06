@@ -282,7 +282,9 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
                   placeholder="6-digit code"
+                  inputMode="numeric"
                   maxLength={6}
+                  pattern="[0-9]{6}"
                   autoComplete="off"
                   required
                 />
