@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, timeAgo } from "@/lib/utils";
 import { getMySystem } from "@/lib/systems";
 
 export function FrontsPage() {
@@ -35,13 +35,24 @@ export function FrontsPage() {
     updateFront.mutate({ id, data: { ended_at: new Date().toISOString() } });
   }
 
-  function renderMembers(memberIds: string[]) {
+  function renderMembers(
+    memberIds: string[],
+    memberSince?: Record<string, string>,
+    cappedIds?: string[],
+  ) {
     return memberIds.map((mid) => {
       const m = memberMap.get(mid);
+      const since = memberSince?.[mid];
+      const capped = cappedIds?.includes(mid) ?? false;
       return (
         <Badge key={mid} variant="secondary" className="gap-1.5">
           <ColorDot color={m?.color ?? null} />
           {m?.display_name ?? m?.name ?? "Unknown"}
+          {since && (
+            <span className="text-muted-foreground">
+              · {capped ? "> " : ""}{timeAgo(since)}
+            </span>
+          )}
         </Badge>
       );
     });
@@ -69,10 +80,11 @@ export function FrontsPage() {
                   className="flex items-center justify-between rounded-md border p-3"
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    {renderMembers(front.member_ids)}
-                    <span className="text-xs text-muted-foreground">
-                      since {formatDateTime(front.started_at)}
-                    </span>
+                    {renderMembers(
+                      front.member_ids,
+                      front.member_since,
+                      front.member_since_capped,
+                    )}
                   </div>
                   <Button
                     size="sm"

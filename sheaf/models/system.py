@@ -65,6 +65,13 @@ class System(UUIDMixin, TimestampMixin, Base):
     replace_fronts_default: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
     )
+    # Display preference: when a member appears in a chain of back-to-back
+    # front entries (e.g. solo -> cofront via replace_fronts), treat their
+    # "fronting since" as the start of the earliest contiguous entry rather
+    # than the literal current entry. Computed read-time, no schema impact.
+    coalesce_contiguous_fronts: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
 
     # System Safety — grace period + per-category toggles for destructive actions.
     # 0 days means no grace; paired with all category toggles off by default.

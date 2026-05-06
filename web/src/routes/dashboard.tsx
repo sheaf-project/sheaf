@@ -53,16 +53,20 @@ export function DashboardPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       {front.member_ids.map((mid) => {
                         const m = memberMap.get(mid);
+                        const since =
+                          front.member_since?.[mid] ?? front.started_at;
+                        const capped =
+                          front.member_since_capped?.includes(mid) ?? false;
                         return (
                           <Badge key={mid} variant="secondary" className="gap-1.5">
                             <ColorDot color={m?.color ?? null} />
                             {m?.display_name ?? m?.name ?? "Unknown"}
+                            <span className="text-muted-foreground">
+                              · {capped ? "> " : ""}{timeAgo(since)}
+                            </span>
                           </Badge>
                         );
                       })}
-                      <span className="text-xs text-muted-foreground">
-                        {timeAgo(front.started_at)}
-                      </span>
                     </div>
                     <Button
                       size="sm"
