@@ -105,7 +105,9 @@ function StepUpDialog({
                 value={totp}
                 onChange={(e) => setTotp(e.target.value)}
                 placeholder="6-digit code"
+                inputMode="numeric"
                 maxLength={6}
+                pattern="[0-9]{6}"
                 autoComplete="off"
               />
             </div>

@@ -93,6 +93,7 @@ export function TOTPSetup() {
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="000000"
+              inputMode="numeric"
               maxLength={6}
               pattern="[0-9]{6}"
               required
@@ -248,7 +249,9 @@ function TOTPDisable() {
             value={totpCode}
             onChange={(e) => setTotpCode(e.target.value)}
             placeholder="000000"
+            inputMode="numeric"
             maxLength={6}
+            pattern="[0-9]{6}"
             autoComplete="off"
             required
             autoFocus
@@ -287,7 +290,9 @@ function TOTPDisable() {
           value={totpCode}
           onChange={(e) => setTotpCode(e.target.value)}
           placeholder="000000"
+          inputMode="numeric"
           maxLength={6}
+          pattern="[0-9]{6}"
           autoComplete="off"
           required
         />
