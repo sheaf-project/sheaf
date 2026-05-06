@@ -18,6 +18,10 @@ Yes. Sheaf is free and open-source software under the AGPL-3.0 license. You can 
 
 Yes. Export your data from SimplyPlural, then use the import feature in Sheaf. You can choose exactly what to import — specific members, front history, custom fields, groups.
 
+### Can I import from PluralKit?
+
+Yes, both ways: upload a `pk;export` JSON file, or paste the token from `pk;token` to pull live from the PluralKit API. PK's switch log is converted into Sheaf's front-interval model, and each member's PK HID is stored on the imported member so you can keep cross-referencing between the two. Tokens are forwarded once and never stored. See [docs/IMPORT.md](docs/IMPORT.md) for details.
+
 ### Does Sheaf have mobile apps?
 
 Yes, iOS and Android apps are in development.
@@ -88,7 +92,7 @@ Sheaf treats all system data as GDPR Article 9 special category data (data conce
 
 ### What about PluralKit integration?
 
-It's on the roadmap. Bidirectional sync (pushing switches to PK and/or pulling from PK) is planned but needs careful design work.
+One-shot import is supported today (file upload or live API via `pk;token`). Bidirectional sync (pushing switches to PK and/or continuously pulling from PK with conflict resolution) is on the roadmap as a follow-up; it needs careful design work around foreign-ID tracking and merge semantics.
 
 ## Contributing
 

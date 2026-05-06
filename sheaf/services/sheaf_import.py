@@ -141,6 +141,7 @@ async def run_import(
             avatar_url=_trunc(m_data.get("avatar_url"), 500),
             color=_trunc(m_data.get("color"), 7),
             birthday=_trunc(m_data.get("birthday"), 10),
+            pluralkit_id=_trunc(m_data.get("pluralkit_id"), 8),
             privacy=_privacy(m_data.get("privacy")),
         )
         db.add(member)

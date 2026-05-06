@@ -15,6 +15,7 @@ from sheaf.api.v1 import (
     members,
     notification_channels,
     notifications_public,
+    pk_import,
     retention,
     sheaf_import,
     sp_import,
@@ -92,6 +93,10 @@ v1_router.include_router(
 v1_router.include_router(files.router)
 v1_router.include_router(
     sp_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    pk_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 v1_router.include_router(

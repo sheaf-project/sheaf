@@ -17,9 +17,19 @@ import {
   previewSheafImport,
   runSheafImport,
 } from "@/lib/sheaf-import";
+import {
+  type PKPreviewSummary,
+  type PKImportResult,
+  previewImportFromFile as previewPKFile,
+  runImportFromFile as runPKFile,
+  previewImportFromApi as previewPKApi,
+  runImportFromApi as runPKApi,
+} from "@/lib/pk-import";
+import { Input } from "@/components/ui/input";
 
-type Source = "choose" | "sheaf" | "sp";
+type Source = "choose" | "sheaf" | "sp" | "pk";
 type Step = "upload" | "preview" | "importing" | "done";
+type PKMethod = "choose" | "file" | "api";
 
 export function ImportPage() {
   const [source, setSource] = useState<Source>("choose");
@@ -33,6 +43,9 @@ export function ImportPage() {
       )}
       {source === "sp" && (
         <SPImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "pk" && (
+        <PKImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -65,6 +78,20 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
         <CardContent>
           <p className="text-sm text-muted-foreground">
             Import from a SimplyPlural data export (JSON).
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("pk")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from PluralKit</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Pull from your PluralKit account using a token (the same one you
+            use for <code>pk;token</code>), or upload a PK data export file.
           </p>
         </CardContent>
       </Card>
@@ -452,6 +479,304 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
               )}
               {result.custom_fields_imported > 0 && (
                 <div>Custom fields: <strong>{result.custom_fields_imported}</strong></div>
+              )}
+            </div>
+            <Warnings warnings={result.warnings} />
+            <Button onClick={() => navigate("/members")} className="w-full">
+              View members
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PluralKit import flow
+// ---------------------------------------------------------------------------
+
+function PKImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [method, setMethod] = useState<PKMethod>("choose");
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  // Token lives only in component state; we never persist it. Kept in a
+  // ref-discipline mental model: read on submit, then implicitly discarded
+  // when the user navigates away or finishes the flow.
+  const [token, setToken] = useState<string>("");
+  const [preview, setPreview] = useState<PKPreviewSummary | null>(null);
+  const [result, setResult] = useState<PKImportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [systemProfile, setSystemProfile] = useState(true);
+  const [allMembers, setAllMembers] = useState(true);
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+  const [groups, setGroups] = useState(true);
+  const [frontHistory, setFrontHistory] = useState(false);
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewPKFile(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to parse file");
+    }
+  }
+
+  async function handleApiPreview() {
+    if (!token.trim()) {
+      setError("Enter your PluralKit token first.");
+      return;
+    }
+    setError(null);
+    try {
+      const p = await previewPKApi(token);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reach PluralKit");
+    }
+  }
+
+  async function handleImport() {
+    setStep("importing");
+    setError(null);
+    const options = {
+      system_profile: systemProfile,
+      member_ids: allMembers ? null : Array.from(selectedMembers),
+      groups,
+      front_history: frontHistory,
+    };
+    try {
+      const r =
+        method === "file" && file
+          ? await runPKFile(file, options)
+          : await runPKApi(token, options);
+      setResult(r);
+      setStep("done");
+      // Token has served its purpose; clear it so it's not lingering on the
+      // page for the rest of the session.
+      setToken("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+      setStep("preview");
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {method === "choose" && (
+        <div className="grid gap-4 max-w-lg">
+          <Card
+            className="cursor-pointer hover:border-primary transition-colors"
+            onClick={() => setMethod("api")}
+          >
+            <CardHeader>
+              <CardTitle className="text-base">Connect with a token</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Use your PluralKit token (run <code>pk;token</code> in any
+                Discord server PluralKit is in to get one). Sheaf forwards it
+                once to fetch your system, then drops it. Nothing is stored.
+              </p>
+            </CardContent>
+          </Card>
+          <Card
+            className="cursor-pointer hover:border-primary transition-colors"
+            onClick={() => setMethod("file")}
+          >
+            <CardHeader>
+              <CardTitle className="text-base">Upload an export file</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Use the JSON file from <code>pk;export</code> if you'd rather
+                not paste a token.
+              </p>
+            </CardContent>
+          </Card>
+          <Button variant="outline" size="sm" onClick={onBack} className="w-fit">
+            Back
+          </Button>
+        </div>
+      )}
+
+      {method === "file" && step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload PluralKit export file</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Run <code>pk;export</code> on Discord, then upload the JSON
+              attachment PluralKit DMs you.
+            </p>
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={() => setMethod("choose")}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {method === "api" && step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Connect to PluralKit</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Paste the token from <code>pk;token</code>. We use it once to
+              fetch your system data and discard it. The token is never
+              stored on the server or in your browser.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="pk-token">PluralKit token</Label>
+              <Input
+                id="pk-token"
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="abcd1234..."
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={handleApiPreview} disabled={!token.trim()}>
+                Continue
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setToken("");
+                  setMethod("choose");
+                }}
+              >
+                Back
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                Preview
+                {preview.system_name && (
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    {preview.system_name}
+                  </span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>Groups: <strong>{preview.group_count}</strong></div>
+              <div>
+                Switches:{" "}
+                <strong>
+                  {method === "api" && preview.switch_count >= 100
+                    ? "100+"
+                    : preview.switch_count.toLocaleString()}
+                </strong>
+              </div>
+              {preview.earliest_switch && preview.latest_switch && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  Switch range: {new Date(preview.earliest_switch).toLocaleDateString()}
+                  {" "}to{" "}
+                  {new Date(preview.latest_switch).toLocaleDateString()}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="System profile (tag, color, avatar — only fills in fields you've left blank)"
+                checked={systemProfile}
+                onChange={setSystemProfile}
+              />
+              <Checkbox
+                label="Groups"
+                checked={groups}
+                onChange={setGroups}
+              />
+              <Checkbox
+                label={
+                  method === "api" && preview.switch_count >= 100
+                    ? "Front history (full pull, may take a moment for large logs)"
+                    : `Front history (${preview.switch_count.toLocaleString()} switches)`
+                }
+                checked={frontHistory}
+                onChange={setFrontHistory}
+              />
+
+              <MemberSelector
+                members={preview.members}
+                totalCount={preview.member_count}
+                allMembers={allMembers}
+                setAllMembers={setAllMembers}
+                selectedMembers={selectedMembers}
+                toggleMember={toggleMember}
+              />
+
+              <Button onClick={handleImport} className="w-full">
+                Import
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+
+      {step === "done" && result && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Import complete</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {result.members_imported > 0 && (
+                <div>Members: <strong>{result.members_imported}</strong></div>
+              )}
+              {result.groups_imported > 0 && (
+                <div>Groups: <strong>{result.groups_imported}</strong></div>
+              )}
+              {result.fronts_imported > 0 && (
+                <div>Fronts: <strong>{result.fronts_imported}</strong></div>
               )}
             </div>
             <Warnings warnings={result.warnings} />

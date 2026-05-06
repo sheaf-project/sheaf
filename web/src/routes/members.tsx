@@ -67,6 +67,7 @@ function MemberForm({
   const [color, setColor] = useState(initial?.color ?? "#6366f1");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [birthday, setBirthday] = useState(initial?.birthday ?? "");
+  const [pluralkitId, setPluralkitId] = useState(initial?.pluralkit_id ?? "");
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial?.privacy ?? "private");
 
   function handleSubmit(e: FormEvent) {
@@ -79,6 +80,7 @@ function MemberForm({
       color: color || null,
       description: description || null,
       birthday: birthday || null,
+      pluralkit_id: pluralkitId.trim() || null,
       privacy,
     });
   }
@@ -143,6 +145,20 @@ function MemberForm({
         <Suspense fallback={<div className="h-[120px] rounded-md border border-input" />}>
           <BioEditor value={description} onChange={setDescription} />
         </Suspense>
+      </div>
+      <div className="space-y-2">
+        <Label>PluralKit ID</Label>
+        <Input
+          value={pluralkitId}
+          onChange={(e) => setPluralkitId(e.target.value)}
+          placeholder="Optional, e.g. wyyetr"
+          maxLength={8}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <p className="text-xs text-muted-foreground">
+          The 5-7 character HID PluralKit assigned this member, if you cross-reference between the two.
+        </p>
       </div>
       <div className="space-y-2">
         <Label>Privacy</Label>
@@ -508,6 +524,11 @@ function MemberView({
               )}
               {member.birthday && (
                 <p className="text-sm text-muted-foreground">{member.birthday}</p>
+              )}
+              {member.pluralkit_id && (
+                <p className="text-xs text-muted-foreground font-mono">
+                  PK: {member.pluralkit_id}
+                </p>
               )}
             </div>
           </div>

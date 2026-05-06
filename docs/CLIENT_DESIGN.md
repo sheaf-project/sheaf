@@ -338,10 +338,18 @@ Uploads can be disabled server-wide (`ALLOW_IMAGE_UPLOADS=false`). When disabled
 
 ### Import/Export
 
+For end-user-facing import documentation (covering how data shapes
+differ between SimplyPlural / PluralKit / Sheaf and what gets mapped
+where), see **[IMPORT.md](IMPORT.md)**.
+
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/import/simplyplural/preview` | Preview SP import |
 | POST | `/import/simplyplural` | Run SP import |
+| POST | `/import/pluralkit/preview` | Preview PK import (file upload) |
+| POST | `/import/pluralkit` | Run PK import (file upload) |
+| POST | `/import/pluralkit-api/preview` | Preview PK import (live API; body `{token}`) |
+| POST | `/import/pluralkit-api` | Run PK import (live API; body `{token, options}`) |
 | POST | `/import/sheaf/preview` | Preview Sheaf import |
 | POST | `/import/sheaf` | Run Sheaf import |
 | GET | `/export` | Export plural system content as JSON (sync, Article 20) |

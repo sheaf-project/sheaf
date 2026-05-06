@@ -1,0 +1,114 @@
+{
+  "version": 2,
+  "id": "exsysa",
+  "uuid": "11111111-1111-1111-1111-111111111111",
+  "name": "Test PK System",
+  "description": "Imported via test fixture.",
+  "tag": "tst",
+  "color": "ffaa00",
+  "avatar_url": "https://cdn.pluralkit.example/sys/exsysa.webp",
+  "pronouns": null,
+  "banner": null,
+  "created": "2024-01-01T00:00:00Z",
+  "privacy": {
+    "name_privacy": "public",
+    "avatar_privacy": "public",
+    "description_privacy": "public",
+    "banner_privacy": "public",
+    "pronoun_privacy": "public",
+    "member_list_privacy": "public",
+    "group_list_privacy": "public",
+    "front_privacy": "public",
+    "front_history_privacy": "public"
+  },
+  "config": {},
+  "accounts": [],
+  "webhook_url": null,
+  "members": [
+    {
+      "id": "alice",
+      "uuid": "22222222-2222-2222-2222-222222222222",
+      "name": "Alice",
+      "display_name": "Alice the First",
+      "color": "ff0000",
+      "birthday": "1990-04-15",
+      "pronouns": "she/her",
+      "avatar_url": "https://cdn.pluralkit.example/m/alice.webp",
+      "description": "First test member.",
+      "created": "2024-01-01T00:00:00Z",
+      "proxy_tags": [{"prefix": "a:", "suffix": null}],
+      "privacy": {
+        "visibility": "public",
+        "name_privacy": "public",
+        "description_privacy": "public",
+        "birthday_privacy": "public",
+        "pronoun_privacy": "public",
+        "avatar_privacy": "public",
+        "metadata_privacy": "public",
+        "proxy_privacy": "public"
+      }
+    },
+    {
+      "id": "bobxyz",
+      "uuid": "33333333-3333-3333-3333-333333333333",
+      "name": "Bob",
+      "display_name": null,
+      "color": "00ff00",
+      "birthday": "0004-07-20",
+      "pronouns": "he/him",
+      "avatar_url": null,
+      "description": null,
+      "created": "2024-01-02T00:00:00Z",
+      "proxy_tags": [],
+      "privacy": {
+        "visibility": "private",
+        "name_privacy": "private",
+        "description_privacy": "private"
+      }
+    },
+    {
+      "id": "carol1",
+      "uuid": "44444444-4444-4444-4444-444444444444",
+      "name": "Carol",
+      "display_name": null,
+      "color": "0000ff",
+      "birthday": null,
+      "pronouns": null,
+      "avatar_url": null,
+      "description": null,
+      "created": "2024-01-03T00:00:00Z",
+      "proxy_tags": [],
+      "privacy": {
+        "visibility": "public"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "id": "grp001",
+      "uuid": "55555555-5555-5555-5555-555555555555",
+      "name": "Inner Circle",
+      "description": "A small group.",
+      "color": "888888",
+      "members": ["alice", "bobxyz"]
+    }
+  ],
+  "switches": [
+    {
+      "timestamp": "2025-01-04T12:00:00.000000Z",
+      "members": []
+    },
+    {
+      "timestamp": "2025-01-04T11:00:00.000000Z",
+      "members": ["carol1"]
+    },
+    {
+      "timestamp": "2025-01-04T10:00:00.000000Z",
+      "members": ["alice", "bobxyz"]
+    },
+    {
+      "timestamp": "2025-01-04T09:00:00.000000Z",
+      "members": ["alice"]
+    }
+  ]
+}

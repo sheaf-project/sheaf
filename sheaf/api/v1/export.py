@@ -187,6 +187,7 @@ async def export_all(
                 "avatar_url": m.avatar_url,
                 "color": m.color,
                 "birthday": m.birthday,
+                "pluralkit_id": m.pluralkit_id,
                 "privacy": m.privacy.value,
                 "created_at": m.created_at.isoformat(),
             }
