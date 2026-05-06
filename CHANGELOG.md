@@ -6,6 +6,15 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Front-time analytics
+
+- New `GET /v1/analytics/fronting` endpoint, gated by the existing `fronts:read` scope. Returns per-member time-on-front summaries over a configurable window (defaults to last 30 days, capped at 5 years).
+- Co-fronting double-counts intentionally: if Alice and Bob co-front for an hour, both accrue +3600 seconds. Matches SimplyPlural's analytics shape and the reading users expect for "how much did Alice front this month".
+- Hour-of-day distribution: 24 buckets indexed 0-23 in the requested timezone (passed as `tz` query param). Sessions crossing hour boundaries split proportionally; DST transitions handled via zoneinfo-aware walking.
+- Custom fronts ride along with the `is_custom_front` flag set on the per-member row, so clients can filter them out of headcount-style charts.
+- Members with zero fronting time still appear in the response so the UI can list them without special-casing.
+- Frontend: new `/analytics` route in the sidebar (between Fronts and Groups). Cards for total time per member (horizontal bar chart, member colours), hour-of-day distribution (with per-member breakdown in the tooltip), and a per-member detail table. Window selector chips: 7d / 30d / 90d / 1 year. Times shown in the browser's local timezone.
+
 ### Custom fronts, member emoji, custom status on fronts
 
 A bundle of three small SimplyPlural-parity additions to the member and front data models:

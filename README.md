@@ -28,6 +28,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Members** — Profiles with name, pronouns, description, colour, birthday, avatar, emoji, privacy levels, optional PluralKit ID
 - **Custom fronts** — Mark non-counting fronting entities like "Asleep" or "Away" so they show up in the fronter list without inflating member counts
 - **Front tracking** — Log switches with cofronters and an optional encrypted free-text status per fronting period
+- **Analytics** — Per-member front time, percent of window, session count, longest session, and hour-of-day distribution over a configurable window (7d / 30d / 90d / 1 year). Co-fronting double-counts so individual member stats are accurate.
 - **Groups** — Organize members into groups with nesting (subsystems)
 - **Tags** — Flexible member tagging
 - **Custom fields** — Define your own fields (text, number, date, boolean, select) with per-field privacy

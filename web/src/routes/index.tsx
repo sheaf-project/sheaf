@@ -4,6 +4,7 @@ import { LoginPage } from "./login";
 import { DashboardPage } from "./dashboard";
 import { MembersPage } from "./members";
 import { FrontsPage } from "./fronts";
+import { AnalyticsPage } from "./analytics";
 import { GroupsPage } from "./groups";
 import { SettingsLayout } from "./settings/_layout";
 import { SettingsIndex } from "./settings/index";
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
       { path: "journals", element: <JournalsPage /> },
       { path: "journals/:entryId", element: <JournalDetailPage /> },
       { path: "fronts", element: <FrontsPage /> },
+      { path: "analytics", element: <AnalyticsPage /> },
       { path: "groups", element: <GroupsPage /> },
       { path: "notifications", element: <NotificationsPage /> },
       { path: "notifications/:channelId", element: <NotificationChannelPage /> },

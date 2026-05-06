@@ -336,6 +336,16 @@ Upload returns `{ "url": "...", "key": "...", "size": 12345 }`. Store the `key`;
 
 Uploads can be disabled server-wide (`ALLOW_IMAGE_UPLOADS=false`). When disabled, `POST /files/upload` returns 403 for regular users; admins and users with `can_upload_images=true` are unaffected. `GET /auth/me` returns `uploads_allowed: bool` — the effective permission for the current user. Hide upload UI when it is false and fall back to external-URL input where available.
 
+### Analytics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/analytics/fronting?since=&until=&tz=` | Per-member fronting summary over a window. Defaults: `until=now`, `since=until-30d`, `tz=UTC`. Capped at 5-year windows. Gated by `fronts:read`. |
+
+The response includes `total_seconds`, `percent_of_window`, `session_count`, `longest_session_seconds`, and `hour_of_day_seconds` (24 buckets indexed 0-23 in the supplied timezone) for every member in the system. Members with no fronting time are returned with zeros so clients can list them without a separate query.
+
+Co-fronting double-counts: if Alice and Bob co-front for an hour, both accrue +3600s individually. Custom fronts are present in the response with `is_custom_front: true`; clients should filter them out of headcount-style charts.
+
 ### Import/Export
 
 For end-user-facing import documentation (covering how data shapes

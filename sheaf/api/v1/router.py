@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from sheaf.api.v1 import (
     account,
     admin,
+    analytics,
     announcements,
     auth,
     client_settings,
@@ -62,6 +63,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     fronts.router,
+    dependencies=[Depends(require_scope("fronts:read"))],
+)
+v1_router.include_router(
+    analytics.router,
     dependencies=[Depends(require_scope("fronts:read"))],
 )
 v1_router.include_router(
