@@ -20,6 +20,7 @@ class PendingActionType(StrEnum):
     REVISION_UNPIN = "revision_unpin"
     WATCH_TOKEN_REVOKE = "watch_token_revoke"
     CHANNEL_DELETE = "channel_delete"
+    REMINDER_DELETE = "reminder_delete"
 
 
 class PendingActionStatus(StrEnum):

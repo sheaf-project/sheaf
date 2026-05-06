@@ -621,6 +621,15 @@ async def _cleanup_export_jobs(db: AsyncSession) -> dict:
     return {"items_processed": handled}
 
 
+async def _tick_repeated_reminders(db: AsyncSession) -> dict:
+    """Fire repeated reminders whose schedule has elapsed since last tick."""
+    from sheaf.services.reminders import tick_repeated_reminders
+
+    enqueued = await tick_repeated_reminders(db)
+    await db.commit()
+    return {"items_processed": enqueued}
+
+
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -723,6 +732,13 @@ def _register_all_jobs() -> None:
         description="Delete expired export artefacts and mark rows EXPIRED",
         func=_cleanup_export_jobs,
         interval_seconds=lambda: settings.export_cleanup_interval_seconds,
+    )
+
+    register_job(
+        name="tick_repeated_reminders",
+        description="Fire any due repeated reminders into the notification outbox",
+        func=_tick_repeated_reminders,
+        interval_seconds=lambda: 60,
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images

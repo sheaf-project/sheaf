@@ -143,6 +143,64 @@ export interface FrontCreate {
   custom_status?: string | null;
 }
 
+// --- Reminders -----------------------------------------------------------
+
+export type ReminderTriggerType = "automated" | "repeated";
+export type ReminderTriggerEvent = "start" | "stop" | "any";
+export type ReminderScheduleKind = "daily" | "weekly" | "monthly";
+export type ReminderScope = "system" | "member";
+
+export interface Reminder {
+  id: string;
+  system_id: string;
+  channel_id: string;
+  name: string;
+  title: string;
+  body: string | null;
+  enabled: boolean;
+  trigger_type: ReminderTriggerType;
+  trigger_member_id: string | null;
+  trigger_event: ReminderTriggerEvent | null;
+  delay_seconds: number | null;
+  schedule_kind: ReminderScheduleKind | null;
+  schedule_time: string | null;
+  schedule_dow_mask: number | null;
+  schedule_dom: number | null;
+  schedule_tz: string | null;
+  cron_expression: string | null;
+  scope: ReminderScope;
+  scope_member_ids: string[];
+  digest_when_absent: boolean;
+  last_fired_at: string | null;
+  pending_count: number;
+  next_fire_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReminderCreate {
+  channel_id: string;
+  name: string;
+  title: string;
+  body?: string | null;
+  enabled?: boolean;
+  trigger_type: ReminderTriggerType;
+  trigger_member_id?: string | null;
+  trigger_event?: ReminderTriggerEvent | null;
+  delay_seconds?: number | null;
+  schedule_kind?: ReminderScheduleKind | null;
+  schedule_time?: string | null;
+  schedule_dow_mask?: number | null;
+  schedule_dom?: number | null;
+  schedule_tz?: string | null;
+  cron_expression?: string | null;
+  scope?: ReminderScope;
+  scope_member_ids?: string[];
+  digest_when_absent?: boolean;
+}
+
+export type ReminderUpdate = Partial<ReminderCreate>;
+
 export interface MemberFrontingStats {
   member_id: string;
   is_custom_front: boolean;

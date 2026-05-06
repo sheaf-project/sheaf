@@ -33,6 +33,7 @@ from sheaf.models.pending_action import (
     PendingActionStatus,
     PendingActionType,
 )
+from sheaf.models.reminder import Reminder
 from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
     SafetyChangeStatus,
@@ -68,6 +69,7 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.REVISION_UNPIN: "revisions",
     PendingActionType.WATCH_TOKEN_REVOKE: "notifications",
     PendingActionType.CHANNEL_DELETE: "notifications",
+    PendingActionType.REMINDER_DELETE: "notifications",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -81,6 +83,7 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.REVISION_UNPIN: ContentRevision,
     PendingActionType.WATCH_TOKEN_REVOKE: WatchToken,
     PendingActionType.CHANNEL_DELETE: NotificationChannel,
+    PendingActionType.REMINDER_DELETE: Reminder,
 }
 
 

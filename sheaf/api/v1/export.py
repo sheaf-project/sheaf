@@ -174,6 +174,19 @@ async def export_all(
     )
     uploaded_files = list(files_result.scalars().all())
 
+    # Reminders — config the user explicitly set up. Title and body are
+    # encrypted at rest; we decrypt for the export so the user has the
+    # plaintext. Pending queue rows are runtime state and not exported.
+    from sheaf.models.reminder import Reminder
+
+    reminders_result = await db.execute(
+        select(Reminder)
+        .options(selectinload(Reminder.scope_members))
+        .where(Reminder.system_id == system.id)
+        .order_by(Reminder.created_at.asc())
+    )
+    reminders = list(reminders_result.scalars().all())
+
     return {
         "version": "2",
         "system": _system_dict(system),
@@ -249,6 +262,7 @@ async def export_all(
         "revisions": [_revision_dict(r) for r in revisions],
         "watch_tokens": [_watch_token_dict(t) for t in watch_tokens],
         "uploaded_files": [_uploaded_file_dict(f) for f in uploaded_files],
+        "reminders": [_reminder_dict(r) for r in reminders],
     }
 
 
@@ -265,6 +279,7 @@ def _empty_export() -> dict:
         "revisions": [],
         "watch_tokens": [],
         "uploaded_files": [],
+        "reminders": [],
     }
 
 
@@ -409,6 +424,44 @@ def _uploaded_file_dict(f: UploadedFile) -> dict:
         "size_bytes": f.size_bytes,
         "content_type": f.content_type,
         "created_at": f.created_at.isoformat(),
+    }
+
+
+def _reminder_dict(reminder) -> dict:
+    """Reminder config the user explicitly built up. Title and body are
+    decrypted to plaintext for the export. Pending-queue rows are
+    transient runtime state and not included.
+
+    Re-importable in the sense that the trigger config and channel
+    reference carry over to another instance; runtime state (last_fired_at,
+    pending queue) is omitted and the channel_id is just the original UUID
+    so a re-import on a fresh instance won't resolve unless the channels
+    were imported there too."""
+    title = decrypt(reminder.title) if reminder.title else ""
+    body = decrypt(reminder.body) if reminder.body else None
+    return {
+        "id": str(reminder.id),
+        "channel_id": str(reminder.channel_id),
+        "name": reminder.name,
+        "title": title,
+        "body": body,
+        "enabled": reminder.enabled,
+        "trigger_type": reminder.trigger_type,
+        "trigger_member_id": (
+            str(reminder.trigger_member_id) if reminder.trigger_member_id else None
+        ),
+        "trigger_event": reminder.trigger_event,
+        "delay_seconds": reminder.delay_seconds,
+        "schedule_kind": reminder.schedule_kind,
+        "schedule_time": reminder.schedule_time,
+        "schedule_dow_mask": reminder.schedule_dow_mask,
+        "schedule_dom": reminder.schedule_dom,
+        "schedule_tz": reminder.schedule_tz,
+        "cron_expression": reminder.cron_expression,
+        "scope": reminder.scope,
+        "scope_member_ids": [str(m.id) for m in reminder.scope_members],
+        "digest_when_absent": reminder.digest_when_absent,
+        "created_at": reminder.created_at.isoformat(),
     }
 
 

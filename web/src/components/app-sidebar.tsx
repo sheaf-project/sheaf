@@ -16,6 +16,7 @@ import {
   Shield,
   BookOpen,
   Bell,
+  BellRing,
   BarChart3,
   PanelLeftClose,
   PanelLeftOpen,
@@ -31,6 +32,7 @@ const navItems = [
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/groups", label: "Groups", icon: FolderOpen },
   { to: "/notifications", label: "Notifications", icon: Bell },
+  { to: "/reminders", label: "Reminders", icon: BellRing },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

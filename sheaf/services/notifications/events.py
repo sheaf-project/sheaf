@@ -91,11 +91,36 @@ async def emit_front_change(
 
     Returns the number of outbox rows enqueued. Caller commits the session.
     """
-    started = bool(after.fronting_member_ids - before.fronting_member_ids)
-    stopped = bool(before.fronting_member_ids - after.fronting_member_ids)
+    started_ids = after.fronting_member_ids - before.fronting_member_ids
+    stopped_ids = before.fronting_member_ids - after.fronting_member_ids
+    started = bool(started_ids)
+    stopped = bool(stopped_ids)
     cofront_changed = _has_cofront_change(before, after)
     if not (started or stopped or cofront_changed):
         return 0
+
+    # Reminders ride alongside front-change notifications: automated
+    # timers fire `delay_seconds` after the matching event, and member-
+    # scoped repeated-reminder digests drain when a scope-member starts
+    # fronting after a stretch with none of them on. Importing here to
+    # avoid a circular import at module load.
+    from sheaf.services.reminders import (
+        drain_digests_for_started_members,
+        emit_for_front_event,
+    )
+
+    await emit_for_front_event(
+        db,
+        system_id=system_id,
+        started_member_ids=set(started_ids),
+        stopped_member_ids=set(stopped_ids),
+    )
+    await drain_digests_for_started_members(
+        db,
+        system_id=system_id,
+        started_member_ids=set(started_ids),
+        previously_fronting=set(before.fronting_member_ids),
+    )
 
     event_id = event_id or uuid.uuid4()
     now = now or datetime.now(UTC)

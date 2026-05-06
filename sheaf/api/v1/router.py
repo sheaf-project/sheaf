@@ -17,6 +17,7 @@ from sheaf.api.v1 import (
     notification_channels,
     notifications_public,
     pk_import,
+    reminders,
     retention,
     sheaf_import,
     sp_import,
@@ -120,6 +121,10 @@ v1_router.include_router(
     dependencies=[Depends(require_scope("notifications:read"))],
 )
 v1_router.include_router(notifications_public.router)
+v1_router.include_router(
+    reminders.router,
+    dependencies=[Depends(require_scope("notifications:read"))],
+)
 
 # File serve catch-all MUST be last — {path:path} would shadow other routes
 v1_router.include_router(files.serve_router)

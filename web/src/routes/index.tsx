@@ -23,6 +23,7 @@ import { NotificationsPage } from "./notifications";
 import { NotificationChannelPage } from "./notifications.$channelId";
 import { NotificationsRedeemPage } from "./notifications.redeem";
 import { NotificationsManagePage } from "./notifications.manage.$mgmtToken";
+import { RemindersPage } from "./reminders";
 import { AdminLayout } from "./admin/_layout";
 import { VerifyEmailPage } from "./verify-email";
 import { ForgotPasswordPage } from "./forgot-password";
@@ -71,6 +72,7 @@ export const router = createBrowserRouter([
       { path: "groups", element: <GroupsPage /> },
       { path: "notifications", element: <NotificationsPage /> },
       { path: "notifications/:channelId", element: <NotificationChannelPage /> },
+      { path: "reminders", element: <RemindersPage /> },
       {
         path: "settings",
         element: <SettingsLayout />,

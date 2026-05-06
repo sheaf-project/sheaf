@@ -360,6 +360,41 @@ async def list_channels(
     return [_channel_to_read(c) for c in result.scalars().all()]
 
 
+@router.get("/channels", response_model=list[ChannelRead])
+async def list_all_channels(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChannelRead]:
+    """Flat list of every notification channel in the user's system.
+
+    The per-token list endpoint above is the right shape for the
+    notifications UI (which is grouped by watch token); this flat view
+    is the right shape for the reminders UI, which doesn't care about
+    tokens — it just needs to pick a destination. Same auth model:
+    you only see channels under your own non-revoked watch tokens.
+    """
+    from sheaf.models.system import System
+    from sheaf.models.watch_token import WatchToken
+
+    system_result = await db.execute(
+        select(System).where(System.user_id == user.id)
+    )
+    system = system_result.scalar_one_or_none()
+    if system is None:
+        return []
+    result = await db.execute(
+        select(NotificationChannel)
+        .join(WatchToken, NotificationChannel.watch_token_id == WatchToken.id)
+        .where(WatchToken.system_id == system.id)
+        .options(
+            selectinload(NotificationChannel.group_rules),
+            selectinload(NotificationChannel.member_rules),
+        )
+        .order_by(NotificationChannel.created_at.desc())
+    )
+    return [_channel_to_read(c) for c in result.scalars().all()]
+
+
 @router.get("/channels/{channel_id}", response_model=ChannelRead)
 async def get_channel(
     channel_id: uuid.UUID,

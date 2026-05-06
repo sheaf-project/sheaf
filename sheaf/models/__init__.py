@@ -30,6 +30,7 @@ from sheaf.models.notification_channel_member_rule import (
 )
 from sheaf.models.notification_outbox import NotificationOutboxRow
 from sheaf.models.pending_action import PendingAction, PendingActionStatus, PendingActionType
+from sheaf.models.reminder import Reminder, ReminderPending, reminder_scope_members
 from sheaf.models.retention_trim_notice import RetentionTrimNotice, RetentionTrimStatus
 from sheaf.models.safety_change_request import SafetyChangeRequest, SafetyChangeStatus
 from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
@@ -75,6 +76,8 @@ __all__ = [
     "PendingActionStatus",
     "PendingActionType",
     "PrivacyLevel",
+    "Reminder",
+    "ReminderPending",
     "RetentionTrimNotice",
     "RetentionTrimStatus",
     "SafetyChangeRequest",
@@ -90,4 +93,5 @@ __all__ = [
     "front_members",
     "group_members",
     "member_tags",
+    "reminder_scope_members",
 ]

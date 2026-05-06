@@ -36,6 +36,7 @@ from sheaf.models.notification_channel import (
 from sheaf.models.notification_outbox import NotificationOutboxRow
 from sheaf.services.members import member_name_plaintext
 from sheaf.services.notifications.handlers import deliver
+from sheaf.services.notifications.payload import RenderedMessage
 from sheaf.services.notifications.resolution import resolve_member_visibility
 
 logger = logging.getLogger("sheaf.notifications.dispatcher")
@@ -134,9 +135,19 @@ async def _process_row(
             await _drop(db, row, f"channel state {channel.destination_state}")
             return
 
+        # Reminders take a separate code path: no member resolution, no
+        # filter application, no debounce/quiet-hours suppression. They
+        # were scheduled at a specific time on purpose; if the user
+        # didn't want them firing during quiet hours they wouldn't have
+        # set them. Per-channel rate limits still apply via the semaphore.
+        now = datetime.now(UTC)
+        if row.event_type == "reminder":
+            message = _render_reminder(row.event_payload)
+            await _deliver_or_retry(db, row, channel, message, sems)
+            return
+
         # Debounce: skip if the channel got a successful delivery within the
         # debounce window. Re-queue past the window.
-        now = datetime.now(UTC)
         if (
             channel.last_delivered_at is not None
             and channel.debounce_seconds > 0
@@ -191,44 +202,85 @@ async def _process_row(
             await _drop(db, row, "no visible content for this channel")
             return
 
-        sem = sems.get(channel.destination_type)
-        if sem is None:
-            await _drop(db, row, f"no handler for {channel.destination_type}")
-            return
+        await _deliver_or_retry(db, row, channel, message, sems)
 
-        # Resolve channel owner for handlers that need per-user accounting
-        # (currently just Pushover's per-user monthly cap on the shared app).
-        owner_user_id, owner_tier = await _resolve_channel_owner(db, channel)
 
-        async with sem:
-            outcome = await deliver(
-                channel,
-                message,
-                event_id=str(row.event_id),
-                owner_user_id=owner_user_id,
-                owner_tier=owner_tier,
-            )
+def _render_reminder(payload: dict) -> RenderedMessage:
+    """Build a delivery message for a reminder outbox row.
 
-        if outcome.ok:
-            row.delivered_at = datetime.now(UTC)
-            channel.last_delivered_at = row.delivered_at
-            await db.commit()
-            return
+    Two payload kinds:
+      - reminder_single: one fire of one reminder; title is the user's
+        reminder title, body is the user's body verbatim.
+      - reminder_digest: multiple missed firings of one reminder, drained
+        because a scope-member just started fronting. Body summarises with
+        a count + last-missed timestamp; recipients click through if they
+        want the full detail.
+    """
+    kind = payload.get("kind")
+    title = payload.get("title") or "Reminder"
+    body = payload.get("body") or ""
+    if kind == "reminder_digest":
+        count = payload.get("missed_count") or 0
+        last = payload.get("last_missed_at") or ""
+        suffix = f" (×{count})" if count > 1 else ""
+        # Keep the body terse — channels with a strict size budget (web push
+        # at ~4KB) don't have room for full per-occurrence detail anyway.
+        digest_lines = [f"{title}{suffix}"]
+        if last:
+            digest_lines.append(f"last scheduled at {last}")
+        if body:
+            digest_lines.append(body)
+        return RenderedMessage(
+            title="Missed reminders" if count > 1 else title,
+            body="\n".join(digest_lines),
+        )
+    return RenderedMessage(title=title, body=body)
 
-        if outcome.permanent:
-            channel.destination_state = DestinationState.DISABLED.value
-            await _drop(db, row, f"permanent: {outcome.error}")
-            return
 
-        # Transient: backoff + requeue.
-        row.failed_attempts += 1
-        row.last_error = outcome.error
-        backoff = _BACKOFF_BASE_SECONDS * (2 ** min(row.failed_attempts - 1, 6))
-        row.next_retry_after = datetime.now(UTC) + timedelta(seconds=backoff)
-        row.deliver_after = row.next_retry_after
-        row.claimed_at = None
-        row.claimed_by = None
+async def _deliver_or_retry(
+    db: AsyncSession,
+    row: NotificationOutboxRow,
+    channel: NotificationChannel,
+    message: RenderedMessage,
+    sems: dict[str, asyncio.Semaphore],
+) -> None:
+    """Common delivery tail used by both front-change and reminder rows."""
+    sem = sems.get(channel.destination_type)
+    if sem is None:
+        await _drop(db, row, f"no handler for {channel.destination_type}")
+        return
+
+    owner_user_id, owner_tier = await _resolve_channel_owner(db, channel)
+
+    async with sem:
+        outcome = await deliver(
+            channel,
+            message,
+            event_id=str(row.event_id),
+            owner_user_id=owner_user_id,
+            owner_tier=owner_tier,
+        )
+
+    if outcome.ok:
+        row.delivered_at = datetime.now(UTC)
+        channel.last_delivered_at = row.delivered_at
         await db.commit()
+        return
+
+    if outcome.permanent:
+        channel.destination_state = DestinationState.DISABLED.value
+        await _drop(db, row, f"permanent: {outcome.error}")
+        return
+
+    # Transient: backoff + requeue.
+    row.failed_attempts += 1
+    row.last_error = outcome.error
+    backoff = _BACKOFF_BASE_SECONDS * (2 ** min(row.failed_attempts - 1, 6))
+    row.next_retry_after = datetime.now(UTC) + timedelta(seconds=backoff)
+    row.deliver_after = row.next_retry_after
+    row.claimed_at = None
+    row.claimed_by = None
+    await db.commit()
 
 
 async def _load_row(

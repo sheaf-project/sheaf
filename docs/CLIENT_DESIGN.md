@@ -336,6 +336,22 @@ Upload returns `{ "url": "...", "key": "...", "size": 12345 }`. Store the `key`;
 
 Uploads can be disabled server-wide (`ALLOW_IMAGE_UPLOADS=false`). When disabled, `POST /files/upload` returns 403 for regular users; admins and users with `can_upload_images=true` are unaffected. `GET /auth/me` returns `uploads_allowed: bool` — the effective permission for the current user. Hide upload UI when it is false and fall back to external-URL input where available.
 
+### Reminders
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/reminders` | List all reminders for the caller's system |
+| POST | `/reminders` | Create a reminder. Gated by `notifications:write`. |
+| GET | `/reminders/{id}` | Read |
+| PATCH | `/reminders/{id}` | Update. Gated by `notifications:write`. |
+| DELETE | `/reminders/{id}` | Delete. Gated by `notifications:write`. |
+| GET | `/reminders/{id}/next-fire` | Compute next scheduled fire time (null for automated reminders) |
+| GET | `/channels` | Flat list of notification channels for the system, used when picking a destination for a reminder. |
+
+Reminders ride a notification channel for delivery (`channel_id`). Two trigger types: `automated` (delay_seconds after a front-change matching `trigger_member_id`/`trigger_event`) and `repeated` (cron-style schedule via either structured `schedule_kind`/`schedule_time`/`schedule_dow_mask`/`schedule_dom`/`schedule_tz` fields, or a raw `cron_expression`).
+
+Repeated reminders can be scope-limited to specific members. When the schedule fires while no scoped member is fronting and `digest_when_absent=true`, the missed firing queues (capped at 5 per reminder, oldest dropped). On the next front-start of a scoped member, the queue drains as a digest notification. Title and body are encrypted at rest.
+
 ### Analytics
 
 | Method | Path | Description |
