@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index
+from sqlalchemy import DateTime, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +26,12 @@ class Front(UUIDMixin, Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Optional free-text per-fronting-period annotation, e.g. "during a job
+    # interview" or "panic attack at the wedding". Encrypted at rest because
+    # it's exactly the kind of contextual narrative that the field-level
+    # encryption model is meant to protect, matching the precedent set by
+    # bios and journal entries.
+    custom_status: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     system: Mapped["System"] = relationship(back_populates="fronts")

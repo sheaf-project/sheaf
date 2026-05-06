@@ -142,6 +142,8 @@ async def run_import(
             color=_trunc(m_data.get("color"), 7),
             birthday=_trunc(m_data.get("birthday"), 10),
             pluralkit_id=_trunc(m_data.get("pluralkit_id"), 8),
+            emoji=_trunc(m_data.get("emoji"), 8),
+            is_custom_front=bool(m_data.get("is_custom_front", False)),
             privacy=_privacy(m_data.get("privacy")),
         )
         db.add(member)
@@ -279,11 +281,17 @@ async def run_import(
             if not front_member_ids:
                 continue
 
+            plaintext_status = f_data.get("custom_status")
             front = Front(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 started_at=started_at,
                 ended_at=ended_at,
+                custom_status=(
+                    encrypt(plaintext_status)
+                    if isinstance(plaintext_status, str) and plaintext_status
+                    else None
+                ),
             )
             db.add(front)
             await db.flush()

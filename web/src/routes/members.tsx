@@ -68,6 +68,10 @@ function MemberForm({
   const [description, setDescription] = useState(initial?.description ?? "");
   const [birthday, setBirthday] = useState(initial?.birthday ?? "");
   const [pluralkitId, setPluralkitId] = useState(initial?.pluralkit_id ?? "");
+  const [emoji, setEmoji] = useState(initial?.emoji ?? "");
+  const [isCustomFront, setIsCustomFront] = useState(
+    initial?.is_custom_front ?? false,
+  );
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial?.privacy ?? "private");
 
   function handleSubmit(e: FormEvent) {
@@ -81,6 +85,8 @@ function MemberForm({
       description: description || null,
       birthday: birthday || null,
       pluralkit_id: pluralkitId.trim() || null,
+      emoji: emoji.trim() || null,
+      is_custom_front: isCustomFront,
       privacy,
     });
   }
@@ -97,13 +103,25 @@ function MemberForm({
         <Label>Name</Label>
         <Input value={name} onChange={(e) => setName(e.target.value)} required />
       </div>
-      <div className="space-y-2">
-        <Label>Display name</Label>
-        <Input
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="Optional — shown instead of name if set"
-        />
+      <div className="grid grid-cols-[1fr_auto] gap-3">
+        <div className="space-y-2">
+          <Label>Display name</Label>
+          <Input
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Optional, shown instead of name if set"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>Emoji</Label>
+          <Input
+            value={emoji}
+            onChange={(e) => setEmoji(e.target.value)}
+            placeholder="🦊"
+            maxLength={8}
+            className="w-20 text-center"
+          />
+        </div>
       </div>
       <div className="space-y-2">
         <Label>Pronouns</Label>
@@ -173,6 +191,23 @@ function MemberForm({
           </SelectContent>
         </Select>
       </div>
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={isCustomFront}
+          onChange={(e) => setIsCustomFront(e.target.checked)}
+          className="h-4 w-4 mt-0.5 rounded border-input"
+        />
+        <div>
+          <span className="text-sm font-medium">Custom front (not a member)</span>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Marks this entry as a fronting state like &quot;Asleep&quot; or &quot;Away&quot; rather
+            than a system member. Custom fronts can still front and be in
+            groups, but don&apos;t count toward member statistics and are
+            listed separately from members.
+          </p>
+        </div>
+      </label>
       <DialogFooter>
         <Button type="submit" disabled={loading || !name}>
           {loading ? "Saving..." : submitLabel}
@@ -511,11 +546,14 @@ function MemberView({
                 className="text-xl"
                 style={member.color ? { backgroundColor: member.color, color: "#fff" } : undefined}
               >
-                {member.name.charAt(0).toUpperCase()}
+                {member.emoji?.trim() || member.name.charAt(0).toUpperCase()}
               </AvatarFallback>
             </Avatar>
             <div>
-              <p className="text-lg font-semibold">{member.display_name || member.name}</p>
+              <p className="text-lg font-semibold">
+                {member.emoji && <span className="mr-1.5">{member.emoji}</span>}
+                {member.display_name || member.name}
+              </p>
               {member.display_name && (
                 <p className="text-sm text-muted-foreground">{member.name}</p>
               )}
@@ -612,35 +650,28 @@ export function MembersPage() {
           ))}
         </div>
       ) : members && members.length > 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {members.map((m) => (
-            <Card
-              key={m.id}
-              className="cursor-pointer transition-colors hover:bg-accent/50"
-              onClick={() => setViewing(m)}
-            >
-              <CardContent className="flex items-center gap-3 p-4">
-                <Avatar>
-                  {m.avatar_url && <AvatarImage src={m.avatar_url} />}
-                  <AvatarFallback
-                    style={m.color ? { backgroundColor: m.color, color: "#fff" } : undefined}
-                  >
-                    {m.name.charAt(0).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium truncate">{m.display_name || m.name}</p>
-                  {m.display_name && (
-                    <p className="text-xs text-muted-foreground truncate">{m.name}</p>
-                  )}
-                  {m.pronouns && (
-                    <p className="text-sm text-muted-foreground">{m.pronouns}</p>
-                  )}
+        (() => {
+          const realMembers = members.filter((m) => !m.is_custom_front);
+          const customFronts = members.filter((m) => m.is_custom_front);
+          return (
+            <div className="space-y-8">
+              <MemberGrid members={realMembers} onView={setViewing} />
+              {customFronts.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-baseline justify-between">
+                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                      Custom fronts
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      Non-counting fronting states (e.g. Asleep, Away).
+                    </p>
+                  </div>
+                  <MemberGrid members={customFronts} onView={setViewing} />
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+              )}
+            </div>
+          );
+        })()
       ) : (
         <p className="text-muted-foreground">
           No members yet. Create your first member to get started.
@@ -728,5 +759,49 @@ export function MembersPage() {
         />
       )}
     </>
+  );
+}
+
+function MemberGrid({
+  members,
+  onView,
+}: {
+  members: Member[];
+  onView: (m: Member) => void;
+}) {
+  if (members.length === 0) return null;
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {members.map((m) => (
+        <Card
+          key={m.id}
+          className="cursor-pointer transition-colors hover:bg-accent/50"
+          onClick={() => onView(m)}
+        >
+          <CardContent className="flex items-center gap-3 p-4">
+            <Avatar>
+              {m.avatar_url && <AvatarImage src={m.avatar_url} />}
+              <AvatarFallback
+                style={m.color ? { backgroundColor: m.color, color: "#fff" } : undefined}
+              >
+                {m.emoji?.trim() || m.name.charAt(0).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium truncate">
+                {m.emoji && <span className="mr-1.5">{m.emoji}</span>}
+                {m.display_name || m.name}
+              </p>
+              {m.display_name && (
+                <p className="text-xs text-muted-foreground truncate">{m.name}</p>
+              )}
+              {m.pronouns && (
+                <p className="text-sm text-muted-foreground">{m.pronouns}</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
   );
 }

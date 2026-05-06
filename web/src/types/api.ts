@@ -80,6 +80,8 @@ export interface Member {
   color: string | null;
   birthday: string | null;
   pluralkit_id: string | null;
+  emoji: string | null;
+  is_custom_front: boolean;
   privacy: PrivacyLevel;
   created_at: string;
   updated_at: string;
@@ -94,6 +96,8 @@ export interface MemberCreate {
   color?: string | null;
   birthday?: string | null;
   pluralkit_id?: string | null;
+  emoji?: string | null;
+  is_custom_front?: boolean;
   privacy?: PrivacyLevel;
 }
 
@@ -106,6 +110,8 @@ export interface MemberUpdate {
   color?: string | null;
   birthday?: string | null;
   pluralkit_id?: string | null;
+  emoji?: string | null;
+  is_custom_front?: boolean;
   privacy?: PrivacyLevel;
 }
 
@@ -115,6 +121,7 @@ export interface Front {
   started_at: string;
   ended_at: string | null;
   member_ids: string[];
+  custom_status: string | null;
   // Per-member effective "fronting since" timestamp, keyed by member id.
   // For open fronts on /v1/fronts/current with the system's
   // coalesce_contiguous_fronts toggle on, this walks back through
@@ -133,11 +140,14 @@ export interface FrontCreate {
   member_ids: string[];
   started_at?: string | null;
   replace_fronts?: boolean;
+  custom_status?: string | null;
 }
 
 export interface FrontUpdate {
   ended_at?: string | null;
   member_ids?: string[];
+  // Omit to keep, send null to clear, send a string to replace.
+  custom_status?: string | null;
 }
 
 export interface Group {
