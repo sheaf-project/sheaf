@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.front import Front
 from sheaf.models.member import Member, front_members
@@ -63,6 +64,7 @@ def _front_to_read(
         started_at=front.started_at,
         ended_at=front.ended_at,
         member_ids=[m.id for m in front.members],
+        custom_status=decrypt(front.custom_status) if front.custom_status else None,
         member_since=member_since,
         member_since_capped=member_since_capped or [],
     )
@@ -265,6 +267,7 @@ async def create_front(
     front = Front(
         system_id=system.id,
         started_at=new_started_at,
+        custom_status=encrypt(body.custom_status) if body.custom_status else None,
         members=members,
     )
     db.add(front)
@@ -305,6 +308,14 @@ async def update_front(
 
     if body.ended_at is not None:
         front.ended_at = body.ended_at
+
+    # custom_status uses presence-in-body to distinguish "omit" from
+    # "explicitly clear". model_fields_set is Pydantic v2's per-instance
+    # set of field names that were actually supplied in the input.
+    if "custom_status" in body.model_fields_set:
+        front.custom_status = (
+            encrypt(body.custom_status) if body.custom_status else None
+        )
 
     if body.member_ids is not None:
         member_result = await db.execute(

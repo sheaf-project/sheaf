@@ -148,13 +148,17 @@ async def run_import(
         sp_id_to_member[sp_id] = member
         result.members_imported += 1
 
-    # --- Custom fronts → imported as members (marked via description prefix) ---
+    # --- Custom fronts → imported as Members with is_custom_front=True ---
+    # SP's "frontStatuses" are non-counting fronting entities like "Asleep"
+    # or "Away". Sheaf models them as Members carrying the is_custom_front
+    # flag, which the UI uses to list them separately from headcounted
+    # members and exclude them from member-count statistics.
     sp_id_to_custom_front: dict[str, Member] = {}
     if options.custom_fronts:
         for sp_cf in _get_collection(data, "frontStatuses"):
             sp_id = sp_cf.get("_id", "")
             plaintext_cf_name = (sp_cf.get("name") or "unnamed")[:100]
-            plaintext_cf_description = _prefix_custom_front_desc(sp_cf.get("desc"))
+            plaintext_cf_description = sp_cf.get("desc")
             member = Member(
                 id=uuid.uuid4(),
                 system_id=system.id,
@@ -168,6 +172,7 @@ async def run_import(
                 color=_normalize_color(sp_cf.get("color")),
                 avatar_url=_truncate(sp_cf.get("avatarUrl"), 500),
                 privacy=_map_privacy(sp_cf.get("private", True)),
+                is_custom_front=True,
             )
             db.add(member)
             sp_id_to_custom_front[sp_id] = member
@@ -341,11 +346,3 @@ def _truncate(value: str | None, max_len: int) -> str | None:
     if not value:
         return None
     return value[:max_len]
-
-
-def _prefix_custom_front_desc(desc: str | None) -> str:
-    """Mark imported custom fronts in the description."""
-    prefix = "[Imported SP custom front]"
-    if desc:
-        return f"{prefix}\n{desc}"
-    return prefix

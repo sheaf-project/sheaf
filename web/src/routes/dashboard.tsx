@@ -48,25 +48,33 @@ export function DashboardPage() {
                 {fronts.map((front) => (
                   <div
                     key={front.id}
-                    className="flex items-center justify-between rounded-md border p-3"
+                    className="flex items-start justify-between rounded-md border p-3 gap-2"
                   >
-                    <div className="flex flex-wrap items-center gap-2">
-                      {front.member_ids.map((mid) => {
-                        const m = memberMap.get(mid);
-                        const since =
-                          front.member_since?.[mid] ?? front.started_at;
-                        const capped =
-                          front.member_since_capped?.includes(mid) ?? false;
-                        return (
-                          <Badge key={mid} variant="secondary" className="gap-1.5">
-                            <ColorDot color={m?.color ?? null} />
-                            {m?.display_name ?? m?.name ?? "Unknown"}
-                            <span className="text-muted-foreground">
-                              · {capped ? "> " : ""}{timeAgo(since)}
-                            </span>
-                          </Badge>
-                        );
-                      })}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {front.member_ids.map((mid) => {
+                          const m = memberMap.get(mid);
+                          const since =
+                            front.member_since?.[mid] ?? front.started_at;
+                          const capped =
+                            front.member_since_capped?.includes(mid) ?? false;
+                          return (
+                            <Badge key={mid} variant="secondary" className="gap-1.5">
+                              <ColorDot color={m?.color ?? null} />
+                              {m?.emoji && <span>{m.emoji}</span>}
+                              {m?.display_name ?? m?.name ?? "Unknown"}
+                              <span className="text-muted-foreground">
+                                · {capped ? "> " : ""}{timeAgo(since)}
+                              </span>
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                      {front.custom_status && (
+                        <p className="mt-2 text-sm italic text-muted-foreground">
+                          &ldquo;{front.custom_status}&rdquo;
+                        </p>
+                      )}
                     </div>
                     <Button
                       size="sm"
@@ -93,7 +101,9 @@ export function DashboardPage() {
           <CardContent>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <p className="text-2xl font-semibold">{members?.length ?? 0}</p>
+                <p className="text-2xl font-semibold">
+                  {members?.filter((m) => !m.is_custom_front).length ?? 0}
+                </p>
                 <p className="text-sm text-muted-foreground">Members</p>
               </div>
               <div>

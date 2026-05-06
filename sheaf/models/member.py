@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, Enum, ForeignKey, String, Table, Text
+from sqlalchemy import Boolean, Column, Enum, ForeignKey, String, Table, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -83,6 +83,16 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # editable manually. Not unique within a system; we don't validate against
     # PluralKit's namespace ourselves.
     pluralkit_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Short visual identifier (single emoji or a few characters). Surfaced
+    # alongside or instead of the avatar fallback in compact lists. Optional.
+    emoji: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Marks a Member as a "custom front" — a non-counting fronting entity
+    # (e.g. "Asleep", "Away", "Lost time"). Custom fronts behave like members
+    # for fronting/groups/notifications but are excluded from member headcount
+    # statistics and listed separately in the members UI.
+    is_custom_front: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     privacy: Mapped[PrivacyLevel] = mapped_column(
         Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,

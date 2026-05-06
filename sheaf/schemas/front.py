@@ -8,11 +8,16 @@ class FrontCreate(BaseModel):
     member_ids: list[uuid.UUID]
     started_at: datetime | None = None
     replace_fronts: bool | None = None  # None = use system's replace_fronts_default
+    custom_status: str | None = None
 
 
 class FrontUpdate(BaseModel):
     ended_at: datetime | None = None
     member_ids: list[uuid.UUID] | None = None
+    # `custom_status` uses an explicit "unset" sentinel: omit the field to
+    # keep the existing value, send `null` to clear it, or send a string
+    # to replace it. Pydantic's `exclude_unset=True` round-trips this.
+    custom_status: str | None = None
 
 
 class FrontRead(BaseModel):
@@ -21,6 +26,7 @@ class FrontRead(BaseModel):
     started_at: datetime
     ended_at: datetime | None
     member_ids: list[uuid.UUID]
+    custom_status: str | None = None
     # Per-member effective "fronting since" timestamp, keyed by member id
     # (string form). When the system has `coalesce_contiguous_fronts` on
     # AND the member appears in a chain of back-to-back front entries

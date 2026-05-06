@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MemberSelect } from "@/components/member-select";
 
@@ -39,18 +40,27 @@ export function StartFrontDialog({
     wasOpen: boolean;
     members: string[];
     replaceFronts: boolean | null;
+    customStatus: string;
     error: string | null;
-  }>({ wasOpen: false, members: [], replaceFronts: null, error: null });
+  }>({
+    wasOpen: false,
+    members: [],
+    replaceFronts: null,
+    customStatus: "",
+    error: null,
+  });
 
-  let { members: selectedMembers, replaceFronts, error } = draft;
+  let { members: selectedMembers, replaceFronts, customStatus, error } = draft;
   if (open && !draft.wasOpen) {
     selectedMembers = [];
     replaceFronts = null;
+    customStatus = "";
     error = null;
     setDraft({
       wasOpen: true,
       members: [],
       replaceFronts: null,
+      customStatus: "",
       error: null,
     });
   } else if (!open && draft.wasOpen) {
@@ -61,6 +71,8 @@ export function StartFrontDialog({
     setDraft((d) => ({ ...d, members: m, error: null }));
   const setReplaceFronts = (r: boolean | null) =>
     setDraft((d) => ({ ...d, replaceFronts: r, error: null }));
+  const setCustomStatus = (s: string) =>
+    setDraft((d) => ({ ...d, customStatus: s, error: null }));
 
   const effectiveReplace =
     replaceFronts ?? (system?.replace_fronts_default ?? true);
@@ -69,7 +81,11 @@ export function StartFrontDialog({
     if (selectedMembers.length === 0) return;
     setDraft((d) => ({ ...d, error: null }));
     createFront.mutate(
-      { member_ids: selectedMembers, replace_fronts: effectiveReplace },
+      {
+        member_ids: selectedMembers,
+        replace_fronts: effectiveReplace,
+        custom_status: customStatus.trim() || null,
+      },
       {
         onSuccess: () => {
           onOpenChange(false);
@@ -102,6 +118,18 @@ export function StartFrontDialog({
           className="py-2"
           showGroupFilter
         />
+        <div className="space-y-2 pt-1">
+          <Label htmlFor="custom-status" className="text-sm font-normal">
+            Custom status (optional)
+          </Label>
+          <Input
+            id="custom-status"
+            value={customStatus}
+            onChange={(e) => setCustomStatus(e.target.value)}
+            placeholder="e.g. during a job interview"
+            maxLength={500}
+          />
+        </div>
         <div className="flex items-center gap-2 pt-1">
           <Checkbox
             id="replace-fronts"

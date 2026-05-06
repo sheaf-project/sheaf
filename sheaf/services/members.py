@@ -50,6 +50,8 @@ def decrypt_member_for_read(member: Member) -> MemberRead:
         "color": member.color,
         "birthday": member.birthday,
         "pluralkit_id": member.pluralkit_id,
+        "emoji": member.emoji,
+        "is_custom_front": member.is_custom_front,
         "privacy": member.privacy,
         "created_at": member.created_at,
         "updated_at": member.updated_at,

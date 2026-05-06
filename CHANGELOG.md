@@ -6,6 +6,14 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Custom fronts, member emoji, custom status on fronts
+
+A bundle of three small SimplyPlural-parity additions to the member and front data models:
+
+- **Custom fronts** — new `is_custom_front` boolean on `members`. Marks a Member as a non-counting fronting entity ("Asleep", "Away", "Lost time"). Custom fronts behave like members for fronting/groups/notifications, but are excluded from member-headcount statistics and listed in their own section on the Members page. The SP importer now sets the flag instead of prefixing imported `frontStatuses` with `[Imported SP custom front]` in the description.
+- **Member emoji** — new optional `emoji` String(8) on `members`. Surfaced alongside the avatar fallback in compact lists and as a prefix on member badges in the dashboard, fronts page, and notification picker.
+- **Custom status on fronts** — new optional `custom_status` Text column on `fronts`. Encrypted at rest (matching the precedent set by member descriptions and journal bodies). Lets you annotate a fronting period with context like "during a job interview" without amending the bio. Surfaced inline on the dashboard and fronts pages, editable via the start-front dialog. PATCH semantics: omit the field to keep, send `null` to clear, send a string to replace.
+
 ### PluralKit import
 
 - New importer accepts both PK data export files (from `pk;export`) and live API pulls using the user's PK token (from `pk;token`). Same preview / options / result schema for both paths so the UI is uniform. Token is forwarded once and never logged or persisted.

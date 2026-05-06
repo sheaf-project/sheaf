@@ -147,8 +147,9 @@ same preview-then-import flow as PK and covers:
 
 - System profile (name, description, color).
 - Members with avatar, pronouns, color, description, birthday, privacy.
-- Custom fronts (currently imported as members with a description prefix
-  marking them as such — first-class custom-front support is on the roadmap).
+- Custom fronts (imported as Members with `is_custom_front=true`, so they
+  show up in the fronter list and groups but are excluded from member-count
+  statistics and listed separately on the Members page).
 - Custom field definitions and per-member values.
 - Groups with parent hierarchy and member memberships.
 - Front history (off by default; SP exports can be large).

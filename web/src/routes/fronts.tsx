@@ -47,6 +47,7 @@ export function FrontsPage() {
       return (
         <Badge key={mid} variant="secondary" className="gap-1.5">
           <ColorDot color={m?.color ?? null} />
+          {m?.emoji && <span>{m.emoji}</span>}
           {m?.display_name ?? m?.name ?? "Unknown"}
           {since && (
             <span className="text-muted-foreground">
@@ -77,13 +78,20 @@ export function FrontsPage() {
               {current.map((front) => (
                 <div
                   key={front.id}
-                  className="flex items-center justify-between rounded-md border p-3"
+                  className="flex items-start justify-between rounded-md border p-3 gap-2"
                 >
-                  <div className="flex flex-wrap items-center gap-2">
-                    {renderMembers(
-                      front.member_ids,
-                      front.member_since,
-                      front.member_since_capped,
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {renderMembers(
+                        front.member_ids,
+                        front.member_since,
+                        front.member_since_capped,
+                      )}
+                    </div>
+                    {front.custom_status && (
+                      <p className="mt-2 text-sm italic text-muted-foreground">
+                        &ldquo;{front.custom_status}&rdquo;
+                      </p>
                     )}
                   </div>
                   <Button
@@ -118,10 +126,17 @@ export function FrontsPage() {
           {history.map((front) => (
             <div
               key={front.id}
-              className="flex items-center justify-between rounded-md border p-3"
+              className="flex items-start justify-between rounded-md border p-3 gap-2"
             >
-              <div className="flex flex-wrap items-center gap-2">
-                {renderMembers(front.member_ids)}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  {renderMembers(front.member_ids)}
+                </div>
+                {front.custom_status && (
+                  <p className="mt-2 text-sm italic text-muted-foreground">
+                    &ldquo;{front.custom_status}&rdquo;
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-3 text-sm text-muted-foreground shrink-0">
                 <span>

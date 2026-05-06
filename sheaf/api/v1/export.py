@@ -188,6 +188,8 @@ async def export_all(
                 "color": m.color,
                 "birthday": m.birthday,
                 "pluralkit_id": m.pluralkit_id,
+                "emoji": m.emoji,
+                "is_custom_front": m.is_custom_front,
                 "privacy": m.privacy.value,
                 "created_at": m.created_at.isoformat(),
             }
@@ -199,6 +201,9 @@ async def export_all(
                 "started_at": f.started_at.isoformat(),
                 "ended_at": f.ended_at.isoformat() if f.ended_at else None,
                 "member_ids": [str(m.id) for m in f.members],
+                "custom_status": (
+                    decrypt(f.custom_status) if f.custom_status else None
+                ),
             }
             for f in fronts
         ],
