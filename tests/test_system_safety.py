@@ -293,9 +293,10 @@ def test_loosening_requires_reauth(client: httpx.Client):
         },
     )
 
-    # No password supplied — should be rejected
+    # No password supplied — should be rejected (400 = client didn't
+    # send the field; 401 is reserved for "wrong password").
     resp = client.patch("/v1/system/safety", json={"grace_period_days": 0})
-    assert resp.status_code == 401
+    assert resp.status_code == 400
 
 
 def test_cancel_pending_safety_change(client: httpx.Client):
@@ -405,18 +406,19 @@ def test_delete_endpoint_requires_password_when_tier_set(client: httpx.Client):
     _set_system_safety_via_db(email, delete_confirmation="password")
     member = client.post("/v1/members", json={"name": "Gated"}).json()
 
-    # No body → 401 Password required
+    # No body → 400 Password required (missing input)
     no_body = client.delete(f"/v1/members/{member['id']}")
-    assert no_body.status_code == 401
+    assert no_body.status_code == 400
     assert no_body.json()["detail"] == "Password required"
 
-    # Wrong password → 401
+    # Wrong password → 401 Incorrect password
     wrong = client.request(
         "DELETE",
         f"/v1/members/{member['id']}",
         json={"password": "not-the-password"},
     )
     assert wrong.status_code == 401
+    assert wrong.json()["detail"] == "Incorrect password"
 
     # Member still exists.
     assert client.get(f"/v1/members/{member['id']}").status_code == 200

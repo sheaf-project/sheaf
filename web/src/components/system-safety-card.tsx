@@ -278,6 +278,8 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
               <Label className="text-sm">Password</Label>
               <Input
                 type="password"
+                name="current-password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required

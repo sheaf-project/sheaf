@@ -121,13 +121,17 @@ def verify_destructive_auth(
     """
     level = system.delete_confirmation
 
-    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH) and (
-        not password or not verify_password(password, user.password_hash)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Password required",
-        )
+    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH):
+        if not password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password required",
+            )
+        if not verify_password(password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect password",
+            )
 
     if level in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH):
         if not user.totp_enabled:
