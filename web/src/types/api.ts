@@ -366,6 +366,8 @@ export interface SystemSafetySettings {
   applies_to_images: boolean;
   applies_to_revisions: boolean;
   applies_to_notifications: boolean;
+  applies_to_reminders: boolean;
+  applies_to_polls: boolean;
   auto_pin_first_revision: boolean;
 }
 
@@ -381,6 +383,8 @@ export interface SystemSafetyUpdate {
   applies_to_images?: boolean;
   applies_to_revisions?: boolean;
   applies_to_notifications?: boolean;
+  applies_to_reminders?: boolean;
+  applies_to_polls?: boolean;
   auto_pin_first_revision?: boolean;
   password?: string;
   totp_code?: string;
@@ -687,4 +691,97 @@ export interface RedeemResponse {
   management_url: string;
   channel_name: string;
   system_label: string | null;
+}
+
+// --- Polls -----------------------------------------------------------------
+
+export type PollKind = "single_choice" | "multi_choice";
+export type PollResultsVisibility = "live" | "end_only";
+export type PollVoteAction = "cast" | "change" | "withdraw";
+
+export interface PollOption {
+  id: string;
+  text: string;
+  position: number;
+}
+
+export interface PollTallyEntry {
+  option_id: string;
+  count: number;
+}
+
+export interface PollVote {
+  voted_as_member_id: string;
+  option_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Poll {
+  id: string;
+  system_id: string;
+  question: string;
+  description: string | null;
+  kind: PollKind;
+  results_visibility: PollResultsVisibility;
+  closes_at: string;
+  retention_days: number;
+  include_custom_fronts: boolean;
+  options: PollOption[];
+  is_closed: boolean;
+  closed_since: string | null;
+  purges_at: string;
+  total_votes: number;
+  tally: PollTallyEntry[] | null;
+  votes: PollVote[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PollOptionCreate {
+  text: string;
+}
+
+export interface PollCreate {
+  question: string;
+  description?: string | null;
+  kind: PollKind;
+  results_visibility: PollResultsVisibility;
+  closes_at: string;
+  retention_days?: number | null;
+  include_custom_fronts?: boolean;
+  options: PollOptionCreate[];
+}
+
+export interface VoteCast {
+  voted_as_member_id: string;
+  option_ids: string[];
+}
+
+export interface PollVoteEvent {
+  id: string;
+  voted_as_member_id: string | null;
+  action: PollVoteAction;
+  option_ids: string[];
+  fronting_member_ids: string[];
+  actor_user_id: string | null;
+  created_at: string;
+}
+
+export interface PollAudit {
+  poll_id: string;
+  is_visible: boolean;
+  events: PollVoteEvent[];
+}
+
+export interface PollServerConfig {
+  tier: string;
+  min_close_seconds: number;
+  // 0 means "no upper bound"
+  max_close_seconds: number;
+  default_retention_days: number;
+  // 0 means unlimited
+  max_retention_days: number;
+  // 0 means unlimited
+  max_concurrent_open_polls: number;
 }

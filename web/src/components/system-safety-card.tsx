@@ -48,6 +48,16 @@ const categoryLabels: {
     label: "Notifications",
     desc: "Deleting a channel or revoking a watcher",
   },
+  {
+    key: "applies_to_reminders",
+    label: "Reminders",
+    desc: "Deleting a reminder",
+  },
+  {
+    key: "applies_to_polls",
+    label: "Polls",
+    desc: "Deleting a poll (with its votes and audit log)",
+  },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -391,6 +401,8 @@ const CATEGORY_KEYS = [
   "applies_to_images",
   "applies_to_revisions",
   "applies_to_notifications",
+  "applies_to_reminders",
+  "applies_to_polls",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {

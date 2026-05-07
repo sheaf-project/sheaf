@@ -352,6 +352,21 @@ Reminders ride a notification channel for delivery (`channel_id`). Two trigger t
 
 Repeated reminders can be scope-limited to specific members. When the schedule fires while no scoped member is fronting and `digest_when_absent=true`, the missed firing queues (capped at 5 per reminder, oldest dropped). On the next front-start of a scoped member, the queue drains as a digest notification. Title and body are encrypted at rest.
 
+### Polls
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/polls` | List polls for the caller's system. |
+| POST | `/polls` | Create a poll. Gated by `polls:write`. |
+| GET | `/polls/{id}` | Read a poll. Tally and per-member votes are present iff results are visible (live, or end_only after close). |
+| DELETE | `/polls/{id}` | Delete. Gated by `polls:delete`. Goes through System Safety when the polls category is enabled, queueing a pending action. |
+| POST | `/polls/{id}/votes` | Cast or change a vote. Body: `voted_as_member_id`, `option_ids`. The voted-as member must be in the current front. |
+| DELETE | `/polls/{id}/votes/{voted_as_member_id}` | Withdraw a vote. Same fronting check applies. |
+| GET | `/polls/{id}/audit` | Audit log of every cast / change / withdraw, including the fronting snapshot at vote time. |
+| GET | `/polls/server-config` | Per-user effective tier limits: `min_close_seconds`, `max_close_seconds`, `default_retention_days`, `max_retention_days`, `max_concurrent_open_polls`. `0` on any max means unlimited. The frontend uses this to clamp the create form. |
+
+Polls have a creation-time `closes_at` that cannot be moved (manual close would be abusable without member-level auth). The close window, the per-poll `retention_days`, and the count of concurrent open polls per system are all tier-scaled. The frontend pulls `GET /polls/server-config` to clamp inputs and surface the relevant upsell when a free user hits a limit. After `closes_at`, the poll is read-only; after `retention_days` past close, the cleanup job hard-deletes the poll plus its options, votes, and audit log together. `kind` is `single_choice` or `multi_choice`; `results_visibility` is `live` or `end_only` (both visible-once, locked at creation). `include_custom_fronts` defaults false: members marked `is_custom_front=true` may represent system states (Asleep, Away) rather than voters and are blocked from casting unless this flag is set. Question, description, and option text are encrypted at rest.
+
 ### Analytics
 
 | Method | Path | Description |

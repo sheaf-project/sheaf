@@ -30,6 +30,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Front tracking** — Log switches with cofronters and an optional encrypted free-text status per fronting period
 - **Analytics** — Per-member front time, percent of window, session count, longest session, and hour-of-day distribution over a configurable window (7d / 30d / 90d / 1 year). Co-fronting double-counts so individual member stats are accurate.
 - **Reminders** — Schedule daily/weekly/monthly pings or fire reminders X minutes after a member fronts. Member-scoped reminders queue while nobody on the list is fronting and drain as a digest when one next switches in. Delivery rides your existing notification channels.
+- **Polls** — Run a vote across the system. Each vote is attributed to a specific member who must be in the current front, with a full audit log of cast / change / withdraw events plus a fronting snapshot. Single or multi-choice, results live or hidden until close, hard deadline at creation with auto-purge after retention.
 - **Groups** — Organize members into groups with nesting (subsystems)
 - **Tags** — Flexible member tagging
 - **Custom fields** — Define your own fields (text, number, date, boolean, select) with per-field privacy

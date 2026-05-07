@@ -30,6 +30,15 @@ from sheaf.models.notification_channel_member_rule import (
 )
 from sheaf.models.notification_outbox import NotificationOutboxRow
 from sheaf.models.pending_action import PendingAction, PendingActionStatus, PendingActionType
+from sheaf.models.poll import (
+    Poll,
+    PollKind,
+    PollOption,
+    PollResultsVisibility,
+    PollVote,
+    PollVoteAction,
+    PollVoteEvent,
+)
 from sheaf.models.reminder import Reminder, ReminderPending, reminder_scope_members
 from sheaf.models.retention_trim_notice import RetentionTrimNotice, RetentionTrimStatus
 from sheaf.models.safety_change_request import SafetyChangeRequest, SafetyChangeStatus
@@ -75,6 +84,13 @@ __all__ = [
     "PendingAction",
     "PendingActionStatus",
     "PendingActionType",
+    "Poll",
+    "PollKind",
+    "PollOption",
+    "PollResultsVisibility",
+    "PollVote",
+    "PollVoteAction",
+    "PollVoteEvent",
     "PrivacyLevel",
     "Reminder",
     "ReminderPending",

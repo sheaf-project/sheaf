@@ -55,6 +55,8 @@ _EXTERNAL_TO_INTERNAL = {
     "applies_to_images": "safety_applies_to_images",
     "applies_to_revisions": "safety_applies_to_revisions",
     "applies_to_notifications": "safety_applies_to_notifications",
+    "applies_to_reminders": "safety_applies_to_reminders",
+    "applies_to_polls": "safety_applies_to_polls",
     "auto_pin_first_revision": "auto_pin_first_revision",
 }
 _INTERNAL_TO_EXTERNAL = {v: k for k, v in _EXTERNAL_TO_INTERNAL.items()}
@@ -73,6 +75,8 @@ def _settings_from_system(system: System) -> SystemSafetySettings:
         applies_to_images=system.safety_applies_to_images,
         applies_to_revisions=system.safety_applies_to_revisions,
         applies_to_notifications=system.safety_applies_to_notifications,
+        applies_to_reminders=system.safety_applies_to_reminders,
+        applies_to_polls=system.safety_applies_to_polls,
         auto_pin_first_revision=system.auto_pin_first_revision,
     )
 

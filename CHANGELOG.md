@@ -6,6 +6,24 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Polls
+
+A small voting surface for system-internal decision-making. Headmates cast votes "as" a fronting member, and every action lands in an audit log.
+
+- **Vote attribution**: each vote is attributed to a specific member, who must be part of the current front at vote time. Stops one headmate from silently casting on behalf of others. Anonymous voting was considered and rejected: same-actor repeat-voting is too easy without a real member-auth surface (out of scope for v1).
+- **Audit log**: every cast, change, and withdraw appends a row with the voted-as member, the chosen options, the full set of fronting member ids at vote time, and the actor user id.
+- **Two kinds**: `single_choice` and `multi_choice`. Ranked voting deferred.
+- **Two visibility modes**: `live` (tally and audit visible while the poll is open) and `end_only` (both hidden until close, to avoid bandwagon effects). Locked at creation; cannot be toggled later.
+- **Deadline only**: `closes_at` is required at creation and immutable. Manual close is intentionally not supported, since it would be abusable without member-level auth. Free tier accepts 1 hour to 14 days; raise the env-var bounds when scaling allows. Premium tiers and self-hosted deployments default to longer windows.
+- **Retention**: 30 days post-close by default, configurable per-poll up to a tier-scaled cap (free 30d, plus 180d, self-hosted unlimited). The cleanup job hard-deletes the poll, votes, and audit log together.
+- **Concurrent open polls**: a per-tier cap (free 5, plus 20, self-hosted unlimited) so one runaway question doesn't tile the dashboard. Closed polls don't count toward the cap.
+- **Custom fronts**: per-poll opt-in flag (`include_custom_fronts`, default false). Members marked `is_custom_front=true` (Asleep, Away, etc.) are usually system states rather than voters; opt in if you actually want them counted.
+- **Server-config endpoint**: `GET /v1/polls/server-config` returns the calling user's effective tier limits (close-window, retention, concurrent-open). The frontend fetches it to clamp inputs and signal upsell paths.
+- **System Safety integration**: new `applies_to_polls` safety category. Delete is gated by `verify_destructive_auth` and queues a pending action when safeguarded.
+- API: `POST/GET/DELETE /v1/polls`, `POST/DELETE /v1/polls/{id}/votes`, `GET /v1/polls/{id}/audit`. New scopes: `polls:read`, `polls:write`, `polls:delete`.
+- Frontend: new `/polls` route in the sidebar with list + detail + voting UI, result bars, and audit log table.
+- Question, description, and option text are encrypted at rest.
+
 ### Reminders
 
 A new reminders surface alongside notification channels. Two trigger types share one data model and ride existing notification channels for delivery.

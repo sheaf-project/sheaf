@@ -630,6 +630,15 @@ async def _tick_repeated_reminders(db: AsyncSession) -> dict:
     return {"items_processed": enqueued}
 
 
+async def _purge_expired_polls(db: AsyncSession) -> dict:
+    """Delete polls whose retention window has elapsed."""
+    from sheaf.services.polls import purge_expired_polls
+
+    purged = await purge_expired_polls(db)
+    await db.commit()
+    return {"items_processed": purged}
+
+
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -739,6 +748,13 @@ def _register_all_jobs() -> None:
         description="Fire any due repeated reminders into the notification outbox",
         func=_tick_repeated_reminders,
         interval_seconds=lambda: 60,
+    )
+
+    register_job(
+        name="purge_expired_polls",
+        description="Delete polls past their retention window post-close",
+        func=_purge_expired_polls,
+        interval_seconds=lambda: settings.poll_cleanup_interval_hours * 3600,
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images
