@@ -20,6 +20,8 @@ class SystemSafetySettings(BaseModel):
     applies_to_images: bool
     applies_to_revisions: bool
     applies_to_notifications: bool
+    applies_to_reminders: bool
+    applies_to_polls: bool
     auto_pin_first_revision: bool
 
 
@@ -37,6 +39,8 @@ class SystemSafetyUpdate(BaseModel):
     applies_to_images: bool | None = None
     applies_to_revisions: bool | None = None
     applies_to_notifications: bool | None = None
+    applies_to_reminders: bool | None = None
+    applies_to_polls: bool | None = None
     auto_pin_first_revision: bool | None = None
 
     # Re-auth for loosening changes is checked against the *current* auth tier.

@@ -21,6 +21,7 @@ class PendingActionType(StrEnum):
     WATCH_TOKEN_REVOKE = "watch_token_revoke"
     CHANNEL_DELETE = "channel_delete"
     REMINDER_DELETE = "reminder_delete"
+    POLL_DELETE = "poll_delete"
 
 
 class PendingActionStatus(StrEnum):

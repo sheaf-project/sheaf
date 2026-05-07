@@ -18,6 +18,7 @@ import {
   Bell,
   BellRing,
   BarChart3,
+  Vote,
   PanelLeftClose,
   PanelLeftOpen,
   X,
@@ -33,6 +34,7 @@ const navItems = [
   { to: "/groups", label: "Groups", icon: FolderOpen },
   { to: "/notifications", label: "Notifications", icon: Bell },
   { to: "/reminders", label: "Reminders", icon: BellRing },
+  { to: "/polls", label: "Polls", icon: Vote },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

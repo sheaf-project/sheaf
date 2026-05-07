@@ -33,6 +33,7 @@ from sheaf.models.pending_action import (
     PendingActionStatus,
     PendingActionType,
 )
+from sheaf.models.poll import Poll
 from sheaf.models.reminder import Reminder
 from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
@@ -56,6 +57,8 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "images",
     "revisions",
     "notifications",
+    "reminders",
+    "polls",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {
@@ -69,7 +72,8 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.REVISION_UNPIN: "revisions",
     PendingActionType.WATCH_TOKEN_REVOKE: "notifications",
     PendingActionType.CHANNEL_DELETE: "notifications",
-    PendingActionType.REMINDER_DELETE: "notifications",
+    PendingActionType.REMINDER_DELETE: "reminders",
+    PendingActionType.POLL_DELETE: "polls",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -84,6 +88,7 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.WATCH_TOKEN_REVOKE: WatchToken,
     PendingActionType.CHANNEL_DELETE: NotificationChannel,
     PendingActionType.REMINDER_DELETE: Reminder,
+    PendingActionType.POLL_DELETE: Poll,
 }
 
 
@@ -116,13 +121,17 @@ def verify_destructive_auth(
     """
     level = system.delete_confirmation
 
-    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH) and (
-        not password or not verify_password(password, user.password_hash)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Password required",
-        )
+    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH):
+        if not password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password required",
+            )
+        if not verify_password(password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect password",
+            )
 
     if level in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH):
         if not user.totp_enabled:

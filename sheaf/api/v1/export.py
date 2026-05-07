@@ -187,6 +187,23 @@ async def export_all(
     )
     reminders = list(reminders_result.scalars().all())
 
+    # Polls — same encryption discipline as reminders. We export both
+    # current vote rows and the audit log, since the audit is part of
+    # what makes the poll legible after the fact.
+    from sheaf.models.poll import Poll
+
+    polls_result = await db.execute(
+        select(Poll)
+        .options(
+            selectinload(Poll.options),
+            selectinload(Poll.votes),
+            selectinload(Poll.events),
+        )
+        .where(Poll.system_id == system.id)
+        .order_by(Poll.created_at.asc())
+    )
+    polls = list(polls_result.scalars().all())
+
     return {
         "version": "2",
         "system": _system_dict(system),
@@ -263,6 +280,7 @@ async def export_all(
         "watch_tokens": [_watch_token_dict(t) for t in watch_tokens],
         "uploaded_files": [_uploaded_file_dict(f) for f in uploaded_files],
         "reminders": [_reminder_dict(r) for r in reminders],
+        "polls": [_poll_dict(p) for p in polls],
     }
 
 
@@ -280,6 +298,7 @@ def _empty_export() -> dict:
         "watch_tokens": [],
         "uploaded_files": [],
         "reminders": [],
+        "polls": [],
     }
 
 
@@ -308,6 +327,8 @@ def _system_dict(system: System) -> dict:
             "applies_to_images": system.safety_applies_to_images,
             "applies_to_revisions": system.safety_applies_to_revisions,
             "applies_to_notifications": system.safety_applies_to_notifications,
+            "applies_to_reminders": system.safety_applies_to_reminders,
+            "applies_to_polls": system.safety_applies_to_polls,
             "auto_pin_first_revision": system.auto_pin_first_revision,
         },
         "retention": {
@@ -462,6 +483,57 @@ def _reminder_dict(reminder) -> dict:
         "scope_member_ids": [str(m.id) for m in reminder.scope_members],
         "digest_when_absent": reminder.digest_when_absent,
         "created_at": reminder.created_at.isoformat(),
+    }
+
+
+def _poll_dict(poll) -> dict:
+    """Poll config + audit trail. Question, description and option
+    text are decrypted to plaintext. Vote rows reference member ids and
+    option ids (uuids) so a re-import has to round-trip both before
+    they're meaningful again."""
+    return {
+        "id": str(poll.id),
+        "question": decrypt(poll.question) if poll.question else "",
+        "description": decrypt(poll.description) if poll.description else None,
+        "kind": poll.kind,
+        "results_visibility": poll.results_visibility,
+        "closes_at": poll.closes_at.isoformat(),
+        "retention_days": poll.retention_days,
+        "include_custom_fronts": poll.include_custom_fronts,
+        "created_at": poll.created_at.isoformat(),
+        "options": [
+            {
+                "id": str(opt.id),
+                "text": decrypt(opt.text) if opt.text else "",
+                "position": opt.position,
+            }
+            for opt in sorted(poll.options, key=lambda o: o.position)
+        ],
+        "votes": [
+            {
+                "voted_as_member_id": str(v.voted_as_member_id),
+                "option_ids": [str(o) for o in v.option_ids],
+                "created_at": v.created_at.isoformat(),
+                "updated_at": v.updated_at.isoformat(),
+            }
+            for v in poll.votes
+        ],
+        "events": [
+            {
+                "id": str(e.id),
+                "voted_as_member_id": (
+                    str(e.voted_as_member_id) if e.voted_as_member_id else None
+                ),
+                "action": e.action,
+                "option_ids": [str(o) for o in e.option_ids],
+                "fronting_member_ids": [str(o) for o in e.fronting_member_ids],
+                "actor_user_id": (
+                    str(e.actor_user_id) if e.actor_user_id else None
+                ),
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in sorted(poll.events, key=lambda x: x.created_at)
+        ],
     }
 
 

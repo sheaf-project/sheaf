@@ -320,6 +320,32 @@ class Settings(BaseSettings):
     notifications_concurrency_ntfy: int = 5
     notifications_concurrency_pushover: int = 5
 
+    # Polls
+    # All three premium levers (close-window, retention, concurrent open
+    # polls) are tier-scaled with 0 == "no upper bound". Frontend pulls
+    # the effective per-user limits from /v1/polls/server-config so the
+    # create form can clamp + show upsell hints.
+    #
+    # Close-window: minimum is shared, maximum is per tier.
+    poll_min_close_seconds: int = 3600
+    poll_max_close_seconds_free: int = 14 * 86400
+    poll_max_close_seconds_plus: int = 90 * 86400
+    poll_max_close_seconds_self_hosted: int = 0
+    # Default retention (days a closed poll is kept before purge). Used
+    # when the caller doesn't specify per-poll retention. The per-tier
+    # MAX caps the value the user can request.
+    poll_retention_default_days: int = 30
+    poll_max_retention_days_free: int = 30
+    poll_max_retention_days_plus: int = 180
+    poll_max_retention_days_self_hosted: int = 0
+    # Concurrent open polls per system. Counted against polls whose
+    # closes_at is in the future.
+    poll_max_concurrent_open_free: int = 5
+    poll_max_concurrent_open_plus: int = 20
+    poll_max_concurrent_open_self_hosted: int = 0
+    # How often the poll cleanup job runs.
+    poll_cleanup_interval_hours: int = 6
+
     # Async data export jobs
     # Lifetime of a generated export file before it's auto-deleted from
     # storage and the job row marked EXPIRED. 72h gives the user three days

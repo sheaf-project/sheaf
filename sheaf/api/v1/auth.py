@@ -76,6 +76,7 @@ _VALID_SCOPES = {
     "journals:read", "journals:write", "journals:delete",
     "settings:read", "settings:write", "settings:delete",
     "notifications:read", "notifications:write", "notifications:delete",
+    "polls:read", "polls:write", "polls:delete",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
