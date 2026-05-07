@@ -1,4 +1,5 @@
 import { createContext, useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { User } from "@/types/api";
 import { bootstrapAuth, setAccessToken } from "@/lib/api-client";
 import * as authApi from "@/lib/auth";
@@ -29,6 +30,7 @@ export const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
 
   // Try silent refresh on mount using HttpOnly cookie. Routes through the
   // shared single-flight in api-client so StrictMode's double-fire (and any
@@ -62,12 +64,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const tokens = await authApi.login(
         email, password, totp_code, captcha, remember_device,
       );
+      // Drop any cached query data from a prior session before fetching the
+      // new user, in case a previous logout was skipped (silent token expiry).
+      queryClient.clear();
       setAccessToken(tokens.access_token);
       // Refresh token is set as HttpOnly cookie by the server
       const me = await authApi.getMe();
       setUser(me);
     },
-    [],
+    [queryClient],
   );
 
   const register = useCallback(
@@ -85,12 +90,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         newsletter_opt_in,
         captcha,
       );
+      queryClient.clear();
       setAccessToken(tokens.access_token);
       // Refresh token is set as HttpOnly cookie by the server
       const me = await authApi.getMe();
       setUser(me);
     },
-    [],
+    [queryClient],
   );
 
   const refreshUser = useCallback(async () => {
@@ -104,8 +110,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setAccessToken(null);
       setUser(null);
+      queryClient.clear();
     }
-  }, []);
+  }, [queryClient]);
 
   return (
     <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser }}>
