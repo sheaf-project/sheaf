@@ -5,13 +5,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, get_current_user_optional, require_scope
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import verify_code
-from sheaf.crypto import decrypt
+from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
 
 router = APIRouter(prefix="/systems", tags=["systems"])
+
+
+def _system_to_read(system: System) -> SystemRead:
+    """Build a SystemRead with `note` decrypted to plaintext.
+
+    System.note is the only encrypted-at-rest field on System (description
+    is plaintext for historical reasons), so we just patch it through here
+    rather than building a parallel `decrypt_system_for_read` helper."""
+    plaintext_note = decrypt(system.note) if system.note else None
+    return SystemRead.model_validate(
+        {**system.__dict__, "note": plaintext_note}
+    )
 
 
 async def _get_user_system(user: User, db: AsyncSession) -> System:
@@ -27,7 +39,8 @@ async def get_own_system(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await _get_user_system(user, db)
+    system = await _get_user_system(user, db)
+    return _system_to_read(system)
 
 
 @router.patch(
@@ -43,10 +56,18 @@ async def update_own_system(
     system = await _get_user_system(user, db)
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
-        setattr(system, key, value)
+        if key == "note":
+            # Encrypt at rest. Empty string clears the column (notes are
+            # overwrite-only, no revisions).
+            if value is None or value == "":
+                system.note = None
+            else:
+                system.note = encrypt(value)
+        else:
+            setattr(system, key, value)
     await db.commit()
     await db.refresh(system)
-    return system
+    return _system_to_read(system)
 
 
 @router.put(
@@ -90,7 +111,7 @@ async def update_delete_confirmation(
     system.delete_confirmation = body.level
     await db.commit()
     await db.refresh(system)
-    return system
+    return _system_to_read(system)
 
 
 @router.get("/{system_id}", response_model=SystemRead)
@@ -108,4 +129,4 @@ async def get_system(
     if system.privacy != PrivacyLevel.PUBLIC and (user is None or system.user_id != user.id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
 
-    return system
+    return _system_to_read(system)

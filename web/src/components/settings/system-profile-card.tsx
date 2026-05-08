@@ -48,13 +48,14 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat };
-  onSubmit: (data: { name: string; description: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat }) => void;
+  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat };
+  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
   const [avatarUrl, setAvatarUrl] = useState(initial.avatar_url);
   const [description, setDescription] = useState(initial.description ?? "");
+  const [note, setNote] = useState(initial.note ?? "");
   const [tag, setTag] = useState(initial.tag ?? "");
   const [color, setColor] = useState(initial.color ?? "");
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial.privacy);
@@ -66,6 +67,7 @@ function SystemSettingsForm({
       name,
       avatar_url: avatarUrl,
       description: description || null,
+      note: note || null,
       tag: tag || null,
       color: color || null,
       privacy,
@@ -97,6 +99,22 @@ function SystemSettingsForm({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional"
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="system-note">Notes</Label>
+            <textarea
+              id="system-note"
+              className="w-full rounded-md border bg-background p-2 text-sm font-mono"
+              rows={4}
+              maxLength={5000}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Quick reference scratchpad..."
+            />
+            <p className="text-xs text-muted-foreground">
+              Markdown supported. Edits overwrite immediately. No revision
+              history, not protected by System Safety.
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">

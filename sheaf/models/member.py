@@ -99,6 +99,13 @@ class Member(UUIDMixin, TimestampMixin, Base):
         nullable=False,
     )
 
+    # Free-text scratchpad note. Encrypted at rest like description.
+    # Deliberately lightweight: no revisions, no System Safety protection,
+    # no sub-records — overwriting clears the previous content with no
+    # history. For "trigger list / fav drink / current med doses" type
+    # quick reference. Soft-capped at ~5kb plaintext at the schema layer.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Relationships
     system: Mapped["System"] = relationship(back_populates="members")
     fronts: Mapped[list["Front"]] = relationship(

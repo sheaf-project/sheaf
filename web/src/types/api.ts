@@ -45,6 +45,9 @@ export interface System {
   id: string;
   name: string;
   description: string | null;
+  /** Lightweight scratchpad note; deliberately overwrite-only and not
+   *  protected by System Safety. ~5kb plaintext cap. */
+  note: string | null;
   tag: string | null;
   avatar_url: string | null;
   color: string | null;
@@ -60,6 +63,7 @@ export interface System {
 export interface SystemUpdate {
   name?: string;
   description?: string | null;
+  note?: string | null;
   tag?: string | null;
   avatar_url?: string | null;
   color?: string | null;
@@ -83,6 +87,9 @@ export interface Member {
   emoji: string | null;
   is_custom_front: boolean;
   privacy: PrivacyLevel;
+  /** Lightweight scratchpad note; deliberately overwrite-only and not
+   *  protected by System Safety. ~5kb plaintext cap. */
+  note: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -99,6 +106,7 @@ export interface MemberCreate {
   emoji?: string | null;
   is_custom_front?: boolean;
   privacy?: PrivacyLevel;
+  note?: string | null;
 }
 
 export interface MemberUpdate {
@@ -113,6 +121,7 @@ export interface MemberUpdate {
   emoji?: string | null;
   is_custom_front?: boolean;
   privacy?: PrivacyLevel;
+  note?: string | null;
 }
 
 export interface Front {

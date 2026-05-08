@@ -41,6 +41,9 @@ class System(UUIDMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Free-text scratchpad note. Same shape as Member.note: encrypted at
+    # rest, lightweight, no revisions or System Safety integration.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     tag: Mapped[str | None] = mapped_column(String(8), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)

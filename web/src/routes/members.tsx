@@ -66,6 +66,7 @@ function MemberForm({
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? "");
   const [color, setColor] = useState(initial?.color ?? "#6366f1");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [note, setNote] = useState(initial?.note ?? "");
   const [birthday, setBirthday] = useState(initial?.birthday ?? "");
   const [pluralkitId, setPluralkitId] = useState(initial?.pluralkit_id ?? "");
   const [emoji, setEmoji] = useState(initial?.emoji ?? "");
@@ -83,6 +84,7 @@ function MemberForm({
       pronouns: pronouns || null,
       color: color || null,
       description: description || null,
+      note: note || null,
       birthday: birthday || null,
       pluralkit_id: pluralkitId.trim() || null,
       emoji: emoji.trim() || null,
@@ -163,6 +165,22 @@ function MemberForm({
         <Suspense fallback={<div className="h-[120px] rounded-md border border-input" />}>
           <BioEditor value={description} onChange={setDescription} />
         </Suspense>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="member-note">Notes</Label>
+        <textarea
+          id="member-note"
+          className="w-full rounded-md border bg-background p-2 text-sm font-mono"
+          rows={4}
+          maxLength={5000}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Quick reference scratchpad — trigger list, fav drink, current med doses..."
+        />
+        <p className="text-xs text-muted-foreground">
+          Markdown supported. Edits overwrite immediately. No revision
+          history, not protected by System Safety.
+        </p>
       </div>
       <div className="space-y-2">
         <Label>PluralKit ID</Label>
@@ -576,6 +594,18 @@ function MemberView({
             <div className="rounded-md border bg-muted/30 px-3 py-2">
               <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
                 <MarkdownPreview content={member.description} />
+              </Suspense>
+            </div>
+          )}
+
+          {/* Notes — scratchpad surface, deliberately separate from bio */}
+          {member.note && (
+            <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2">
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Notes
+              </p>
+              <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
+                <MarkdownPreview content={member.note} />
               </Suspense>
             </div>
           )}

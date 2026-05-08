@@ -221,6 +221,7 @@ async def export_all(
                 "emoji": m.emoji,
                 "is_custom_front": m.is_custom_front,
                 "privacy": m.privacy.value,
+                "note": decrypt(m.note) if m.note else None,
                 "created_at": m.created_at.isoformat(),
             }
             for (m, name, description) in members_with_plaintext
@@ -307,6 +308,7 @@ def _system_dict(system: System) -> dict:
         "id": str(system.id),
         "name": system.name,
         "description": system.description,
+        "note": decrypt(system.note) if system.note else None,
         "tag": system.tag,
         "avatar_url": system.avatar_url,
         "color": system.color,

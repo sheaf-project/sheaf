@@ -27,6 +27,12 @@ def member_description_plaintext(member: Member) -> str | None:
     return decrypt(member.description)
 
 
+def member_note_plaintext(member: Member) -> str | None:
+    if member.note is None:
+        return None
+    return decrypt(member.note)
+
+
 def set_member_name(member: Member, plaintext: str) -> None:
     """Encrypt + hash a new plaintext name onto a Member instance."""
     member.name = encrypt(plaintext)
@@ -35,6 +41,16 @@ def set_member_name(member: Member, plaintext: str) -> None:
 
 def set_member_description(member: Member, plaintext: str | None) -> None:
     member.description = encrypt(plaintext) if plaintext is not None else None
+
+
+def set_member_note(member: Member, plaintext: str | None) -> None:
+    """Set / clear the scratchpad note. Empty string normalises to None
+    so deleting the contents in the UI clears the column rather than
+    persisting an encrypted empty string."""
+    if plaintext is None or plaintext == "":
+        member.note = None
+    else:
+        member.note = encrypt(plaintext)
 
 
 def decrypt_member_for_read(member: Member) -> MemberRead:
@@ -53,6 +69,7 @@ def decrypt_member_for_read(member: Member) -> MemberRead:
         "emoji": member.emoji,
         "is_custom_front": member.is_custom_front,
         "privacy": member.privacy,
+        "note": member_note_plaintext(member),
         "created_at": member.created_at,
         "updated_at": member.updated_at,
     })
