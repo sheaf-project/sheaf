@@ -33,10 +33,23 @@ async def _parse_upload(file: UploadFile) -> dict:
             detail="Invalid JSON file.",
         ) from exc
 
-    if not isinstance(parsed, dict) or parsed.get("version") != "1":
+    # Accept both legacy v1 exports and current v2 exports. v2 added new
+    # top-level keys (reminders, watch_tokens, polls, journals, revisions,
+    # uploaded_files) over time; the importer only consumes the original
+    # set (system / members / fronts / groups / tags / custom_fields) and
+    # silently ignores extras, so accepting v2 is forward-compatible
+    # without requiring per-field handlers for the not-yet-importable
+    # surfaces. New format versions should be added here as they ship.
+    if (
+        not isinstance(parsed, dict)
+        or parsed.get("version") not in {"1", "2"}
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Not a valid Sheaf export file (missing version field).",
+            detail=(
+                "Not a valid Sheaf export file (missing or unsupported "
+                "version field — expected 1 or 2)."
+            ),
         )
     return parsed
 

@@ -1,7 +1,15 @@
 """Sheaf data import service.
 
-Imports data from Sheaf's own export format (version "1"). Generates new UUIDs
-for all entities and maps old IDs to new ones for cross-references.
+Imports data from Sheaf's own export format. Versions "1" and "2" are
+accepted; "2" added top-level keys over time (reminders, watch_tokens,
+polls, journals, revisions, uploaded_files) which this importer
+deliberately does not consume — those carry runtime state or live
+deliverability info that doesn't round-trip into a fresh instance
+without re-registration. The fields here are silently ignored when
+present.
+
+Generates new UUIDs for all imported entities and maps old IDs to new
+ones for cross-references inside the file.
 """
 
 import logging
@@ -112,6 +120,11 @@ async def run_import(
                 system.color = sys_data["color"][:7] if sys_data["color"] else None
             if sys_data.get("privacy"):
                 system.privacy = _privacy(sys_data["privacy"])
+            # Notes are encrypted at rest. Empty-string clears (matches the
+            # PATCH /systems/me semantics).
+            if "note" in sys_data:
+                note_val = sys_data["note"]
+                system.note = encrypt(note_val) if note_val else None
 
     # --- Members ---
     export_members = data.get("members", [])
@@ -126,6 +139,7 @@ async def run_import(
         old_id = m_data.get("id", "")
         plaintext_name = (m_data.get("name") or "unnamed")[:100]
         plaintext_description = m_data.get("description")
+        plaintext_note = m_data.get("note")
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -135,6 +149,11 @@ async def run_import(
             description=(
                 encrypt(plaintext_description)
                 if plaintext_description is not None
+                else None
+            ),
+            note=(
+                encrypt(plaintext_note)
+                if plaintext_note
                 else None
             ),
             pronouns=_trunc(m_data.get("pronouns"), 100),
