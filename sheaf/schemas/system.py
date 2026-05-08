@@ -15,6 +15,7 @@ from sheaf.models.system import DateFormat, DeleteConfirmation, PrivacyLevel
 class SystemCreate(BaseModel):
     name: str = Field(max_length=100)
     description: str | None = None
+    note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
@@ -34,6 +35,7 @@ class SystemCreate(BaseModel):
 class SystemUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     description: str | None = None
+    note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
@@ -57,6 +59,7 @@ class SystemRead(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None
+    note: str | None
     tag: str | None
     avatar_url: str | None
     color: str | None

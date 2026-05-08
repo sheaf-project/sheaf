@@ -24,6 +24,7 @@ class MemberCreate(BaseModel):
     emoji: str | None = Field(default=None, max_length=8)
     is_custom_front: bool = False
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
+    note: str | None = Field(default=None, max_length=5000)
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -48,6 +49,7 @@ class MemberUpdate(BaseModel):
     emoji: str | None = Field(default=None, max_length=8)
     is_custom_front: bool | None = None
     privacy: PrivacyLevel | None = None
+    note: str | None = Field(default=None, max_length=5000)
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -83,6 +85,7 @@ class MemberRead(BaseModel):
     emoji: str | None
     is_custom_front: bool
     privacy: PrivacyLevel
+    note: str | None
     created_at: datetime
     updated_at: datetime
 

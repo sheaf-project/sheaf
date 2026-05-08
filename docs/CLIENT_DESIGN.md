@@ -352,6 +352,12 @@ Reminders ride a notification channel for delivery (`channel_id`). Two trigger t
 
 Repeated reminders can be scope-limited to specific members. When the schedule fires while no scoped member is fronting and `digest_when_absent=true`, the missed firing queues (capped at 5 per reminder, oldest dropped). On the next front-start of a scoped member, the queue drains as a digest notification. Title and body are encrypted at rest.
 
+### Notes
+
+A scratchpad text field on each member and on the system itself. Distinct from journals: no revisions, no System Safety integration, no destructive-auth on edit. The scratchpad use case ("trigger list / fav drink / current med doses") wanted journals' machinery to be off, not on. Use journals for anything you want versioned or protected.
+
+No new endpoints — `note: string | null` is part of `MemberCreate` / `MemberUpdate` / `MemberRead` (under `members:write`) and `SystemUpdate` / `SystemRead` (under `system:write`). Hard cap of 5000 plaintext characters. Empty string in a PATCH clears the column. Markdown is rendered with image embeds disabled. Encrypted at rest; decrypted plaintext appears in the Article 20 export.
+
 ### Polls
 
 | Method | Path | Description |

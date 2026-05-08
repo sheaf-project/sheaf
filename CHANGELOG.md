@@ -6,6 +6,17 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Notes
+
+A small scratchpad surface, deliberately separate from journals. One free-form note per member and one per system, encrypted at rest, capped at 5000 plaintext characters.
+
+- **By design lightweight.** No revision history, no System Safety integration, no destructive-auth on edits. Edits overwrite the previous content; clearing the textarea wipes the column. Aimed at "trigger list / fav drink / current med doses" type quick reference, where journals' versioning + protection is unwanted overhead.
+- **Single note per scope.** Multiple notes per member would just reinvent custom fields, which already exist for that.
+- **Markdown rendered with no embedded images.** Same renderer as bios.
+- **API**: `note` field added to `MemberCreate` / `MemberUpdate` / `MemberRead` and to `SystemUpdate` / `SystemRead`. No new endpoints; piggybacks on the existing PATCH surfaces with the existing `members:write` and `system:write` scopes.
+- **Frontend**: notes textarea added under the bio editor on member create/edit, and as a section on Settings → System. Read view shows the note as a dashed-border card under the bio.
+- **Export**: notes are decrypted to plaintext in the Article 20 export alongside other free-text content.
+
 ### Polls
 
 A small voting surface for system-internal decision-making. Headmates cast votes "as" a fronting member, and every action lands in an audit log.

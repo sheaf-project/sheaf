@@ -128,12 +128,18 @@ async def create_member(
     data = body.model_dump()
     plaintext_name: str = data.pop("name")
     plaintext_description: str | None = data.pop("description", None)
+    plaintext_note: str | None = data.pop("note", None)
     member = Member(
         system_id=system.id,
         name=encrypt(plaintext_name),
         name_hash=blind_index(plaintext_name),
         description=(
             encrypt(plaintext_description) if plaintext_description is not None else None
+        ),
+        note=(
+            encrypt(plaintext_note)
+            if plaintext_note is not None and plaintext_note != ""
+            else None
         ),
         **data,
     )
@@ -188,6 +194,13 @@ async def update_member(
             member.name_hash = blind_index(value)
         elif key == "description":
             member.description = encrypt(value) if value is not None else None
+        elif key == "note":
+            # Empty string clears the column. Notes are deliberately
+            # overwrite-only; no revision capture here.
+            if value is None or value == "":
+                member.note = None
+            else:
+                member.note = encrypt(value)
         else:
             setattr(member, key, value)
     await db.commit()
