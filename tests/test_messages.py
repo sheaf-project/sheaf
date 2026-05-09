@@ -225,6 +225,153 @@ def test_revision_history_lists_and_restores(auth_client: httpx.Client):
     assert any(r["body"] == "v3" for r in revs_after)
 
 
+def test_gc_revisions_trims_message_revisions(client: httpx.Client):
+    """gc_revisions must include 'message' targets in its sweep, otherwise
+    edit history grows unbounded. Mirrors the journal/bio coverage."""
+    import asyncio
+    import os
+    import uuid as _uuid
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from sheaf.config import settings
+    from sheaf.crypto import blind_index
+    from sheaf.models.system import System
+    from sheaf.models.user import User
+    from sheaf.services.retention import gc_revisions
+
+    email = f"msggc-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register",
+        json={"email": email, "password": "testpassword123"},
+    )
+    assert resp.status_code == 201, resp.text
+    client.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+
+    # Drop to free tier (count cap = 10) and disable auto-pin so the cap
+    # alone drives the trim.
+    async def _prep() -> None:
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            user = (
+                await db.execute(
+                    select(User).where(User.email_hash == blind_index(email))
+                )
+            ).scalar_one()
+            user.tier = "free"
+            system = (
+                await db.execute(select(System).where(System.user_id == user.id))
+            ).scalar_one()
+            system.auto_pin_first_revision = False
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_prep())
+
+    alice = _create_member(client, "Alice")
+    msg = _post(client, author_member_id=alice, body="v0")
+    for i in range(1, 16):
+        client.patch(f"/v1/messages/{msg['id']}", json={"body": f"v{i}"})
+
+    revs_before = client.get(f"/v1/messages/{msg['id']}/revisions").json()
+    assert len(revs_before) == 15
+
+    async def _run_gc() -> int:
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with async_session() as db:
+                result = await gc_revisions(db)
+                await db.commit()
+                return result["items_processed"]
+        finally:
+            await engine.dispose()
+
+    deleted = asyncio.run(_run_gc())
+    assert deleted >= 5
+
+    revs_after = client.get(f"/v1/messages/{msg['id']}/revisions").json()
+    assert len(revs_after) == 10
+
+
+def test_gc_revisions_sweeps_orphaned_message_revisions(client: httpx.Client):
+    """Defensive orphan sweep: revisions whose message was hard-deleted
+    bypassing the cascade helper should still be cleaned up."""
+    import asyncio
+    import os
+    import uuid as _uuid
+
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from sheaf.config import settings
+    from sheaf.models.content_revision import ContentRevision
+    from sheaf.models.message import Message
+    from sheaf.services.retention import gc_revisions
+
+    email = f"msgorphan-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register",
+        json={"email": email, "password": "testpassword123"},
+    )
+    assert resp.status_code == 201, resp.text
+    client.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+
+    alice = _create_member(client, "Alice")
+    msg = _post(client, author_member_id=alice, body="v0")
+    client.patch(f"/v1/messages/{msg['id']}", json={"body": "v1"})
+    msg_id = _uuid.UUID(msg["id"])
+
+    # Hard-delete the message row directly, bypassing the API cascade
+    # helper. The revisions will be left orphaned.
+    async def _orphan() -> int:
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            await db.execute(delete(Message).where(Message.id == msg_id))
+            await db.commit()
+            count = (
+                await db.execute(
+                    select(ContentRevision).where(
+                        ContentRevision.target_type == "message",
+                        ContentRevision.target_id == msg_id,
+                    )
+                )
+            ).all()
+            await engine.dispose()
+            return len(count)
+
+    orphans = asyncio.run(_orphan())
+    assert orphans >= 1
+
+    async def _run_gc() -> None:
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            await gc_revisions(db)
+            await db.commit()
+            remaining = (
+                await db.execute(
+                    select(ContentRevision).where(
+                        ContentRevision.target_type == "message",
+                        ContentRevision.target_id == msg_id,
+                    )
+                )
+            ).all()
+            assert remaining == []
+        await engine.dispose()
+
+    asyncio.run(_run_gc())
+
+
 # --- Delete ----------------------------------------------------------------
 
 
