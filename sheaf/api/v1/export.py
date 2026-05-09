@@ -204,6 +204,19 @@ async def export_all(
     )
     polls = list(polls_result.scalars().all())
 
+    # Messages — boards + threads. Body is decrypted; deleted messages
+    # excluded (those carry no remaining content). Revisions ride the
+    # existing content_revisions surface and aren't dumped here per the
+    # same shape as journals.
+    from sheaf.models.message import Message
+
+    msgs_result = await db.execute(
+        select(Message)
+        .where(Message.system_id == system.id, Message.deleted_at.is_(None))
+        .order_by(Message.created_at.asc())
+    )
+    messages_rows = list(msgs_result.scalars().all())
+
     return {
         "version": "2",
         "system": _system_dict(system),
@@ -282,6 +295,7 @@ async def export_all(
         "uploaded_files": [_uploaded_file_dict(f) for f in uploaded_files],
         "reminders": [_reminder_dict(r) for r in reminders],
         "polls": [_poll_dict(p) for p in polls],
+        "messages": [_message_dict(m) for m in messages_rows],
     }
 
 
@@ -300,6 +314,7 @@ def _empty_export() -> dict:
         "uploaded_files": [],
         "reminders": [],
         "polls": [],
+        "messages": [],
     }
 
 
@@ -331,6 +346,7 @@ def _system_dict(system: System) -> dict:
             "applies_to_notifications": system.safety_applies_to_notifications,
             "applies_to_reminders": system.safety_applies_to_reminders,
             "applies_to_polls": system.safety_applies_to_polls,
+            "applies_to_messages": system.safety_applies_to_messages,
             "auto_pin_first_revision": system.auto_pin_first_revision,
         },
         "retention": {
@@ -485,6 +501,27 @@ def _reminder_dict(reminder) -> dict:
         "scope_member_ids": [str(m.id) for m in reminder.scope_members],
         "digest_when_absent": reminder.digest_when_absent,
         "created_at": reminder.created_at.isoformat(),
+    }
+
+
+def _message_dict(msg) -> dict:
+    """Board message + reply pointer. Body decrypted to plaintext.
+    Soft-deleted rows are excluded upstream of this serialiser."""
+    return {
+        "id": str(msg.id),
+        "board_kind": msg.board_kind,
+        "board_member_id": (
+            str(msg.board_member_id) if msg.board_member_id else None
+        ),
+        "author_member_id": (
+            str(msg.author_member_id) if msg.author_member_id else None
+        ),
+        "parent_message_id": (
+            str(msg.parent_message_id) if msg.parent_message_id else None
+        ),
+        "body": decrypt(msg.body) if msg.body else "",
+        "created_at": msg.created_at.isoformat(),
+        "updated_at": msg.updated_at.isoformat(),
     }
 
 

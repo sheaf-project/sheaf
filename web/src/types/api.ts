@@ -377,6 +377,7 @@ export interface SystemSafetySettings {
   applies_to_notifications: boolean;
   applies_to_reminders: boolean;
   applies_to_polls: boolean;
+  applies_to_messages: boolean;
   auto_pin_first_revision: boolean;
 }
 
@@ -394,6 +395,7 @@ export interface SystemSafetyUpdate {
   applies_to_notifications?: boolean;
   applies_to_reminders?: boolean;
   applies_to_polls?: boolean;
+  applies_to_messages?: boolean;
   auto_pin_first_revision?: boolean;
   password?: string;
   totp_code?: string;
@@ -472,7 +474,7 @@ export interface JournalListResponse {
   next_cursor: string | null;
 }
 
-export type ContentRevisionTarget = "journal_entry" | "member_bio";
+export type ContentRevisionTarget = "journal_entry" | "member_bio" | "message";
 
 export interface ContentRevision {
   id: string;
@@ -700,6 +702,72 @@ export interface RedeemResponse {
   management_url: string;
   channel_name: string;
   system_label: string | null;
+}
+
+// --- Messages --------------------------------------------------------------
+
+export type BoardKind = "system" | "member";
+
+export interface Message {
+  id: string;
+  system_id: string;
+  board_kind: BoardKind;
+  board_member_id: string | null;
+  author_member_id: string | null;
+  author_member_name: string | null;
+  parent_message_id: string | null;
+  parent_preview: string | null;
+  parent_author_member_name: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MessageCreate {
+  board_kind: BoardKind;
+  board_member_id?: string | null;
+  author_member_id: string;
+  parent_message_id?: string | null;
+  body: string;
+}
+
+export interface MessageUpdate {
+  body: string;
+}
+
+export interface MessagesPage {
+  board_kind: BoardKind;
+  board_member_id: string | null;
+  messages: Message[];
+  caller_last_seen_at: string | null;
+}
+
+export interface BoardSummary {
+  board_kind: BoardKind;
+  board_member_id: string | null;
+  member_name: string | null;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  message_count: number;
+  unread_count: number;
+}
+
+export interface UnreadCounts {
+  member_id: string;
+  total: number;
+  by_board: BoardSummary[];
+}
+
+export interface NotifyOnFrontSettings {
+  notify_on_front_global: boolean;
+  notify_on_front_self: boolean;
+  notify_on_front_member_ids: string[];
+}
+
+export interface FrontStartPrompt {
+  member_id: string;
+  summaries: BoardSummary[];
+  total_unread: number;
 }
 
 // --- Polls -----------------------------------------------------------------

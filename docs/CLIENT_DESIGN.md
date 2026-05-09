@@ -373,6 +373,33 @@ No new endpoints — `note: string | null` is part of `MemberCreate` / `MemberUp
 
 Polls have a creation-time `closes_at` that cannot be moved (manual close would be abusable without member-level auth). The close window, the per-poll `retention_days`, and the count of concurrent open polls per system are all tier-scaled. The frontend pulls `GET /polls/server-config` to clamp inputs and surface the relevant upsell when a free user hits a limit. After `closes_at`, the poll is read-only; after `retention_days` past close, the cleanup job hard-deletes the poll plus its options, votes, and audit log together. `kind` is `single_choice` or `multi_choice`; `results_visibility` is `live` or `end_only` (both visible-once, locked at creation). `include_custom_fronts` defaults false: members marked `is_custom_front=true` may represent system states (Asleep, Away) rather than voters and are blocked from casting unless this flag is set. Question, description, and option text are encrypted at rest.
 
+### Messages
+
+A lightweight message-board surface inside the system: one shared global wall plus a per-member wall. Any system member can post and read on any board (matches SP semantics — the threat model is "headmates leaving each other notes", not cross-system trust).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/messages/boards` | Summary of every board (global + one row per member): unread count, last message preview, last activity timestamp. Pass `caller_member_id` for unread counts. |
+| GET | `/messages` | List messages on one board. Query: `board_kind=system\|member`, plus `board_member_id` for member walls and optional `caller_member_id`. |
+| POST | `/messages` | Post a message. Body: `board_kind`, `board_member_id?`, `author_member_id`, `parent_message_id?`, `body`. Gated by `members:read`. |
+| PATCH | `/messages/{id}` | Edit body. Captures a content revision (first revision auto-pinned). |
+| DELETE | `/messages/{id}` | Soft-delete a single message. Goes through System Safety when the messages category is enabled. |
+| DELETE | `/messages/{id}/thread` | Walk the reply tree breadth-first and soft-delete every reachable message. Separate operation type so a future per-operation auth tier can require stronger reauth for thread delete. |
+| POST | `/messages/mark-seen` | Mark a board as seen for a given member. Lazy-creates the read-state row on first call. |
+| GET | `/messages/unread` | Per-board and total unread counts for `caller_member_id`. |
+| GET | `/messages/front-start-prompt` | Returns the boards the just-fronted member has opted into, with unread counts. The mobile/web client uses this to show a "you have N unread" prompt at front-start. |
+| GET / PUT | `/messages/notify-settings/{member_id}` | Read or update a member's three on-front notify toggles (`notify_on_front_global`, `notify_on_front_self`, `notify_on_front_member_ids` JSONB). |
+| GET | `/messages/{id}/revisions` | List captured revisions of a message body, newest first. Same shape as journal/bio revisions. |
+| POST | `/messages/{id}/restore-revision` | Restore a revision to be the live body. Captures the pre-restore body as a fresh revision (forward-action semantics). |
+| POST | `/messages/{id}/pin-revision` | Pin a revision so retention sweeps don't evict it. |
+| POST | `/messages/{id}/unpin-revision` | Unpin. Goes through System Safety when the revisions category is enabled. |
+
+Replies are a single-level chain (`parent_message_id`), not a tree. The list endpoint includes `parent_preview` and `parent_author_member_name` snapshots so clients can render a backlink without a follow-up fetch. Soft-deleted parents render as "Replying to a deleted message"; the reply itself is not deleted.
+
+Authorship binds to the member, not the user account. Deleting a member sets author rows to NULL, rendered as "[deleted member]". Length cap 5000 plaintext chars. Bodies are encrypted at rest.
+
+Per-member unread tracking lives in `MessageReadState` keyed `(member_id, board_kind, board_member_id)` — lazy-created on the first `/unread` or `/mark-seen` call so opening Messages doesn't dump every historical post into "unread". The web frontend badges the sidebar Messages item with the unread total for the first currently-fronting member.
+
 ### Analytics
 
 | Method | Path | Description |

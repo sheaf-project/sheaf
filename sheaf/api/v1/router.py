@@ -14,6 +14,7 @@ from sheaf.api.v1 import (
     groups,
     journals,
     members,
+    messages,
     notification_channels,
     notifications_public,
     pk_import,
@@ -129,6 +130,13 @@ v1_router.include_router(
 v1_router.include_router(
     polls.router,
     dependencies=[Depends(require_scope("polls:read"))],
+)
+
+# Messages share the members:* scope set rather than minting new scopes —
+# the audience and authorization domain are the same as member content.
+v1_router.include_router(
+    messages.router,
+    dependencies=[Depends(require_scope("members:read"))],
 )
 
 # File serve catch-all MUST be last — {path:path} would shadow other routes

@@ -27,6 +27,7 @@ from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
+from sheaf.models.message import Message
 from sheaf.models.notification_channel import NotificationChannel
 from sheaf.models.pending_action import (
     PendingAction,
@@ -59,6 +60,7 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "notifications",
     "reminders",
     "polls",
+    "messages",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {
@@ -74,6 +76,11 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.CHANNEL_DELETE: "notifications",
     PendingActionType.REMINDER_DELETE: "reminders",
     PendingActionType.POLL_DELETE: "polls",
+    # Both single-message and thread delete map to the same category for
+    # v1; the per-operation auth-tier split is parked under the
+    # System Safety v2 future-work entry.
+    PendingActionType.MESSAGE_DELETE: "messages",
+    PendingActionType.MESSAGE_THREAD_DELETE: "messages",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -89,6 +96,11 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.CHANNEL_DELETE: NotificationChannel,
     PendingActionType.REMINDER_DELETE: Reminder,
     PendingActionType.POLL_DELETE: Poll,
+    # Both message-delete actions resolve to a single Message row at
+    # finalize time. Thread-delete cascades to children inside
+    # `finalize_pending_action`.
+    PendingActionType.MESSAGE_DELETE: Message,
+    PendingActionType.MESSAGE_THREAD_DELETE: Message,
 }
 
 
@@ -347,6 +359,30 @@ async def finalize_pending_action(
                 from sheaf.services.journals import delete_revisions_for
 
                 await delete_revisions_for("member_bio", target.id, db)
+            elif pending.action_type == PendingActionType.MESSAGE_DELETE:
+                from sheaf.services.journals import delete_revisions_for
+
+                await delete_revisions_for("message", target.id, db)
+            elif pending.action_type == PendingActionType.MESSAGE_THREAD_DELETE:
+                # Thread delete: cascade to all replies in the chain.
+                # Walk the parent_message_id graph and delete each
+                # message + its revisions. parent FK is SET NULL on
+                # delete, so order doesn't matter for FK consistency,
+                # but we sweep top-down for predictability.
+                from sheaf.services.journals import delete_revisions_for
+                from sheaf.services.messages import collect_thread_ids
+
+                thread_ids = await collect_thread_ids(db, target.id)
+                for mid in thread_ids:
+                    await delete_revisions_for("message", mid, db)
+                    msg = await db.get(Message, mid)
+                    if msg is not None:
+                        await db.delete(msg)
+                # The root target is part of thread_ids; finalize without
+                # the duplicate db.delete below.
+                pending.status = PendingActionStatus.COMPLETED
+                pending.completed_at = datetime.now(UTC)
+                return
             # Image deletes need to drop the storage blob alongside the DB row;
             # the immediate-delete path does the same. An orphaned blob from a
             # storage failure is recoverable; a stuck pending action isn't.
@@ -379,6 +415,9 @@ async def _target_in_scope(
         if target.target_type == "member_bio":
             member = await db.get(Member, target.target_id)
             return member is not None and member.system_id == pending.system_id
+        if target.target_type == "message":
+            msg = await db.get(Message, target.target_id)
+            return msg is not None and msg.system_id == pending.system_id
         return False
     if isinstance(target, NotificationChannel):
         # Channels don't carry system_id directly; resolve via watch token.

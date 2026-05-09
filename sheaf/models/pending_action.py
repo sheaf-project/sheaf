@@ -22,6 +22,8 @@ class PendingActionType(StrEnum):
     CHANNEL_DELETE = "channel_delete"
     REMINDER_DELETE = "reminder_delete"
     POLL_DELETE = "poll_delete"
+    MESSAGE_DELETE = "message_delete"
+    MESSAGE_THREAD_DELETE = "message_thread_delete"
 
 
 class PendingActionStatus(StrEnum):

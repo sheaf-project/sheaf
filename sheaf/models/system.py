@@ -114,6 +114,9 @@ class System(UUIDMixin, TimestampMixin, Base):
     safety_applies_to_polls: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    safety_applies_to_messages: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # Auto-pin the first captured revision for each journal entry / member bio.
     # Independent of safety_applies_to_revisions: even without grace+re-auth on

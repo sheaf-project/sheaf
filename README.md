@@ -32,6 +32,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Reminders** — Schedule daily/weekly/monthly pings or fire reminders X minutes after a member fronts. Member-scoped reminders queue while nobody on the list is fronting and drain as a digest when one next switches in. Delivery rides your existing notification channels.
 - **Polls** — Run a vote across the system. Each vote is attributed to a specific member who must be in the current front, with a full audit log of cast / change / withdraw events plus a fronting snapshot. Single or multi-choice, results live or hidden until close, hard deadline at creation with auto-purge after retention.
 - **Notes** — Lightweight scratchpad per member and per system. Markdown, encrypted at rest, intentionally without revision history or System Safety protection - for "trigger list / fav drink / current med doses" quick reference where journals' versioning is overkill.
+- **Messages** — Global system message board plus a per-member wall, so headmates can leave each other notes inside the system. Replies chain (no nested threads), edits keep revision history, deletes are soft and gated by System Safety. Per-member unread counts power the sidebar badge and an opt-in "you have N unread" prompt when you start fronting.
 - **Groups** — Organize members into groups with nesting (subsystems)
 - **Tags** — Flexible member tagging
 - **Custom fields** — Define your own fields (text, number, date, boolean, select) with per-field privacy

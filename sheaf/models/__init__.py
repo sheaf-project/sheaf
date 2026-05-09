@@ -12,6 +12,7 @@ from sheaf.models.invite_code import InviteCode
 from sheaf.models.job_run import JobRun
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member, front_members, group_members, member_tags
+from sheaf.models.message import BoardKind, Message, MessageReadState
 from sheaf.models.notification_channel import (
     CofrontRedaction,
     DestinationState,
@@ -76,6 +77,9 @@ __all__ = [
     "JournalEntry",
     "Member",
     "MemberRuleAction",
+    "Message",
+    "MessageReadState",
+    "BoardKind",
     "NotificationChannel",
     "NotificationChannelGroupRule",
     "NotificationChannelMemberRule",

@@ -13,6 +13,7 @@ import {
   unpinMemberBioRevision,
 } from "@/lib/members";
 import { listTags } from "@/lib/tags";
+import { getNotifySettings, setNotifySettings } from "@/lib/messages";
 import { getSystemSafety } from "@/lib/system-safety";
 import { AvatarUpload } from "@/components/avatar-upload";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +27,7 @@ const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => (
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
 import { PageHeader } from "@/components/page-header";
-import { BookOpen, History, Pencil } from "lucide-react";
+import { BookOpen, History, MessageSquare, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -497,6 +498,176 @@ function MemberTagsEditor({ memberId }: { memberId: string }) {
 }
 
 
+function NotifyOnFrontEditor({ member }: { member: Member }) {
+  const qc = useQueryClient();
+  const { data: members } = useMembers();
+  const { data: settings } = useQuery({
+    queryKey: ["messages", "notify-settings", member.id],
+    queryFn: () => getNotifySettings(member.id),
+  });
+  const save = useMutation({
+    mutationFn: (body: {
+      notify_on_front_global: boolean;
+      notify_on_front_self: boolean;
+      notify_on_front_member_ids: string[];
+    }) => setNotifySettings(member.id, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["messages", "notify-settings", member.id] });
+      toast.success("Notification preferences updated");
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Failed to update"),
+  });
+
+  const [editing, setEditing] = useState(false);
+  const [draftGlobal, setDraftGlobal] = useState(false);
+  const [draftSelf, setDraftSelf] = useState(false);
+  const [draftMemberIds, setDraftMemberIds] = useState<string[]>([]);
+
+  if (!settings) return null;
+
+  function startEdit() {
+    if (!settings) return;
+    setDraftGlobal(settings.notify_on_front_global);
+    setDraftSelf(settings.notify_on_front_self);
+    setDraftMemberIds(settings.notify_on_front_member_ids);
+    setEditing(true);
+  }
+
+  function toggleMember(id: string) {
+    setDraftMemberIds((ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+    );
+  }
+
+  const otherMembers = (members ?? []).filter(
+    (m) => m.id !== member.id && !m.is_custom_front,
+  );
+
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="flex items-center justify-between">
+        <Label className="text-xs text-muted-foreground">
+          On-front notifications
+        </Label>
+        {!editing ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs"
+            onClick={startEdit}
+          >
+            Edit
+          </Button>
+        ) : (
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs"
+              onClick={() => setEditing(false)}
+              disabled={save.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 text-xs"
+              onClick={() =>
+                save.mutate(
+                  {
+                    notify_on_front_global: draftGlobal,
+                    notify_on_front_self: draftSelf,
+                    notify_on_front_member_ids: draftMemberIds,
+                  },
+                  { onSuccess: () => setEditing(false) },
+                )
+              }
+              disabled={save.isPending}
+            >
+              {save.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        When this member starts fronting, prompt them about new messages on
+        the boards they care about.
+      </p>
+      {!editing ? (
+        <div className="space-y-1 text-sm">
+          <div>
+            Global board:{" "}
+            <span className="font-medium">
+              {settings.notify_on_front_global ? "yes" : "no"}
+            </span>
+          </div>
+          <div>
+            Their own wall:{" "}
+            <span className="font-medium">
+              {settings.notify_on_front_self ? "yes" : "no"}
+            </span>
+          </div>
+          <div>
+            Other members watched:{" "}
+            <span className="font-medium">
+              {settings.notify_on_front_member_ids.length === 0
+                ? "none"
+                : settings.notify_on_front_member_ids
+                    .map(
+                      (id) =>
+                        otherMembers.find((m) => m.id === id)?.display_name ||
+                        otherMembers.find((m) => m.id === id)?.name ||
+                        "?",
+                    )
+                    .join(", ")}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2 text-sm">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={draftGlobal}
+              onChange={(e) => setDraftGlobal(e.target.checked)}
+            />
+            Global board
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={draftSelf}
+              onChange={(e) => setDraftSelf(e.target.checked)}
+            />
+            Their own wall
+          </label>
+          {otherMembers.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">Other members:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {otherMembers.map((m) => {
+                  const selected = draftMemberIds.includes(m.id);
+                  return (
+                    <Badge
+                      key={m.id}
+                      variant={selected ? "default" : "outline"}
+                      className="cursor-pointer"
+                      onClick={() => toggleMember(m.id)}
+                    >
+                      {m.display_name || m.name}
+                    </Badge>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MemberView({
   member,
   onEdit,
@@ -537,6 +708,12 @@ function MemberView({
                 <Link to={`/journals?member_id=${member.id}`}>
                   <BookOpen className="h-3.5 w-3.5 mr-1" />
                   Journal
+                </Link>
+              </Button>
+              <Button variant="ghost" size="sm" asChild>
+                <Link to={`/messages?member=${member.id}`}>
+                  <MessageSquare className="h-3.5 w-3.5 mr-1" />
+                  Wall
                 </Link>
               </Button>
               <Button
@@ -651,6 +828,9 @@ function MemberView({
 
           {/* Tags */}
           <MemberTagsEditor memberId={member.id} />
+
+          {/* Notify-on-front settings */}
+          <NotifyOnFrontEditor member={member} />
         </div>
       </DialogContent>
     </Dialog>

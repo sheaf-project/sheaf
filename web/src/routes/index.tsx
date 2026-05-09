@@ -26,6 +26,7 @@ import { NotificationsManagePage } from "./notifications.manage.$mgmtToken";
 import { RemindersPage } from "./reminders";
 import { PollsPage } from "./polls";
 import { PollDetailPage } from "./polls.$pollId";
+import { MessagesPage } from "./messages";
 import { AdminLayout } from "./admin/_layout";
 import { VerifyEmailPage } from "./verify-email";
 import { ForgotPasswordPage } from "./forgot-password";
@@ -77,6 +78,7 @@ export const router = createBrowserRouter([
       { path: "reminders", element: <RemindersPage /> },
       { path: "polls", element: <PollsPage /> },
       { path: "polls/:pollId", element: <PollDetailPage /> },
+      { path: "messages", element: <MessagesPage /> },
       {
         path: "settings",
         element: <SettingsLayout />,
