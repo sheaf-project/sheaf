@@ -1,6 +1,9 @@
 import { NavLink } from "react-router";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useTheme } from "@/hooks/use-theme";
+import { useCurrentFronts } from "@/hooks/use-fronts";
+import { getUnread } from "@/lib/messages";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
@@ -19,6 +22,7 @@ import {
   BellRing,
   BarChart3,
   Vote,
+  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   X,
@@ -35,6 +39,7 @@ const navItems = [
   { to: "/notifications", label: "Notifications", icon: Bell },
   { to: "/reminders", label: "Reminders", icon: BellRing },
   { to: "/polls", label: "Polls", icon: Vote },
+  { to: "/messages", label: "Messages", icon: MessageSquare },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -60,6 +65,18 @@ export function AppSidebar({
 }) {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+
+  // Pick the first fronting member as the perspective for unread counts.
+  // If no one is fronting, skip the query - badge stays hidden.
+  const { data: currentFronts } = useCurrentFronts();
+  const callerMemberId = currentFronts?.[0]?.member_ids?.[0];
+  const { data: unread } = useQuery({
+    queryKey: ["messages", "unread", callerMemberId],
+    queryFn: () => getUnread(callerMemberId!),
+    enabled: !!callerMemberId,
+    refetchInterval: 30_000,
+  });
+  const messagesUnread = unread?.total ?? 0;
 
   // Collapsed-icons-only is a desktop-only convenience. On mobile the
   // sidebar is shown as a drawer overlay where horizontal space is plentiful,
@@ -137,6 +154,7 @@ export function AppSidebar({
             icon={item.icon}
             collapsed={isCollapsed}
             onClick={onMobileClose}
+            badge={item.to === "/messages" ? messagesUnread : undefined}
           />
         ))}
         {user?.is_admin &&
@@ -210,6 +228,7 @@ function SidebarNavLink({
   collapsed,
   indented,
   onClick,
+  badge,
 }: {
   to: string;
   end?: boolean;
@@ -218,6 +237,7 @@ function SidebarNavLink({
   collapsed: boolean;
   indented?: boolean;
   onClick?: () => void;
+  badge?: number;
 }) {
   return (
     <NavLink
@@ -227,7 +247,7 @@ function SidebarNavLink({
       title={collapsed ? label : undefined}
       className={({ isActive }) =>
         cn(
-          "flex items-center rounded-md text-sm font-medium transition-colors",
+          "relative flex items-center rounded-md text-sm font-medium transition-colors",
           collapsed
             ? "justify-center px-2 py-2"
             : indented
@@ -240,7 +260,15 @@ function SidebarNavLink({
       }
     >
       {Icon && <Icon className="h-4 w-4 shrink-0" />}
-      {!collapsed && <span className="truncate">{label}</span>}
+      {!collapsed && <span className="truncate flex-1">{label}</span>}
+      {!collapsed && badge !== undefined && badge > 0 && (
+        <span className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-foreground">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
+      {collapsed && badge !== undefined && badge > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-primary" />
+      )}
     </NavLink>
   );
 }

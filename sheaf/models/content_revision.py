@@ -15,6 +15,7 @@ from sheaf.models.base import Base, UUIDMixin
 class ContentRevisionTarget(StrEnum):
     JOURNAL_ENTRY = "journal_entry"
     MEMBER_BIO = "member_bio"
+    MESSAGE = "message"
 
 
 class ContentRevision(UUIDMixin, Base):

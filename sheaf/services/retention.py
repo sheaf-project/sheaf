@@ -239,6 +239,7 @@ async def gc_revisions(db: AsyncSession) -> dict:
 
     from sheaf.models.journal_entry import JournalEntry
     from sheaf.models.member import Member
+    from sheaf.models.message import Message
 
     for user, system in pairs:
         max_rev, max_days, notice = await effective_caps_with_grace(user, system, db)
@@ -257,6 +258,12 @@ async def gc_revisions(db: AsyncSession) -> dict:
         )
         for (m_id,) in m_result.all():
             targets.append(("member_bio", m_id))
+
+        msg_result = await db.execute(
+            select(Message.id).where(Message.system_id == system.id)
+        )
+        for (msg_id,) in msg_result.all():
+            targets.append(("message", msg_id))
 
         user_deleted = 0
         for target_type, target_id in targets:
@@ -291,10 +298,12 @@ async def gc_revisions(db: AsyncSession) -> dict:
         "journal_entry", JournalEntry, db
     )
     orphan_bio = await _delete_orphaned_revisions_for("member_bio", Member, db)
-    if orphan_journal or orphan_bio:
-        total_deleted += orphan_journal + orphan_bio
+    orphan_message = await _delete_orphaned_revisions_for("message", Message, db)
+    if orphan_journal or orphan_bio or orphan_message:
+        total_deleted += orphan_journal + orphan_bio + orphan_message
         detail_lines.append(
-            f"Orphan sweep: {orphan_journal} journal-entry, {orphan_bio} member-bio revisions"
+            f"Orphan sweep: {orphan_journal} journal-entry, "
+            f"{orphan_bio} member-bio, {orphan_message} message revisions"
         )
 
     return {

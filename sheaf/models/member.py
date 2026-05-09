@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import Boolean, Column, Enum, ForeignKey, String, Table, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from sheaf.models.base import Base, TimestampMixin, UUIDMixin
@@ -105,6 +105,23 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # history. For "trigger list / fav drink / current med doses" type
     # quick reference. Soft-capped at ~5kb plaintext at the schema layer.
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Per-member opt-in toggles for the on-front-start "new board
+    # messages" prompt. Off by default — opt-in surface, not push.
+    # The prompt is in-app only (toast/modal at front-start time + the
+    # sidebar unread badge); it does not fire through notification
+    # channels.
+    notify_on_front_global: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    notify_on_front_self: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    # JSONB list of member ids (as strings) whose walls this member
+    # wants to be notified about.
+    notify_on_front_member_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
 
     # Relationships
     system: Mapped["System"] = relationship(back_populates="members")

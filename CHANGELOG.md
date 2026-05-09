@@ -6,6 +6,26 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Messages
+
+A lightweight in-system message board so headmates can leave each other notes — global wall plus a per-member wall (an SP-style surface, but encrypted at rest and revisioned).
+
+- **Two board kinds.** `system` (one shared global feed) and `member` (one wall per member, addressable from the Members page or directly via `/messages?member=<id>`). The Messages tab in the sidebar shows both, with a search/filter panel for member walls.
+- **No external auth.** Any member of the system can post and read on any board. Matches SP semantics — the threat model is "headmates leaving each other notes", not cross-system trust.
+- **Authorship is per-member, not per-account.** Posters pick which member they are speaking as; deletes follow the author member, not the user account, so a member's posts go away cleanly when the member is deleted (`author_member_id` is `SET NULL`, rendered as "[deleted member]").
+- **Replies are a chain, not a tree.** Each message can carry a single `parent_message_id`; the UI shows a "Replying to Alice: ..." backlink with a preview, no nested rendering. Keeps the model simple and avoids the SP-thread depth-creep failure mode.
+- **Revision history.** Edits capture content revisions through the same polymorphic mechanism journals use; first revision auto-pinned. Length cap 5000 plaintext chars.
+- **Soft delete.** Single-message delete tombstones the row (`deleted_at`); replies still render but show "Replying to a deleted message" instead of a preview. Thread delete is a separate operation that walks the reply tree breadth-first and deletes everything reachable.
+- **System Safety integration.** New `applies_to_messages` category. Both `message_delete` and `message_thread_delete` go through `verify_destructive_auth` and queue pending actions when safeguarded; finalize hard-deletes. Threads stayed a separate operation type so a future per-operation auth-tier setting can require stronger reauth for "delete the entire reply tree".
+- **Per-member unread tracking.** `MessageReadState` is keyed `(member_id, board_kind, board_member_id)` and lazy-created on first access — first call to `/v1/messages/unread` for a member establishes the baseline, so opening Messages doesn't dump every historical post into "unread". Sidebar nav badges the Messages item with the unread total for the first currently-fronting member.
+- **On-front prompt.** Each member has three opt-in toggles (global, own wall, watched-member ids stored as JSONB). When a member starts fronting, `GET /v1/messages/front-start-prompt` returns the boards they care about with unread counts so the client can surface a "you have N unread on these walls" notice.
+- **Encryption.** Message bodies are encrypted at rest with the same per-system key chain as the rest of the free-text surface.
+- **Revision history surfaced inline.** Each message has a History button that opens the same revision viewer used for journals and bios (list, diff, restore, pin/unpin via System Safety) — `GET /v1/messages/{id}/revisions` plus `restore-revision`, `pin-revision`, `unpin-revision` POSTs. `ContentRevisionTarget.MESSAGE` joins the existing polymorphic enum.
+- **Revision retention coverage.** The periodic `gc_revisions` job now sweeps message revisions alongside journal/bio revisions, honouring the same per-tier `revisions_per_target` and `revisions_max_days` caps. The orphan-revision sweep also covers the `message` target type. Message rows themselves are not bounded — same as journal entries; revisit if it ever becomes a problem.
+- **Two view modes.** Flat (every message in chronological order) is the default; Topics mode groups by thread root and shows top-level posts with a reply-count badge, expanding inline to show the chain. Per-board state, no preference persistence yet.
+- **API**: `POST/PATCH/DELETE /v1/messages`, `DELETE /v1/messages/{id}/thread`, `GET /v1/messages` (board-scoped list), `GET /v1/messages/boards`, `GET /v1/messages/unread`, `GET /v1/messages/front-start-prompt`, `POST /v1/messages/mark-seen`, `GET/PUT /v1/messages/notify-settings/{member_id}`, `GET /v1/messages/{id}/revisions`, `POST /v1/messages/{id}/restore-revision`, `POST /v1/messages/{id}/pin-revision`, `POST /v1/messages/{id}/unpin-revision`. All gated by the existing `members:*` scopes.
+- **Frontend**: new `/messages` route with Global / Members tabs, composer with reply UI, edit dialog, single + thread destructive-confirm flows, History dialog per message, and a Flat/Topics view toggle. Member detail dialog gains a "Wall" button (deep-links into the member's board) and an "On-front notifications" editor.
+
 ### Notes
 
 A small scratchpad surface, deliberately separate from journals. One free-form note per member and one per system, encrypted at rest, capped at 5000 plaintext characters.

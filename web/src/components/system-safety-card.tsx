@@ -58,6 +58,11 @@ const categoryLabels: {
     label: "Polls",
     desc: "Deleting a poll (with its votes and audit log)",
   },
+  {
+    key: "applies_to_messages",
+    label: "Messages",
+    desc: "Deleting a board message or thread",
+  },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -405,6 +410,7 @@ const CATEGORY_KEYS = [
   "applies_to_notifications",
   "applies_to_reminders",
   "applies_to_polls",
+  "applies_to_messages",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {
