@@ -66,7 +66,17 @@ router = APIRouter(prefix="", tags=["notifications"])
 # ---------- helpers --------------------------------------------------------
 
 
-_PUSH_TYPES = {DestinationType.WEB_PUSH.value}
+_PUSH_TYPES = {
+    DestinationType.WEB_PUSH.value,
+    DestinationType.FCM.value,
+    DestinationType.APNS_DEV.value,
+    DestinationType.APNS_PROD.value,
+}
+_MOBILE_PUSH_TYPES = {
+    DestinationType.FCM.value,
+    DestinationType.APNS_DEV.value,
+    DestinationType.APNS_PROD.value,
+}
 _DIRECT_TYPES = {
     DestinationType.WEBHOOK.value,
     DestinationType.NTFY.value,
@@ -74,8 +84,6 @@ _DIRECT_TYPES = {
 }
 _RESERVED_TYPES = {
     DestinationType.EMAIL.value,
-    DestinationType.APNS.value,
-    DestinationType.FCM.value,
     DestinationType.DISCORD.value,
 }
 
@@ -179,6 +187,22 @@ def _redacted_destination_config(channel: NotificationChannel) -> dict:
     return dict(channel.destination_config or {})
 
 
+def _fcm_configured() -> bool:
+    return bool(
+        settings.fcm_service_account_path or settings.fcm_service_account_json
+    )
+
+
+def _apns_configured() -> bool:
+    has_key = bool(settings.apns_p8_path or settings.apns_p8_key)
+    return bool(
+        settings.apns_team_id
+        and settings.apns_key_id
+        and settings.apns_bundle_id
+        and has_key
+    )
+
+
 def _validate_destination(body_type: str) -> None:
     if body_type in _RESERVED_TYPES:
         raise HTTPException(
@@ -189,6 +213,21 @@ def _validate_destination(body_type: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"unknown destination_type {body_type!r}",
+        )
+    # Mobile push feature-flags: reject channel creation when credentials
+    # for the relevant provider aren't configured on this deployment.
+    if body_type == DestinationType.FCM.value and not _fcm_configured():
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="FCM is not configured on this server",
+        )
+    if (
+        body_type in {DestinationType.APNS_DEV.value, DestinationType.APNS_PROD.value}
+        and not _apns_configured()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="APNs is not configured on this server",
         )
 
 

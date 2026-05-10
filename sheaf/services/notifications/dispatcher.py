@@ -46,6 +46,7 @@ _BACKOFF_BASE_SECONDS = 30
 
 
 def _semaphores() -> dict[str, asyncio.Semaphore]:
+    apns_sem = asyncio.Semaphore(settings.notifications_concurrency_apns)
     return {
         DestinationType.WEB_PUSH.value: asyncio.Semaphore(
             settings.notifications_concurrency_web_push
@@ -59,6 +60,13 @@ def _semaphores() -> dict[str, asyncio.Semaphore]:
         DestinationType.PUSHOVER.value: asyncio.Semaphore(
             settings.notifications_concurrency_pushover
         ),
+        DestinationType.FCM.value: asyncio.Semaphore(
+            settings.notifications_concurrency_fcm
+        ),
+        # APNs dev + prod share one semaphore — same backend, same key,
+        # just different hosts. Concurrency budget is shared across both.
+        DestinationType.APNS_DEV.value: apns_sem,
+        DestinationType.APNS_PROD.value: apns_sem,
     }
 
 
@@ -259,6 +267,7 @@ async def _deliver_or_retry(
             event_id=str(row.event_id),
             owner_user_id=owner_user_id,
             owner_tier=owner_tier,
+            db=db,
         )
 
     if outcome.ok:

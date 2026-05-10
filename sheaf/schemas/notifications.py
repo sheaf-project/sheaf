@@ -44,7 +44,9 @@ class WatchTokenRead(BaseModel):
 # ---- notification channels ------------------------------------------------
 
 
-_DESTINATION_TYPES = Literal["web_push", "webhook", "ntfy", "pushover"]
+_DESTINATION_TYPES = Literal[
+    "web_push", "webhook", "ntfy", "pushover", "fcm", "apns_dev", "apns_prod"
+]
 _PAYLOAD_SENSITIVITIES = Literal["full", "minimal", "bare"]
 _COFRONT_REDACTIONS = Literal["count", "someone", "suppress"]
 
@@ -204,6 +206,9 @@ class RedeemRequest(BaseModel):
 
 
 class RedeemResponse(BaseModel):
+    # Empty for mobile-push channels (FCM/APNS_DEV/APNS_PROD), which
+    # have no anonymous-capability /manage URL — recipients manage in
+    # the app via /v1/notifications/receiving/{channel_id}/unsubscribe.
     management_url: str
     channel_name: str
     system_label: str | None = None

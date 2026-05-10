@@ -8,6 +8,7 @@ from sheaf.api.v1 import (
     auth,
     client_settings,
     custom_fields,
+    devices,
     export,
     files,
     fronts,
@@ -125,6 +126,13 @@ v1_router.include_router(
 v1_router.include_router(notifications_public.router)
 v1_router.include_router(
     reminders.router,
+    dependencies=[Depends(require_scope("notifications:read"))],
+)
+# Mobile push device-token registration. Account-scoped; uses the same
+# scope set as the rest of the notifications surface (router-level read,
+# write scope per-endpoint inside the module).
+v1_router.include_router(
+    devices.router,
     dependencies=[Depends(require_scope("notifications:read"))],
 )
 v1_router.include_router(
