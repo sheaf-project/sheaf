@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
 from sheaf.crypto import decrypt
@@ -60,6 +61,7 @@ async def deliver(
     event_id: str,
     owner_user_id: uuid.UUID | None = None,
     owner_tier: str | None = None,
+    db: AsyncSession | None = None,
 ) -> DeliveryResult:
     """Dispatch a rendered message via the channel's destination handler.
 
@@ -67,6 +69,10 @@ async def deliver(
     monthly cap enforcement on the shared deployment app token. Pass them
     on real dispatcher-driven deliveries; pass None for synthetic test
     sends (which still hit the deployment cap but skip the per-user one).
+
+    `db` is required for mobile-push types (FCM / APNs) which fan out to
+    every push_device_tokens row matching the channel's redeemed account.
+    Other handlers ignore it.
     """
     dtype = DestinationType(channel.destination_type)
     if dtype == DestinationType.WEB_PUSH:
@@ -78,6 +84,18 @@ async def deliver(
     if dtype == DestinationType.PUSHOVER:
         return await _deliver_pushover(
             channel, message, owner_user_id=owner_user_id, owner_tier=owner_tier
+        )
+    if dtype == DestinationType.FCM:
+        return await _deliver_mobile_push(
+            channel, message, event_id=event_id, db=db, platform="fcm"
+        )
+    if dtype == DestinationType.APNS_DEV:
+        return await _deliver_mobile_push(
+            channel, message, event_id=event_id, db=db, platform="apns_dev"
+        )
+    if dtype == DestinationType.APNS_PROD:
+        return await _deliver_mobile_push(
+            channel, message, event_id=event_id, db=db, platform="apns_prod"
         )
     return permanent(f"unsupported destination type {dtype}")
 
@@ -364,3 +382,117 @@ async def _deliver_pushover(
         # Pushover returns 400 for invalid user/app keys: permanent.
         return permanent(f"pushover bad key ({resp.status_code})")
     return transient(f"pushover error ({resp.status_code})")
+
+
+# --- mobile push (FCM + APNs) ----------------------------------------------
+
+
+async def _deliver_mobile_push(
+    channel: NotificationChannel,
+    message: RenderedMessage,
+    *,
+    event_id: str,
+    db: AsyncSession | None,
+    platform: str,
+) -> DeliveryResult:
+    """Fan-out one notification to every push_device_tokens row matching
+    the channel's redeemed_by_account_id and the given platform.
+
+    Aggregation rule: any-success-is-success. Permanent only when every
+    device returned a permanent error AND there was at least one device.
+    Zero-device case is success-with-no-effect (the user might just not
+    have any registered devices for this platform yet).
+
+    410 / Unregistered responses delete the dead row in-line so the next
+    delivery doesn't re-attempt against it.
+    """
+    from sqlalchemy import delete, select
+
+    from sheaf.models.push_device_token import PushDeviceToken
+
+    if db is None:
+        return transient("mobile push handler called without a db session")
+
+    if channel.redeemed_by_account_id is None:
+        # The redemption flow refuses to mark a mobile channel ACTIVE
+        # without an account binding, so this is defensive only.
+        return permanent("mobile push channel has no redeemed_by_account_id")
+
+    result = await db.execute(
+        select(PushDeviceToken).where(
+            PushDeviceToken.account_id == channel.redeemed_by_account_id,
+            PushDeviceToken.platform == platform,
+        )
+    )
+    rows = list(result.scalars().all())
+    if not rows:
+        # No registered devices for this platform — not a delivery
+        # failure; the user might still have a web-push channel to the
+        # same account or just hasn't installed the app yet.
+        logger.info(
+            "mobile push: no devices for account=%s platform=%s",
+            channel.redeemed_by_account_id,
+            platform,
+        )
+        return SUCCESS
+
+    any_ok = False
+    all_dead = True
+    last_error: str | None = None
+    dead_ids: list[uuid.UUID] = []
+
+    if platform == "fcm":
+        from sheaf.services.notifications.fcm import send_to_token as fcm_send
+
+        for row in rows:
+            outcome = await fcm_send(
+                device_token=row.token,
+                title=message.title,
+                body=message.body,
+                event_id=event_id,
+            )
+            if outcome.ok:
+                any_ok = True
+                all_dead = False
+            elif outcome.dead:
+                dead_ids.append(row.id)
+                last_error = outcome.error
+            else:
+                all_dead = False
+                last_error = outcome.error
+    else:
+        from sheaf.services.notifications.apns import send_to_token as apns_send
+
+        for row in rows:
+            outcome = await apns_send(
+                platform=platform,
+                device_token=row.token,
+                title=message.title,
+                body=message.body,
+                event_id=event_id,
+            )
+            if outcome.ok:
+                any_ok = True
+                all_dead = False
+            elif outcome.dead:
+                dead_ids.append(row.id)
+                last_error = outcome.error
+            else:
+                all_dead = False
+                last_error = outcome.error
+
+    if dead_ids:
+        await db.execute(
+            delete(PushDeviceToken).where(PushDeviceToken.id.in_(dead_ids))
+        )
+        await db.commit()
+
+    if any_ok:
+        return SUCCESS
+    if all_dead:
+        # Every remaining device is dead. Channel-level: don't disable
+        # the channel — the user might re-register a fresh device. Treat
+        # as transient so the dispatcher retries (and finds zero rows
+        # next time, which is SUCCESS above).
+        return transient(last_error or "all mobile push devices dead")
+    return transient(last_error or "mobile push delivery failed")

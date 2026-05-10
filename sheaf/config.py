@@ -319,6 +319,41 @@ class Settings(BaseSettings):
     notifications_concurrency_webhook: int = 5
     notifications_concurrency_ntfy: int = 5
     notifications_concurrency_pushover: int = 5
+    notifications_concurrency_fcm: int = 10
+    notifications_concurrency_apns: int = 10
+
+    # Mobile push (FCM + APNs). Both creds are long-term static secrets,
+    # shaped like the existing VAPID keys. Each accepts a path or inline
+    # content; path wins when both are set.
+    #
+    # FCM service account JSON (download from Firebase Console -> Project
+    # Settings -> Service Accounts). Empty = FCM destination type is
+    # rejected with 501. The FCM project id is read from the JSON itself.
+    fcm_service_account_path: str = ""
+    fcm_service_account_json: str = ""
+
+    # APNs auth (Apple Developer -> Certificates, Identifiers & Profiles
+    # -> Keys -> APNs). One .p8 key authenticates against both
+    # api.sandbox.push.apple.com and api.push.apple.com; the dispatcher
+    # picks the host per-device based on the apns_dev / apns_prod
+    # platform value. Any of TEAM_ID / KEY_ID / BUNDLE_ID / (P8_PATH or
+    # P8_KEY) being empty disables APNs (channel creation rejects with
+    # 501).
+    apns_team_id: str = ""
+    apns_key_id: str = ""
+    apns_bundle_id: str = ""
+    # Optional override used as the apns-topic header for apns_dev
+    # devices when set. Falls back to apns_bundle_id when unset. Only
+    # relevant if dev and prod builds ever ship under different bundle
+    # ids (a common pattern when supporting side-by-side installs).
+    apns_bundle_id_dev: str = ""
+    apns_p8_path: str = ""
+    apns_p8_key: str = ""
+
+    # Per-account soft cap on push_device_token rows. When exceeded on
+    # register, the row with the oldest last_seen_at is evicted before
+    # the new one is inserted. 0 = unlimited.
+    notifications_mobile_tokens_per_account_max: int = 20
 
     # Polls
     # All three premium levers (close-window, retention, concurrent open

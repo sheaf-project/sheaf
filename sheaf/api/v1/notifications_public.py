@@ -84,6 +84,13 @@ async def redeem_activation(
             detail="Activation code has expired",
         )
 
+    mobile_push_types = {
+        DestinationType.FCM.value,
+        DestinationType.APNS_DEV.value,
+        DestinationType.APNS_PROD.value,
+    }
+    is_mobile = channel.destination_type in mobile_push_types
+
     if channel.destination_type == DestinationType.WEB_PUSH.value:
         if body.push_subscription is None:
             raise HTTPException(
@@ -92,15 +99,44 @@ async def redeem_activation(
             )
         channel.destination_config = body.push_subscription.model_dump()  # noqa: SIM102
 
-    # Optional account-link: if the redeemer is signed in to a Sheaf account
-    # in the same browser, bind the subscription to their user_id.
+    # Resolve the redeemer's account from the session cookie.
+    redeemer_account_id = None
     if session_id is not None:
-        user_id = await get_session_user_id(session_id)
-        if user_id is not None:
-            channel.redeemed_by_account_id = user_id
+        redeemer_account_id = await get_session_user_id(session_id)
 
-    issued = issue_management_token()
-    channel.recipient_management_token_hash = issued.token_hash
+    if is_mobile:
+        # Mobile push is account-anchored: a session is required, and the
+        # transport (push token) lives on push_device_tokens, not the
+        # channel. Refuse any push_subscription supplied by the client.
+        if redeemer_account_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="login required to redeem a mobile push channel",
+            )
+        if body.push_subscription is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="push_subscription is not used for mobile push channels",
+            )
+        channel.destination_config = {}
+        channel.redeemed_by_account_id = redeemer_account_id
+    elif redeemer_account_id is not None:
+        # Web push: optional account-link if the redeemer is signed in.
+        channel.redeemed_by_account_id = redeemer_account_id
+
+    if not is_mobile:
+        issued = issue_management_token()
+        channel.recipient_management_token_hash = issued.token_hash
+        management_url = build_management_url(
+            settings.sheaf_base_url or "", issued.token
+        )
+    else:
+        # No anonymous /manage URL for mobile push — recipients manage
+        # via the in-app Receiving screen using the existing
+        # /notifications/receiving/{channel_id}/unsubscribe endpoint
+        # under their logged-in session.
+        management_url = ""
+
     channel.activation_code_hash = None
     channel.activation_code_expires_at = None
     channel.redeemed_at = datetime.now(UTC)
@@ -119,9 +155,7 @@ async def redeem_activation(
     )
 
     return RedeemResponse(
-        management_url=build_management_url(
-            settings.sheaf_base_url or "", issued.token
-        ),
+        management_url=management_url,
         channel_name=channel.name,
         system_label=system_label,
     )

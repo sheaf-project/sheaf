@@ -400,6 +400,39 @@ Authorship binds to the member, not the user account. Deleting a member sets aut
 
 Per-member unread tracking lives in `MessageReadState` keyed `(member_id, board_kind, board_member_id)` — lazy-created on the first `/unread` or `/mark-seen` call so opening Messages doesn't dump every historical post into "unread". The web frontend badges the sidebar Messages item with the unread total for the first currently-fronting member.
 
+### Mobile push devices
+
+Mobile clients (FCM-on-Android, APNs-on-iOS) register their push tokens against the calling account, and channel fan-out at delivery time looks up the account's currently-registered devices. Designed around the reality that mobile push tokens rotate (app reinstall, OS-side housekeeping, clear-data) — anchoring on the account instead of the channel keeps subscriptions stable across rotation. Web push retains its existing anonymous-capable, channel-scoped flow unchanged.
+
+The platform enum has three values: `fcm`, `apns_dev`, `apns_prod`. FCM has no environment split (one token works everywhere); APNs has two distinct host endpoints (sandbox vs production), routed by the dispatcher per-device. iOS clients pick which one they have at build time from the `aps-environment` entitlement value (not `#if DEBUG` — TestFlight builds are release-config but use production APNs).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/devices/push` | Register or refresh a push token. Body: `{platform, token, install_id?, app_version?}`. Idempotent on `(account, platform, token)`. If `install_id` matches an existing row with a different token, treats as rotation and updates in place. Per-account soft cap (default 20) evicts the oldest-`last_seen_at` row when over. Gated by `notifications:write`. |
+| DELETE | `/devices/push` | Body: `{token}`. Drop a token. Called by the client on logout. Idempotent: returns 204 even if the row is already gone (e.g. evicted by the LRU cap, or lazily reaped via 410 on a previous delivery). |
+| GET | `/devices/push` | List the calling account's registered devices. Returns metadata only — never the token bytes. Used by the in-app "your devices" management screen. |
+
+Channels of type `fcm` / `apns_dev` / `apns_prod` are created with the same shape as web-push channels (the owner provides triggers / filters / payload sensitivity / debounce / quiet hours; `destination_config` stays `{}`). Channel creation rejects with 501 when the deployment hasn't configured the relevant credentials.
+
+Redemption differs from web push:
+
+- A logged-in session is **required** (anonymous redemption returns 401).
+- The `push_subscription` body field is **rejected** (transport lives on `push_device_tokens`, not the channel).
+- `redeemed_by_account_id` is set to the redeeming user.
+- `recipient_management_token_hash` stays NULL — mobile-push channels do **not** get an anonymous-capability `/manage` URL. Recipients manage from inside the app, calling `POST /v1/notifications/receiving/{channel_id}/unsubscribe` under their session.
+
+Dispatch behaviour:
+
+- Looks up every `push_device_tokens` row matching the channel's `redeemed_by_account_id` and the channel's platform.
+- Aggregation: any-success-is-success. Permanent only when every device returned a permanent error AND there was at least one device. Zero devices is success-with-no-effect (the user might just not have any registered for this platform yet).
+- 404 / 410 / `Unregistered` / `BadDeviceToken` responses delete the dead row in-line; the channel itself is not disabled (the user might re-register a fresh device later).
+- The dispatcher routes APNs traffic to `api.sandbox.push.apple.com` for `apns_dev` rows and `api.push.apple.com` for `apns_prod` rows; both use the same `.p8` key. The `apns-topic` header takes `APNS_BUNDLE_ID` (or `APNS_BUNDLE_ID_DEV` for `apns_dev` devices when set, supporting deployments that ship dev builds under a different bundle id).
+
+Payload shape:
+
+- Server sends a data-style payload to both providers. FCM: `data: {title, body, event_id}` plus `android: {priority: "high"}`. APNs: `aps.alert` placeholder + `mutable-content: 1` + custom `data: {title, body, event_id}`. The placeholder shows if the iOS client's Notification Service Extension fails or times out — keep it neutral.
+- iOS clients are expected to ship a Notification Service Extension that reads the `data` keys and rewrites the user-visible alert. Pure data-only / `content-available` payloads on APNs are throttled to ~2-3/hour at low priority — too tight for front-change traffic, hence the `mutable-content` + NSE pattern.
+
 ### Analytics
 
 | Method | Path | Description |

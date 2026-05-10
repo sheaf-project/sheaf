@@ -24,6 +24,14 @@ services:
       ALLOW_IMAGE_UPLOADS: "${ALLOW_IMAGE_UPLOADS:-true}"
       ALLOW_BIO_IMAGES: "${ALLOW_BIO_IMAGES:-true}"
       ALLOW_EXTERNAL_IMAGES: "${ALLOW_EXTERNAL_IMAGES:-true}"
+      # Mobile push: dummy creds in the test stack so channel creation
+      # for FCM / APNS_DEV / APNS_PROD passes the feature-flag gate.
+      # Real dispatch is mocked in tests.
+      FCM_SERVICE_ACCOUNT_JSON: '{"project_id":"sheaf-test","client_email":"x@y","private_key":"-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n"}'
+      APNS_TEAM_ID: "TESTTEAM01"
+      APNS_KEY_ID: "TESTKEY001"
+      APNS_BUNDLE_ID: "com.sheaftest.app"
+      APNS_P8_KEY: "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n"
     volumes: []
     depends_on:
       db:

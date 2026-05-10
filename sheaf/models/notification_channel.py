@@ -10,16 +10,23 @@ from sheaf.models.base import Base, TimestampMixin, UUIDMixin
 
 
 class DestinationType(enum.StrEnum):
-    """v1 supports the first four. The remainder are reserved values that the
-    schema accepts, but `POST /v1/.../channels` rejects with 501 until the
-    matching handler ships."""
+    """Supported destinations and reserved placeholders for ones whose
+    handler hasn't shipped yet (channel creation rejects those with 501).
+
+    The APNs values are split by build environment because Apple uses two
+    distinct host endpoints (`api.sandbox.push.apple.com` for development
+    builds, `api.push.apple.com` for TestFlight + App Store) — the same
+    .p8 key authenticates against both, but tokens issued in one
+    environment bounce on the other. The dispatcher uses this enum value
+    to route to the right host. FCM has no equivalent split."""
 
     WEB_PUSH = "web_push"
     WEBHOOK = "webhook"
     NTFY = "ntfy"
     PUSHOVER = "pushover"
     EMAIL = "email"
-    APNS = "apns"
+    APNS_DEV = "apns_dev"
+    APNS_PROD = "apns_prod"
     FCM = "fcm"
     DISCORD = "discord"
 
