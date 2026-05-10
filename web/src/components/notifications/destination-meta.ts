@@ -5,6 +5,9 @@ const labels: Record<DestinationType, string> = {
   webhook: "Webhook",
   ntfy: "ntfy",
   pushover: "Pushover",
+  fcm: "Android push",
+  apns_dev: "iOS push (dev)",
+  apns_prod: "iOS push",
 };
 
 export function destinationLabel(type: DestinationType): string {

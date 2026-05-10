@@ -531,7 +531,14 @@ export interface RetentionUpdate {
 
 // ---- notifications -------------------------------------------------------
 
-export type DestinationType = "web_push" | "webhook" | "ntfy" | "pushover";
+export type DestinationType =
+  | "web_push"
+  | "webhook"
+  | "ntfy"
+  | "pushover"
+  | "fcm"
+  | "apns_dev"
+  | "apns_prod";
 export type DestinationState =
   | "pending_registration"
   | "active"
@@ -702,6 +709,13 @@ export interface RedeemResponse {
   management_url: string;
   channel_name: string;
   system_label: string | null;
+}
+
+export interface RedeemPreview {
+  destination_type: DestinationType;
+  channel_name: string;
+  system_label: string | null;
+  expires_at: string | null;
 }
 
 // --- Messages --------------------------------------------------------------

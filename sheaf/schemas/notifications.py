@@ -214,6 +214,21 @@ class RedeemResponse(BaseModel):
     system_label: str | None = None
 
 
+class RedeemPreview(BaseModel):
+    """Read-only summary returned by `/notifications/redeem-preview`.
+
+    Lets the recipient-facing redeem UI branch on destination type
+    before doing anything destructive (registering a service worker,
+    asking for notification permission, etc.). Reveals strictly less
+    than redemption — anyone who already has the code can redeem; the
+    preview just tells them what to render."""
+
+    destination_type: str
+    channel_name: str
+    system_label: str | None = None
+    expires_at: datetime | None = None
+
+
 class ManageChannelView(BaseModel):
     channel_id: uuid.UUID
     channel_name: str
