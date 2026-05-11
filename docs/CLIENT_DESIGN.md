@@ -433,6 +433,12 @@ Payload shape:
 - Server sends a data-style payload to both providers. FCM: `data: {title, body, event_id}` plus `android: {priority: "high"}`. APNs: `aps.alert` placeholder + `mutable-content: 1` + custom `data: {title, body, event_id}`. The placeholder shows if the iOS client's Notification Service Extension fails or times out — keep it neutral.
 - iOS clients are expected to ship a Notification Service Extension that reads the `data` keys and rewrites the user-visible alert. Pure data-only / `content-available` payloads on APNs are throttled to ~2-3/hour at low priority — too tight for front-change traffic, hence the `mutable-content` + NSE pattern.
 
+Magic-link redemption:
+
+- Owner-side channel creation returns the same `{activation_url, expires_at}` shape as web push. The URL is the public web fallback (`<base_url>/notifications/redeem?code=...&channel=...`); the recipient page detects the channel type at runtime and branches.
+- `GET /v1/notifications/redeem-preview?code=...` is a public read-only endpoint that returns `{destination_type, channel_name, system_label, expires_at}` for a pending channel without consuming the code. The web redeem page calls it on mount and uses it to decide between running the in-browser web-push flow and presenting an "Open in Sheaf" button that fires `sheaf://notifications/redeem?code=<code>&channel=<uuid>`. The native apps register an intent filter for that URI scheme and handle redemption in-app under the user's session.
+- App Links / Universal Links auto-verification is intentionally **not** wired, because per-instance domain verification doesn't compose well with self-hosted deployments. The web fallback always renders, and either flows the user through web push (if their browser supports it and the channel is web-push) or invokes the deep link (for mobile channels). 404 / 410 from `redeem-preview` cleanly surface "invalid" / "expired" before any browser permission prompt fires.
+
 ### Analytics
 
 | Method | Path | Description |

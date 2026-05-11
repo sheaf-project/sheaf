@@ -30,6 +30,7 @@ from sheaf.models.system import System
 from sheaf.models.watch_token import WatchToken
 from sheaf.schemas.notifications import (
     ManageChannelView,
+    RedeemPreview,
     RedeemRequest,
     RedeemResponse,
 )
@@ -43,6 +44,69 @@ from sheaf.services.notifications.activation import (
 )
 
 router = APIRouter(prefix="/notifications", tags=["notifications-public"])
+
+
+@router.get("/redeem-preview", response_model=RedeemPreview)
+async def preview_activation(
+    code: str,
+    db: AsyncSession = Depends(get_db),
+) -> RedeemPreview:
+    """Read-only preview of the channel a code would redeem.
+
+    Used by the public redeem page to branch its UI on destination_type
+    (web push runs the in-browser permission + subscribe flow; mobile
+    push hands off to the native app via the `sheaf://` deep link). Does
+    not consume the code; the next POST /redeem still works.
+
+    Reveals strictly less information than redemption itself — anyone
+    holding the code can redeem the channel, so leaking the channel
+    name and system label to the same caller is fine.
+    """
+    from sheaf.services.notifications.activation import hash_activation_code
+
+    code_hash = hash_activation_code(code)
+    result = await db.execute(
+        select(NotificationChannel).where(
+            NotificationChannel.activation_code_hash == code_hash
+        )
+    )
+    channel = result.scalar_one_or_none()
+    if channel is None or not activation_code_matches(
+        code, channel.activation_code_hash or ""
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Invalid activation code"
+        )
+    if channel.destination_state != DestinationState.PENDING_REGISTRATION.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Channel is no longer pending registration",
+        )
+    if (
+        channel.activation_code_expires_at is not None
+        and channel.activation_code_expires_at < datetime.now(UTC)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Activation code has expired",
+        )
+
+    token_result = await db.execute(
+        select(WatchToken).where(WatchToken.id == channel.watch_token_id)
+    )
+    token = token_result.scalar_one()
+    system_result = await db.execute(select(System).where(System.id == token.system_id))
+    system = system_result.scalar_one_or_none()
+    system_label = (
+        getattr(system, "display_name", None) if system is not None else None
+    )
+
+    return RedeemPreview(
+        destination_type=channel.destination_type,
+        channel_name=channel.name,
+        system_label=system_label,
+        expires_at=channel.activation_code_expires_at,
+    )
 
 
 @router.post("/redeem", response_model=RedeemResponse)

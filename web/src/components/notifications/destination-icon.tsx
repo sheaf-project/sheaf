@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { Bell, Globe, MessageSquare, Webhook } from "lucide-react";
+import { Apple, Bell, Globe, MessageSquare, Smartphone, Webhook } from "lucide-react";
 
 import type { DestinationType } from "@/types/api";
 
@@ -8,6 +8,9 @@ const icons: Record<DestinationType, ComponentType<{ className?: string }>> = {
   webhook: Webhook,
   ntfy: MessageSquare,
   pushover: Globe,
+  fcm: Smartphone,
+  apns_dev: Apple,
+  apns_prod: Apple,
 };
 
 export function DestinationIcon({

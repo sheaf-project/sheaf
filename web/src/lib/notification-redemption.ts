@@ -1,5 +1,6 @@
 import type {
   ManageChannelView,
+  RedeemPreview,
   RedeemRequest,
   RedeemResponse,
 } from "@/types/api";
@@ -30,6 +31,12 @@ export function redeemActivation(data: RedeemRequest) {
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+export function previewActivation(code: string) {
+  return publicFetch<RedeemPreview>(
+    `/v1/notifications/redeem-preview?code=${encodeURIComponent(code)}`,
+  );
 }
 
 export function viewManagedChannel(token: string) {

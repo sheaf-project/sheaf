@@ -135,6 +135,70 @@ def test_redeem_mobile_succeeds_with_session(auth_client: httpx.Client):
     assert fresh["redeemed_by_account_id"] is not None
 
 
+def test_redeem_preview_returns_destination_type(auth_client: httpx.Client):
+    """Public preview reveals destination_type so the recipient page can
+    branch (web push -> in-browser flow; mobile push -> deep link)."""
+    _, fcm_code = _create_channel(auth_client, destination_type="fcm")
+    _, apns_code = _create_channel(auth_client, destination_type="apns_prod")
+
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as anon:
+        fcm_preview = anon.get(
+            "/v1/notifications/redeem-preview", params={"code": fcm_code}
+        )
+        apns_preview = anon.get(
+            "/v1/notifications/redeem-preview", params={"code": apns_code}
+        )
+    assert fcm_preview.status_code == 200, fcm_preview.text
+    assert fcm_preview.json()["destination_type"] == "fcm"
+    assert apns_preview.status_code == 200, apns_preview.text
+    assert apns_preview.json()["destination_type"] == "apns_prod"
+
+
+def test_redeem_preview_does_not_consume_code(auth_client: httpx.Client):
+    """Preview is read-only — the same code can still be redeemed
+    afterward."""
+    _, code = _create_channel(auth_client, destination_type="fcm")
+
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as anon:
+        preview = anon.get(
+            "/v1/notifications/redeem-preview", params={"code": code}
+        )
+    assert preview.status_code == 200
+
+    # Redeem succeeds with that same code (using the existing
+    # session-cookie + register flow established elsewhere).
+    email = f"preview-noconsume-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as c:
+        reg = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert reg.status_code == 201, reg.text
+        resp = c.post("/v1/notifications/redeem", json={"activation_code": code})
+    assert resp.status_code == 200, resp.text
+
+
+def test_redeem_preview_invalid_code_returns_404(auth_client: httpx.Client):
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as anon:
+        resp = anon.get(
+            "/v1/notifications/redeem-preview", params={"code": "not-a-real-code"}
+        )
+    assert resp.status_code == 404
+
+
+def test_redeem_preview_for_web_push_channel(auth_client: httpx.Client):
+    """The same preview endpoint works for web push channels too — the
+    destination_type field is what the client branches on."""
+    _, code = _create_channel(auth_client, destination_type="web_push")
+
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as anon:
+        resp = anon.get(
+            "/v1/notifications/redeem-preview", params={"code": code}
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["destination_type"] == "web_push"
+
+
 def test_unit_validate_destination_rejects_unconfigured_fcm(monkeypatch):
     """Unit test for the feature-flag gate: when FCM creds are absent,
     channel creation rejects with 501. Integration tests can't easily

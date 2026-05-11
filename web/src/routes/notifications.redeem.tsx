@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { Bell, Check, Loader2 } from "lucide-react";
+import { Bell, Check, Loader2, Smartphone } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Logo } from "@/components/logo";
-import { redeemActivation } from "@/lib/notification-redemption";
+import {
+  previewActivation,
+  redeemActivation,
+} from "@/lib/notification-redemption";
+import type { DestinationType, RedeemPreview } from "@/types/api";
 
 type Phase =
-  | { kind: "idle" }
+  | { kind: "loading-preview" }
+  | { kind: "preview-loaded"; preview: RedeemPreview }
   | { kind: "requesting" }
   | { kind: "subscribing" }
   | { kind: "redeeming" }
@@ -19,6 +24,12 @@ type Phase =
       managementUrl: string;
     }
   | { kind: "error"; message: string };
+
+const MOBILE_DESTINATION_TYPES = new Set<DestinationType>([
+  "fcm",
+  "apns_dev",
+  "apns_prod",
+]);
 
 async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -38,10 +49,8 @@ async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
   const existing = await reg.pushManager.getSubscription();
   if (existing) return existing;
 
-  // We need the server's VAPID public key to subscribe. The /v1/version
-  // endpoint can expose it in future; for now we accept a 404 from the
-  // unauth fetch and just request without applicationServerKey, which
-  // most browsers reject. Show a clear error if so.
+  // Pull the deployment's VAPID public key from /v1/version. Browsers
+  // reject subscribe() without applicationServerKey.
   let appKey: BufferSource | undefined;
   try {
     const resp = await fetch("/v1/version");
@@ -76,19 +85,46 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+function buildDeepLink(code: string, channel: string | null): string {
+  // The native apps register an intent filter for sheaf://notifications/redeem
+  // and read `code` from the query. `channel` is informational; we forward
+  // it verbatim if present.
+  const params = new URLSearchParams({ code });
+  if (channel) params.set("channel", channel);
+  return `sheaf://notifications/redeem?${params.toString()}`;
+}
+
 export function NotificationsRedeemPage() {
   const [params] = useSearchParams();
   const code = params.get("code") ?? "";
-  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const channel = params.get("channel");
+  const [phase, setPhase] = useState<Phase>({ kind: "loading-preview" });
 
   useEffect(() => {
     if (!code) {
       setPhase({ kind: "error", message: "Missing activation code." });
       return;
     }
+    let cancelled = false;
+    previewActivation(code)
+      .then((preview) => {
+        if (cancelled) return;
+        setPhase({ kind: "preview-loaded", preview });
+      })
+      .catch((exc: unknown) => {
+        if (cancelled) return;
+        setPhase({
+          kind: "error",
+          message:
+            exc instanceof Error ? exc.message : "Couldn't read activation link.",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [code]);
 
-  async function activate() {
+  async function activateWebPush() {
     setPhase({ kind: "requesting" });
     try {
       if (!("Notification" in window)) {
@@ -127,6 +163,14 @@ export function NotificationsRedeemPage() {
     }
   }
 
+  function openInNativeApp() {
+    // Just navigate the page to the deep link. If the app is installed
+    // and registered for the URI, the OS hands off; otherwise the
+    // browser sits there with no handler, which is fine — the recipient
+    // is told above that they need the app installed first.
+    window.location.href = buildDeepLink(code, channel);
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md space-y-6">
@@ -141,33 +185,95 @@ export function NotificationsRedeemPage() {
               <Check className="h-12 w-12 mx-auto text-emerald-500" />
               <p className="text-base font-medium">You're subscribed.</p>
               <p className="text-sm text-muted-foreground">
-                {phase.systemLabel
-                  ? `${phase.systemLabel}'s `
-                  : ""}
+                {phase.systemLabel ? `${phase.systemLabel}'s ` : ""}
                 front-change notifications will now arrive in this browser
                 under the channel <strong>{phase.channelName}</strong>.
               </p>
-              <Button asChild variant="outline" className="w-full">
-                <Link to={phase.managementUrl}>Manage subscription</Link>
-              </Button>
+              {phase.managementUrl && (
+                <Button asChild variant="outline" className="w-full">
+                  <Link to={phase.managementUrl}>Manage subscription</Link>
+                </Button>
+              )}
             </CardContent>
           </Card>
         ) : phase.kind === "error" ? (
           <Card>
             <CardContent className="space-y-3 p-6 text-center">
               <p className="text-sm text-destructive">{phase.message}</p>
-              <Button onClick={activate}>Try again</Button>
+              {code && (
+                <Button
+                  onClick={() => {
+                    setPhase({ kind: "loading-preview" });
+                    previewActivation(code)
+                      .then((preview) =>
+                        setPhase({ kind: "preview-loaded", preview }),
+                      )
+                      .catch((exc: unknown) =>
+                        setPhase({
+                          kind: "error",
+                          message:
+                            exc instanceof Error ? exc.message : String(exc),
+                        }),
+                      );
+                  }}
+                >
+                  Try again
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        ) : phase.kind === "loading-preview" ? (
+          <Card>
+            <CardContent className="flex items-center justify-center p-8">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </CardContent>
+          </Card>
+        ) : phase.kind === "preview-loaded" &&
+          MOBILE_DESTINATION_TYPES.has(phase.preview.destination_type) ? (
+          <Card>
+            <CardContent className="space-y-4 p-6">
+              <p className="text-sm text-muted-foreground">
+                <strong>{phase.preview.system_label ?? "A Sheaf system"}</strong>
+                {" "}has invited you to receive front-change pings on the
+                channel <strong>{phase.preview.channel_name}</strong>. This
+                channel delivers via the native Sheaf app.
+              </p>
+              <Button onClick={openInNativeApp} className="w-full">
+                <Smartphone className="mr-2 h-4 w-4" />
+                Open in Sheaf
+              </Button>
+              <p className="text-xs text-muted-foreground text-center">
+                Don't have the app installed? Install Sheaf first and then
+                reopen this link from your inbox or messages.
+              </p>
             </CardContent>
           </Card>
         ) : (
           <Card>
             <CardContent className="space-y-4 p-6">
-              <p className="text-sm text-muted-foreground">
-                The owner of a Sheaf system has invited you to receive
-                notifications when fronts change. You'll only receive what
-                they've configured for you &mdash; no data access, just pings.
-              </p>
-              <Button onClick={activate} className="w-full" disabled={!code}>
+              {phase.kind === "preview-loaded" ? (
+                <p className="text-sm text-muted-foreground">
+                  <strong>
+                    {phase.preview.system_label ?? "A Sheaf system"}
+                  </strong>
+                  {" "}has invited you to receive front-change pings on the
+                  channel <strong>{phase.preview.channel_name}</strong>.
+                  You'll only receive what they've configured for you &mdash;
+                  no data access, just pings.
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  The owner of a Sheaf system has invited you to receive
+                  notifications when fronts change. You'll only receive what
+                  they've configured for you &mdash; no data access, just
+                  pings.
+                </p>
+              )}
+              <Button
+                onClick={activateWebPush}
+                className="w-full"
+                disabled={!code || phase.kind === "requesting"}
+              >
                 {phase.kind === "requesting" ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
