@@ -12,12 +12,38 @@ class FrontCreate(BaseModel):
 
 
 class FrontUpdate(BaseModel):
+    # All three of these use presence-in-body to distinguish "omit" from
+    # "explicitly set". Sending `ended_at: null` is reopening a closed
+    # front; sending no `ended_at` key at all leaves it as-is. Same for
+    # custom_status (null clears, omit keeps). started_at must be a
+    # value when supplied; sending null is rejected.
+    started_at: datetime | None = None
     ended_at: datetime | None = None
     member_ids: list[uuid.UUID] | None = None
-    # `custom_status` uses an explicit "unset" sentinel: omit the field to
-    # keep the existing value, send `null` to clear it, or send a string
-    # to replace it. Pydantic's `exclude_unset=True` round-trips this.
     custom_status: str | None = None
+
+
+class FrontSnapshot(BaseModel):
+    """Pre- or post-edit state captured in a FrontAuditEvent row."""
+
+    started_at: datetime
+    ended_at: datetime | None
+    member_ids: list[uuid.UUID]
+    custom_status: str | None = None
+
+
+class FrontAuditEventRead(BaseModel):
+    id: uuid.UUID
+    front_id: uuid.UUID
+    actor_user_id: uuid.UUID | None
+    # System members who were fronting at the moment of the edit. Same
+    # forensic shape as polls' fronting snapshot.
+    fronting_member_ids: list[uuid.UUID]
+    before: FrontSnapshot
+    after: FrontSnapshot
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class FrontRead(BaseModel):

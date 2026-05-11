@@ -11,11 +11,18 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.front import Front
+from sheaf.models.front_audit_event import FrontAuditEvent
 from sheaf.models.member import Member, front_members
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
-from sheaf.schemas.front import FrontCreate, FrontRead, FrontUpdate
+from sheaf.schemas.front import (
+    FrontAuditEventRead,
+    FrontCreate,
+    FrontRead,
+    FrontSnapshot,
+    FrontUpdate,
+)
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.notifications.events import (
     emit_front_change,
@@ -283,6 +290,34 @@ async def create_front(
     return _front_to_read(front)
 
 
+def _front_snapshot_for_audit(front: Front) -> dict:
+    """Serialise a Front into the JSONB shape stored in
+    `front_audit_events.before/after_snapshot`. custom_status stays
+    encrypted in the snapshot exactly as it is on the live row."""
+    return {
+        "started_at": front.started_at.isoformat(),
+        "ended_at": front.ended_at.isoformat() if front.ended_at else None,
+        "member_ids": [str(m.id) for m in front.members],
+        "custom_status_encrypted": front.custom_status,
+    }
+
+
+def _audit_snapshot_to_read(snapshot: dict) -> FrontSnapshot:
+    """Inverse of `_front_snapshot_for_audit` for the audit-list endpoint —
+    decrypts custom_status the same way the live front read does."""
+    ciphertext = snapshot.get("custom_status_encrypted")
+    return FrontSnapshot(
+        started_at=datetime.fromisoformat(snapshot["started_at"]),
+        ended_at=(
+            datetime.fromisoformat(snapshot["ended_at"])
+            if snapshot.get("ended_at")
+            else None
+        ),
+        member_ids=[uuid.UUID(m) for m in snapshot.get("member_ids", [])],
+        custom_status=decrypt(ciphertext) if ciphertext else None,
+    )
+
+
 @router.patch(
     "/{front_id}",
     response_model=FrontRead,
@@ -304,20 +339,37 @@ async def update_front(
     if front is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Front not found")
 
+    # Capture pre-edit state for both the audit log and the
+    # currently-fronting notification emit.
     before_state = await snapshot_front_state(db, system.id)
+    before_snapshot = _front_snapshot_for_audit(front)
+    fronting_ids_at_edit = list(before_state.fronting_member_ids)
 
-    if body.ended_at is not None:
+    fields_set = body.model_fields_set
+    has_explicit_change = False
+
+    if "started_at" in fields_set:
+        if body.started_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="started_at cannot be null",
+            )
+        front.started_at = body.started_at
+        has_explicit_change = True
+
+    if "ended_at" in fields_set:
+        # Explicit null reopens a closed front. A non-null value either
+        # closes an open front or moves an existing close timestamp.
         front.ended_at = body.ended_at
+        has_explicit_change = True
 
-    # custom_status uses presence-in-body to distinguish "omit" from
-    # "explicitly clear". model_fields_set is Pydantic v2's per-instance
-    # set of field names that were actually supplied in the input.
-    if "custom_status" in body.model_fields_set:
+    if "custom_status" in fields_set:
         front.custom_status = (
             encrypt(body.custom_status) if body.custom_status else None
         )
+        has_explicit_change = True
 
-    if body.member_ids is not None:
+    if "member_ids" in fields_set and body.member_ids is not None:
         member_result = await db.execute(
             select(Member).where(
                 Member.id.in_(body.member_ids),
@@ -331,8 +383,34 @@ async def update_front(
                 detail="One or more member IDs are invalid",
             )
         front.members = members
+        has_explicit_change = True
+
+    # Sanity-check ordering. Allow overlap with adjacent entries (SP
+    # parity), but reject the impossibilities.
+    if front.ended_at is not None and front.ended_at < front.started_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ended_at cannot be earlier than started_at",
+        )
 
     await db.flush()
+
+    # Append the audit row only if something explicitly changed. A
+    # no-op PATCH (empty body) doesn't pollute history.
+    if has_explicit_change:
+        after_snapshot = _front_snapshot_for_audit(front)
+        if after_snapshot != before_snapshot:
+            db.add(
+                FrontAuditEvent(
+                    id=uuid.uuid4(),
+                    front_id=front.id,
+                    actor_user_id=user.id,
+                    fronting_member_ids=[str(m) for m in fronting_ids_at_edit],
+                    before_snapshot=before_snapshot,
+                    after_snapshot=after_snapshot,
+                    created_at=datetime.now(UTC),
+                )
+            )
 
     after_state = await snapshot_front_state(db, system.id)
     await emit_front_change(
@@ -342,6 +420,54 @@ async def update_front(
     await db.commit()
     await db.refresh(front, ["members"])
     return _front_to_read(front)
+
+
+@router.get(
+    "/{front_id}/audit",
+    response_model=list[FrontAuditEventRead],
+)
+async def list_front_audit(
+    front_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return audit rows for a front entry, newest first.
+
+    Gated by `fronts:read` (router-level dep). The audit log is
+    system-internal; same caller can read the live entry, so the audit
+    rows reveal nothing further. Hard-deleted with the entry via
+    ON DELETE CASCADE on front_id."""
+    system = await _get_user_system(user, db)
+    # Ownership check via the live front row — if the entry doesn't
+    # belong to the caller's system, return 404 regardless of whether
+    # audit rows happen to exist.
+    front_result = await db.execute(
+        select(Front).where(
+            Front.id == front_id, Front.system_id == system.id
+        )
+    )
+    if front_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Front not found"
+        )
+
+    audit_result = await db.execute(
+        select(FrontAuditEvent)
+        .where(FrontAuditEvent.front_id == front_id)
+        .order_by(FrontAuditEvent.created_at.desc())
+    )
+    return [
+        FrontAuditEventRead(
+            id=row.id,
+            front_id=row.front_id,
+            actor_user_id=row.actor_user_id,
+            fronting_member_ids=[uuid.UUID(s) for s in (row.fronting_member_ids or [])],
+            before=_audit_snapshot_to_read(row.before_snapshot),
+            after=_audit_snapshot_to_read(row.after_snapshot),
+            created_at=row.created_at,
+        )
+        for row in audit_result.scalars().all()
+    ]
 
 
 @router.delete(
