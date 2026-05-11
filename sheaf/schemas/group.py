@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GroupCreate(BaseModel):
@@ -16,6 +16,13 @@ class GroupUpdate(BaseModel):
     description: str | None = None
     color: str | None = Field(default=None, max_length=7)
     parent_id: uuid.UUID | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
 
 
 class GroupRead(BaseModel):

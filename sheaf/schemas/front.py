@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class FrontCreate(BaseModel):
@@ -12,15 +12,22 @@ class FrontCreate(BaseModel):
 
 
 class FrontUpdate(BaseModel):
-    # All three of these use presence-in-body to distinguish "omit" from
-    # "explicitly set". Sending `ended_at: null` is reopening a closed
-    # front; sending no `ended_at` key at all leaves it as-is. Same for
-    # custom_status (null clears, omit keeps). started_at must be a
-    # value when supplied; sending null is rejected.
+    # All four of these use presence-in-body to distinguish "omit" from
+    # "explicitly set". Sending `ended_at: null` reopens a closed front;
+    # sending no `ended_at` key at all leaves it as-is. Same for
+    # custom_status (null clears, omit keeps). started_at and member_ids
+    # back NOT-NULL columns; sending null for either is rejected.
     started_at: datetime | None = None
     ended_at: datetime | None = None
     member_ids: list[uuid.UUID] | None = None
     custom_status: str | None = None
+
+    @field_validator("started_at", "member_ids")
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
 
 
 class FrontSnapshot(BaseModel):

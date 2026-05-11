@@ -6,6 +6,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### PATCH endpoints reject explicit null on NOT-NULL columns
+
+Bug fix uncovered while testing on the test instance: `PATCH /v1/systems/me` with `date_format: null` (or any other NOT-NULL column nulled out) crashed with a 500 `NotNullViolationError`. The `| None = None` shape that every Update schema uses to enable "presence-in-body" PATCH semantics also allowed clients to send explicit `null`, which the handler then setattr'd onto the model and pushed to the DB.
+
+Fixed by adding `field_validator` rejections at the schema layer for every NOT-NULL column on every Update schema where the handler doesn't already defensively ignore `None`. Clients now get a clean 422 instead of a 500. Validators don't run on default values in Pydantic v2, so the "omit to keep" semantics is unchanged — only explicit `null` for required fields is newly rejected. Affected schemas: `SystemUpdate`, `MemberUpdate`, `GroupUpdate`, `TagUpdate`, `CustomFieldUpdate`, `AnnouncementUpdate`, `ReminderUpdate`, `ChannelUpdate`, `SystemSafetyUpdate`, `FrontUpdate`. `JournalEntryUpdate` and `UserUpdate` were already None-tolerant at the handler layer and don't need the schema-level check.
+
 ### Edit front entry + audit log
 
 SP parity for editing past front entries. Each explicit edit now appends an audit row to `front_audit_events`, capturing who did it, when, what was at front at the time, and a full pre/post snapshot.

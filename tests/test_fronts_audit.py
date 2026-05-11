@@ -42,7 +42,9 @@ def test_patch_rejects_null_started_at(auth_client: httpx.Client):
     resp = auth_client.patch(
         f"/v1/fronts/{front['id']}", json={"started_at": None}
     )
-    assert resp.status_code == 400
+    # Schema-layer rejection (422 from pydantic) — the handler also has
+    # a defensive 400 path, but the schema catches it first.
+    assert resp.status_code == 422
 
 
 def test_patch_can_reopen_closed_front(auth_client: httpx.Client):

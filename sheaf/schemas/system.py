@@ -54,6 +54,26 @@ class SystemUpdate(BaseModel):
     def _normalize_description(cls, v: str | None) -> str | None:
         return normalize_description_urls(v)
 
+    @field_validator(
+        "name",
+        "privacy",
+        "date_format",
+        "replace_fronts_default",
+        "coalesce_contiguous_fronts",
+    )
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        """These columns are NOT NULL on the model; the `| None` in the
+        annotation only exists so `model_fields_set` can distinguish
+        "omitted" from "supplied" for PATCH semantics. An explicit
+        `null` in the body would otherwise reach the DB and 500. Reject
+        it here with a 422 instead. Validators don't run on default
+        values in Pydantic v2, so this only fires when the client
+        actually sent the field."""
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
+
 
 class SystemRead(BaseModel):
     id: uuid.UUID
