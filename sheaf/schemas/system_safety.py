@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # `delete_confirmation` is re-exported here as the System Safety auth tier.
 # Historical name retained for API / DB compatibility.
@@ -48,6 +48,31 @@ class SystemSafetyUpdate(BaseModel):
     # Re-auth for loosening changes is checked against the *current* auth tier.
     password: str | None = None
     totp_code: str | None = None
+
+    # NOT-NULL columns on the model; `| None` is only here so
+    # model_fields_set can distinguish omitted vs supplied.
+    @field_validator(
+        "grace_period_days",
+        "auth_tier",
+        "applies_to_members",
+        "applies_to_groups",
+        "applies_to_tags",
+        "applies_to_fields",
+        "applies_to_fronts",
+        "applies_to_journals",
+        "applies_to_images",
+        "applies_to_revisions",
+        "applies_to_notifications",
+        "applies_to_reminders",
+        "applies_to_polls",
+        "applies_to_messages",
+        "auto_pin_first_revision",
+    )
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
 
 
 class PendingActionRead(BaseModel):

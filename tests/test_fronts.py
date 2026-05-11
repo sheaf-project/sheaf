@@ -33,15 +33,18 @@ def test_current_fronts(auth_client: httpx.Client):
 
 
 def test_end_front(auth_client: httpx.Client):
+    from datetime import UTC, datetime, timedelta
+
     member_id = _create_member(auth_client, "Ender")
     resp = auth_client.post("/v1/fronts", json={"member_ids": [member_id]})
     front_id = resp.json()["id"]
 
+    end_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     resp = auth_client.patch(
         f"/v1/fronts/{front_id}",
-        json={"ended_at": "2026-03-18T00:00:00Z"},
+        json={"ended_at": end_at},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert resp.json()["ended_at"] is not None
 
 

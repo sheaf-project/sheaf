@@ -301,6 +301,7 @@ All resource endpoints require authentication. With API keys, the appropriate sc
 | GET | `/fronts/current` | `fronts:read` |
 | PATCH | `/fronts/{id}` | `fronts:write` |
 | DELETE | `/fronts/{id}` | `fronts:delete` |
+| GET | `/fronts/{id}/audit` | `fronts:read` |
 | GET | `/groups` | `groups:read` |
 | POST | `/groups` | `groups:write` |
 | PATCH | `/groups/{id}` | `groups:write` |
@@ -351,6 +352,28 @@ Uploads can be disabled server-wide (`ALLOW_IMAGE_UPLOADS=false`). When disabled
 Reminders ride a notification channel for delivery (`channel_id`). Two trigger types: `automated` (delay_seconds after a front-change matching `trigger_member_id`/`trigger_event`) and `repeated` (cron-style schedule via either structured `schedule_kind`/`schedule_time`/`schedule_dow_mask`/`schedule_dom`/`schedule_tz` fields, or a raw `cron_expression`).
 
 Repeated reminders can be scope-limited to specific members. When the schedule fires while no scoped member is fronting and `digest_when_absent=true`, the missed firing queues (capped at 5 per reminder, oldest dropped). On the next front-start of a scoped member, the queue drains as a digest notification. Title and body are encrypted at rest.
+
+### Front editing + audit log
+
+`PATCH /v1/fronts/{id}` accepts partial updates to `started_at`, `ended_at`, `member_ids`, and `custom_status`. Presence-in-body determines effect: an omitted field is unchanged, `null` is an explicit clear (which only `ended_at` and `custom_status` accept — `ended_at: null` reopens a closed front, `custom_status: null` clears the status), and a value replaces. `started_at: null` is rejected.
+
+Validation is intentionally permissive (SP parity): overlap with adjacent entries is allowed. The only timeline impossibility rejected is `ended_at` strictly before `started_at`.
+
+Every explicit edit that produces a different snapshot appends a row to `front_audit_events`, captured in the same transaction as the edit. System-driven mutations (auto-end on `replace_fronts=true`, retention purges, etc.) do not write audit rows.
+
+`GET /v1/fronts/{id}/audit` returns audit rows newest-first under `fronts:read`:
+
+```
+{
+  id, front_id, actor_user_id,
+  fronting_member_ids: [uuid, ...],   // system-wide currently-fronting set at edit time
+  before: { started_at, ended_at, member_ids, custom_status },
+  after:  { started_at, ended_at, member_ids, custom_status },
+  created_at
+}
+```
+
+`custom_status` is decrypted in the response (same scope gate as the live front read). Audit rows are bound to the entry via `ON DELETE CASCADE`; deleting the front entry purges its history too.
 
 ### Notes
 

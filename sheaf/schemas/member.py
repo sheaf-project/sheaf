@@ -61,6 +61,15 @@ class MemberUpdate(BaseModel):
     def _normalize_description(cls, v: str | None) -> str | None:
         return normalize_description_urls(v)
 
+    # NOT-NULL columns on the model; `| None` is only here so
+    # model_fields_set can distinguish omitted vs supplied.
+    @field_validator("name", "is_custom_front", "privacy")
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
+
 
 class MemberDeleteConfirm(BaseModel):
     password: str | None = None

@@ -121,6 +121,29 @@ class ChannelUpdate(BaseModel):
     group_rules: list[GroupRuleSpec] | None = None
     member_rules: list[MemberRuleSpec] | None = None
 
+    # NOT-NULL columns on the model; `| None` is only here so
+    # model_fields_set can distinguish omitted vs supplied. quiet_hours
+    # is genuinely nullable (null = clear the quiet-hours window), so
+    # it's not in this list.
+    @field_validator(
+        "name",
+        "destination_config",
+        "base_all_members",
+        "base_include_private",
+        "trigger_on_start",
+        "trigger_on_stop",
+        "trigger_on_cofront_change",
+        "cofront_redaction",
+        "payload_sensitivity",
+        "debounce_seconds",
+        "aggregation_window_seconds",
+    )
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
+
 
 class ChannelRead(BaseModel):
     id: uuid.UUID

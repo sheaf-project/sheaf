@@ -6,6 +6,23 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### PATCH endpoints reject explicit null on NOT-NULL columns
+
+Bug fix uncovered while testing on the test instance: `PATCH /v1/systems/me` with `date_format: null` (or any other NOT-NULL column nulled out) crashed with a 500 `NotNullViolationError`. The `| None = None` shape that every Update schema uses to enable "presence-in-body" PATCH semantics also allowed clients to send explicit `null`, which the handler then setattr'd onto the model and pushed to the DB.
+
+Fixed by adding `field_validator` rejections at the schema layer for every NOT-NULL column on every Update schema where the handler doesn't already defensively ignore `None`. Clients now get a clean 422 instead of a 500. Validators don't run on default values in Pydantic v2, so the "omit to keep" semantics is unchanged — only explicit `null` for required fields is newly rejected. Affected schemas: `SystemUpdate`, `MemberUpdate`, `GroupUpdate`, `TagUpdate`, `CustomFieldUpdate`, `AnnouncementUpdate`, `ReminderUpdate`, `ChannelUpdate`, `SystemSafetyUpdate`, `FrontUpdate`. `JournalEntryUpdate` and `UserUpdate` were already None-tolerant at the handler layer and don't need the schema-level check.
+
+### Edit front entry + audit log
+
+SP parity for editing past front entries. Each explicit edit now appends an audit row to `front_audit_events`, capturing who did it, when, what was at front at the time, and a full pre/post snapshot.
+
+- **Extended `PATCH /v1/fronts/{id}`.** Now accepts `started_at` (new), plus the existing `ended_at` (with reopen semantics: send `null` to clear and reopen a closed front), `member_ids`, and `custom_status`. All four use presence-in-body to distinguish "omit" from "explicit set", so a partial PATCH only touches what you sent. Overlap with adjacent entries is allowed (SP parity: front history is self-reported state, not a system-enforced timeline); the only timeline impossibility rejected is `ended_at` strictly before `started_at`.
+- **Audit log.** New `front_audit_events` table — append-only, one row per explicit edit. Stores `actor_user_id`, `fronting_member_ids` (the system-wide currently-fronting set at the moment of the edit, mirroring polls' fronting snapshot), and `before_snapshot` / `after_snapshot` JSONB columns holding the full entry state (member ids, started_at, ended_at, custom_status — encrypted at rest exactly as on the live row). `ON DELETE CASCADE` on `front_id` means the audit log is bound to the entry: purging a front (retention, manual delete) takes its history with it.
+- **No audit for system-driven edits.** Auto-end on `replace_fronts=true` and any other implicit mutation does **not** write an audit row; only explicit `PATCH` calls do. No-op PATCHes (empty body, or body that doesn't actually change the snapshot) also skip the row.
+- **No System Safety gating on edits.** Edits are mutating but not destructive — the audit log itself is the safeguard. Front-entry deletion still goes through System Safety unchanged.
+- **API**: `GET /v1/fronts/{id}/audit` lists audit rows newest-first, gated by `fronts:read`. Ownership is verified via the live front row; other systems' entries 404 (not 403, to avoid leaking existence).
+- **Frontend**: Edit button on each entry (both Currently-fronting and History) opens a dialog with member-set / started_at / ended_at / reopen-toggle / custom_status fields. History toggle (clock icon) on each entry expands inline to show a chronological audit list with per-row "Members: X → Y", "Started: A → B", etc. diffs.
+
 ### Mobile push notifications (FCM + APNs)
 
 Backend wiring so the iOS and Android apps can receive front-change pings (and any other channel-driven notification surface) directly via the OS push providers, on top of the existing notification-channels machinery.

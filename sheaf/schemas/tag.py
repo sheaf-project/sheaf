@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TagCreate(BaseModel):
@@ -12,6 +12,13 @@ class TagCreate(BaseModel):
 class TagUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=50)
     color: str | None = Field(default=None, max_length=7)
+
+    @field_validator("name")
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
 
 
 class TagRead(BaseModel):

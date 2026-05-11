@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AnnouncementCreate(BaseModel):
@@ -26,6 +26,18 @@ class AnnouncementUpdate(BaseModel):
     expires_at: datetime | None = None
     clear_starts_at: bool = False
     clear_expires_at: bool = False
+
+    # NOT-NULL columns on the model; the `| None` annotation only exists
+    # so model_fields_set can distinguish "omitted" from "supplied" for
+    # PATCH semantics. Reject explicit nulls before they reach the DB.
+    @field_validator(
+        "title", "body", "severity", "dismissible", "active", "visible_while_logged_out"
+    )
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
 
 
 class AnnouncementPublic(BaseModel):

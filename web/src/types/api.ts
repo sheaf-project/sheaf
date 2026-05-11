@@ -229,10 +229,30 @@ export interface FrontingAnalytics {
 }
 
 export interface FrontUpdate {
+  // All fields use presence-in-body to distinguish "omit" (keep) from
+  // "explicitly set". Sending null on ended_at reopens a closed front;
+  // sending null on custom_status clears it. started_at cannot be null.
+  started_at?: string;
   ended_at?: string | null;
   member_ids?: string[];
-  // Omit to keep, send null to clear, send a string to replace.
   custom_status?: string | null;
+}
+
+export interface FrontSnapshot {
+  started_at: string;
+  ended_at: string | null;
+  member_ids: string[];
+  custom_status: string | null;
+}
+
+export interface FrontAuditEvent {
+  id: string;
+  front_id: string;
+  actor_user_id: string | null;
+  fronting_member_ids: string[];
+  before: FrontSnapshot;
+  after: FrontSnapshot;
+  created_at: string;
 }
 
 export interface Group {

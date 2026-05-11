@@ -7,6 +7,7 @@ from sheaf.models.email_suppression import EmailSuppression
 from sheaf.models.email_verification import EmailVerification
 from sheaf.models.export_job import ExportJob, ExportJobStatus
 from sheaf.models.front import Front
+from sheaf.models.front_audit_event import FrontAuditEvent
 from sheaf.models.group import Group
 from sheaf.models.invite_code import InviteCode
 from sheaf.models.job_run import JobRun
@@ -70,6 +71,7 @@ __all__ = [
     "ExportJobStatus",
     "FieldType",
     "Front",
+    "FrontAuditEvent",
     "Group",
     "GroupRuleAction",
     "IncludePrivate",

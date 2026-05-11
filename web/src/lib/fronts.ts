@@ -2,6 +2,7 @@ import type {
   DeleteResult,
   DestructiveConfirm,
   Front,
+  FrontAuditEvent,
   FrontCreate,
   FrontUpdate,
 } from "@/types/api";
@@ -34,4 +35,8 @@ export function deleteFront(id: string, confirm?: DestructiveConfirm) {
     method: "DELETE",
     ...(confirm ? { body: JSON.stringify(confirm) } : {}),
   });
+}
+
+export function listFrontAudit(id: string) {
+  return apiFetch<FrontAuditEvent[]>(`/v1/fronts/${id}/audit`);
 }

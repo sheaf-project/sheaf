@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from sheaf.models.custom_field import FieldType
 from sheaf.models.system import PrivacyLevel
@@ -21,6 +21,13 @@ class CustomFieldUpdate(BaseModel):
     options: dict | None = None
     order: int | None = None
     privacy: PrivacyLevel | None = None
+
+    @field_validator("name", "order", "privacy")
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
 
 
 class CustomFieldRead(BaseModel):

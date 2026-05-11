@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight, History, Pencil } from "lucide-react";
 import {
   useCurrentFronts,
   useFronts,
@@ -10,6 +11,8 @@ import { useMembers } from "@/hooks/use-members";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { EditFrontDialog } from "@/components/edit-front-dialog";
+import { FrontAuditHistory } from "@/components/front-audit-history";
 import { StartFrontDialog } from "@/components/start-front-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { formatDateTime, timeAgo } from "@/lib/utils";
 import { getMySystem } from "@/lib/systems";
+import type { Front } from "@/types/api";
 
 export function FrontsPage() {
   const { data: current, isLoading: currentLoading } = useCurrentFronts();
@@ -28,6 +32,19 @@ export function FrontsPage() {
   const deleteFront = useDeleteFront();
   const [showStart, setShowStart] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Front | null>(null);
+  const [expandedHistory, setExpandedHistory] = useState<Set<string>>(
+    new Set(),
+  );
+
+  function toggleHistory(id: string) {
+    setExpandedHistory((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   const memberMap = new Map(members?.map((m) => [m.id, m]) ?? []);
 
@@ -78,30 +95,59 @@ export function FrontsPage() {
               {current.map((front) => (
                 <div
                   key={front.id}
-                  className="flex items-start justify-between rounded-md border p-3 gap-2"
+                  className="rounded-md border p-3 space-y-2"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {renderMembers(
-                        front.member_ids,
-                        front.member_since,
-                        front.member_since_capped,
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {renderMembers(
+                          front.member_ids,
+                          front.member_since,
+                          front.member_since_capped,
+                        )}
+                      </div>
+                      {front.custom_status && (
+                        <p className="mt-2 text-sm italic text-muted-foreground">
+                          &ldquo;{front.custom_status}&rdquo;
+                        </p>
                       )}
                     </div>
-                    {front.custom_status && (
-                      <p className="mt-2 text-sm italic text-muted-foreground">
-                        &ldquo;{front.custom_status}&rdquo;
-                      </p>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => toggleHistory(front.id)}
+                        aria-label="Show edit history"
+                        title="Show edit history"
+                      >
+                        {expandedHistory.has(front.id) ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                        <History className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEditing(front)}
+                      >
+                        <Pencil className="h-3.5 w-3.5 mr-1" />
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleEndFront(front.id)}
+                        disabled={updateFront.isPending}
+                      >
+                        End
+                      </Button>
+                    </div>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleEndFront(front.id)}
-                    disabled={updateFront.isPending}
-                  >
-                    End
-                  </Button>
+                  {expandedHistory.has(front.id) && (
+                    <FrontAuditHistory frontId={front.id} />
+                  )}
                 </div>
               ))}
             </div>
@@ -124,36 +170,62 @@ export function FrontsPage() {
       ) : history && history.length > 0 ? (
         <div className="space-y-2">
           {history.map((front) => (
-            <div
-              key={front.id}
-              className="flex items-start justify-between rounded-md border p-3 gap-2"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  {renderMembers(front.member_ids)}
+            <div key={front.id} className="rounded-md border p-3 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {renderMembers(front.member_ids)}
+                  </div>
+                  {front.custom_status && (
+                    <p className="mt-2 text-sm italic text-muted-foreground">
+                      &ldquo;{front.custom_status}&rdquo;
+                    </p>
+                  )}
                 </div>
-                {front.custom_status && (
-                  <p className="mt-2 text-sm italic text-muted-foreground">
-                    &ldquo;{front.custom_status}&rdquo;
-                  </p>
-                )}
+                <div className="flex items-center gap-3 text-sm text-muted-foreground shrink-0">
+                  <span>
+                    {formatDateTime(front.started_at)}
+                    {front.ended_at
+                      ? ` — ${formatDateTime(front.ended_at)}`
+                      : " — ongoing"}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    onClick={() => toggleHistory(front.id)}
+                    aria-label="Show edit history"
+                    title="Show edit history"
+                  >
+                    {expandedHistory.has(front.id) ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    <History className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    onClick={() => setEditing(front)}
+                  >
+                    <Pencil className="h-3.5 w-3.5 mr-1" />
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive-foreground h-7 px-2"
+                    onClick={() => setDeleting(front.id)}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-3 text-sm text-muted-foreground shrink-0">
-                <span>
-                  {formatDateTime(front.started_at)}
-                  {front.ended_at
-                    ? ` — ${formatDateTime(front.ended_at)}`
-                    : " — ongoing"}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-destructive-foreground h-7 px-2"
-                  onClick={() => setDeleting(front.id)}
-                >
-                  Delete
-                </Button>
-              </div>
+              {expandedHistory.has(front.id) && (
+                <FrontAuditHistory frontId={front.id} />
+              )}
             </div>
           ))}
         </div>
@@ -162,6 +234,11 @@ export function FrontsPage() {
       )}
 
       <StartFrontDialog open={showStart} onOpenChange={setShowStart} />
+
+      <EditFrontDialog
+        front={editing}
+        onOpenChange={(open) => !open && setEditing(null)}
+      />
 
       {/* Delete confirm */}
       <DestructiveConfirmDialog

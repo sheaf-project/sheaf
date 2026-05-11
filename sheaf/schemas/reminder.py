@@ -87,6 +87,23 @@ class ReminderUpdate(BaseModel):
     scope_member_ids: list[uuid.UUID] | None = None
     digest_when_absent: bool | None = None
 
+    # NOT-NULL columns on the model; the `| None` annotation only exists
+    # so model_fields_set can distinguish omitted vs supplied.
+    @field_validator(
+        "name",
+        "title",
+        "enabled",
+        "channel_id",
+        "trigger_type",
+        "scope",
+        "digest_when_absent",
+    )
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
+
 
 class ReminderRead(BaseModel):
     id: uuid.UUID

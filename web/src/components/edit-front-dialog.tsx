@@ -1,0 +1,232 @@
+import { useState } from "react";
+
+import { useUpdateFront } from "@/hooks/use-fronts";
+import type { Front } from "@/types/api";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { MemberSelect } from "@/components/member-select";
+
+function toLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  // datetime-local wants YYYY-MM-DDTHH:mm in the browser's local zone.
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
+}
+
+function fromLocalInput(value: string): string | null {
+  if (!value) return null;
+  return new Date(value).toISOString();
+}
+
+export function EditFrontDialog({
+  front,
+  onOpenChange,
+  onSaved,
+}: {
+  // null = closed
+  front: Front | null;
+  onOpenChange: (open: boolean) => void;
+  onSaved?: () => void;
+}) {
+  const updateFront = useUpdateFront();
+
+  // Reinit the form on the open transition without useEffect (lint
+  // blocks setState-in-effect). Tracking which front the form was
+  // last populated from is enough.
+  const [draft, setDraft] = useState<{
+    fromFrontId: string | null;
+    memberIds: string[];
+    startedAt: string;
+    endedAt: string;
+    reopen: boolean;
+    customStatus: string;
+  }>({
+    fromFrontId: null,
+    memberIds: [],
+    startedAt: "",
+    endedAt: "",
+    reopen: false,
+    customStatus: "",
+  });
+
+  if (front && draft.fromFrontId !== front.id) {
+    setDraft({
+      fromFrontId: front.id,
+      memberIds: front.member_ids,
+      startedAt: toLocalInput(front.started_at),
+      endedAt: toLocalInput(front.ended_at),
+      reopen: false,
+      customStatus: front.custom_status ?? "",
+    });
+  } else if (!front && draft.fromFrontId !== null) {
+    setDraft((d) => ({ ...d, fromFrontId: null }));
+  }
+
+  function handleSave() {
+    if (!front) return;
+    const body: {
+      started_at?: string;
+      ended_at?: string | null;
+      member_ids?: string[];
+      custom_status?: string | null;
+    } = {};
+
+    const originalStartedAt = toLocalInput(front.started_at);
+    const originalEndedAt = toLocalInput(front.ended_at);
+    const originalCustomStatus = front.custom_status ?? "";
+    const originalMemberIds = [...front.member_ids].sort();
+    const draftMemberIds = [...draft.memberIds].sort();
+
+    if (draft.startedAt !== originalStartedAt) {
+      const iso = fromLocalInput(draft.startedAt);
+      if (iso) body.started_at = iso;
+    }
+    // Reopen flag wins: explicit clear.
+    if (draft.reopen) {
+      body.ended_at = null;
+    } else if (draft.endedAt !== originalEndedAt) {
+      body.ended_at = fromLocalInput(draft.endedAt);
+    }
+    if (draft.customStatus !== originalCustomStatus) {
+      body.custom_status = draft.customStatus.trim() || null;
+    }
+    if (
+      originalMemberIds.length !== draftMemberIds.length ||
+      originalMemberIds.some((id, i) => id !== draftMemberIds[i])
+    ) {
+      body.member_ids = draft.memberIds;
+    }
+
+    if (Object.keys(body).length === 0) {
+      onOpenChange(false);
+      return;
+    }
+
+    updateFront.mutate(
+      { id: front.id, data: body },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          onSaved?.();
+        },
+      },
+    );
+  }
+
+  return (
+    <Dialog open={!!front} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit front entry</DialogTitle>
+          <DialogDescription>
+            Changes are recorded in this entry's history. Overlap with
+            adjacent entries is allowed; ended_at before started_at is not.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2">
+          <Label className="text-sm font-normal">Fronting members</Label>
+          <MemberSelect
+            selected={draft.memberIds}
+            onChange={(m) => setDraft((d) => ({ ...d, memberIds: m }))}
+            className="py-2"
+            showGroupFilter
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <Label htmlFor="started-at" className="text-sm font-normal">
+              Started
+            </Label>
+            <Input
+              id="started-at"
+              type="datetime-local"
+              value={draft.startedAt}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, startedAt: e.target.value }))
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="ended-at" className="text-sm font-normal">
+              Ended
+            </Label>
+            <Input
+              id="ended-at"
+              type="datetime-local"
+              value={draft.endedAt}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, endedAt: e.target.value, reopen: false }))
+              }
+              disabled={draft.reopen}
+            />
+          </div>
+        </div>
+
+        {front?.ended_at && (
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="reopen"
+              checked={draft.reopen}
+              onCheckedChange={(v) =>
+                setDraft((d) => ({
+                  ...d,
+                  reopen: v === true,
+                  endedAt: v === true ? "" : d.endedAt,
+                }))
+              }
+            />
+            <Label
+              htmlFor="reopen"
+              className="text-sm font-normal cursor-pointer"
+            >
+              Reopen (clear ended_at)
+            </Label>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <Label htmlFor="custom-status" className="text-sm font-normal">
+            Custom status
+          </Label>
+          <Input
+            id="custom-status"
+            value={draft.customStatus}
+            onChange={(e) =>
+              setDraft((d) => ({ ...d, customStatus: e.target.value }))
+            }
+            placeholder="e.g. during a job interview"
+            maxLength={500}
+          />
+        </div>
+
+        <DialogFooter>
+          <Button
+            onClick={handleSave}
+            disabled={
+              !front ||
+              draft.memberIds.length === 0 ||
+              updateFront.isPending
+            }
+          >
+            {updateFront.isPending ? "Saving..." : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
