@@ -73,5 +73,9 @@ class FrontRead(BaseModel):
     # UIs should render these with a "> X ago" prefix. Empty in the
     # overwhelming majority of cases — chains are typically 1-3 entries.
     member_since_capped: list[str] = []
+    # True iff at least one FrontAuditEvent row exists for this front.
+    # Lets the UI grey out the history button on entries that have never
+    # been edited, without making the recipient pay for a per-row fetch.
+    has_audit_history: bool = False
 
     model_config = {"from_attributes": True}

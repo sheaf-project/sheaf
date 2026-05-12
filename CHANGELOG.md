@@ -6,6 +6,15 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Grey out history buttons on entries without history
+
+Small UX polish across every surface that has an edit/audit/revision history button. Before, the button was always enabled, so you'd click it and find an empty list. Now the button is disabled and dimmed when nothing's there, so you can see at a glance which entries have actually been edited.
+
+- **Fronts** (`/fronts` - both Currently-fronting and History): the per-entry History toggle is disabled until the entry has at least one audit row. Backed by a new `has_audit_history` boolean on the `FrontRead` API shape, populated via a single batched `EXISTS` query per list (no per-row round-trip).
+- **Members** (bio history modal): the History button in the member detail dialog is disabled until the bio has been edited at least once. Backed by `has_bio_revisions` on `MemberRead`, same batched-`EXISTS` pattern. Nested contexts (tag / group member lists) default to `false` since the modal is opened from the members route; if you need the accurate value, fetch from `GET /v1/members` or `/v1/members/{id}`.
+- **Messages**: the History button is disabled when `updated_at` equals `created_at` (no edit has happened yet). No backend change needed - the existing "(edited)" indicator already relies on this signal.
+- **Journal entries**: the Revisions button is disabled when `revision_count === 0`. No backend change needed - the existing single-entry endpoint already returns the count.
+
 ### Mobile push redemption accepts Bearer auth
 
 `POST /v1/notifications/redeem` only consulted the `sheaf_session` cookie when resolving the redeeming account, so mobile clients (which authenticate with `Authorization: Bearer <jwt>` and carry no cookies) failed the mobile-channel "login required" gate and got 401 even with a valid token. The Android app's retry-on-401 logic compounded the issue into a refresh loop.

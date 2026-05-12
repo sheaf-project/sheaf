@@ -281,6 +281,47 @@ def test_bio_edit_captures_revision(auth_client: httpx.Client):
     assert revs[0]["target_type"] == "member_bio"
 
 
+def test_member_has_bio_revisions_flag(auth_client: httpx.Client):
+    """`has_bio_revisions` lights up once the bio has been edited at least
+    once. Lets the members UI grey out the History button on members
+    whose bio has never changed."""
+    fresh = auth_client.post(
+        "/v1/members", json={"name": "Fresh", "description": "first bio"}
+    ).json()
+    # Right after create, no revisions exist yet.
+    assert fresh["has_bio_revisions"] is False
+    got = auth_client.get(f"/v1/members/{fresh['id']}").json()
+    assert got["has_bio_revisions"] is False
+    listed = auth_client.get("/v1/members").json()
+    matching = next(m for m in listed if m["id"] == fresh["id"])
+    assert matching["has_bio_revisions"] is False
+
+    # Edit the bio — a revision is captured.
+    edited = auth_client.patch(
+        f"/v1/members/{fresh['id']}", json={"description": "second bio"}
+    ).json()
+    assert edited["has_bio_revisions"] is True
+    got_after = auth_client.get(f"/v1/members/{fresh['id']}").json()
+    assert got_after["has_bio_revisions"] is True
+    listed_after = auth_client.get("/v1/members").json()
+    matching_after = next(m for m in listed_after if m["id"] == fresh["id"])
+    assert matching_after["has_bio_revisions"] is True
+
+
+def test_member_has_bio_revisions_unaffected_by_non_description_edit(
+    auth_client: httpx.Client,
+):
+    """Editing a non-description field doesn't write a revision, so the
+    flag stays False."""
+    member = auth_client.post(
+        "/v1/members", json={"name": "PronounEdit", "description": "stable"}
+    ).json()
+    edited = auth_client.patch(
+        f"/v1/members/{member['id']}", json={"pronouns": "they/them"}
+    ).json()
+    assert edited["has_bio_revisions"] is False
+
+
 def test_bio_revisions_isolated_per_member(auth_client: httpx.Client):
     a = auth_client.post(
         "/v1/members", json={"name": "A", "description": "a-v1"}

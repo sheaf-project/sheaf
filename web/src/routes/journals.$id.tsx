@@ -120,6 +120,10 @@ export function JournalDetailPage() {
               size="sm"
               variant="outline"
               onClick={() => setShowRevisions((s) => !s)}
+              disabled={entry.revision_count === 0}
+              title={
+                entry.revision_count > 0 ? "Show revisions" : "No revisions yet"
+              }
             >
               <History className="h-4 w-4 mr-1" />
               Revisions {entry.revision_count > 0 && `(${entry.revision_count})`}

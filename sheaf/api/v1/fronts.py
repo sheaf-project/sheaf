@@ -50,6 +50,7 @@ def _front_to_read(
     *,
     member_since: dict[str, datetime] | None = None,
     member_since_capped: list[str] | None = None,
+    has_audit_history: bool = False,
 ) -> FrontRead:
     """Project a Front row to its API shape.
 
@@ -62,6 +63,11 @@ def _front_to_read(
     walk-back depth limit; the returned timestamp is a lower bound,
     not the true chain start. Frontends should render those with a
     "> X ago" prefix to be honest about precision.
+
+    `has_audit_history` reflects whether at least one FrontAuditEvent
+    exists for this entry. Computed once per list call via a batch
+    EXISTS query (see `_load_audit_existence`); single-front endpoints
+    do their own one-row check.
     """
     if member_since is None:
         member_since = {str(m.id): front.started_at for m in front.members}
@@ -74,7 +80,32 @@ def _front_to_read(
         custom_status=decrypt(front.custom_status) if front.custom_status else None,
         member_since=member_since,
         member_since_capped=member_since_capped or [],
+        has_audit_history=has_audit_history,
     )
+
+
+async def _load_audit_existence(
+    db: AsyncSession, front_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Return the subset of given front_ids that have at least one
+    FrontAuditEvent row. One round-trip regardless of the list size."""
+    if not front_ids:
+        return set()
+    result = await db.execute(
+        select(FrontAuditEvent.front_id)
+        .where(FrontAuditEvent.front_id.in_(front_ids))
+        .distinct()
+    )
+    return {row[0] for row in result.all()}
+
+
+async def _front_has_audit(db: AsyncSession, front_id: uuid.UUID) -> bool:
+    result = await db.execute(
+        select(FrontAuditEvent.id)
+        .where(FrontAuditEvent.front_id == front_id)
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 # Walk-back depth cap: pathological cycles aside, real chains are
@@ -173,7 +204,11 @@ async def list_fronts(
         .limit(limit)
         .offset(offset)
     )
-    return [_front_to_read(f) for f in result.scalars().all()]
+    fronts = list(result.scalars().all())
+    with_audit = await _load_audit_existence(db, [f.id for f in fronts])
+    return [
+        _front_to_read(f, has_audit_history=f.id in with_audit) for f in fronts
+    ]
 
 
 @router.get("/current", response_model=list[FrontRead])
@@ -190,11 +225,13 @@ async def get_current_fronts(
     )
     fronts = list(result.scalars().all())
     member_since_map = await _build_coalesced_member_since(db, system, fronts)
+    with_audit = await _load_audit_existence(db, [f.id for f in fronts])
     return [
         _front_to_read(
             f,
             member_since=member_since_map[f.id][0],
             member_since_capped=member_since_map[f.id][1],
+            has_audit_history=f.id in with_audit,
         )
         for f in fronts
     ]
@@ -419,7 +456,9 @@ async def update_front(
 
     await db.commit()
     await db.refresh(front, ["members"])
-    return _front_to_read(front)
+    return _front_to_read(
+        front, has_audit_history=await _front_has_audit(db, front.id)
+    )
 
 
 @router.get(

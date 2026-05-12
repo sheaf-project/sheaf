@@ -586,7 +586,17 @@ function MessageRow({
           <Pencil className="size-3" />
           Edit
         </Button>
-        <Button size="sm" variant="ghost" onClick={onHistory}>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onHistory}
+          disabled={!msg.updated_at || msg.updated_at === msg.created_at}
+          title={
+            msg.updated_at && msg.updated_at !== msg.created_at
+              ? "Message history"
+              : "No edit history"
+          }
+        >
           <History className="size-3" />
           History
         </Button>

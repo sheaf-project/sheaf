@@ -227,6 +227,58 @@ def test_audit_cascades_on_front_delete(auth_client: httpx.Client):
     assert audit_after.status_code == 404
 
 
+# --- has_audit_history flag -----------------------------------------------
+
+
+def test_has_audit_history_false_on_create(auth_client: httpx.Client):
+    """Freshly-created fronts have no audit rows yet, so the flag is
+    False. The list endpoint should reflect that too."""
+    m = _create_member(auth_client, "FreshFront")
+    front = _open_front(auth_client, [m])
+    assert front["has_audit_history"] is False
+
+    listed = auth_client.get("/v1/fronts").json()
+    matching = next(f for f in listed if f["id"] == front["id"])
+    assert matching["has_audit_history"] is False
+
+
+def test_has_audit_history_true_after_explicit_patch(auth_client: httpx.Client):
+    """An explicit PATCH that changes a field writes an audit row, and
+    the flag flips to True on the patched response and on subsequent
+    list / current reads."""
+    m = _create_member(auth_client, "EditMe")
+    front = _open_front(auth_client, [m])
+
+    patched = auth_client.patch(
+        f"/v1/fronts/{front['id']}",
+        json={"custom_status": "thinking"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["has_audit_history"] is True
+
+    listed = auth_client.get("/v1/fronts").json()
+    matching = next(f for f in listed if f["id"] == front["id"])
+    assert matching["has_audit_history"] is True
+
+    current = auth_client.get("/v1/fronts/current").json()
+    in_current = next(
+        (f for f in current if f["id"] == front["id"]), None
+    )
+    if in_current is not None:
+        assert in_current["has_audit_history"] is True
+
+
+def test_has_audit_history_unchanged_on_noop_patch(auth_client: httpx.Client):
+    """A no-op PATCH (empty body) doesn't write an audit row, so the
+    flag stays False."""
+    m = _create_member(auth_client, "NoopPatch")
+    front = _open_front(auth_client, [m])
+
+    patched = auth_client.patch(f"/v1/fronts/{front['id']}", json={})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["has_audit_history"] is False
+
+
 def test_audit_ownership_other_systems_get_404(auth_client: httpx.Client):
     """A front from another user's system must 404 on /audit, not leak
     history (and not 403, which would confirm existence)."""
