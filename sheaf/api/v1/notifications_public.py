@@ -6,8 +6,11 @@
 - POST /v1/notifications/manage/{token}/unsubscribe : disable the channel.
 
 These endpoints accept anonymous traffic. If the redeemer is currently
-signed in (session cookie present), `redeemed_by_account_id` is also set
-so future cross-system management UIs can list this subscription.
+signed in (web session cookie OR Bearer access token), `redeemed_by_account_id`
+is also set so future cross-system management UIs can list this subscription.
+Mobile push channels require an authenticated redeemer (the native app sends
+a Bearer token after sheaf:// deep-link handoff); web push treats auth as
+optional.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.auth.dependencies import get_current_user_optional
 from sheaf.auth.sessions import get_session_user_id
 from sheaf.config import settings
 from sheaf.database import get_db
@@ -27,6 +31,7 @@ from sheaf.models.notification_channel import (
     NotificationChannel,
 )
 from sheaf.models.system import System
+from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 from sheaf.schemas.notifications import (
     ManageChannelView,
@@ -112,8 +117,8 @@ async def preview_activation(
 @router.post("/redeem", response_model=RedeemResponse)
 async def redeem_activation(
     body: RedeemRequest,
-    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
     db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> RedeemResponse:
     # Find a candidate channel by hashing the code and looking it up. The
     # hash is keyed (jwt_secret_key) so an attacker without the server key
@@ -163,10 +168,10 @@ async def redeem_activation(
             )
         channel.destination_config = body.push_subscription.model_dump()  # noqa: SIM102
 
-    # Resolve the redeemer's account from the session cookie.
-    redeemer_account_id = None
-    if session_id is not None:
-        redeemer_account_id = await get_session_user_id(session_id)
+    # Resolve the redeemer's account from either a web session cookie
+    # (browser flow) or a Bearer access token (mobile / API client flow);
+    # `get_current_user_optional` accepts both. None = anonymous redemption.
+    redeemer_account_id = current_user.id if current_user is not None else None
 
     if is_mobile:
         # Mobile push is account-anchored: a session is required, and the

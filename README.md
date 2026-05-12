@@ -12,7 +12,11 @@
 
 Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
 
-> **Status:** selfhostable and usable — hosted service is still being set up. Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://discord.gg/WFaKQPzFx8).
+> **Status:** selfhostable; hosted app in [open beta](https://test.sheaf.sh). Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://discord.gg/WFaKQPzFx8).
+
+[Android/WearOS](https://github.com/sheaf-project/android) and [iOS/WatchOS](https://github.com/sheaf-project/ios) clients are pending approval; ask on Discord for private test access.
+
+Sheaf supports the [OpenPlural](https://github.com/skylartaylor/openplural) data standard proposal as a founding project, and will be migrating to the format for exports once finalised.
 
 ## Why
 
@@ -25,6 +29,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 
 ## Features
 
+- **Web, mobile, and wearable apps** - Sheaf also supports first-class API support for custom clients and integrations, and development of custom or alternative clients for the Sheaf API is encouraged.
 - **Members** — Profiles with name, pronouns, description, colour, birthday, avatar, emoji, privacy levels, optional PluralKit ID
 - **Custom fronts** — Mark non-counting fronting entities like "Asleep" or "Away" so they show up in the fronter list without inflating member counts
 - **Front tracking** — Log switches with cofronters and an optional encrypted free-text status per fronting period
