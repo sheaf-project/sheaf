@@ -110,6 +110,34 @@ def test_redeem_mobile_rejects_push_subscription(auth_client: httpx.Client):
     assert "mobile push" in resp.json()["detail"].lower()
 
 
+def test_redeem_mobile_succeeds_with_bearer_token(auth_client: httpx.Client):
+    """Mobile clients authenticate with Bearer access tokens, not cookies.
+    Redemption must accept Bearer auth for the mobile sheaf:// deep-link
+    handoff to work — the native app has no session cookie to send."""
+    channel_id, code = _create_channel(auth_client, destination_type="apns_prod")
+    email = f"mobile-redeem-bearer-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    # Register on one client to get a token, then move to a *fresh* client
+    # so no session cookie is carried. Only the Authorization header
+    # authenticates the request, matching the mobile-app shape.
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as register_c:
+        reg = register_c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert reg.status_code == 201, reg.text
+        access_token = reg.json()["access_token"]
+    with httpx.Client(base_url=os.environ["SHEAF_TEST_URL"]) as bearer_c:
+        bearer_c.headers["Authorization"] = f"Bearer {access_token}"
+        resp = bearer_c.post(
+            "/v1/notifications/redeem",
+            json={"activation_code": code},
+        )
+    assert resp.status_code == 200, resp.text
+    fresh = auth_client.get(f"/v1/channels/{channel_id}").json()
+    assert fresh["destination_state"] == "active"
+    assert fresh["redeemed_by_account_id"] is not None
+
+
 def test_redeem_mobile_succeeds_with_session(auth_client: httpx.Client):
     """Logged-in redemption with no push_subscription succeeds, binds
     redeemed_by_account_id, and returns an empty management_url (mobile

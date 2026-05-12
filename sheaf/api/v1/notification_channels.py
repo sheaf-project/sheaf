@@ -229,6 +229,18 @@ def _validate_destination(body_type: str) -> None:
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="APNs is not configured on this server",
         )
+    # apns_dev is opt-in even when APNs creds are configured. Prod
+    # deployments keep `apns_dev_enabled` off so sandbox tokens can't
+    # be registered against the production backend (where they'd
+    # bounce at the APNs host anyway).
+    if (
+        body_type == DestinationType.APNS_DEV.value
+        and not settings.apns_dev_enabled
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="apns_dev is not enabled on this server",
+        )
 
 
 def _validate_direct_config(body_type: str, config: dict) -> None:

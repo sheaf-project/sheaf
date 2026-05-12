@@ -6,6 +6,18 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Mobile push redemption accepts Bearer auth
+
+`POST /v1/notifications/redeem` only consulted the `sheaf_session` cookie when resolving the redeeming account, so mobile clients (which authenticate with `Authorization: Bearer <jwt>` and carry no cookies) failed the mobile-channel "login required" gate and got 401 even with a valid token. The Android app's retry-on-401 logic compounded the issue into a refresh loop.
+
+Fixed by switching the endpoint to `get_current_user_optional`, which accepts either a session cookie or a Bearer access token. Web push redemption is unchanged (auth was always optional there); mobile push redemption now works from both the web fallback (cookie) and the native deep-link flow (Bearer).
+
+### apns_dev sandbox tokens gated behind explicit opt-in
+
+The mobile push backend accepts two APNs environments (`apns_dev` for Xcode-built sandbox installs, `apns_prod` for TestFlight / App Store). Both authenticate with the same `.p8` key, but their tokens are not interchangeable: a sandbox token registered against a prod backend would bounce at the APNs host at delivery time, leaving an orphaned `push_device_tokens` row on a real production account.
+
+Added `APNS_DEV_ENABLED` (default `false`). When off, both `POST /v1/watch-tokens/{id}/channels` with `destination_type=apns_dev` and `POST /v1/devices/push` with `platform=apns_dev` refuse the request (501 and 400 respectively) so prod deployments never see dev rows. Dev / staging / self-hosted-with-TestFlight setups flip the flag on.
+
 ### PATCH endpoints reject explicit null on NOT-NULL columns
 
 Bug fix uncovered while testing on the test instance: `PATCH /v1/systems/me` with `date_format: null` (or any other NOT-NULL column nulled out) crashed with a 500 `NotNullViolationError`. The `| None = None` shape that every Update schema uses to enable "presence-in-body" PATCH semantics also allowed clients to send explicit `null`, which the handler then setattr'd onto the model and pushed to the DB.

@@ -342,6 +342,12 @@ class Settings(BaseSettings):
     apns_team_id: str = ""
     apns_key_id: str = ""
     apns_bundle_id: str = ""
+    # Opt-in flag for accepting apns_dev tokens / channels. Production
+    # deployments should leave this off so dev-environment device tokens
+    # can't be registered against the prod backend (which would orphan
+    # them anyway, since the prod APNs host bounces sandbox tokens).
+    # Flip on for dev / staging / self-hosted-with-TestFlight setups.
+    apns_dev_enabled: bool = False
     # Optional override used as the apns-topic header for apns_dev
     # devices when set. Falls back to apns_bundle_id when unset. Only
     # relevant if dev and prod builds ever ship under different bundle

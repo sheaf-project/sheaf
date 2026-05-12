@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +52,20 @@ async def register_push_device(
     3. Otherwise: insert a new row, evicting the oldest-`last_seen_at`
        row first if the per-account soft cap is hit.
     """
+    # apns_dev is opt-in. Prod deployments leave APNS_DEV_ENABLED off
+    # so sandbox tokens can't be registered against the prod backend
+    # (where APNs would bounce them at delivery time anyway). Reject
+    # at registration so we don't accrue orphaned dev rows on a prod
+    # account; symmetric with the channel-creation gate.
+    if (
+        body.platform == PushPlatform.APNS_DEV
+        and not settings.apns_dev_enabled
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="apns_dev is not enabled on this server",
+        )
+
     now = datetime.now(UTC)
 
     # Path 1: exact match.
