@@ -1590,8 +1590,10 @@ async def request_account_deletion(
 
     # Verify password
     if not verify_password(body.password, user.password_hash):
+        # 403: step-up auth denial. See system_safety.verify_destructive_auth
+        # for full reasoning.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Incorrect password",
         )
 
@@ -1618,7 +1620,7 @@ async def request_account_deletion(
                     valid_recovery = True
             if not valid_recovery:
                 raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    status_code=status.HTTP_403_FORBIDDEN,
                     detail="Invalid TOTP code",
                 )
 

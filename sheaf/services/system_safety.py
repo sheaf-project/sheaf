@@ -140,8 +140,14 @@ def verify_destructive_auth(
                 detail="Password required",
             )
         if not verify_password(password, user.password_hash):
+            # 403 (not 401) — the caller IS authenticated; the step-up
+            # password gate denied this specific destructive action. 401
+            # would trip the frontend's silent-refresh-and-retry path,
+            # which is meaningless here (refreshing the access token
+            # doesn't make the wrong password right) and hides the real
+            # error from the user.
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Incorrect password",
             )
 
@@ -157,8 +163,9 @@ def verify_destructive_auth(
             )
         secret = decrypt(user.totp_secret)
         if not verify_code(secret, totp_code):
+            # Same reasoning as the wrong-password branch: 403, not 401.
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",
             )
 

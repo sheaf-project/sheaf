@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   isDeleteQueued,
@@ -13,10 +18,36 @@ export const frontKeys = {
   current: ["fronts", "current"] as const,
 };
 
-export function useFronts(limit = 50, offset = 0) {
+/**
+ * Cursor-paginated front history. Surface `fetchNextPage` + `hasNextPage`
+ * to wire a "Load older" button; the `items` getter flattens the page
+ * array so consumers don't have to know about page boundaries.
+ */
+export function useFronts(limit = 50) {
+  const query = useInfiniteQuery({
+    queryKey: [...frontKeys.all, "history", limit],
+    queryFn: ({ pageParam }: { pageParam: string | null }) =>
+      api.listFronts({ limit, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) =>
+      lastPage.hasMore ? lastPage.nextCursor : null,
+  });
+  const items = query.data?.pages.flatMap((p) => p.items) ?? [];
+  return { ...query, items };
+}
+
+/**
+ * Offset-paginated front history with a known total count, for the
+ * numbered-pages view. `placeholderData: keepPreviousData` keeps the
+ * old page visible while the new one loads so the page doesn't flash
+ * empty when paging.
+ */
+export function useFrontsPaged(page: number, limit = 50) {
+  const safePage = Math.max(1, page);
   return useQuery({
-    queryKey: [...frontKeys.all, limit, offset],
-    queryFn: () => api.listFronts(limit, offset),
+    queryKey: [...frontKeys.all, "paged", safePage, limit],
+    queryFn: () => api.listFrontsPaged({ page: safePage, limit }),
+    placeholderData: (prev) => prev,
   });
 }
 

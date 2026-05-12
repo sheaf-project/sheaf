@@ -76,8 +76,11 @@ async def verify_admin_step_up(
             )
         from sheaf.auth.passwords import verify_password
         if not verify_password(body.password, user.password_hash):
+            # 403: caller is already authenticated; this step-up gate
+            # denies the action. 401 would falsely trigger the frontend's
+            # silent-refresh-and-retry path.
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password"
+                status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password"
             )
 
     elif level == "totp":
@@ -94,7 +97,7 @@ async def verify_admin_step_up(
         totp_secret = decrypt(user.totp_secret)
         if not totp.verify_code(totp_secret, body.totp_code):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code"
+                status_code=status.HTTP_403_FORBIDDEN, detail="Invalid TOTP code"
             )
 
     await set_admin_step_up(user.id)

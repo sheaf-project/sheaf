@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, History, Pencil } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
+import { apiFetch } from "@/lib/api-client";
+import { ChevronDown, ChevronRight, History, Infinity as InfinityIcon, ListOrdered, Pencil } from "lucide-react";
 import {
   useCurrentFronts,
   useFronts,
+  useFrontsPaged,
   useUpdateFront,
   useDeleteFront,
 } from "@/hooks/use-fronts";
@@ -13,19 +16,147 @@ import { ColorDot } from "@/components/color-dot";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { EditFrontDialog } from "@/components/edit-front-dialog";
 import { FrontAuditHistory } from "@/components/front-audit-history";
+import { PageNav } from "@/components/page-nav";
 import { StartFrontDialog } from "@/components/start-front-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDateTime, timeAgo } from "@/lib/utils";
 import { getMySystem } from "@/lib/systems";
 import type { Front } from "@/types/api";
 
+const HISTORY_PAGE_SIZES = [25, 50, 100] as const;
+type ViewMode = "infinite" | "paged";
+
+interface FrontsViewPrefs {
+  view?: ViewMode;
+  pageSize?: number;
+}
+
+function isViewMode(v: unknown): v is ViewMode {
+  return v === "infinite" || v === "paged";
+}
+
+function isPageSize(v: unknown): v is (typeof HISTORY_PAGE_SIZES)[number] {
+  return (
+    typeof v === "number" &&
+    (HISTORY_PAGE_SIZES as readonly number[]).includes(v)
+  );
+}
+
 export function FrontsPage() {
+  const qc = useQueryClient();
   const { data: current, isLoading: currentLoading } = useCurrentFronts();
-  const { data: history, isLoading: historyLoading } = useFronts();
+
+  // Saved defaults from client settings — only consulted when the URL
+  // doesn't already pin a view / pageSize. URL wins so bookmarking and
+  // link-sharing stay deterministic; settings just pick the default the
+  // user sees on a fresh visit.
+  const { data: clientSettings } = useQuery({
+    queryKey: ["client-settings", "web"],
+    queryFn: async () => {
+      try {
+        const res = await apiFetch<{ settings: Record<string, unknown> }>(
+          "/v1/settings/client/web",
+        );
+        return res.settings;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  const savedFrontsPrefs =
+    (clientSettings?.fronts as FrontsViewPrefs | undefined) ?? {};
+  const savedView: ViewMode = isViewMode(savedFrontsPrefs.view)
+    ? savedFrontsPrefs.view
+    : "infinite";
+  const savedPageSize = isPageSize(savedFrontsPrefs.pageSize)
+    ? savedFrontsPrefs.pageSize
+    : 50;
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view: ViewMode = searchParams.has("view")
+    ? searchParams.get("view") === "paged"
+      ? "paged"
+      : "infinite"
+    : savedView;
+  const page = Math.max(
+    1,
+    Number.parseInt(searchParams.get("page") || "1", 10) || 1,
+  );
+  const pageSize = (() => {
+    if (!searchParams.has("pageSize")) return savedPageSize;
+    const raw = Number.parseInt(searchParams.get("pageSize") || "50", 10);
+    return isPageSize(raw) ? raw : savedPageSize;
+  })();
+
+  async function persistFrontsPrefs(next: FrontsViewPrefs) {
+    // PUT merges client-side: read the existing blob, splice in our key,
+    // write back. Same shape as the announcement-banners dismissal flow.
+    const current = clientSettings ?? {};
+    try {
+      await apiFetch("/v1/settings/client/web", {
+        method: "PUT",
+        body: JSON.stringify({
+          settings: { ...current, fronts: { ...savedFrontsPrefs, ...next } },
+        }),
+      });
+      qc.invalidateQueries({ queryKey: ["client-settings", "web"] });
+    } catch {
+      // Persistence failure is non-fatal — URL state still works.
+    }
+  }
+
+  function setView(next: ViewMode) {
+    const params = new URLSearchParams(searchParams);
+    if (next === "infinite") {
+      params.delete("view");
+      params.delete("page");
+      params.delete("pageSize");
+    } else {
+      params.set("view", "paged");
+      params.set("page", "1");
+    }
+    setSearchParams(params, { replace: true });
+    void persistFrontsPrefs({ view: next });
+  }
+  function setPage(next: number) {
+    const params = new URLSearchParams(searchParams);
+    params.set("page", String(next));
+    setSearchParams(params, { replace: true });
+    // Page number is transient: not persisted.
+  }
+  function setPageSize(next: number) {
+    const params = new URLSearchParams(searchParams);
+    params.set("pageSize", String(next));
+    params.set("page", "1");
+    setSearchParams(params, { replace: true });
+    if (isPageSize(next)) void persistFrontsPrefs({ pageSize: next });
+  }
+
+  const {
+    items: infiniteHistory,
+    isLoading: infiniteLoading,
+    hasNextPage: infiniteHasMore,
+    fetchNextPage: fetchMoreInfinite,
+    isFetchingNextPage: infiniteLoadingMore,
+  } = useFronts(50);
+  const pagedQuery = useFrontsPaged(page, pageSize);
+  const isPaged = view === "paged";
+  const history = isPaged ? (pagedQuery.data?.items ?? []) : infiniteHistory;
+  const historyLoading = isPaged ? pagedQuery.isLoading : infiniteLoading;
+  const total = pagedQuery.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const { data: members } = useMembers();
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
   const updateFront = useUpdateFront();
@@ -165,7 +296,55 @@ export function FrontsPage() {
       <Separator className="my-6" />
 
       {/* History */}
-      <h2 className="text-lg font-semibold mb-4">History</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold">History</h2>
+        <div className="flex items-center gap-2 text-sm">
+          {isPaged && total > 0 && (
+            <span className="text-muted-foreground">
+              {total} {total === 1 ? "entry" : "entries"}
+            </span>
+          )}
+          {isPaged && (
+            <Select
+              value={String(pageSize)}
+              onValueChange={(v) => setPageSize(Number.parseInt(v, 10))}
+            >
+              <SelectTrigger size="sm" className="h-8 w-[5.5rem]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {HISTORY_PAGE_SIZES.map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    {n} / page
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
+            <Button
+              size="sm"
+              variant={isPaged ? "ghost" : "default"}
+              className="h-7 px-2"
+              onClick={() => setView("infinite")}
+              aria-pressed={!isPaged}
+              title="Infinite scroll"
+            >
+              <InfinityIcon className="size-3.5" />
+            </Button>
+            <Button
+              size="sm"
+              variant={isPaged ? "default" : "ghost"}
+              className="h-7 px-2"
+              onClick={() => setView("paged")}
+              aria-pressed={isPaged}
+              title="Numbered pages"
+            >
+              <ListOrdered className="size-3.5" />
+            </Button>
+          </div>
+        </div>
+      </div>
       {historyLoading ? (
         <div className="space-y-2">
           {[1, 2, 3].map((i) => (
@@ -238,6 +417,30 @@ export function FrontsPage() {
               )}
             </div>
           ))}
+          {!isPaged && infiniteHasMore && (
+            <div className="flex justify-center pt-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => fetchMoreInfinite()}
+                disabled={infiniteLoadingMore}
+              >
+                {infiniteLoadingMore ? "Loading…" : "Load older entries"}
+              </Button>
+            </div>
+          )}
+          {isPaged && (
+            <div className="flex flex-col items-center gap-2 pt-2">
+              <PageNav
+                page={page}
+                totalPages={totalPages}
+                onChange={setPage}
+              />
+              <span className="text-xs text-muted-foreground">
+                Page {page} of {totalPages}
+              </span>
+            </div>
+          )}
         </div>
       ) : (
         <p className="text-muted-foreground">No front history yet.</p>
