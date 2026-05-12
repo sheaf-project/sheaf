@@ -114,6 +114,11 @@ async def run_import(
         )
 
     result.warnings = warnings
+    # See pk_import.run_import for the full rationale: `get_db`'s
+    # auto-commit runs after the response is sent, which races a
+    # follow-up request on slow CI. Commit explicitly here so writes
+    # are visible by the time the client receives the response.
+    await db.commit()
     return result
 
 
