@@ -92,6 +92,12 @@ export interface Member {
   note: string | null;
   created_at: string;
   updated_at: string;
+  /** True iff at least one ContentRevision exists for this member's
+   *  bio. Populated by the /v1/members list + get endpoints; nested
+   *  contexts (tag / group member lists) may return false even when
+   *  history exists — open the bio history modal from the members
+   *  route for an accurate signal. */
+  has_bio_revisions: boolean;
 }
 
 export interface MemberCreate {
@@ -143,6 +149,9 @@ export interface Front {
   // `member_since` entry is a lower bound, not the true chain start —
   // render with a "> X ago" prefix.
   member_since_capped: string[];
+  // True iff at least one audit row exists for this front. Lets the UI
+  // grey out the history button on entries that have never been edited.
+  has_audit_history: boolean;
 }
 
 export interface FrontCreate {

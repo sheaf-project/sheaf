@@ -721,6 +721,10 @@ function MemberView({
                 size="sm"
                 onClick={() => setShowRevisions((v) => !v)}
                 aria-pressed={showRevisions}
+                disabled={!member.has_bio_revisions}
+                title={
+                  member.has_bio_revisions ? "Bio history" : "No bio history"
+                }
               >
                 <History className="h-3.5 w-3.5 mr-1" />
                 History

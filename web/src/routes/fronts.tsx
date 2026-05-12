@@ -117,8 +117,13 @@ export function FrontsPage() {
                         size="sm"
                         variant="ghost"
                         onClick={() => toggleHistory(front.id)}
+                        disabled={!front.has_audit_history}
                         aria-label="Show edit history"
-                        title="Show edit history"
+                        title={
+                          front.has_audit_history
+                            ? "Show edit history"
+                            : "No edit history"
+                        }
                       >
                         {expandedHistory.has(front.id) ? (
                           <ChevronDown className="h-3.5 w-3.5" />
@@ -194,8 +199,13 @@ export function FrontsPage() {
                     variant="ghost"
                     className="h-7 px-2"
                     onClick={() => toggleHistory(front.id)}
+                    disabled={!front.has_audit_history}
                     aria-label="Show edit history"
-                    title="Show edit history"
+                    title={
+                      front.has_audit_history
+                        ? "Show edit history"
+                        : "No edit history"
+                    }
                   >
                     {expandedHistory.has(front.id) ? (
                       <ChevronDown className="h-3.5 w-3.5" />

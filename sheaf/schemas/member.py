@@ -97,6 +97,12 @@ class MemberRead(BaseModel):
     note: str | None
     created_at: datetime
     updated_at: datetime
+    # True iff at least one ContentRevision exists for this member's bio.
+    # Lets the UI grey out the bio history button on members whose bio
+    # has never been edited. Defaults to False for non-list contexts
+    # (e.g. nested in tag / group responses) where computing this would
+    # be a needless round-trip.
+    has_bio_revisions: bool = False
 
     model_config = {"from_attributes": True}
 

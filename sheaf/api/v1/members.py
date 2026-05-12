@@ -69,6 +69,40 @@ async def _get_own_member(
     return member
 
 
+async def _load_bio_revision_existence(
+    db: AsyncSession, member_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Return the subset of member_ids that have at least one bio
+    ContentRevision. One round-trip regardless of list size."""
+    if not member_ids:
+        return set()
+    result = await db.execute(
+        select(ContentRevision.target_id)
+        .where(
+            ContentRevision.target_type
+            == ContentRevisionTarget.MEMBER_BIO.value,
+            ContentRevision.target_id.in_(member_ids),
+        )
+        .distinct()
+    )
+    return {row[0] for row in result.all()}
+
+
+async def _member_has_bio_revisions(
+    db: AsyncSession, member_id: uuid.UUID
+) -> bool:
+    result = await db.execute(
+        select(ContentRevision.id)
+        .where(
+            ContentRevision.target_type
+            == ContentRevisionTarget.MEMBER_BIO.value,
+            ContentRevision.target_id == member_id,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 @router.get("", response_model=list[MemberRead])
 async def list_members(
     user: User = Depends(get_current_user),
@@ -80,8 +114,16 @@ async def list_members(
     result = await db.execute(
         select(Member).where(Member.system_id == system.id)
     )
-    members = result.scalars().all()
-    decoded = [decrypt_member_for_read(m) for m in members]
+    members = list(result.scalars().all())
+    with_revisions = await _load_bio_revision_existence(
+        db, [m.id for m in members]
+    )
+    decoded = [
+        decrypt_member_for_read(
+            m, has_bio_revisions=m.id in with_revisions
+        )
+        for m in members
+    ]
     decoded.sort(key=lambda m: (m.display_name or m.name).casefold())
     return decoded
 
@@ -157,7 +199,10 @@ async def get_member(
 ):
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
-    return decrypt_member_for_read(member)
+    return decrypt_member_for_read(
+        member,
+        has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+    )
 
 
 @router.patch(
@@ -205,7 +250,10 @@ async def update_member(
             setattr(member, key, value)
     await db.commit()
     await db.refresh(member)
-    return decrypt_member_for_read(member)
+    return decrypt_member_for_read(
+        member,
+        has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+    )
 
 
 @router.delete(
@@ -374,7 +422,10 @@ async def restore_bio_revision(
     )
     await db.commit()
     await db.refresh(member)
-    return decrypt_member_for_read(member)
+    return decrypt_member_for_read(
+        member,
+        has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+    )
 
 
 @router.post(

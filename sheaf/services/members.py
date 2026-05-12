@@ -53,8 +53,17 @@ def set_member_note(member: Member, plaintext: str | None) -> None:
         member.note = encrypt(plaintext)
 
 
-def decrypt_member_for_read(member: Member) -> MemberRead:
-    """Build a MemberRead with name + description decrypted to plaintext."""
+def decrypt_member_for_read(
+    member: Member, *, has_bio_revisions: bool = False
+) -> MemberRead:
+    """Build a MemberRead with name + description decrypted to plaintext.
+
+    `has_bio_revisions` is opt-in: callers that need an accurate value
+    (the /v1/members endpoints, since the bio history button reads it)
+    look it up and pass through. Nested contexts (tag / group member
+    lists) default to False; the bio history modal is opened from the
+    members route, not from those, so a stale value there is harmless.
+    """
     return MemberRead.model_validate({
         "id": member.id,
         "system_id": member.system_id,
@@ -72,6 +81,7 @@ def decrypt_member_for_read(member: Member) -> MemberRead:
         "note": member_note_plaintext(member),
         "created_at": member.created_at,
         "updated_at": member.updated_at,
+        "has_bio_revisions": has_bio_revisions,
     })
 
 
