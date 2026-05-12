@@ -6,6 +6,15 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### In-browser "Verify this page" button + attestation links
+
+Two enhancements on the `/about` page's verifiability surface:
+
+- **Verify this page**: a button in the Bundle integrity card that re-fetches every file in `build-manifest.json`, computes its SHA-384 in the browser via the Web Crypto API, and compares to the manifest's recorded integrity. Renders per-file pass / fail / unreachable inline with a running summary. The hash function and comparison both live in the browser, so the server can only influence the bytes it serves - which is the thing being checked. Covers `index.html` too, closing the SRI bootstrap gap for verification (though browser-enforced loading of `index.html` against a hash still needs the cosign-attested manifest path). Previously the docs said "open devtools and eyeball it"; that's now a click.
+- **Attestations & transparency card**: direct links to the GHCR package pages (backend image, frontend image - both expose cosign signatures, SBOM, and the build-manifest predicate via the GitHub UI), to the Rekor transparency log search, and to the current build's GitHub release page when a tag is present. Cross-checking what the instance reports against what CI actually published no longer requires hunting around.
+
+Also updated `docs/VERIFYING.md` to lead with the in-browser button before the manual devtools workflow.
+
 ### Fix flaky import tests: commit before responding
 
 `run_import` in both the PluralKit (`sheaf/services/pk_import.py`) and Tupperbox (`sheaf/services/tb_import.py`) importers wrote rows via `db.flush()` but never called `db.commit()` inside the handler. They relied on the auto-commit at the end of `get_db`, which for FastAPI `yield` dependencies runs *after* the response has been delivered to the client. A test (or any client) firing a follow-up request immediately after a 200 OK could race that cleanup-commit and see an empty members list, manifesting on CI as a `KeyError: 'Alice'` in `test_import_resolves_visibility_to_privacy_enum`. The race window is microseconds on a fast local machine and milliseconds on slow CI runners; rerunning usually won the race. Fixed by committing explicitly at the end of both importers' `run_import`, matching the convention every other write endpoint in the codebase already follows.
