@@ -146,6 +146,15 @@ async def run_import(
         warnings.extend(switch_warnings)
 
     result.warnings = warnings
+    # Commit explicitly here, before the handler returns. `get_db` does
+    # auto-commit on successful exit, but for `yield` dependencies that
+    # cleanup runs *after* the response has been sent to the client.
+    # Without an explicit commit inside the handler, a follow-up request
+    # (e.g. the test's GET /v1/members right after import) can race the
+    # cleanup-commit and see an empty members list. The window is
+    # microseconds locally and milliseconds on slow CI runners, so the
+    # symptom is a flaky test, not a deterministic one.
+    await db.commit()
     return result
 
 

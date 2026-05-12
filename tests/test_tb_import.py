@@ -29,11 +29,16 @@ def tb_export() -> dict:
 
 
 def _upload(client: httpx.Client, path: str, payload: bytes, **params):
-    return client.post(
+    """Multipart-upload a TB export. Asserts the response is 2xx so any
+    server-side failure surfaces here instead of as a downstream
+    KeyError when a later assertion looks for a missing member."""
+    resp = client.post(
         path,
         files={"file": ("tb_export.json", payload, "application/json")},
         params=params,
     )
+    assert 200 <= resp.status_code < 300, resp.text
+    return resp
 
 
 # --- Preview path ------------------------------------------------------------

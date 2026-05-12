@@ -6,6 +6,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fix flaky import tests: commit before responding
+
+`run_import` in both the PluralKit (`sheaf/services/pk_import.py`) and Tupperbox (`sheaf/services/tb_import.py`) importers wrote rows via `db.flush()` but never called `db.commit()` inside the handler. They relied on the auto-commit at the end of `get_db`, which for FastAPI `yield` dependencies runs *after* the response has been delivered to the client. A test (or any client) firing a follow-up request immediately after a 200 OK could race that cleanup-commit and see an empty members list, manifesting on CI as a `KeyError: 'Alice'` in `test_import_resolves_visibility_to_privacy_enum`. The race window is microseconds on a fast local machine and milliseconds on slow CI runners; rerunning usually won the race. Fixed by committing explicitly at the end of both importers' `run_import`, matching the convention every other write endpoint in the codebase already follows.
+
+Also hardened the `_upload` test helper in `tests/test_pk_import.py` and `tests/test_tb_import.py` to assert `2xx` on the response so any future server-side failure surfaces as a clear assertion failure instead of a downstream `KeyError`.
+
 ### Grey out history buttons on entries without history
 
 Small UX polish across every surface that has an edit/audit/revision history button. Before, the button was always enabled, so you'd click it and find an empty list. Now the button is disabled and dimmed when nothing's there, so you can see at a glance which entries have actually been edited.
