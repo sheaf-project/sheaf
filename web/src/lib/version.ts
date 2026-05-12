@@ -59,3 +59,72 @@ export function buildLabel(opts: {
   if (opts.gitCommit) return shortSha(opts.gitCommit);
   return "dev";
 }
+
+// --- Live bundle verification -----------------------------------------------
+//
+// SubtleCrypto-based SRI re-verification. For each file in the manifest:
+//   1. Fetch the file from the running server.
+//   2. Hash the response bytes with SHA-384.
+//   3. Encode as "sha384-<base64>" — the SRI integrity format.
+//   4. Compare to the manifest's recorded integrity.
+//
+// Identical in spirit to what the browser does for <script integrity=...> tags
+// at load time, except this also covers index.html and static assets that
+// don't carry SRI attributes. Runs entirely client-side; the server can't
+// influence the hash function or the comparison, only the bytes it serves.
+
+export type VerifyStatus = "pending" | "match" | "mismatch" | "error";
+
+export interface VerifyFileResult {
+  path: string;
+  expected: string;
+  actual: string | null;
+  status: VerifyStatus;
+  error?: string;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  // Browsers don't ship a built-in Uint8Array → base64 yet (Uint8Array.toBase64
+  // is Baseline-pending), so go via a binary string. btoa wants char codes
+  // <256, which is what a byte array gives us.
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+async function sha384Sri(buf: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-384", buf);
+  return "sha384-" + bytesToBase64(new Uint8Array(digest));
+}
+
+export async function verifyManifestFile(
+  file: BuildManifestFile,
+): Promise<VerifyFileResult> {
+  try {
+    const res = await fetch("/" + file.path, { cache: "no-store" });
+    if (!res.ok) {
+      return {
+        path: file.path,
+        expected: file.integrity,
+        actual: null,
+        status: "error",
+        error: `HTTP ${res.status}`,
+      };
+    }
+    const actual = await sha384Sri(await res.arrayBuffer());
+    return {
+      path: file.path,
+      expected: file.integrity,
+      actual,
+      status: actual === file.integrity ? "match" : "mismatch",
+    };
+  } catch (err) {
+    return {
+      path: file.path,
+      expected: file.integrity,
+      actual: null,
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
