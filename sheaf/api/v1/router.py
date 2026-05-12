@@ -27,6 +27,7 @@ from sheaf.api.v1 import (
     system_safety,
     systems,
     tags,
+    tb_import,
     version,
     watch_tokens,
     webhooks,
@@ -110,6 +111,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     sheaf_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    tb_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 v1_router.include_router(webhooks.router)

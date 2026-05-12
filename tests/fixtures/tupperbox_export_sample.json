@@ -1,0 +1,71 @@
+{
+  "groups": [
+    {
+      "id": 100001,
+      "name": "Core",
+      "avatar": null,
+      "description": "Primary group.",
+      "tag": null
+    },
+    {
+      "id": 100002,
+      "name": "Visitors",
+      "avatar": "https://cdn.tupperbox.app/example/group.webp",
+      "description": null,
+      "tag": null
+    }
+  ],
+  "tuppers": [
+    {
+      "id": 200001,
+      "name": "Alpha",
+      "brackets": ["a:", ""],
+      "avatar_url": "https://cdn.tupperbox.app/example/alpha.webp",
+      "avatar": "alpha",
+      "banner": null,
+      "posts": 12,
+      "show_brackets": false,
+      "birthday": "1990-04-15T00:00:00.000Z",
+      "description": "First test tupper.",
+      "tag": null,
+      "nick": "Alpha the First",
+      "created_at": "2024-01-01T00:00:00.000Z",
+      "group_id": 100001,
+      "last_used": "2024-06-01T12:00:00.000Z"
+    },
+    {
+      "id": 200002,
+      "name": "Beta",
+      "brackets": ["[", "]"],
+      "avatar_url": null,
+      "avatar": null,
+      "banner": null,
+      "posts": 0,
+      "show_brackets": true,
+      "birthday": null,
+      "description": null,
+      "tag": null,
+      "nick": null,
+      "created_at": "2024-01-02T00:00:00.000Z",
+      "group_id": 100001,
+      "last_used": null
+    },
+    {
+      "id": 200003,
+      "name": "Gamma",
+      "brackets": ["g:", ""],
+      "avatar_url": null,
+      "avatar": null,
+      "banner": "https://cdn.tupperbox.app/example/gamma-banner.webp",
+      "posts": 3,
+      "show_brackets": false,
+      "birthday": null,
+      "description": "Group-less tupper.",
+      "tag": "| Example",
+      "nick": null,
+      "created_at": "2024-01-03T00:00:00.000Z",
+      "group_id": null,
+      "last_used": null
+    }
+  ]
+}

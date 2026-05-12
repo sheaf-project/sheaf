@@ -25,9 +25,15 @@ import {
   previewImportFromApi as previewPKApi,
   runImportFromApi as runPKApi,
 } from "@/lib/pk-import";
+import {
+  type TBPreviewSummary,
+  type TBImportResult,
+  previewImport as previewTB,
+  runImport as runTB,
+} from "@/lib/tb-import";
 import { Input } from "@/components/ui/input";
 
-type Source = "choose" | "sheaf" | "sp" | "pk";
+type Source = "choose" | "sheaf" | "sp" | "pk" | "tb";
 type Step = "upload" | "preview" | "importing" | "done";
 type PKMethod = "choose" | "file" | "api";
 
@@ -46,6 +52,9 @@ export function ImportPage() {
       )}
       {source === "pk" && (
         <PKImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "tb" && (
+        <TBImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -92,6 +101,22 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
           <p className="text-sm text-muted-foreground">
             Pull from your PluralKit account using a token (the same one you
             use for <code>pk;token</code>), or upload a PK data export file.
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("tb")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from Tupperbox</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Upload a Tupperbox export file (run <code>tb!export</code> on
+            Discord). Tupperbox doesn't track fronting, so only your tuppers
+            and groups come across. Proxy brackets and per-tupper tags are
+            dropped since Sheaf doesn't proxy Discord messages.
           </p>
         </CardContent>
       </Card>
@@ -777,6 +802,161 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
               )}
               {result.fronts_imported > 0 && (
                 <div>Fronts: <strong>{result.fronts_imported}</strong></div>
+              )}
+            </div>
+            <Warnings warnings={result.warnings} />
+            <Button onClick={() => navigate("/members")} className="w-full">
+              View members
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tupperbox import flow
+// ---------------------------------------------------------------------------
+
+function TBImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<TBPreviewSummary | null>(null);
+  const [result, setResult] = useState<TBImportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [allMembers, setAllMembers] = useState(true);
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+  const [groups, setGroups] = useState(true);
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewTB(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to parse file");
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const r = await runTB(file, {
+        member_ids: allMembers ? null : Array.from(selectedMembers),
+        groups,
+      });
+      setResult(r);
+      setStep("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+      setStep("preview");
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload Tupperbox export file</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Run <code>tb!export</code> on Discord, then upload the JSON
+              attachment Tupperbox DMs you.
+            </p>
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={onBack}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>Groups: <strong>{preview.group_count}</strong></div>
+              <div className="col-span-2 text-xs text-muted-foreground">
+                Tupperbox doesn't track fronting, system metadata, or
+                pronouns/colour per tupper. Proxy brackets, banners, and
+                per-tupper tags are dropped on import.
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="Groups"
+                checked={groups}
+                onChange={setGroups}
+              />
+
+              <MemberSelector
+                members={preview.members}
+                totalCount={preview.member_count}
+                allMembers={allMembers}
+                setAllMembers={setAllMembers}
+                selectedMembers={selectedMembers}
+                toggleMember={toggleMember}
+              />
+
+              <Button onClick={handleImport} className="w-full">
+                Import
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+
+      {step === "done" && result && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Import complete</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {result.members_imported > 0 && (
+                <div>Members: <strong>{result.members_imported}</strong></div>
+              )}
+              {result.groups_imported > 0 && (
+                <div>Groups: <strong>{result.groups_imported}</strong></div>
               )}
             </div>
             <Warnings warnings={result.warnings} />
