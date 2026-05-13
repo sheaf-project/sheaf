@@ -153,7 +153,11 @@ async def redeem_activation(
             detail="Activation code has expired",
         )
 
+    # Legacy fcm / apns_* rows kept defensively in case any survive the
+    # migration to mobile_push (they shouldn't, but the redemption path
+    # is the wrong place to fail loudly).
     mobile_push_types = {
+        DestinationType.MOBILE_PUSH.value,
         DestinationType.FCM.value,
         DestinationType.APNS_DEV.value,
         DestinationType.APNS_PROD.value,
@@ -297,6 +301,7 @@ async def view_managed(
         system_label=system_label,
         destination_type=channel.destination_type,
         destination_state=channel.destination_state,
+        paused_by_sender=channel.paused_by_sender,
     )
 
 

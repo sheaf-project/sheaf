@@ -565,6 +565,9 @@ export type DestinationType =
   | "webhook"
   | "ntfy"
   | "pushover"
+  | "mobile_push"
+  // Legacy mobile types kept so the type covers any pre-migration row that
+  // somehow survives. Channel creation no longer produces these.
   | "fcm"
   | "apns_dev"
   | "apns_prod";
@@ -714,6 +717,10 @@ export interface ManageChannelView {
   system_label: string | null;
   destination_type: string;
   destination_state: string;
+  /** True when the channel was disabled by the owner pausing it (not the
+   *  recipient unsubscribing). Lets the recipient UI render "Paused by
+   *  sender" instead of "Unsubscribed". */
+  paused_by_sender: boolean;
 }
 
 export interface ReceivingChannelView {
@@ -722,6 +729,8 @@ export interface ReceivingChannelView {
   system_label: string | null;
   destination_type: string;
   destination_state: string;
+  /** See ManageChannelView.paused_by_sender. */
+  paused_by_sender: boolean;
   redeemed_at: string | null;
   last_delivered_at: string | null;
 }

@@ -6,6 +6,36 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Unified `mobile_push` channels (collapse of fcm / apns_dev / apns_prod)
+
+The platform-specific mobile destination types had to be picked at channel creation, even though the owner didn't know which OS the recipient was on. Replaced with a single `mobile_push` type that binds to a Sheaf account at redemption and fans out across every `push_device_tokens` row for that account at delivery time — one channel rings every device the recipient has signed into, iOS or Android.
+
+Breaking change (pre-GA, mobile app coordinated):
+
+- New `DestinationType.MOBILE_PUSH` value. The legacy `fcm` / `apns_dev` / `apns_prod` values stay in the Python enum + API Literal type so read-back of historical audit / export rows still validates, but channel creation refuses them with a message pointing at `mobile_push`.
+- Migration `f2g3h4i5j6k7` collapses any existing channel rows to `mobile_push`.
+- Per-channel platform gating + `APNS_DEV_ENABLED` channel-level enforcement removed (the flag still gates apns_dev *device-token* registration, which is the orthogonal "don't accrue sandbox tokens on a prod backend" concern).
+- Dispatcher's `_deliver_mobile_push` drops the `platform` parameter and queries all of the account's device tokens, routing each to the FCM or APNs handler based on the device row's own `platform`.
+- Owner-side UI: one "Mobile push (iOS + Android)" option in the channel-create dialog replaces the three platform-specific rows.
+- Mobile app coordination: app reads its API target from `/v1/version` at first-run; deep-link domain (`sheaf.sh/redeem` via Universal Links / App Links) is built into the published app. Self-hosters route through `sheaf.sh/redeem?code=...&instance=https://...` or use the `sheaf://` custom-scheme fallback.
+
+### Device list management in the Receiving tab
+
+A recipient can now see and manage every device registered to their account from the Receiving tab.
+
+- `push_device_tokens` gains `enabled` (bool, default true) and `label` (optional 80-char user-visible device name set by the mobile app at registration).
+- New endpoints: `PATCH /v1/devices/push/{id}` to toggle `enabled` or rename the device; `DELETE /v1/devices/push/{id}` to remove a device from the web UI (the existing token-based DELETE stays for the mobile app's logout flow).
+- Dispatcher's mobile-push fan-out skips rows where `enabled = false`, so a recipient can mute one device (e.g. the work phone over the weekend) without unregistering it entirely.
+- Receiving tab gets a "Your devices" card with one row per registered token: label (rename inline), platform badge, last-seen-at, on/off checkbox, remove button.
+
+### Recipient label fix: "Paused by sender" vs "Unsubscribed"
+
+Owner-paused channels and recipient-unsubscribed channels both flipped `destination_state` to `disabled`, and the recipient UI labelled them both as "Unsubscribed" — confusing in the owner-paused case ("but I didn't unsubscribe").
+
+- New `paused_by_sender` column on `notification_channels`. Owner pause sets it to true; re-enable clears it; recipient unsubscribe leaves it false (its default).
+- Exposed on `ChannelRead`, `ReceivingChannelView`, and `ManageChannelView`. Receiving-tab list and manage-link page render "Paused by sender" (amber) when the flag is set, "Unsubscribed" (muted) otherwise.
+- Manage-page copy distinguishes the two: the paused branch tells the recipient that subscription will resume automatically when the sender does, with a pointer to ask for removal if they want to opt out permanently.
+
 ### Step-up auth denials return 403 instead of 401
 
 Bug surfaced when deleting a notification channel under a system with `delete_confirmation=password` (or `totp` / `both`): a wrong password returned `401 Incorrect password`, which the frontend's `apiFetch` interpreted as "access token may be stale" and silently kicked off the refresh-and-retry path. Refresh succeeded but the retried DELETE still came back 401 (same wrong password) — and the second 401 was swallowed by a `resp.status !== 401` guard meant to avoid double-toasting during normal refresh dances. End result: user clicks Delete, nothing visibly happens.

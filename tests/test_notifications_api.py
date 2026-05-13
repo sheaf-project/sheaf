@@ -322,6 +322,29 @@ def test_redeem_used_code_rejected(auth_client: httpx.Client, client: httpx.Clie
 # -------------------------------------------------------- isolation / authz
 
 
+def test_owner_pause_sets_paused_by_sender(auth_client: httpx.Client):
+    """`POST /channels/{id}/disable` (owner action) flips the channel
+    into the DISABLED state AND sets paused_by_sender=true. Recipient
+    UIs use the flag to render "Paused by sender" instead of
+    "Unsubscribed"."""
+    tok = _create_token(auth_client)
+    channel = _create_webhook_channel(auth_client, tok["id"])
+    channel_id = channel["channel"]["id"]
+
+    resp = auth_client.post(f"/v1/channels/{channel_id}/disable")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["destination_state"] == "disabled"
+    assert body["paused_by_sender"] is True
+
+    # Re-enable clears the flag — next disable gets its own attribution.
+    resp = auth_client.post(f"/v1/channels/{channel_id}/enable")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["destination_state"] == "active"
+    assert body["paused_by_sender"] is False
+
+
 def test_other_user_cannot_see_token(auth_client: httpx.Client):
     tok = _create_token(auth_client, "Mine")
 

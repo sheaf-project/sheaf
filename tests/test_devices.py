@@ -180,3 +180,125 @@ def test_unauthenticated_requests_rejected(client: httpx.Client):
         json={"platform": "fcm", "token": "anon-tok"},
     )
     assert resp.status_code in {401, 403}
+
+
+# --- enabled / label / per-id PATCH + DELETE ---------------------------------
+
+
+def test_register_accepts_label(auth_client: httpx.Client):
+    """The mobile app supplies a user-visible device name at
+    registration; the server stores it and `enabled` defaults to True."""
+    resp = auth_client.post(
+        "/v1/devices/push",
+        json={
+            "platform": "fcm",
+            "token": "tok-labelled",
+            "install_id": "i-lbl",
+            "label": "Sarah's Pixel",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["label"] == "Sarah's Pixel"
+    assert body["enabled"] is True
+
+
+def test_patch_toggles_enabled(auth_client: httpx.Client):
+    """Recipient mutes a device by flipping `enabled` to False; the
+    row stays registered so re-enabling later is a one-click action."""
+    created = auth_client.post(
+        "/v1/devices/push",
+        json={"platform": "fcm", "token": "tok-mute", "install_id": "i-mute"},
+    ).json()
+    assert created["enabled"] is True
+
+    patched = auth_client.patch(
+        f"/v1/devices/push/{created['id']}", json={"enabled": False}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["enabled"] is False
+
+    listing = auth_client.get("/v1/devices/push").json()
+    row = next(r for r in listing if r["id"] == created["id"])
+    assert row["enabled"] is False
+
+    # And back on.
+    auth_client.patch(
+        f"/v1/devices/push/{created['id']}", json={"enabled": True}
+    )
+    listing = auth_client.get("/v1/devices/push").json()
+    row = next(r for r in listing if r["id"] == created["id"])
+    assert row["enabled"] is True
+
+
+def test_patch_renames_device(auth_client: httpx.Client):
+    """Recipient renames a device from the Receiving tab. Empty string
+    clears the label back to platform-derived default at render time."""
+    created = auth_client.post(
+        "/v1/devices/push",
+        json={
+            "platform": "fcm",
+            "token": "tok-rename",
+            "install_id": "i-rn",
+            "label": "Old name",
+        },
+    ).json()
+    patched = auth_client.patch(
+        f"/v1/devices/push/{created['id']}", json={"label": "New name"}
+    ).json()
+    assert patched["label"] == "New name"
+
+    cleared = auth_client.patch(
+        f"/v1/devices/push/{created['id']}", json={"label": ""}
+    ).json()
+    assert cleared["label"] is None
+
+
+def test_patch_404_for_other_account(auth_client: httpx.Client, client: httpx.Client):
+    """A device row belonging to another user 404s — no leak of the
+    existence of cross-account rows."""
+    import uuid as _uuid
+
+    other_email = f"patch-other-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = client.post(
+        "/v1/auth/register",
+        json={"email": other_email, "password": "testpassword123"},
+    )
+    client.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+    other = client.post(
+        "/v1/devices/push",
+        json={
+            "platform": "fcm",
+            "token": "tok-other",
+            "install_id": "i-other",
+        },
+    ).json()
+
+    resp = auth_client.patch(
+        f"/v1/devices/push/{other['id']}", json={"enabled": False}
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_by_id_removes_row(auth_client: httpx.Client):
+    """DELETE /v1/devices/push/{id} drops the row — the web UI variant
+    of the existing logout-time token-based DELETE."""
+    created = auth_client.post(
+        "/v1/devices/push",
+        json={"platform": "fcm", "token": "tok-drop", "install_id": "i-drop"},
+    ).json()
+
+    resp = auth_client.delete(f"/v1/devices/push/{created['id']}")
+    assert resp.status_code == 204
+
+    listing = auth_client.get("/v1/devices/push").json()
+    assert not any(r["id"] == created["id"] for r in listing)
+
+
+def test_delete_by_id_is_idempotent(auth_client: httpx.Client):
+    """Deleting a non-existent device id returns 204 too — matches the
+    token-based DELETE's idempotent semantics so retries don't 404."""
+    import uuid as _uuid
+
+    resp = auth_client.delete(f"/v1/devices/push/{_uuid.uuid4()}")
+    assert resp.status_code == 204
