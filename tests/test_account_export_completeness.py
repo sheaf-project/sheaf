@@ -78,7 +78,9 @@ def test_export_version_bumped_to_2(auth_client: httpx.Client):
 
 def test_account_data_requires_password(auth_client: httpx.Client):
     r = auth_client.post("/v1/account/data", json={"password": "wrong"})
-    assert r.status_code == 401
+    # 403, not 401: step-up gate denial. See test_system_safety for full
+    # rationale.
+    assert r.status_code == 403
 
 
 def test_account_data_succeeds_with_correct_password(auth_client: httpx.Client):
@@ -140,7 +142,9 @@ def test_export_job_requires_password(auth_client: httpx.Client):
         "/v1/export/jobs",
         json={"include_images": False, "password": "wrong"},
     )
-    assert r.status_code == 401
+    # 403, not 401: step-up gate denial. See test_system_safety for full
+    # rationale.
+    assert r.status_code == 403
 
 
 def test_export_job_create_then_list(auth_client: httpx.Client):

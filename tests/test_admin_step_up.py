@@ -59,7 +59,9 @@ def test_password_step_up_required(raw_admin_client: httpx.Client):
 @pytest.mark.admin_auth_password
 def test_password_step_up_wrong_password_rejected(raw_admin_client: httpx.Client):
     resp = raw_admin_client.post("/v1/admin/auth", json={"password": "wrongpassword"})
-    assert resp.status_code == 401
+    # 403, not 401: caller is authenticated; the admin step-up gate is
+    # denying access. 401 would trip the frontend's silent-refresh-retry.
+    assert resp.status_code == 403
 
 
 @pytest.mark.admin_auth_password
@@ -116,9 +118,9 @@ def test_totp_step_up_wrong_code_rejected(raw_admin_client: httpx.Client):
     totp = pyotp.TOTP(secret)
     raw_admin_client.post("/v1/auth/totp/verify", json={"code": totp.now()})
 
-    # Wrong code
+    # Wrong code → 403 (step-up gate denial). See password variant above.
     resp = raw_admin_client.post("/v1/admin/auth", json={"totp_code": "000000"})
-    assert resp.status_code == 401
+    assert resp.status_code == 403
 
 
 @pytest.mark.admin_auth_totp

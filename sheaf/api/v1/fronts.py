@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,6 +28,7 @@ from sheaf.services.notifications.events import (
     emit_front_change,
     snapshot_front_state,
 )
+from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -190,21 +191,97 @@ async def _build_coalesced_member_since(
 
 @router.get("", response_model=list[FrontRead])
 async def list_fronts(
+    response: Response,
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
+    cursor: str | None = Query(
+        default=None,
+        description=(
+            "Opaque pagination cursor. Pass the value of "
+            "`X-Sheaf-Next-Cursor` from the previous response to fetch "
+            "the next page. When set, `offset` is ignored. Callers "
+            "should treat the value as a black box."
+        ),
+    ),
+    include_total: bool = Query(
+        default=False,
+        description=(
+            "Opt-in: include `X-Sheaf-Total-Count` header with the total "
+            "number of entries in the system. Costs one extra COUNT query; "
+            "set true only when the UI actually renders page numbers."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """List front entries newest-first.
+
+    Pagination: cursor-based (preferred) or offset-based (legacy). When
+    more entries exist beyond the current page, the response carries:
+
+    - `X-Sheaf-Has-More: true|false`
+    - `X-Sheaf-Next-Cursor: <opaque>` (only when `Has-More` is true)
+
+    Detection uses a `limit + 1` probe rather than a separate `COUNT(*)`,
+    so the response time stays flat regardless of total history length.
+    """
     system = await _get_user_system(user, db)
-    result = await db.execute(
+
+    query = (
         select(Front)
         .options(selectinload(Front.members))
         .where(Front.system_id == system.id)
-        .order_by(Front.started_at.desc())
-        .limit(limit)
-        .offset(offset)
+        # Stable order under tied started_at: id is the deterministic
+        # tiebreaker the cursor's row comparison also uses, so pagination
+        # neither skips nor duplicates rows.
+        .order_by(Front.started_at.desc(), Front.id.desc())
     )
-    fronts = list(result.scalars().all())
+
+    if cursor is not None:
+        try:
+            cursor_started, cursor_id = decode_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid cursor",
+            ) from exc
+        # Postgres row comparison: rows whose (started_at, id) is
+        # lexicographically less than the cursor's pair. With the matching
+        # ORDER BY, this is exactly "the next page of older entries".
+        query = query.where(
+            tuple_(Front.started_at, Front.id)
+            < tuple_(cursor_started, cursor_id)
+        )
+    elif offset:
+        # Legacy callers pinned to offset-based paging keep working.
+        query = query.offset(offset)
+
+    # Probe for one extra row so we can answer "is there more?" without a
+    # COUNT query. Trim before returning.
+    result = await db.execute(query.limit(limit + 1))
+    rows = list(result.scalars().all())
+    has_more = len(rows) > limit
+    fronts = rows[:limit]
+
+    response.headers["X-Sheaf-Has-More"] = "true" if has_more else "false"
+    if has_more and fronts:
+        last = fronts[-1]
+        response.headers["X-Sheaf-Next-Cursor"] = encode_cursor(
+            last.started_at, last.id
+        )
+
+    if include_total:
+        # Opt-in: only when the UI is rendering numbered pages and actually
+        # needs the count. COUNT(*) on a system_id-indexed filter is fast,
+        # but it's still an extra round-trip we don't want every caller
+        # paying for.
+        total_result = await db.execute(
+            select(func.count())
+            .select_from(Front)
+            .where(Front.system_id == system.id)
+        )
+        response.headers["X-Sheaf-Total-Count"] = str(total_result.scalar_one())
+
     with_audit = await _load_audit_existence(db, [f.id for f in fronts])
     return [
         _front_to_read(f, has_audit_history=f.id in with_audit) for f in fronts

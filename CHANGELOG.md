@@ -6,6 +6,40 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Step-up auth denials return 403 instead of 401
+
+Bug surfaced when deleting a notification channel under a system with `delete_confirmation=password` (or `totp` / `both`): a wrong password returned `401 Incorrect password`, which the frontend's `apiFetch` interpreted as "access token may be stale" and silently kicked off the refresh-and-retry path. Refresh succeeded but the retried DELETE still came back 401 (same wrong password) — and the second 401 was swallowed by a `resp.status !== 401` guard meant to avoid double-toasting during normal refresh dances. End result: user clicks Delete, nothing visibly happens.
+
+Fix is two-sided:
+
+- **Backend**: every "user is authenticated, step-up credential is wrong" path now raises **403** instead of **401**. 401 means "authenticate"; 403 means "you are authenticated but can't do this action". The wrong-credential case is the latter. Sites changed: `services/system_safety.verify_destructive_auth` (used by member / channel / front / journal / group / tag / poll / message / front-entry / safety-setting deletes), `api/v1/admin.do_step_up`, `api/v1/systems.update_delete_confirmation`, `api/v1/account.account_data`, `api/v1/export.create_export_job`, `api/v1/auth.request_account_deletion`. The "credential not provided" branches stay 400 (or 422 for admin, matching the existing per-site style).
+- **Frontend**: `apiFetch` and `apiFetchWithHeaders` now distinguish "pre-retry 401" (suppressed; the silent refresh handles it) from "post-retry 401" (surfaced via toast like any other error). A defensive measure on top of the backend fix — covers any future bug where a 401 survives the refresh dance.
+
+Test asserts updated in `test_system_safety`, `test_admin_step_up`, `test_account_deletion`, `test_account_export_completeness` to expect 403 on the wrong-credentials paths.
+
+### Pagination for the fronts history (cursor + numbered, with toggle)
+
+`GET /v1/fronts` was paginated by `limit` + `offset` but had no way to tell a caller "there's more" - so the frontend silently rendered only the first 50 entries and anyone with a longer history was truncated without warning. Now there's an explicit signal, plus a real numbered-pages UI for the people who don't want infinite scroll.
+
+Non-breaking backend additions:
+
+- New `cursor` query param (alternative to `offset`); when set, `offset` is ignored.
+- New `include_total` query param (opt-in) - adds `X-Sheaf-Total-Count` header. Off by default since it costs one extra `COUNT(*)`; the numbered-pages UI opts in, the cursor / "load more" path doesn't.
+- New response headers:
+  - `X-Sheaf-Has-More: true|false` on every response.
+  - `X-Sheaf-Next-Cursor: <opaque>` when more results exist; absent otherwise.
+  - `X-Sheaf-Total-Count: <int>` when `include_total=true`.
+- Cursor is base64url JSON of `{started_at, id}`, opaque to callers. Server uses Postgres row comparison `(started_at, id) < (cursor.started_at, cursor.id)` with a matching `ORDER BY started_at DESC, id DESC` for stable pagination across ties.
+- Cursor-mode has-more detection uses a `limit + 1` probe rather than a separate count, so the response time stays flat regardless of total history length.
+- Existing `offset`-only callers (notably the mobile app in app-store review) are unaffected; the new headers just provide extra info they can ignore.
+
+Frontend `/fronts` history now supports two views, toggleable via a small icon group in the History header and persisted to the URL search params:
+
+- **Infinite (default)**: `useInfiniteQuery` with cursor pagination + Load older entries button. No URL state.
+- **Numbered pages**: opt-in via the toggle (or `?view=paged` directly). Renders First / Prev / 1 2 3 ... N / Next / Last navigation with "Page N of M" and "X entries" indicators. Page + page-size live in URL search params (`?view=paged&page=3&pageSize=50`) so refresh / bookmark / share preserve position. Per-page selector offers 25 / 50 / 100.
+
+Per-user persistence: view mode + page size persist to `client-settings/web` under a `fronts` key, so toggling once sticks across sessions. URL still wins when present (bookmark / share stays deterministic); settings just supply the default on bare `/fronts` visits. Page number itself is transient and not persisted.
+
 ### In-browser "Verify this page" button + attestation links
 
 Two enhancements on the `/about` page's verifiability surface:

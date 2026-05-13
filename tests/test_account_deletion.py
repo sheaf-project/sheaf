@@ -93,7 +93,9 @@ def test_request_deletion_wrong_password(auth_client: httpx.Client):
         "/v1/auth/delete-account",
         json={"password": "wrongpassword"},
     )
-    assert resp.status_code == 401
+    # 403, not 401: caller is authenticated; the step-up gate denies
+    # the action. 401 would trip the frontend's silent-refresh-retry.
+    assert resp.status_code == 403
 
 
 def test_request_deletion_already_pending(auth_client: httpx.Client):

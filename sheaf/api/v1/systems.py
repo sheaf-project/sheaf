@@ -82,8 +82,10 @@ async def update_delete_confirmation(
 ):
     """Update delete confirmation level. Requires password (+ TOTP if enabled)."""
     if not verify_password(body.password, user.password_hash):
+        # 403: step-up auth denial. See system_safety.verify_destructive_auth
+        # for full reasoning.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid password",
         )
 
@@ -96,7 +98,7 @@ async def update_delete_confirmation(
         secret = decrypt(user.totp_secret)
         if not verify_code(secret, body.totp_code):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",
             )
 

@@ -411,13 +411,16 @@ def test_delete_endpoint_requires_password_when_tier_set(client: httpx.Client):
     assert no_body.status_code == 400
     assert no_body.json()["detail"] == "Password required"
 
-    # Wrong password → 401 Incorrect password
+    # Wrong password → 403 Incorrect password. 403 (not 401) because the
+    # caller IS authenticated; the step-up password gate is denying this
+    # specific destructive action. 401 would trip the frontend's silent
+    # token-refresh-and-retry path, which can't fix a wrong password.
     wrong = client.request(
         "DELETE",
         f"/v1/members/{member['id']}",
         json={"password": "not-the-password"},
     )
-    assert wrong.status_code == 401
+    assert wrong.status_code == 403
     assert wrong.json()["detail"] == "Incorrect password"
 
     # Member still exists.
@@ -449,7 +452,7 @@ def test_delete_endpoint_reauth_then_queues_when_safeguarded(client: httpx.Clien
         f"/v1/members/{member['id']}",
         json={"password": "nope"},
     )
-    assert wrong.status_code == 401
+    assert wrong.status_code == 403
     assert client.get("/v1/system/safety").json()["pending_actions"] == []
 
     # Correct password → 202 pending (safeguard takes over).
