@@ -160,7 +160,7 @@ def test_fan_out_to_all_fcm_devices(auth_client, monkeypatch):
 
     sent: list[str] = []
 
-    async def fake_send(*, device_token, title, body, event_id):
+    async def fake_send(*, device_token, title, body, event_id, **_):
         from sheaf.services.notifications.fcm import FcmSendResult
 
         sent.append(device_token)
@@ -181,7 +181,7 @@ def test_dead_token_evicted_from_account(auth_client, monkeypatch):
         devices=[("fcm", "fcm-good"), ("fcm", "fcm-dead")],
     )
 
-    async def fake_send(*, device_token, title, body, event_id):
+    async def fake_send(*, device_token, title, body, event_id, **_):
         from sheaf.services.notifications.fcm import FcmSendResult
 
         if device_token == "fcm-dead":
@@ -242,7 +242,7 @@ def test_all_transient_fails_transient(auth_client, monkeypatch):
         devices=[("fcm", "fcm-x"), ("fcm", "fcm-y")],
     )
 
-    async def fake_send(*, device_token, title, body, event_id):
+    async def fake_send(*, device_token, title, body, event_id, **_):
         from sheaf.services.notifications.fcm import FcmSendResult
 
         return FcmSendResult(transient=True, error="upstream 503")
@@ -271,13 +271,13 @@ def test_fan_out_rings_both_fcm_and_apns(auth_client, monkeypatch):
     fcm_sent: list[str] = []
     apns_sent: list[tuple[str, str]] = []
 
-    async def fake_fcm(*, device_token, title, body, event_id):
+    async def fake_fcm(*, device_token, title, body, event_id, **_):
         from sheaf.services.notifications.fcm import FcmSendResult
 
         fcm_sent.append(device_token)
         return FcmSendResult(ok=True)
 
-    async def fake_apns(*, platform, device_token, title, body, event_id):
+    async def fake_apns(*, platform, device_token, title, body, event_id, **_):
         from sheaf.services.notifications.apns import ApnsSendResult
 
         apns_sent.append((platform, device_token))
@@ -340,7 +340,7 @@ def test_disabled_devices_skipped(auth_client, monkeypatch):
 
     sent: list[str] = []
 
-    async def fake_fcm(*, device_token, title, body, event_id):
+    async def fake_fcm(*, device_token, title, body, event_id, **_):
         from sheaf.services.notifications.fcm import FcmSendResult
 
         sent.append(device_token)
@@ -353,3 +353,44 @@ def test_disabled_devices_skipped(auth_client, monkeypatch):
     assert sent == ["active-tok"], (
         f"muted device should be skipped, got sent={sent}"
     )
+
+
+def test_channel_metadata_threaded_to_send_to_token(auth_client, monkeypatch):
+    """Every dispatched push carries the originating channel's id, name,
+    and event_type so the Android client can route into a per-subscription
+    NotificationChannel rather than bucketing every push onto one fallback.
+    Regression test for the Android v0.1.11+ contract."""
+    channel_id, _ = _setup_channel_with_devices(
+        auth_client,
+        devices=[("fcm", "fcm-meta-A"), ("apns_prod", "apns-meta-B")],
+    )
+
+    fcm_calls: list[dict] = []
+    apns_calls: list[dict] = []
+
+    async def fake_fcm(**kwargs):
+        from sheaf.services.notifications.fcm import FcmSendResult
+
+        fcm_calls.append(kwargs)
+        return FcmSendResult(ok=True)
+
+    async def fake_apns(**kwargs):
+        from sheaf.services.notifications.apns import ApnsSendResult
+
+        apns_calls.append(kwargs)
+        return ApnsSendResult(ok=True)
+
+    monkeypatch.setattr("sheaf.services.notifications.fcm.send_to_token", fake_fcm)
+    monkeypatch.setattr("sheaf.services.notifications.apns.send_to_token", fake_apns)
+
+    result = asyncio.run(_run_dispatch(channel_id))
+    assert result.ok, result.error
+
+    for call in fcm_calls + apns_calls:
+        assert call["channel_id"] == str(channel_id), (
+            f"expected channel_id={channel_id!s}, got {call.get('channel_id')!r}"
+        )
+        # The channel's name is "phone" via _create_mobile_channel.
+        assert call["channel_name"] == "phone"
+        # event_type defaults to "front_change" on creation.
+        assert call["event_type"] == "front_change"

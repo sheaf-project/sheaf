@@ -111,6 +111,9 @@ async def test_fcm_send_success(fcm_settings, monkeypatch):
         title="hi",
         body="there",
         event_id="evt-1",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.ok, result.error
 
@@ -134,6 +137,9 @@ async def test_fcm_send_404_unregistered_marks_dead(fcm_settings, monkeypatch):
         title="x",
         body="y",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.dead
     assert not result.ok
@@ -158,6 +164,9 @@ async def test_fcm_send_5xx_marks_transient(fcm_settings, monkeypatch):
         title="x",
         body="y",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.transient
     assert not result.ok
@@ -173,7 +182,13 @@ async def test_fcm_unconfigured_returns_transient(monkeypatch):
     fcm._reset_cache_for_tests()
 
     result = await fcm.send_to_token(
-        device_token="x", title="t", body="b", event_id="e"
+        device_token="x",
+        title="t",
+        body="b",
+        event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.transient
     assert "FCM" in (result.error or "")
@@ -253,6 +268,9 @@ async def test_apns_dev_routes_to_sandbox_host(apns_settings, monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.ok, result.error
     assert "api.sandbox.push.apple.com" in captured_url[0]
@@ -292,6 +310,9 @@ async def test_apns_prod_routes_to_prod_host(apns_settings, monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.ok, result.error
     assert "api.push.apple.com" in captured_url[0]
@@ -310,6 +331,9 @@ async def test_apns_410_marks_dead(apns_settings, monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.dead
 
@@ -327,6 +351,9 @@ async def test_apns_400_bad_device_token_marks_dead(apns_settings, monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.dead
 
@@ -342,6 +369,9 @@ async def test_apns_5xx_marks_transient(apns_settings, monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert result.transient
 
@@ -393,6 +423,9 @@ async def test_apns_dev_uses_dev_bundle_when_set(monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     await send_to_token(
         platform="apns_prod",
@@ -400,6 +433,9 @@ async def test_apns_dev_uses_dev_bundle_when_set(monkeypatch):
         title="t",
         body="b",
         event_id="e",
+        channel_id="ch-1",
+        channel_name="test",
+        event_type="front_change",
     )
     assert captured[0]["apns-topic"] == "com.example.sheaf.dev"
     assert captured[1]["apns-topic"] == "com.example.sheaf"

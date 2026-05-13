@@ -191,7 +191,14 @@ def _classify_response(status_code: int, body: str) -> FcmSendResult:
 
 
 async def send_to_token(
-    *, device_token: str, title: str, body: str, event_id: str
+    *,
+    device_token: str,
+    title: str,
+    body: str,
+    event_id: str,
+    channel_id: str,
+    channel_name: str,
+    event_type: str,
 ) -> FcmSendResult:
     """Send one FCM message to one device token.
 
@@ -199,6 +206,12 @@ async def send_to_token(
     data payload — Android clients build the user-visible notification
     locally from these fields, matching the design's "client formats
     title/body" requirement.
+
+    `channel_id` / `channel_name` / `event_type` identify the originating
+    Sheaf NotificationChannel so the Android client can route into a
+    per-subscription Android NotificationChannel (mute one Sheaf channel
+    without muting them all). Clients that don't read these fields are
+    unaffected — FCM data dicts ignore unknown keys.
     """
     account = _load_service_account()
     if account is None:
@@ -215,6 +228,9 @@ async def send_to_token(
                 "title": title,
                 "body": body,
                 "event_id": event_id,
+                "channel_id": channel_id,
+                "channel_name": channel_name,
+                "event_type": event_type,
             },
             "android": {"priority": "high"},
         }

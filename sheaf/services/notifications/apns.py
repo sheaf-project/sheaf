@@ -145,23 +145,39 @@ def _classify_response(status_code: int, body: str) -> ApnsSendResult:
     return ApnsSendResult(transient=True, error=f"APNs {status_code}: {body[:200]}")
 
 
-def _build_payload(title: str, body: str, event_id: str) -> dict:
+def _build_payload(
+    title: str,
+    body: str,
+    event_id: str,
+    channel_id: str,
+    channel_name: str,
+    event_type: str,
+) -> dict:
     """Mutable-content alert + custom keys, per the design doc.
 
     iOS clients are expected to ship a Notification Service Extension
     that reads `data.title` / `data.body` (and any future custom fields)
     and rewrites the user-visible alert. The placeholder in `aps.alert`
     is what shows if the NSE is missing or times out — keep it neutral.
+
+    `channel_id` / `channel_name` / `event_type` mirror the FCM payload
+    so the iOS client can drive thread-id / interruption-level / sound
+    overrides per-subscription rather than collapsing everything into
+    one bucket.
     """
     return {
         "aps": {
             "alert": {"title": title, "body": body},
             "mutable-content": 1,
+            "thread-id": channel_id,
         },
         "data": {
             "title": title,
             "body": body,
             "event_id": event_id,
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "event_type": event_type,
         },
     }
 
@@ -173,6 +189,9 @@ async def send_to_token(
     title: str,
     body: str,
     event_id: str,
+    channel_id: str,
+    channel_name: str,
+    event_type: str,
 ) -> ApnsSendResult:
     """Send one APNs message to one device token. Platform must be
     `apns_dev` or `apns_prod` and selects the host."""
@@ -189,7 +208,9 @@ async def send_to_token(
 
     host = _HOST_DEV if platform == "apns_dev" else _HOST_PROD
     url = f"https://{host}:{_PORT}/3/device/{device_token}"
-    payload = _build_payload(title, body, event_id)
+    payload = _build_payload(
+        title, body, event_id, channel_id, channel_name, event_type
+    )
     try:
         async with httpx.AsyncClient(http2=True, timeout=15.0) as client:
             resp = await client.post(

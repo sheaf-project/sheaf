@@ -449,6 +449,11 @@ async def _deliver_mobile_push(
     last_error: str | None = None
     dead_ids: list[uuid.UUID] = []
 
+    # Captured once outside the per-device loop so the channel-routing
+    # metadata is consistent across every device the same event reaches.
+    channel_id_str = str(channel.id)
+    channel_name = channel.name
+    channel_event_type = channel.event_type
     for row in rows:
         if row.platform == "fcm":
             outcome = await fcm_send(
@@ -456,6 +461,9 @@ async def _deliver_mobile_push(
                 title=message.title,
                 body=message.body,
                 event_id=event_id,
+                channel_id=channel_id_str,
+                channel_name=channel_name,
+                event_type=channel_event_type,
             )
         elif row.platform in ("apns_dev", "apns_prod"):
             outcome = await apns_send(
@@ -464,6 +472,9 @@ async def _deliver_mobile_push(
                 title=message.title,
                 body=message.body,
                 event_id=event_id,
+                channel_id=channel_id_str,
+                channel_name=channel_name,
+                event_type=channel_event_type,
             )
         else:
             # Unknown platform on the device row — skip, don't treat as
