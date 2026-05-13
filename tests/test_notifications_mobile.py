@@ -71,6 +71,48 @@ def test_mobile_push_channel_creates_pending(auth_client: httpx.Client):
     assert "code=" in body["activation_url"]
 
 
+def test_mobile_push_activation_url_routes_through_universal_link_host(
+    auth_client: httpx.Client,
+):
+    """mobile_push activation URLs must funnel through the shared
+    Universal Link host (settings.mobile_link_base_url) rather than the
+    instance's own frontend, since only that host is trusted by the
+    apps' associated-domains / asset-links entitlements at build time.
+    The instance origin is carried as a query param so the app can call
+    the right `/v1/notifications/redeem` after intercepting."""
+    from sheaf.config import settings
+
+    tok = _create_token(auth_client)
+    resp = auth_client.post(
+        f"/v1/watch-tokens/{tok['id']}/channels",
+        json={"name": "phone", "destination_type": "mobile_push"},
+    )
+    assert resp.status_code == 201, resp.text
+    url = resp.json()["activation_url"]
+    assert url.startswith(settings.mobile_link_base_url.rstrip("/") + "/redeem?"), (
+        f"expected mobile_push URL to route through "
+        f"{settings.mobile_link_base_url}, got {url}"
+    )
+    assert "code=" in url
+    assert "channel=" in url
+    assert "instance=" in url
+
+
+def test_web_push_activation_url_stays_on_instance(auth_client: httpx.Client):
+    """web_push, by contrast, redeems via the instance's own frontend —
+    no Universal Link funnel involved, since it's a browser-side
+    service-worker flow scoped to whichever origin the recipient opens."""
+    tok = _create_token(auth_client)
+    resp = auth_client.post(
+        f"/v1/watch-tokens/{tok['id']}/channels",
+        json={"name": "browser", "destination_type": "web_push"},
+    )
+    assert resp.status_code == 201, resp.text
+    url = resp.json()["activation_url"]
+    assert "/notifications/redeem?" in url
+    assert "instance=" not in url
+
+
 def test_legacy_mobile_types_rejected(auth_client: httpx.Client):
     """fcm / apns_dev / apns_prod are no longer accepted at channel
     creation — clients should use mobile_push. The error message points

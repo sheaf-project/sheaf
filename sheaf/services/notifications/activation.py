@@ -17,6 +17,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 from sheaf.config import settings
 
@@ -94,6 +95,30 @@ def activation_url(base_url: str, channel_id: uuid.UUID, code: str) -> str:
     """
     base = base_url.rstrip("/")
     return f"{base}/notifications/redeem?code={code}&channel={channel_id}"
+
+
+def mobile_activation_url(
+    *,
+    mobile_link_base_url: str,
+    instance_base_url: str,
+    channel_id: uuid.UUID,
+    code: str,
+) -> str:
+    """Activation URL for mobile_push channels, routed through the shared
+    Universal Link / App Link host (sheaf.sh by default).
+
+    The mobile apps' associated-domains entitlement is baked in at build
+    time and only trusts a single host. Self-hosters' arbitrary domains
+    cannot be claimed, so every mobile_push activation link funnels
+    through that one host; the app intercepts, reads `instance=`, then
+    calls that instance's `/v1/notifications/redeem` to actually redeem.
+
+    Format: {mobile_link_base_url}/redeem?code=...&channel={uuid}&instance=
+    {url-encoded instance origin}
+    """
+    base = mobile_link_base_url.rstrip("/")
+    instance = quote(instance_base_url.rstrip("/"), safe="")
+    return f"{base}/redeem?code={code}&channel={channel_id}&instance={instance}"
 
 
 def management_url(base_url: str, token: str) -> str:

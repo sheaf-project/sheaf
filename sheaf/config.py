@@ -176,6 +176,14 @@ class Settings(BaseSettings):
     # An explicit http:// URL opts in to non-Secure cookies for plain-HTTP dev.
     sheaf_base_url: str = ""
 
+    # Shared Universal Link / App Link host for mobile_push activation
+    # URLs. Every instance routes mobile_push redemption links through
+    # this host because the mobile app's associated-domains entitlement
+    # is baked in at build time and trusts only one origin. The default
+    # points at the public sheaf.sh website; self-hosters who fork and
+    # republish the apps override this to their own host.
+    mobile_link_base_url: str = "https://sheaf.sh"
+
     # Admin dashboard step-up authentication level.
     # "none"     — any admin can access the dashboard immediately.
     # "password" — admin must re-enter their password (valid for 2 hours).

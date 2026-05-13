@@ -49,6 +49,9 @@ from sheaf.services.notifications.activation import (
 from sheaf.services.notifications.activation import (
     issue_activation_code,
 )
+from sheaf.services.notifications.activation import (
+    mobile_activation_url as build_mobile_activation_url,
+)
 from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.resolution import (
     build_group_name_lookup,
@@ -90,6 +93,26 @@ _LEGACY_MOBILE_TYPES = {
     DestinationType.APNS_DEV.value,
     DestinationType.APNS_PROD.value,
 }
+
+
+def _build_activation_url(
+    destination_type: str, channel_id: uuid.UUID, code: str
+) -> str:
+    """Pick the right activation URL builder for the channel type.
+
+    mobile_push funnels through the shared Universal Link host (see
+    settings.mobile_link_base_url) so the iOS / Android apps can claim
+    the path via associated-domains / asset-links. Other push-style
+    types (web_push) stay on the instance's own frontend.
+    """
+    if destination_type == DestinationType.MOBILE_PUSH.value:
+        return build_mobile_activation_url(
+            mobile_link_base_url=settings.mobile_link_base_url,
+            instance_base_url=settings.sheaf_base_url or "",
+            channel_id=channel_id,
+            code=code,
+        )
+    return build_activation_url(settings.sheaf_base_url or "", channel_id, code)
 
 
 async def _system_for_user(user: User, db: AsyncSession) -> System:
@@ -352,8 +375,8 @@ async def create_channel(
         channel.destination_state = DestinationState.PENDING_REGISTRATION.value
         channel.activation_code_hash = issued.code_hash
         channel.activation_code_expires_at = issued.expires_at
-        activation_url = build_activation_url(
-            settings.sheaf_base_url or "", channel.id, issued.code
+        activation_url = _build_activation_url(
+            body.destination_type, channel.id, issued.code
         )
         activation_expires = issued.expires_at
     else:
@@ -688,8 +711,8 @@ async def duplicate_channel(
         clone.destination_state = DestinationState.PENDING_REGISTRATION.value
         clone.activation_code_hash = issued.code_hash
         clone.activation_code_expires_at = issued.expires_at
-        activation_url = build_activation_url(
-            settings.sheaf_base_url or "", clone.id, issued.code
+        activation_url = _build_activation_url(
+            src.destination_type, clone.id, issued.code
         )
         activation_expires = issued.expires_at
     elif src.destination_type == DestinationType.WEBHOOK.value:
@@ -752,8 +775,8 @@ async def reissue_activation(
     channel.activation_code_expires_at = issued.expires_at
     await db.commit()
     return ReissueActivationResponse(
-        activation_url=build_activation_url(
-            settings.sheaf_base_url or "", channel.id, issued.code
+        activation_url=_build_activation_url(
+            channel.destination_type, channel.id, issued.code
         ),
         activation_expires_at=issued.expires_at,
     )
