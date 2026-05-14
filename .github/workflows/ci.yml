@@ -154,11 +154,13 @@ jobs:
 
       # Sign by digest. cosign stores the signature at <repo>:sha256-DIGEST.sig
       # so a single sign call covers every tag pointing at the same digest.
+      # The retry wrapper covers the GH Actions OIDC token endpoint flaking
+      # under load - signing is idempotent at the registry layer.
       - name: Sign image
         env:
           REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
         run: |
-          cosign sign --yes \
+          ./.github/scripts/with-retry.sh cosign sign --yes \
             -a "git_sha=${{ github.sha }}" \
             -a "git_ref=${{ github.ref }}" \
             -a "workflow=${{ github.workflow }}" \
@@ -174,7 +176,7 @@ jobs:
         env:
           REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
         run: |
-          cosign attest --yes \
+          ./.github/scripts/with-retry.sh cosign attest --yes \
             --predicate sbom.spdx.json \
             --type spdxjson \
             "$REF"
@@ -207,7 +209,7 @@ jobs:
         env:
           REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
         run: |
-          cosign attest --yes \
+          ./.github/scripts/with-retry.sh cosign attest --yes \
             --predicate web/dist/build-manifest.json \
             --type custom \
             "$REF"
