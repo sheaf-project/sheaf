@@ -9,6 +9,7 @@ from sheaf.models.export_job import ExportJob, ExportJobStatus
 from sheaf.models.front import Front
 from sheaf.models.front_audit_event import FrontAuditEvent
 from sheaf.models.group import Group
+from sheaf.models.import_job import ImportJob, ImportJobSource, ImportJobStatus
 from sheaf.models.invite_code import InviteCode
 from sheaf.models.job_run import JobRun
 from sheaf.models.journal_entry import JournalEntry
@@ -74,6 +75,9 @@ __all__ = [
     "FrontAuditEvent",
     "Group",
     "GroupRuleAction",
+    "ImportJob",
+    "ImportJobSource",
+    "ImportJobStatus",
     "IncludePrivate",
     "InviteCode",
     "JobRun",

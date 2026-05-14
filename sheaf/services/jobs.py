@@ -639,6 +639,47 @@ async def _purge_expired_polls(db: AsyncSession) -> dict:
     return {"items_processed": purged}
 
 
+async def _run_import_tick(db: AsyncSession) -> dict:
+    """One tick of the import runner — claim a pending ImportJob (if any)
+    and dispatch to its per-source handler."""
+    from sheaf.services.import_runner import run_import_tick
+
+    return await run_import_tick(db)
+
+
+async def _cleanup_import_jobs(db: AsyncSession) -> dict:
+    """Drop ImportJob rows past the retention window.
+
+    Matches the cleanup_job_logs pattern (30 days). The user-facing
+    /imports/{id} report is the value here — keeping it around long
+    enough to be useful when someone says 'why is my system weird,
+    let me check what that import did three weeks ago' — but the row
+    isn't immortal.
+
+    The uploaded payload blob was already deleted at finalize time, so
+    this is purely DB row cleanup. CASCADE will sweep nothing because
+    nothing references import_jobs.
+    """
+    from sheaf.models.import_job import ImportJob, ImportJobStatus
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.import_job_retention_days)
+    result = await db.execute(
+        delete(ImportJob).where(
+            ImportJob.finished_at.is_not(None),
+            ImportJob.finished_at < cutoff,
+            ImportJob.status.in_(
+                [
+                    ImportJobStatus.COMPLETE.value,
+                    ImportJobStatus.FAILED.value,
+                    ImportJobStatus.CANCELLED.value,
+                ]
+            ),
+        )
+    )
+    await db.commit()
+    return {"items_processed": result.rowcount or 0}
+
+
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -755,6 +796,29 @@ def _register_all_jobs() -> None:
         description="Delete polls past their retention window post-close",
         func=_purge_expired_polls,
         interval_seconds=lambda: settings.poll_cleanup_interval_hours * 3600,
+    )
+
+    # Imports run async via this tick — uploaded payload is stashed in
+    # the file-storage backend, a pending ImportJob row is created, and
+    # this job claims the next pending row each interval. The interval
+    # is intentionally short so a new-user upload doesn't sit there for
+    # tens of seconds before the runner notices. The empty-queue case
+    # is a single indexed query returning no rows.
+    register_job(
+        name="run_import_jobs",
+        description=(
+            "Process queued user data imports "
+            "(PluralKit / Tupperbox / SimplyPlural / Sheaf)"
+        ),
+        func=_run_import_tick,
+        interval_seconds=lambda: settings.import_runner_interval_seconds,
+    )
+
+    register_job(
+        name="cleanup_import_jobs",
+        description="Delete ImportJob rows past their retention window",
+        func=_cleanup_import_jobs,
+        interval_seconds=lambda: 86400,  # daily
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images
