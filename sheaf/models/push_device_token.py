@@ -15,7 +15,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,4 +59,15 @@ class PushDeviceToken(UUIDMixin, TimestampMixin, Base):
 
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+
+    # User-visible device name set by the mobile app at registration
+    # (e.g. "Sarah's iPhone", "Pixel 7"). Optional — rendering code
+    # falls back to a platform-based default when absent.
+    label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    # Soft mute: if False, dispatcher fan-out skips this row. The row
+    # stays registered so the user can re-enable without re-installing.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
     )

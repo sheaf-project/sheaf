@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { Apple, Bell, Globe, MessageSquare, Smartphone, Webhook } from "lucide-react";
+import { Bell, Globe, MessageSquare, Smartphone, Webhook } from "lucide-react";
 
 import type { DestinationType } from "@/types/api";
 
@@ -8,9 +8,12 @@ const icons: Record<DestinationType, ComponentType<{ className?: string }>> = {
   webhook: Webhook,
   ntfy: MessageSquare,
   pushover: Globe,
+  mobile_push: Smartphone,
+  // Legacy mobile types — same icon since the recipient experience is
+  // identical now.
   fcm: Smartphone,
-  apns_dev: Apple,
-  apns_prod: Apple,
+  apns_dev: Smartphone,
+  apns_prod: Smartphone,
 };
 
 export function DestinationIcon({

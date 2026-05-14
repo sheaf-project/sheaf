@@ -13,22 +13,32 @@ class DestinationType(enum.StrEnum):
     """Supported destinations and reserved placeholders for ones whose
     handler hasn't shipped yet (channel creation rejects those with 501).
 
-    The APNs values are split by build environment because Apple uses two
-    distinct host endpoints (`api.sandbox.push.apple.com` for development
-    builds, `api.push.apple.com` for TestFlight + App Store) — the same
-    .p8 key authenticates against both, but tokens issued in one
-    environment bounce on the other. The dispatcher uses this enum value
-    to route to the right host. FCM has no equivalent split."""
+    `mobile_push` is the single, platform-agnostic mobile destination —
+    the channel binds to a Sheaf account at redemption, and the dispatcher
+    fans out across every `push_device_tokens` row for that account,
+    routing each token to FCM (Android) or APNs (iOS, dev/prod per-token)
+    automatically. There is no per-channel platform choice; one channel
+    rings every device the recipient signs into. Distinct from `web_push`,
+    which is anonymous-capable and tied to a single browser subscription.
+
+    The legacy `fcm` / `apns_dev` / `apns_prod` values are kept in the
+    enum so existing audit logs / exports remain interpretable, but
+    channel creation refuses them — use `mobile_push` instead. A migration
+    flips any existing rows over."""
 
     WEB_PUSH = "web_push"
     WEBHOOK = "webhook"
     NTFY = "ntfy"
     PUSHOVER = "pushover"
     EMAIL = "email"
+    MOBILE_PUSH = "mobile_push"
+    DISCORD = "discord"
+    # Deprecated, retained for migration / read-back of historical rows.
+    # Channel creation rejects these; the migration moves any existing
+    # data to MOBILE_PUSH.
     APNS_DEV = "apns_dev"
     APNS_PROD = "apns_prod"
     FCM = "fcm"
-    DISCORD = "discord"
 
 
 class DestinationState(enum.StrEnum):
@@ -75,6 +85,17 @@ class NotificationChannel(UUIDMixin, TimestampMixin, Base):
         nullable=False,
         default=DestinationState.PENDING_REGISTRATION.value,
         server_default=DestinationState.PENDING_REGISTRATION.value,
+    )
+    # Splits the meaning of `destination_state = DISABLED` between the
+    # owner pausing the channel (True) and the recipient unsubscribing
+    # (False — also covers legacy rows where the cause is unknown). The
+    # recipient-facing label renders differently for each: "Paused by
+    # sender" vs "Unsubscribed". Cleared on re-enable.
+    paused_by_sender: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
     )
 
     # Forward-compat: only "front_change" in v1.

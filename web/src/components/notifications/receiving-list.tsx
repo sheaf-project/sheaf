@@ -12,11 +12,19 @@ import { DestinationIcon } from "./destination-icon";
 
 const STATE_LABELS: Record<string, { label: string; tone: string }> = {
   active: { label: "Active", tone: "text-emerald-600 dark:text-emerald-400" },
+  // For `disabled`, the receiving row decides between "Paused by sender"
+  // and "Unsubscribed" based on the paused_by_sender flag — this entry
+  // is the fallback for the recipient-initiated case.
   disabled: { label: "Unsubscribed", tone: "text-muted-foreground" },
   pending_registration: {
     label: "Pending",
     tone: "text-amber-600 dark:text-amber-400",
   },
+};
+
+const PAUSED_BY_SENDER_LABEL = {
+  label: "Paused by sender",
+  tone: "text-amber-600 dark:text-amber-400",
 };
 
 export function ReceivingList() {
@@ -64,10 +72,13 @@ function ReceivingRow({
   channel: ReceivingChannelView;
   onUnsubscribe: (channelId: string) => void;
 }) {
-  const state = STATE_LABELS[channel.destination_state] ?? {
-    label: channel.destination_state,
-    tone: "text-muted-foreground",
-  };
+  const state =
+    channel.destination_state === "disabled" && channel.paused_by_sender
+      ? PAUSED_BY_SENDER_LABEL
+      : (STATE_LABELS[channel.destination_state] ?? {
+          label: channel.destination_state,
+          tone: "text-muted-foreground",
+        });
   return (
     <Card>
       <CardContent className="flex items-center gap-4 p-4">

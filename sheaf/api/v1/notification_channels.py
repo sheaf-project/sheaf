@@ -49,6 +49,9 @@ from sheaf.services.notifications.activation import (
 from sheaf.services.notifications.activation import (
     issue_activation_code,
 )
+from sheaf.services.notifications.activation import (
+    mobile_activation_url as build_mobile_activation_url,
+)
 from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.resolution import (
     build_group_name_lookup,
@@ -68,14 +71,10 @@ router = APIRouter(prefix="", tags=["notifications"])
 
 _PUSH_TYPES = {
     DestinationType.WEB_PUSH.value,
-    DestinationType.FCM.value,
-    DestinationType.APNS_DEV.value,
-    DestinationType.APNS_PROD.value,
+    DestinationType.MOBILE_PUSH.value,
 }
 _MOBILE_PUSH_TYPES = {
-    DestinationType.FCM.value,
-    DestinationType.APNS_DEV.value,
-    DestinationType.APNS_PROD.value,
+    DestinationType.MOBILE_PUSH.value,
 }
 _DIRECT_TYPES = {
     DestinationType.WEBHOOK.value,
@@ -86,6 +85,34 @@ _RESERVED_TYPES = {
     DestinationType.EMAIL.value,
     DestinationType.DISCORD.value,
 }
+# Legacy mobile types are kept in the enum for read-back of historical
+# rows; channel creation refuses them and a migration collapsed any
+# existing rows to MOBILE_PUSH.
+_LEGACY_MOBILE_TYPES = {
+    DestinationType.FCM.value,
+    DestinationType.APNS_DEV.value,
+    DestinationType.APNS_PROD.value,
+}
+
+
+def _build_activation_url(
+    destination_type: str, channel_id: uuid.UUID, code: str
+) -> str:
+    """Pick the right activation URL builder for the channel type.
+
+    mobile_push funnels through the shared Universal Link host (see
+    settings.mobile_link_base_url) so the iOS / Android apps can claim
+    the path via associated-domains / asset-links. Other push-style
+    types (web_push) stay on the instance's own frontend.
+    """
+    if destination_type == DestinationType.MOBILE_PUSH.value:
+        return build_mobile_activation_url(
+            mobile_link_base_url=settings.mobile_link_base_url,
+            instance_base_url=settings.sheaf_base_url or "",
+            channel_id=channel_id,
+            code=code,
+        )
+    return build_activation_url(settings.sheaf_base_url or "", channel_id, code)
 
 
 async def _system_for_user(user: User, db: AsyncSession) -> System:
@@ -146,6 +173,7 @@ def _channel_to_read(channel: NotificationChannel) -> ChannelRead:
         name=channel.name,
         destination_type=channel.destination_type,
         destination_state=channel.destination_state,
+        paused_by_sender=channel.paused_by_sender,
         destination_config=_redacted_destination_config(channel),
         event_type=channel.event_type,
         activation_code_expires_at=channel.activation_code_expires_at,
@@ -209,37 +237,34 @@ def _validate_destination(body_type: str) -> None:
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail=f"destination_type {body_type!r} not yet supported",
         )
+    if body_type in _LEGACY_MOBILE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"destination_type {body_type!r} has been replaced by "
+                "'mobile_push' — a single channel that fans out to all "
+                "of the recipient's registered iOS / Android devices."
+            ),
+        )
     if body_type not in _PUSH_TYPES and body_type not in _DIRECT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"unknown destination_type {body_type!r}",
         )
-    # Mobile push feature-flags: reject channel creation when credentials
-    # for the relevant provider aren't configured on this deployment.
-    if body_type == DestinationType.FCM.value and not _fcm_configured():
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="FCM is not configured on this server",
-        )
-    if (
-        body_type in {DestinationType.APNS_DEV.value, DestinationType.APNS_PROD.value}
-        and not _apns_configured()
+    # Mobile push: must have at least one provider's credentials so the
+    # server can actually dispatch. Either FCM (Android) or APNs (iOS) on
+    # its own is enough — single-platform deployments still want to
+    # accept mobile_push channels and just no-op for the other platform
+    # at dispatch time.
+    if body_type == DestinationType.MOBILE_PUSH.value and not (
+        _fcm_configured() or _apns_configured()
     ):
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="APNs is not configured on this server",
-        )
-    # apns_dev is opt-in even when APNs creds are configured. Prod
-    # deployments keep `apns_dev_enabled` off so sandbox tokens can't
-    # be registered against the production backend (where they'd
-    # bounce at the APNs host anyway).
-    if (
-        body_type == DestinationType.APNS_DEV.value
-        and not settings.apns_dev_enabled
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="apns_dev is not enabled on this server",
+            detail=(
+                "mobile_push is not configured on this server — neither "
+                "FCM nor APNs credentials are set."
+            ),
         )
 
 
@@ -350,8 +375,8 @@ async def create_channel(
         channel.destination_state = DestinationState.PENDING_REGISTRATION.value
         channel.activation_code_hash = issued.code_hash
         channel.activation_code_expires_at = issued.expires_at
-        activation_url = build_activation_url(
-            settings.sheaf_base_url or "", channel.id, issued.code
+        activation_url = _build_activation_url(
+            body.destination_type, channel.id, issued.code
         )
         activation_expires = issued.expires_at
     else:
@@ -616,6 +641,9 @@ async def enable_channel(
             detail="Channel is awaiting activation; can't enable until redeemed",
         )
     channel.destination_state = DestinationState.ACTIVE.value
+    # Re-enable clears the pause-cause flag — whatever happened next time
+    # the channel goes DISABLED gets its own fresh attribution.
+    channel.paused_by_sender = False
     await db.commit()
     return _channel_to_read(await _load_owned_channel(db, user, channel.id))
 
@@ -634,6 +662,7 @@ async def disable_channel(
     re-enable later to resume."""
     channel = await _load_owned_channel(db, user, channel_id)
     channel.destination_state = DestinationState.DISABLED.value
+    channel.paused_by_sender = True
     await db.commit()
     return _channel_to_read(await _load_owned_channel(db, user, channel.id))
 
@@ -682,8 +711,8 @@ async def duplicate_channel(
         clone.destination_state = DestinationState.PENDING_REGISTRATION.value
         clone.activation_code_hash = issued.code_hash
         clone.activation_code_expires_at = issued.expires_at
-        activation_url = build_activation_url(
-            settings.sheaf_base_url or "", clone.id, issued.code
+        activation_url = _build_activation_url(
+            src.destination_type, clone.id, issued.code
         )
         activation_expires = issued.expires_at
     elif src.destination_type == DestinationType.WEBHOOK.value:
@@ -746,8 +775,8 @@ async def reissue_activation(
     channel.activation_code_expires_at = issued.expires_at
     await db.commit()
     return ReissueActivationResponse(
-        activation_url=build_activation_url(
-            settings.sheaf_base_url or "", channel.id, issued.code
+        activation_url=_build_activation_url(
+            channel.destination_type, channel.id, issued.code
         ),
         activation_expires_at=issued.expires_at,
     )
@@ -1042,6 +1071,7 @@ async def list_receiving(
                 system_label=getattr(system, "display_name", None),
                 destination_type=channel.destination_type,
                 destination_state=channel.destination_state,
+                paused_by_sender=channel.paused_by_sender,
                 redeemed_at=channel.redeemed_at,
                 last_delivered_at=channel.last_delivered_at,
             )

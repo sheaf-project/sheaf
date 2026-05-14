@@ -91,8 +91,15 @@ export function NotificationsManagePage() {
 
               <div className="rounded border bg-muted/30 px-3 py-2 text-sm">
                 Status:{" "}
-                <strong className="capitalize">
-                  {view.destination_state.replace("_", " ")}
+                <strong>
+                  {view.destination_state === "disabled" &&
+                  view.paused_by_sender
+                    ? "Paused by sender"
+                    : view.destination_state === "disabled"
+                      ? "Unsubscribed"
+                      : view.destination_state
+                          .replace("_", " ")
+                          .replace(/^./, (c) => c.toUpperCase())}
                 </strong>
               </div>
 
@@ -105,6 +112,13 @@ export function NotificationsManagePage() {
                 >
                   {unsubscribing ? "Unsubscribing..." : "Unsubscribe"}
                 </Button>
+              ) : view.destination_state === "disabled" &&
+                view.paused_by_sender ? (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                  The sender has paused this channel. You'll start receiving
+                  again automatically if they resume it. To opt out
+                  permanently, ask them to remove you.
+                </p>
               ) : (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Check className="h-4 w-4 text-emerald-500" />

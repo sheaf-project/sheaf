@@ -45,7 +45,17 @@ class WatchTokenRead(BaseModel):
 
 
 _DESTINATION_TYPES = Literal[
-    "web_push", "webhook", "ntfy", "pushover", "fcm", "apns_dev", "apns_prod"
+    "web_push",
+    "webhook",
+    "ntfy",
+    "pushover",
+    "mobile_push",
+    # Legacy mobile types retained so read-back of any historical row
+    # (export, audit) still validates. Channel creation refuses them;
+    # a migration collapsed any existing channel rows to mobile_push.
+    "fcm",
+    "apns_dev",
+    "apns_prod",
 ]
 _PAYLOAD_SENSITIVITIES = Literal["full", "minimal", "bare"]
 _COFRONT_REDACTIONS = Literal["count", "someone", "suppress"]
@@ -151,6 +161,10 @@ class ChannelRead(BaseModel):
     name: str
     destination_type: str
     destination_state: str
+    # True when destination_state == 'disabled' was caused by the owner
+    # pausing the channel (not the recipient unsubscribing). Lets the
+    # recipient UI render "Paused by sender" instead of "Unsubscribed".
+    paused_by_sender: bool = False
     # destination_config is echoed back for non-secret types (ntfy server URL,
     # webhook URL minus secret, pushover user key). Secrets never leak here.
     destination_config: dict[str, Any]
@@ -258,6 +272,7 @@ class ManageChannelView(BaseModel):
     system_label: str | None = None
     destination_type: str
     destination_state: str
+    paused_by_sender: bool = False
 
 
 class ReceivingChannelView(BaseModel):
@@ -274,5 +289,6 @@ class ReceivingChannelView(BaseModel):
     system_label: str | None = None
     destination_type: str
     destination_state: str
+    paused_by_sender: bool = False
     redeemed_at: datetime | None
     last_delivered_at: datetime | None

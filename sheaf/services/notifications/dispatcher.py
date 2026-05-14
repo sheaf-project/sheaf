@@ -46,7 +46,17 @@ _BACKOFF_BASE_SECONDS = 30
 
 
 def _semaphores() -> dict[str, asyncio.Semaphore]:
+    # mobile_push fans out per-token to FCM and APNs (dev or prod, per
+    # token); the per-device dispatch happens inside the handler under
+    # the dedicated FCM / APNs sub-semaphores so per-provider concurrency
+    # budgets still apply. The outer channel-level semaphore is sized
+    # generously since the real work is delegated.
     apns_sem = asyncio.Semaphore(settings.notifications_concurrency_apns)
+    fcm_sem = asyncio.Semaphore(settings.notifications_concurrency_fcm)
+    mobile_sem = asyncio.Semaphore(
+        settings.notifications_concurrency_apns
+        + settings.notifications_concurrency_fcm
+    )
     return {
         DestinationType.WEB_PUSH.value: asyncio.Semaphore(
             settings.notifications_concurrency_web_push
@@ -60,11 +70,11 @@ def _semaphores() -> dict[str, asyncio.Semaphore]:
         DestinationType.PUSHOVER.value: asyncio.Semaphore(
             settings.notifications_concurrency_pushover
         ),
-        DestinationType.FCM.value: asyncio.Semaphore(
-            settings.notifications_concurrency_fcm
-        ),
-        # APNs dev + prod share one semaphore — same backend, same key,
-        # just different hosts. Concurrency budget is shared across both.
+        DestinationType.MOBILE_PUSH.value: mobile_sem,
+        # Legacy entries retained for read-back / replay of any pre-
+        # migration outbox rows still in flight at upgrade time. New
+        # channels never land here.
+        DestinationType.FCM.value: fcm_sem,
         DestinationType.APNS_DEV.value: apns_sem,
         DestinationType.APNS_PROD.value: apns_sem,
     }

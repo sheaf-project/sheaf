@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { PageHeader } from "@/components/page-header";
+import { DeviceList } from "@/components/notifications/device-list";
 import { ReceivingList } from "@/components/notifications/receiving-list";
 import { WatchTokenCard } from "@/components/notifications/watch-token-card";
 import { Button } from "@/components/ui/button";
@@ -119,13 +120,14 @@ export function NotificationsPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="receiving" className="mt-4">
-          <p className="text-sm text-muted-foreground mb-4 max-w-prose">
+        <TabsContent value="receiving" className="mt-4 space-y-4">
+          <p className="text-sm text-muted-foreground max-w-prose">
             Notifications you receive from other systems. Channels show up
             here when you redeem an activation link while signed in to your
             account &mdash; the owner sees you as a recipient and you can
             manage everything from one place.
           </p>
+          <DeviceList />
           <ReceivingList />
         </TabsContent>
       </Tabs>

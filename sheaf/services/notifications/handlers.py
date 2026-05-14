@@ -85,17 +85,16 @@ async def deliver(
         return await _deliver_pushover(
             channel, message, owner_user_id=owner_user_id, owner_tier=owner_tier
         )
-    if dtype == DestinationType.FCM:
+    if dtype in (
+        DestinationType.MOBILE_PUSH,
+        # Defensive: any legacy rows that somehow survive the migration
+        # collapse-to-mobile_push fall through to the same fan-out.
+        DestinationType.FCM,
+        DestinationType.APNS_DEV,
+        DestinationType.APNS_PROD,
+    ):
         return await _deliver_mobile_push(
-            channel, message, event_id=event_id, db=db, platform="fcm"
-        )
-    if dtype == DestinationType.APNS_DEV:
-        return await _deliver_mobile_push(
-            channel, message, event_id=event_id, db=db, platform="apns_dev"
-        )
-    if dtype == DestinationType.APNS_PROD:
-        return await _deliver_mobile_push(
-            channel, message, event_id=event_id, db=db, platform="apns_prod"
+            channel, message, event_id=event_id, db=db
         )
     return permanent(f"unsupported destination type {dtype}")
 
@@ -393,15 +392,20 @@ async def _deliver_mobile_push(
     *,
     event_id: str,
     db: AsyncSession | None,
-    platform: str,
 ) -> DeliveryResult:
     """Fan-out one notification to every push_device_tokens row matching
-    the channel's redeemed_by_account_id and the given platform.
+    the channel's redeemed_by_account_id, regardless of platform.
+
+    The channel is platform-agnostic: a single mobile_push channel rings
+    every device the recipient has signed into, whether iOS or Android.
+    Per-row, we route to FCM (android tokens) or APNs (ios_* tokens,
+    sandbox vs prod determined per-token) and call the matching handler.
 
     Aggregation rule: any-success-is-success. Permanent only when every
     device returned a permanent error AND there was at least one device.
     Zero-device case is success-with-no-effect (the user might just not
-    have any registered devices for this platform yet).
+    have any registered devices yet — e.g. account exists but the app
+    hasn't been installed).
 
     410 / Unregistered responses delete the dead row in-line so the next
     delivery doesn't re-attempt against it.
@@ -421,65 +425,76 @@ async def _deliver_mobile_push(
     result = await db.execute(
         select(PushDeviceToken).where(
             PushDeviceToken.account_id == channel.redeemed_by_account_id,
-            PushDeviceToken.platform == platform,
+            # Recipients can mute individual devices from the Receiving tab
+            # without unregistering them; disabled rows skip fan-out.
+            PushDeviceToken.enabled.is_(True),
         )
     )
     rows = list(result.scalars().all())
     if not rows:
-        # No registered devices for this platform — not a delivery
+        # No registered devices for this account — not a delivery
         # failure; the user might still have a web-push channel to the
         # same account or just hasn't installed the app yet.
         logger.info(
-            "mobile push: no devices for account=%s platform=%s",
+            "mobile push: no devices registered for account=%s",
             channel.redeemed_by_account_id,
-            platform,
         )
         return SUCCESS
+
+    from sheaf.services.notifications.apns import send_to_token as apns_send
+    from sheaf.services.notifications.fcm import send_to_token as fcm_send
 
     any_ok = False
     all_dead = True
     last_error: str | None = None
     dead_ids: list[uuid.UUID] = []
 
-    if platform == "fcm":
-        from sheaf.services.notifications.fcm import send_to_token as fcm_send
-
-        for row in rows:
+    # Captured once outside the per-device loop so the channel-routing
+    # metadata is consistent across every device the same event reaches.
+    channel_id_str = str(channel.id)
+    channel_name = channel.name
+    channel_event_type = channel.event_type
+    for row in rows:
+        if row.platform == "fcm":
             outcome = await fcm_send(
                 device_token=row.token,
                 title=message.title,
                 body=message.body,
                 event_id=event_id,
+                channel_id=channel_id_str,
+                channel_name=channel_name,
+                event_type=channel_event_type,
             )
-            if outcome.ok:
-                any_ok = True
-                all_dead = False
-            elif outcome.dead:
-                dead_ids.append(row.id)
-                last_error = outcome.error
-            else:
-                all_dead = False
-                last_error = outcome.error
-    else:
-        from sheaf.services.notifications.apns import send_to_token as apns_send
-
-        for row in rows:
+        elif row.platform in ("apns_dev", "apns_prod"):
             outcome = await apns_send(
-                platform=platform,
+                platform=row.platform,
                 device_token=row.token,
                 title=message.title,
                 body=message.body,
                 event_id=event_id,
+                channel_id=channel_id_str,
+                channel_name=channel_name,
+                event_type=channel_event_type,
             )
-            if outcome.ok:
-                any_ok = True
-                all_dead = False
-            elif outcome.dead:
-                dead_ids.append(row.id)
-                last_error = outcome.error
-            else:
-                all_dead = False
-                last_error = outcome.error
+        else:
+            # Unknown platform on the device row — skip, don't treat as
+            # a delivery failure for this channel.
+            logger.warning(
+                "mobile push: unknown device platform=%s for account=%s",
+                row.platform,
+                channel.redeemed_by_account_id,
+            )
+            continue
+
+        if outcome.ok:
+            any_ok = True
+            all_dead = False
+        elif outcome.dead:
+            dead_ids.append(row.id)
+            last_error = outcome.error
+        else:
+            all_dead = False
+            last_error = outcome.error
 
     if dead_ids:
         await db.execute(

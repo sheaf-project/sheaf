@@ -135,9 +135,7 @@ export function NewChannelDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="web_push">Web push (browser)</SelectItem>
-                <SelectItem value="fcm">Android push</SelectItem>
-                <SelectItem value="apns_prod">iOS push</SelectItem>
-                <SelectItem value="apns_dev">iOS push (dev build)</SelectItem>
+                <SelectItem value="mobile_push">Mobile push (iOS + Android)</SelectItem>
                 <SelectItem value="webhook">Webhook</SelectItem>
                 <SelectItem value="ntfy">ntfy</SelectItem>
                 <SelectItem value="pushover">Pushover</SelectItem>
@@ -296,14 +294,14 @@ export function NewChannelDialog({
             </p>
           )}
 
-          {(type === "fcm" || type === "apns_dev" || type === "apns_prod") && (
+          {type === "mobile_push" && (
             <p className="text-sm text-muted-foreground">
               You'll get a one-time activation link to send to the recipient.
               They open it on their phone (with the Sheaf app installed and
               signed in to their account), the app handles redemption, and
-              the channel becomes active. The recipient's account is bound
-              to the channel; deliveries go to whichever device they have
-              registered.
+              the channel becomes active. The link works on both iOS and
+              Android — one channel rings every device the recipient has
+              signed into.
             </p>
           )}
 

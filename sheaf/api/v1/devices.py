@@ -23,6 +23,7 @@ from sheaf.schemas.push_device import (
     PushDeviceDeleteRequest,
     PushDeviceRead,
     PushDeviceRegisterRequest,
+    PushDeviceUpdateRequest,
 )
 
 router = APIRouter(prefix="/devices", tags=["devices"])
@@ -83,6 +84,8 @@ async def register_push_device(
             existing.install_id = body.install_id
         if body.app_version is not None:
             existing.app_version = body.app_version
+        if body.label is not None:
+            existing.label = body.label
         await db.commit()
         await db.refresh(existing)
         return PushDeviceRead.model_validate(existing)
@@ -102,6 +105,8 @@ async def register_push_device(
             rotating.last_seen_at = now
             if body.app_version is not None:
                 rotating.app_version = body.app_version
+            if body.label is not None:
+                rotating.label = body.label
             await db.commit()
             await db.refresh(rotating)
             return PushDeviceRead.model_validate(rotating)
@@ -131,6 +136,7 @@ async def register_push_device(
         token=body.token,
         install_id=body.install_id,
         app_version=body.app_version,
+        label=body.label,
         last_seen_at=now,
     )
     db.add(new_row)
@@ -162,6 +168,77 @@ async def delete_push_device(
             PushDeviceToken.token == body.token,
         )
     )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/push/{device_id}",
+    response_model=PushDeviceRead,
+    dependencies=[Depends(require_scope("notifications:write"))],
+)
+async def update_push_device(
+    device_id: uuid.UUID,
+    body: PushDeviceUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PushDeviceRead:
+    """Update a device's `enabled` flag or `label`. Recipient-facing —
+    edited from the Receiving tab's device list. Other fields (token,
+    platform, install_id) come from the mobile app at registration and
+    aren't user-editable.
+
+    Account-scoped: a device row belonging to another user 404s,
+    matching the rest of the per-account ownership pattern."""
+    result = await db.execute(
+        select(PushDeviceToken).where(
+            PushDeviceToken.id == device_id,
+            PushDeviceToken.account_id == user.id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Device not found"
+        )
+    fields = body.model_dump(exclude_unset=True)
+    if "enabled" in fields and fields["enabled"] is not None:
+        row.enabled = bool(fields["enabled"])
+    if "label" in fields:
+        # Empty string clears the label; the front-end falls back to
+        # the platform-based default.
+        label = fields["label"]
+        row.label = label or None
+    await db.commit()
+    await db.refresh(row)
+    return PushDeviceRead.model_validate(row)
+
+
+@router.delete(
+    "/push/{device_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_scope("notifications:write"))],
+)
+async def delete_push_device_by_id(
+    device_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Recipient-side: drop a device by its id (from the Receiving
+    tab's device list). The token-based DELETE above stays for the
+    mobile app's logout flow; this one is for the web UI which has
+    no access to the raw token."""
+    result = await db.execute(
+        select(PushDeviceToken).where(
+            PushDeviceToken.id == device_id,
+            PushDeviceToken.account_id == user.id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        # Idempotent — already-removed devices return 204.
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    await db.delete(row)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

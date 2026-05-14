@@ -26,6 +26,8 @@ type Phase =
   | { kind: "error"; message: string };
 
 const MOBILE_DESTINATION_TYPES = new Set<DestinationType>([
+  "mobile_push",
+  // Legacy types kept for read-back of any pre-migration link.
   "fcm",
   "apns_dev",
   "apns_prod",
