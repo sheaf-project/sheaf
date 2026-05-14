@@ -13,6 +13,7 @@ from sheaf.api.v1 import (
     files,
     fronts,
     groups,
+    imports,
     journals,
     members,
     messages,
@@ -115,6 +116,13 @@ v1_router.include_router(
 )
 v1_router.include_router(
     tb_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+# Unified async-job import router. Replaces the per-source legacy
+# routes above incrementally — they coexist while the runners and
+# frontend are migrated.
+v1_router.include_router(
+    imports.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 v1_router.include_router(webhooks.router)
