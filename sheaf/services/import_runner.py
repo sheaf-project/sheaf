@@ -216,28 +216,42 @@ async def run_import_tick(db: AsyncSession) -> dict:
         job.source,
         job.user_id,
     )
+    job_id = job.id
     try:
         await handler(job, db)
     except Exception as exc:
-        logger.exception("import_job %s failed", job.id)
-        append_event(
-            job,
-            level="error",
-            stage="runner",
-            message=f"unhandled exception: {exc!s}"[:1000],
-        )
-        # Roll back any uncommitted importer state so the failure mode
-        # is consistent: either we committed up to a savepoint the
-        # importer chose, or nothing.
-        await db.rollback()
-        # Reload the (rolled-back) job row so we can write terminal state.
-        job = await db.get(ImportJob, job.id)
-        if job is None:
-            return {"items_processed": 1, "details": "job vanished mid-run"}
-        await _finalize(
-            job, db, status=ImportJobStatus.FAILED, last_error=str(exc)[:8000]
-        )
-        return {"items_processed": 1, "details": f"failed: {job.id}"}
+        logger.exception("import_job %s failed", job_id)
+        # Roll back the importer's uncommitted state, then write the
+        # terminal failed record from a *fresh* session. The handler's
+        # session is in an unknown state after the raise — reusing it
+        # risks an expired-attribute sync lazy-load (MissingGreenlet).
+        # All-or-nothing: a hard failure discards everything the
+        # importer did, including any progress events; the terminal
+        # error event names the stage so the report still says where
+        # it broke.
+        try:
+            await db.rollback()
+        except Exception:  # noqa: BLE001
+            logger.exception("rollback after import_job %s failure failed", job_id)
+        from sheaf.database import async_session_factory
+
+        async with async_session_factory() as fresh:
+            fresh_job = await fresh.get(ImportJob, job_id)
+            if fresh_job is None:
+                return {"items_processed": 1, "details": "job vanished mid-run"}
+            append_event(
+                fresh_job,
+                level="error",
+                stage="runner",
+                message=f"unhandled exception: {exc!s}"[:1000],
+            )
+            await _finalize(
+                fresh_job,
+                fresh,
+                status=ImportJobStatus.FAILED,
+                last_error=str(exc)[:8000],
+            )
+        return {"items_processed": 1, "details": f"failed: {job_id}"}
 
     await _finalize(job, db, status=ImportJobStatus.COMPLETE)
     logger.info(
@@ -268,12 +282,11 @@ def _register_builtin_handlers() -> None:
     no-ops on any pending row, marks it failed with 'no handler', and
     that's an explicit error the developer sees immediately.
     """
-    # Phase 3: from sheaf.services import pk_import_runner  # noqa: F401
+    from sheaf.services import pk_import_runner  # noqa: F401
     # Phase 4: from sheaf.services import pk_api_runner  # noqa: F401
     # Phase 5: from sheaf.services import tb_import_runner  # noqa: F401
     # Phase 5: from sheaf.services import sp_import_runner  # noqa: F401
     # Phase 6: from sheaf.services import sheaf_import_runner  # noqa: F401
-    pass
 
 
 _register_builtin_handlers()

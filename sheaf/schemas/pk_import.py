@@ -7,15 +7,21 @@ preview/options/result regardless of source.
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PKImportOptions(BaseModel):
     """What to import from a PluralKit export."""
 
+    # Strict by default so typos in option names from a hand-rolled
+    # client land as a 422 instead of being silently ignored. Pre-async
+    # the importer just dropped unknown keys; this is a tightening.
+    model_config = ConfigDict(extra="forbid")
+
     system_profile: bool = True
     member_ids: list[str] | None = Field(
         default=None,
+        max_length=10_000,
         description=(
             "PK member HIDs to import. None = all. Used to let the user "
             "deselect specific members on the preview screen."
