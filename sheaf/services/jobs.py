@@ -124,8 +124,12 @@ async def job_runner_loop() -> None:
             if not job.enabled():
                 continue
 
-            interval = job.interval_seconds()
-            if interval <= 0:
+            # Use a job-scoped name — assigning to the outer `interval`
+            # here would corrupt the loop's own wake cadence on the next
+            # `asyncio.sleep(interval)`, drifting it to whatever the
+            # last-registered job's interval happens to be.
+            job_interval = job.interval_seconds()
+            if job_interval <= 0:
                 # Treat non-positive intervals as "disabled" — prevents a
                 # misconfigured 0 from running the job every tick.
                 continue
@@ -137,7 +141,7 @@ async def job_runner_loop() -> None:
                     # Run if never run before, or if enough time has elapsed
                     if last_success is not None:
                         elapsed = (datetime.now(UTC) - last_success).total_seconds()
-                        if elapsed < interval:
+                        if elapsed < job_interval:
                             continue
 
                     logger.info("Running job: %s", name)
@@ -639,14 +643,6 @@ async def _purge_expired_polls(db: AsyncSession) -> dict:
     return {"items_processed": purged}
 
 
-async def _run_import_tick(db: AsyncSession) -> dict:
-    """One tick of the import runner — claim a pending ImportJob (if any)
-    and dispatch to its per-source handler."""
-    from sheaf.services.import_runner import run_import_tick
-
-    return await run_import_tick(db)
-
-
 async def _cleanup_import_jobs(db: AsyncSession) -> dict:
     """Drop ImportJob rows past the retention window.
 
@@ -798,22 +794,12 @@ def _register_all_jobs() -> None:
         interval_seconds=lambda: settings.poll_cleanup_interval_hours * 3600,
     )
 
-    # Imports run async via this tick — uploaded payload is stashed in
-    # the file-storage backend, a pending ImportJob row is created, and
-    # this job claims the next pending row each interval. The interval
-    # is intentionally short so a new-user upload doesn't sit there for
-    # tens of seconds before the runner notices. The empty-queue case
-    # is a single indexed query returning no rows.
-    register_job(
-        name="run_import_jobs",
-        description=(
-            "Process queued user data imports "
-            "(PluralKit / Tupperbox / SimplyPlural / Sheaf)"
-        ),
-        func=_run_import_tick,
-        interval_seconds=lambda: settings.import_runner_interval_seconds,
-    )
-
+    # NOTE: the import *runner* is NOT registered here. It needs a
+    # few-second tick, but this registry only wakes every
+    # job_check_interval_minutes — far too slow for an import a user is
+    # waiting on. It runs as its own loop (import_runner_loop) in the
+    # FastAPI lifespan, same pattern as the notification dispatcher.
+    # Only the slow daily cleanup of old ImportJob rows belongs here.
     register_job(
         name="cleanup_import_jobs",
         description="Delete ImportJob rows past their retention window",

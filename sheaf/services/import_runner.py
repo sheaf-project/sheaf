@@ -14,6 +14,7 @@ per-record errors land in events with level=error.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -24,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from sheaf.config import settings
 from sheaf.models.import_job import ImportJob, ImportJobStatus
 from sheaf.services.import_storage import delete_payload
 
@@ -260,12 +262,52 @@ async def run_import_tick(db: AsyncSession) -> dict:
     return {"items_processed": 1, "details": f"complete: {job.id}"}
 
 
+async def import_runner_loop(stop_event: asyncio.Event | None = None) -> None:
+    """Dedicated import-runner loop, run as its own asyncio task in the
+    FastAPI lifespan — NOT registered in the jobs.py periodic registry.
+
+    The jobs.py registry only wakes every `job_check_interval_minutes`
+    (15m default), which is fine for hourly/daily housekeeping but far
+    too slow for an import the user is actively waiting on. This loop
+    mirrors the notification dispatcher: a tight interval, its own
+    session per tick.
+
+    Each pass drains the queue — keep claiming until empty — so a
+    backlog of N pending jobs clears in one pass rather than taking
+    N * interval seconds. `run_import_tick` claims exactly one pending
+    job and drives it to a terminal state, so the drain always
+    terminates (a processed job is no longer pending).
+    """
+    from sheaf.database import async_session_factory
+
+    interval = max(1, settings.import_runner_interval_seconds)
+    logger.info("Import runner started (interval=%ds)", interval)
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return
+        try:
+            while True:
+                async with async_session_factory() as db:
+                    result = await run_import_tick(db)
+                if result.get("items_processed", 0) == 0:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Import runner tick failed")
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+
+
 # Public re-export so the importer modules don't reach into the
 # private name when registering themselves at module import time.
 __all__ = [
     "ImportHandler",
     "MAX_EVENTS_PER_JOB",
     "append_event",
+    "import_runner_loop",
     "register_handler",
     "run_import_tick",
     "update_counts",

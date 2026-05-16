@@ -74,20 +74,36 @@ async def lifespan(app: FastAPI):
     except ImportError:
         pass
 
+    from sheaf.services.import_runner import import_runner_loop
     from sheaf.services.jobs import job_runner_loop
     from sheaf.services.notifications.dispatcher import dispatcher_loop
 
     jobs_task = asyncio.create_task(job_runner_loop())
     dispatcher_task = asyncio.create_task(dispatcher_loop())
+    # Imports get their own fast loop, not the slow jobs.py registry —
+    # the registry only wakes every job_check_interval_minutes, far too
+    # slow for an import a user is actively waiting on. The test stack
+    # disables the loop so import tests can drive the runner manually
+    # without a live loop racing them.
+    import_task = (
+        asyncio.create_task(import_runner_loop())
+        if settings.import_runner_enabled
+        else None
+    )
 
     yield
 
     jobs_task.cancel()
     dispatcher_task.cancel()
+    if import_task is not None:
+        import_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await jobs_task
     with contextlib.suppress(asyncio.CancelledError):
         await dispatcher_task
+    if import_task is not None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await import_task
     logger.info("Sheaf shutting down")
 
 

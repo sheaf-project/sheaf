@@ -1,5 +1,5 @@
 import { type ChangeEvent, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,34 +7,33 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   type SPPreviewSummary,
-  type SPImportResult,
   previewImport as previewSP,
-  runImport as runSP,
 } from "@/lib/sp-import";
 import {
   type SheafPreviewSummary,
-  type SheafImportResult,
   previewSheafImport,
-  runSheafImport,
 } from "@/lib/sheaf-import";
 import {
   type PKPreviewSummary,
-  type PKImportResult,
   previewImportFromFile as previewPKFile,
-  runImportFromFile as runPKFile,
   previewImportFromApi as previewPKApi,
-  runImportFromApi as runPKApi,
 } from "@/lib/pk-import";
 import {
   type TBPreviewSummary,
-  type TBImportResult,
   previewImport as previewTB,
-  runImport as runTB,
 } from "@/lib/tb-import";
+import {
+  createApiImport,
+  createFileImport,
+  newIdempotencyKey,
+} from "@/lib/imports";
 import { Input } from "@/components/ui/input";
 
 type Source = "choose" | "sheaf" | "sp" | "pk" | "tb";
-type Step = "upload" | "preview" | "importing" | "done";
+// "importing" shows a brief spinner while the enqueue POST is in
+// flight; on success the flow navigates to /imports/:id, which owns
+// the running/done UI. There's no "done" step here any more.
+type Step = "upload" | "preview" | "importing";
 type PKMethod = "choose" | "file" | "api";
 
 export function ImportPage() {
@@ -42,7 +41,11 @@ export function ImportPage() {
 
   return (
     <>
-      <PageHeader title="Import data" />
+      <PageHeader title="Import data">
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/imports">Import history</Link>
+        </Button>
+      </PageHeader>
       {source === "choose" && <SourcePicker onSelect={setSource} />}
       {source === "sheaf" && (
         <SheafImportFlow onBack={() => setSource("choose")} />
@@ -133,8 +136,10 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
   const [step, setStep] = useState<Step>("upload");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<SheafPreviewSummary | null>(null);
-  const [result, setResult] = useState<SheafImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // One idempotency key per flow visit — a double-click on Import
+  // reuses it, so the server dedupes instead of enqueueing twice.
+  const [idemKey] = useState(newIdempotencyKey);
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
@@ -163,16 +168,20 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
     setStep("importing");
     setError(null);
     try {
-      const r = await runSheafImport(file, {
-        system_profile: systemProfile,
-        member_ids: allMembers ? null : Array.from(selectedMembers),
-        fronts: importFronts,
-        groups: importGroups,
-        tags: importTags,
-        custom_fields: importFields,
+      const job = await createFileImport({
+        source: "sheaf_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          system_profile: systemProfile,
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          fronts: importFronts,
+          groups: importGroups,
+          tags: importTags,
+          custom_fields: importFields,
+        },
       });
-      setResult(r);
-      setStep("done");
+      navigate(`/imports/${job.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
       setStep("preview");
@@ -285,37 +294,6 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {step === "importing" && <ImportingCard />}
-
-      {step === "done" && result && (
-        <Card className="max-w-lg">
-          <CardHeader>
-            <CardTitle className="text-base">Import complete</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              {result.members_imported > 0 && (
-                <div>Members: <strong>{result.members_imported}</strong></div>
-              )}
-              {result.fronts_imported > 0 && (
-                <div>Fronts: <strong>{result.fronts_imported}</strong></div>
-              )}
-              {result.groups_imported > 0 && (
-                <div>Groups: <strong>{result.groups_imported}</strong></div>
-              )}
-              {result.tags_imported > 0 && (
-                <div>Tags: <strong>{result.tags_imported}</strong></div>
-              )}
-              {result.custom_fields_imported > 0 && (
-                <div>Custom fields: <strong>{result.custom_fields_imported}</strong></div>
-              )}
-            </div>
-            <Warnings warnings={result.warnings} />
-            <Button onClick={() => navigate("/members")} className="w-full">
-              View members
-            </Button>
-          </CardContent>
-        </Card>
-      )}
     </>
   );
 }
@@ -329,8 +307,8 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
   const [step, setStep] = useState<Step>("upload");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<SPPreviewSummary | null>(null);
-  const [result, setResult] = useState<SPImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
@@ -359,16 +337,20 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
     setStep("importing");
     setError(null);
     try {
-      const r = await runSP(file, {
-        system_profile: systemProfile,
-        member_ids: allMembers ? null : Array.from(selectedMembers),
-        custom_fronts: customFronts,
-        custom_fields: customFields,
-        groups,
-        front_history: frontHistory,
+      const job = await createFileImport({
+        source: "simplyplural_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          system_profile: systemProfile,
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          custom_fronts: customFronts,
+          custom_fields: customFields,
+          groups,
+          front_history: frontHistory,
+        },
       });
-      setResult(r);
-      setStep("done");
+      navigate(`/imports/${job.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
       setStep("preview");
@@ -482,37 +464,6 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {step === "importing" && <ImportingCard />}
-
-      {step === "done" && result && (
-        <Card className="max-w-lg">
-          <CardHeader>
-            <CardTitle className="text-base">Import complete</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              {result.members_imported > 0 && (
-                <div>Members: <strong>{result.members_imported}</strong></div>
-              )}
-              {result.custom_fronts_imported > 0 && (
-                <div>Custom fronts: <strong>{result.custom_fronts_imported}</strong></div>
-              )}
-              {result.fronts_imported > 0 && (
-                <div>Fronts: <strong>{result.fronts_imported}</strong></div>
-              )}
-              {result.groups_imported > 0 && (
-                <div>Groups: <strong>{result.groups_imported}</strong></div>
-              )}
-              {result.custom_fields_imported > 0 && (
-                <div>Custom fields: <strong>{result.custom_fields_imported}</strong></div>
-              )}
-            </div>
-            <Warnings warnings={result.warnings} />
-            <Button onClick={() => navigate("/members")} className="w-full">
-              View members
-            </Button>
-          </CardContent>
-        </Card>
-      )}
     </>
   );
 }
@@ -531,8 +482,8 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
   // when the user navigates away or finishes the flow.
   const [token, setToken] = useState<string>("");
   const [preview, setPreview] = useState<PKPreviewSummary | null>(null);
-  const [result, setResult] = useState<PKImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
@@ -579,15 +530,24 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
       front_history: frontHistory,
     };
     try {
-      const r =
+      const job =
         method === "file" && file
-          ? await runPKFile(file, options)
-          : await runPKApi(token, options);
-      setResult(r);
-      setStep("done");
-      // Token has served its purpose; clear it so it's not lingering on the
-      // page for the rest of the session.
+          ? await createFileImport({
+              source: "pluralkit_file",
+              file,
+              idempotencyKey: idemKey,
+              options,
+            })
+          : await createApiImport({
+              pkToken: token,
+              idempotencyKey: idemKey,
+              options,
+            });
+      // Token has served its purpose; clear it so it's not lingering on
+      // the page for the rest of the session. (It's also encrypted at
+      // rest server-side and wiped when the job finishes.)
       setToken("");
+      navigate(`/imports/${job.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
       setStep("preview");
@@ -786,31 +746,6 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {step === "importing" && <ImportingCard />}
-
-      {step === "done" && result && (
-        <Card className="max-w-lg">
-          <CardHeader>
-            <CardTitle className="text-base">Import complete</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              {result.members_imported > 0 && (
-                <div>Members: <strong>{result.members_imported}</strong></div>
-              )}
-              {result.groups_imported > 0 && (
-                <div>Groups: <strong>{result.groups_imported}</strong></div>
-              )}
-              {result.fronts_imported > 0 && (
-                <div>Fronts: <strong>{result.fronts_imported}</strong></div>
-              )}
-            </div>
-            <Warnings warnings={result.warnings} />
-            <Button onClick={() => navigate("/members")} className="w-full">
-              View members
-            </Button>
-          </CardContent>
-        </Card>
-      )}
     </>
   );
 }
@@ -824,8 +759,8 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
   const [step, setStep] = useState<Step>("upload");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<TBPreviewSummary | null>(null);
-  const [result, setResult] = useState<TBImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
 
   const [allMembers, setAllMembers] = useState(true);
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
@@ -850,12 +785,16 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
     setStep("importing");
     setError(null);
     try {
-      const r = await runTB(file, {
-        member_ids: allMembers ? null : Array.from(selectedMembers),
-        groups,
+      const job = await createFileImport({
+        source: "tupperbox_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          groups,
+        },
       });
-      setResult(r);
-      setStep("done");
+      navigate(`/imports/${job.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
       setStep("preview");
@@ -944,28 +883,6 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {step === "importing" && <ImportingCard />}
-
-      {step === "done" && result && (
-        <Card className="max-w-lg">
-          <CardHeader>
-            <CardTitle className="text-base">Import complete</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              {result.members_imported > 0 && (
-                <div>Members: <strong>{result.members_imported}</strong></div>
-              )}
-              {result.groups_imported > 0 && (
-                <div>Groups: <strong>{result.groups_imported}</strong></div>
-              )}
-            </div>
-            <Warnings warnings={result.warnings} />
-            <Button onClick={() => navigate("/members")} className="w-full">
-              View members
-            </Button>
-          </CardContent>
-        </Card>
-      )}
     </>
   );
 }
@@ -989,18 +906,6 @@ function ImportingCard() {
         <p className="text-muted-foreground">Importing data...</p>
       </CardContent>
     </Card>
-  );
-}
-
-function Warnings({ warnings }: { warnings: string[] }) {
-  if (warnings.length === 0) return null;
-  return (
-    <div className="space-y-1">
-      <p className="text-sm font-medium text-yellow-500">Warnings:</p>
-      {warnings.map((w, i) => (
-        <p key={i} className="text-xs text-muted-foreground">{w}</p>
-      ))}
-    </div>
   );
 }
 

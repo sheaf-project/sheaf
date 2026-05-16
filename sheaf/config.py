@@ -285,6 +285,12 @@ class Settings(BaseSettings):
     # query returning no rows.
     import_runner_interval_seconds: int = 5
 
+    # Whether the in-process import-runner loop starts at app boot.
+    # On in production. The test stack flips this off so the import
+    # tests can drive the runner deterministically (manually, often
+    # with a stubbed PK API) without a live loop racing them.
+    import_runner_enabled: bool = True
+
     # How long terminal ImportJob rows live before the cleanup job
     # deletes them. The uploaded payload blob is wiped at finalize
     # time independently; this only controls the user-visible report.
