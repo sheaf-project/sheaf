@@ -39,8 +39,6 @@ from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.schemas.pk_import import (
-    PKImportOptions,
-    PKImportResult,
     PKPreviewMember,
     PKPreviewSummary,
 )
@@ -101,61 +99,11 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
     )
 
 
-async def run_import(
-    data: dict,
-    options: PKImportOptions,
-    system: System,
-    db: AsyncSession,
-) -> PKImportResult:
-    """Import a parsed PK export into the user's system."""
-    result = PKImportResult()
-    warnings: list[str] = []
-
-    if options.system_profile:
-        _apply_system_profile(data, system)
-
-    pk_members = _list(data, "members")
-    if options.member_ids is not None:
-        wanted = set(options.member_ids)
-        pk_members = [m for m in pk_members if m.get("id") in wanted]
-
-    hid_to_member: dict[str, Member] = {}
-    for pk_m in pk_members:
-        member = _build_member(pk_m, system.id)
-        if member is None:
-            continue
-        db.add(member)
-        hid = str(pk_m.get("id") or "")
-        if hid:
-            hid_to_member[hid] = member
-        result.members_imported += 1
-
-    await db.flush()
-
-    if options.groups:
-        group_imported = await _import_groups(
-            _list(data, "groups"), system.id, hid_to_member, db
-        )
-        result.groups_imported = group_imported
-
-    if options.front_history:
-        fronts_imported, switch_warnings = await _import_switches(
-            _list(data, "switches"), system.id, hid_to_member, db
-        )
-        result.fronts_imported = fronts_imported
-        warnings.extend(switch_warnings)
-
-    result.warnings = warnings
-    # Commit explicitly here, before the handler returns. `get_db` does
-    # auto-commit on successful exit, but for `yield` dependencies that
-    # cleanup runs *after* the response has been sent to the client.
-    # Without an explicit commit inside the handler, a follow-up request
-    # (e.g. the test's GET /v1/members right after import) can race the
-    # cleanup-commit and see an empty members list. The window is
-    # microseconds locally and milliseconds on slow CI runners, so the
-    # symptom is a flaky test, not a deterministic one.
-    await db.commit()
-    return result
+# The synchronous run_import that used to live here is gone — the
+# PluralKit import now runs through the async job runner, whose handler
+# (pk_import_runner.handle_pluralkit_file) calls the per-section
+# helpers below directly. `preview` above is still used by the
+# /v1/import/pluralkit/preview endpoint.
 
 
 # --- System profile ----------------------------------------------------------

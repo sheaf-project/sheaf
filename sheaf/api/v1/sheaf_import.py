@@ -1,16 +1,18 @@
-"""Sheaf data import endpoints."""
+"""Sheaf native re-import — preview endpoint.
+
+The actual import runs asynchronously through the unified job runner
+(POST /v1/imports/file). What's left here is the synchronous preview:
+parse a Sheaf export and return a summary of importable data. Preview
+writes nothing.
+"""
 
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
-from sheaf.database import get_db
-from sheaf.models.system import System
 from sheaf.models.user import User
-from sheaf.services.sheaf_import import preview, run_import
+from sheaf.services.sheaf_import import preview
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -40,10 +42,7 @@ async def _parse_upload(file: UploadFile) -> dict:
     # silently ignores extras, so accepting v2 is forward-compatible
     # without requiring per-field handlers for the not-yet-importable
     # surfaces. New format versions should be added here as they ship.
-    if (
-        not isinstance(parsed, dict)
-        or parsed.get("version") not in {"1", "2"}
-    ):
+    if not isinstance(parsed, dict) or parsed.get("version") not in {"1", "2"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -52,17 +51,6 @@ async def _parse_upload(file: UploadFile) -> dict:
             ),
         )
     return parsed
-
-
-async def _get_system(user: User, db: AsyncSession) -> System:
-    result = await db.execute(select(System).where(System.user_id == user.id))
-    system = result.scalar_one_or_none()
-    if not system:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Create a system first.",
-        )
-    return system
 
 
 @router.post("/sheaf/preview")
@@ -81,51 +69,4 @@ async def preview_import(
         "group_count": p.group_count,
         "tag_count": p.tag_count,
         "custom_field_count": p.custom_field_count,
-    }
-
-
-@router.post("/sheaf")
-async def do_import(
-    file: UploadFile,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    system_profile: bool = True,
-    member_ids: str | None = None,
-    fronts: bool = True,
-    groups: bool = True,
-    tags: bool = True,
-    custom_fields: bool = True,
-):
-    """Import data from a Sheaf export file.
-
-    Upload the JSON export file with query parameters controlling what to import.
-    Use the preview endpoint first to see what's in the file and get member IDs
-    for selective import.
-    """
-    data = await _parse_upload(file)
-    system = await _get_system(user, db)
-
-    parsed_member_ids = None
-    if member_ids is not None:
-        parsed_member_ids = [mid.strip() for mid in member_ids.split(",") if mid.strip()]
-
-    result = await run_import(
-        data,
-        system,
-        db,
-        system_profile=system_profile,
-        member_ids=parsed_member_ids,
-        fronts=fronts,
-        groups=groups,
-        tags=tags,
-        custom_fields=custom_fields,
-    )
-
-    return {
-        "members_imported": result.members_imported,
-        "fronts_imported": result.fronts_imported,
-        "groups_imported": result.groups_imported,
-        "tags_imported": result.tags_imported,
-        "custom_fields_imported": result.custom_fields_imported,
-        "warnings": result.warnings,
     }

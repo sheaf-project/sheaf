@@ -145,6 +145,55 @@ def test_front_custom_status_optional(auth_client: httpx.Client):
 # --- SP-import path: frontStatuses -> is_custom_front=True ------------------
 
 
+def _run_file_import(client: httpx.Client, *, source: str, payload: bytes) -> dict:
+    """Enqueue a file import through the async runner, drive the runner
+    inside the test container, and return the terminal job. Imports moved
+    off synchronous endpoints onto the job runner — these SP-gap
+    regression tests follow the same enqueue + drive + poll shape as the
+    dedicated import-runner tests."""
+    import subprocess
+    import time
+    import uuid
+
+    resp = client.post(
+        "/v1/imports/file",
+        files={"file": ("import.json", payload, "application/json")},
+        data={"source": source, "idempotency_key": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["id"]
+
+    subprocess.run(
+        [
+            "docker", "compose", "-p", "sheaf-test", "exec", "-T", "app",
+            "python", "-c",
+            """
+import asyncio
+from sheaf.database import async_session_factory
+from sheaf.services.import_runner import run_import_tick
+
+async def main():
+    while True:
+        async with async_session_factory() as db:
+            result = await run_import_tick(db)
+        if result.get("items_processed", 0) == 0:
+            return
+asyncio.run(main())
+""",
+        ],
+        check=True,
+        timeout=60,
+    )
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        body = client.get(f"/v1/imports/{job_id}").json()
+        if body["status"] in ("complete", "failed", "cancelled"):
+            return body
+        time.sleep(0.2)
+    raise AssertionError(f"import job {job_id} did not finish in time")
+
+
 def _sp_export_with_custom_fronts() -> bytes:
     return json.dumps(
         {
@@ -164,14 +213,10 @@ def test_sp_import_marks_frontstatuses_as_custom_fronts(
     auth_client: httpx.Client,
 ):
     payload = _sp_export_with_custom_fronts()
-    resp = auth_client.post(
-        "/v1/import/simplyplural",
-        files={"file": ("sp.json", payload, "application/json")},
-    )
-    assert resp.status_code == 200, resp.text
-    result = resp.json()
-    assert result["members_imported"] == 1
-    assert result["custom_fronts_imported"] == 2
+    job = _run_file_import(auth_client, source="simplyplural_file", payload=payload)
+    assert job["status"] == "complete", job
+    assert job["counts"]["members_imported"] == 1
+    assert job["counts"]["custom_fronts_imported"] == 2
 
     members = auth_client.get("/v1/members").json()
     by_name = {m["name"]: m for m in members}
@@ -196,11 +241,8 @@ def test_sp_import_no_longer_prefixes_custom_front_descriptions(
             ],
         }
     ).encode()
-    resp = auth_client.post(
-        "/v1/import/simplyplural",
-        files={"file": ("sp.json", payload, "application/json")},
-    )
-    assert resp.status_code == 200
+    job = _run_file_import(auth_client, source="simplyplural_file", payload=payload)
+    assert job["status"] == "complete", job
 
     members = auth_client.get("/v1/members").json()
     by_name = {m["name"]: m for m in members}
@@ -266,9 +308,9 @@ def test_pk_import_does_not_set_custom_front(auth_client: httpx.Client):
     fixture = (
         pathlib.Path(__file__).parent / "fixtures" / "pk_export_sample.json"
     )
-    auth_client.post(
-        "/v1/import/pluralkit",
-        files={"file": ("pk.json", fixture.read_bytes(), "application/json")},
+    job = _run_file_import(
+        auth_client, source="pluralkit_file", payload=fixture.read_bytes()
     )
+    assert job["status"] == "complete", job
     members = auth_client.get("/v1/members").json()
     assert all(m["is_custom_front"] is False for m in members)
