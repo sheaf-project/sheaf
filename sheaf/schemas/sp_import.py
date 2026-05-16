@@ -1,14 +1,18 @@
 """Pydantic models for SimplyPlural data import."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SPImportOptions(BaseModel):
     """What to import from the SP export."""
 
+    # Strict: a typo'd option key from a hand-rolled client 422s rather
+    # than being silently ignored.
+    model_config = ConfigDict(extra="forbid")
+
     system_profile: bool = True
     member_ids: list[str] | None = Field(
-        None, description="SP member IDs to import. None = all."
+        None, max_length=10_000, description="SP member IDs to import. None = all."
     )
     custom_fronts: bool = True
     custom_fields: bool = True

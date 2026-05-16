@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +30,7 @@ from sheaf.schemas.pk_import import PKImportOptions
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     expect_dict,
+    parse_options,
     safe_json_loads,
 )
 from sheaf.services.import_runner import append_event, register_handler, update_counts
@@ -58,26 +58,6 @@ async def _load_user_system(db: AsyncSession, user_id) -> System:
             "no system found on this account — create a system before importing"
         )
     return system
-
-
-def _parse_options(job: ImportJob) -> PKImportOptions:
-    """Pull options out of payload_metadata and Pydantic-validate them.
-
-    Missing / null options means 'all defaults' which matches the legacy
-    endpoint's no-options-passed behaviour. Invalid options is a hard
-    failure (the frontend shouldn't be able to produce them, so this
-    being raised in production means a client bug or hand-rolled curl)."""
-    raw = (job.payload_metadata or {}).get("options")
-    if raw is None or raw == {}:
-        return PKImportOptions()
-    if not isinstance(raw, dict):
-        raise ImportPayloadError(
-            f"options must be a JSON object (got {type(raw).__name__})"
-        )
-    try:
-        return PKImportOptions.model_validate(raw)
-    except ValidationError as exc:
-        raise ImportPayloadError(f"invalid import options: {exc.errors()}") from exc
 
 
 async def _process_pk_export(
@@ -227,7 +207,7 @@ async def handle_pluralkit_file(job: ImportJob, db: AsyncSession) -> None:
     )
 
     parsed = expect_dict(safe_json_loads(blob), descriptor="PluralKit export")
-    options = _parse_options(job)
+    options = parse_options(job.payload_metadata, PKImportOptions)
     await _process_pk_export(job, db, parsed, options)
 
 
@@ -255,7 +235,7 @@ async def handle_pluralkit_api(job: ImportJob, db: AsyncSession) -> None:
             "could not decrypt the stored PluralKit token"
         ) from exc
 
-    options = _parse_options(job)
+    options = parse_options(job.payload_metadata, PKImportOptions)
 
     append_event(
         job,

@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
+
 # Per-payload element cap. PK / TB / SP / Sheaf exports of plausible
 # real systems are in the low tens of thousands of elements at most;
 # 5M leaves headroom for an order-of-magnitude growth without making
@@ -68,6 +70,31 @@ def safe_json_loads(
         elif isinstance(node, list):
             stack.extend(node)
     return parsed
+
+
+def parse_options[OptionsT: BaseModel](
+    payload_metadata: dict | None, model_cls: type[OptionsT]
+) -> OptionsT:
+    """Pull the `options` dict out of an ImportJob's payload_metadata and
+    Pydantic-validate it against the source's options model.
+
+    Missing / null / empty options means 'all defaults'. Invalid options
+    is a hard `ImportPayloadError` — the frontend shouldn't be able to
+    produce them, so a raise here means a client bug or hand-rolled
+    request, and failing the job loudly beats importing with a silently
+    wrong option set.
+    """
+    raw = (payload_metadata or {}).get("options")
+    if raw is None or raw == {}:
+        return model_cls()
+    if not isinstance(raw, dict):
+        raise ImportPayloadError(
+            f"options must be a JSON object (got {type(raw).__name__})"
+        )
+    try:
+        return model_cls.model_validate(raw)
+    except ValidationError as exc:
+        raise ImportPayloadError(f"invalid import options: {exc.errors()}") from exc
 
 
 def expect_dict(parsed: Any, *, descriptor: str) -> dict:
