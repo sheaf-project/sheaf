@@ -282,8 +282,8 @@ def _register_builtin_handlers() -> None:
     no-ops on any pending row, marks it failed with 'no handler', and
     that's an explicit error the developer sees immediately.
     """
+    # pk_import_runner registers both pluralkit_file and pluralkit_api.
     from sheaf.services import pk_import_runner  # noqa: F401
-    # Phase 4: from sheaf.services import pk_api_runner  # noqa: F401
     # Phase 5: from sheaf.services import tb_import_runner  # noqa: F401
     # Phase 5: from sheaf.services import sp_import_runner  # noqa: F401
     # Phase 6: from sheaf.services import sheaf_import_runner  # noqa: F401

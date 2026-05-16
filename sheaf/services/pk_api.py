@@ -32,6 +32,13 @@ SWITCHES_PAGE_SIZE = 100
 RATE_LIMIT_DELAY_SECONDS = 0.6
 REQUEST_TIMEOUT_SECONDS = 30.0
 
+# Cap on a single PK API response body before we parse it. A PK
+# member / group / switch-page response for even an unusually large
+# system is well under 10MB; 50MB is generous headroom that still
+# refuses a pathological or hostile response before it becomes a
+# multi-GB Python object graph.
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
 
 class PKApiError(Exception):
     """Raised when the PluralKit API returns an error or is unreachable."""
@@ -86,6 +93,12 @@ async def _get(client: httpx.AsyncClient, path: str, token: str, **params: Any) 
         raise PKApiError(
             f"PluralKit returned {resp.status_code}: {resp.text[:200]}",
             resp.status_code,
+        )
+
+    if len(resp.content) > MAX_RESPONSE_BYTES:
+        raise PKApiError(
+            f"PluralKit response too large "
+            f"({len(resp.content)} bytes > {MAX_RESPONSE_BYTES} cap)."
         )
 
     try:

@@ -1,26 +1,29 @@
-"""Async runner handler for PluralKit file imports.
+"""Async runner handlers for PluralKit imports — file upload + API fetch.
+
+Both sources produce the same canonical PK-export dict, so they share
+one post-parse processor (`_process_pk_export`): the file handler
+parses an uploaded blob, the API handler fetches the same shape live
+from PluralKit, then both walk members / groups / switches identically.
 
 Bridges the existing per-section importer helpers (`_build_member`,
 `_import_groups`, `_import_switches`) onto the ImportJob runner. The
-legacy synchronous `pk_import.run_import` still exists for the older
-`/v1/import/pluralkit` endpoint and lives alongside this until Phase 6
-cleanup deletes the legacy surface.
+legacy synchronous `pk_import.run_import` + `/v1/import/pluralkit*`
+endpoints live alongside this until Phase 6 cleanup.
 
-Per-record errors land in `job.events` rather than aborting the
-import. Hard failures (bad JSON, no system, schema-level validation)
-raise; the runner's outer try/except converts that into status=failed
-and a single error event.
+Per-record errors land in `job.events` rather than aborting. Hard
+failures (bad JSON, no system, PK API rejection) raise; the runner's
+outer try/except converts that into status=failed.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.crypto import decrypt
 from sheaf.models.import_job import ImportJob, ImportJobSource
 from sheaf.models.member import Member
 from sheaf.models.system import System
@@ -32,6 +35,7 @@ from sheaf.services.import_parsing import (
 )
 from sheaf.services.import_runner import append_event, register_handler, update_counts
 from sheaf.services.import_storage import get_payload
+from sheaf.services.pk_api import PKApiError, fetch_export
 from sheaf.services.pk_import import (
     _apply_system_profile,
     _build_member,
@@ -39,9 +43,6 @@ from sheaf.services.pk_import import (
     _import_switches,
     _list,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger("sheaf.imports.pk")
 
@@ -79,48 +80,24 @@ def _parse_options(job: ImportJob) -> PKImportOptions:
         raise ImportPayloadError(f"invalid import options: {exc.errors()}") from exc
 
 
-async def handle_pluralkit_file(job: ImportJob, db: AsyncSession) -> None:
-    """Run a PluralKit-file import for a claimed ImportJob.
+async def _process_pk_export(
+    job: ImportJob,
+    db: AsyncSession,
+    parsed: dict,
+    options: PKImportOptions,
+) -> None:
+    """Walk a parsed PK-export dict into the owner's system.
 
-    Phases:
-      1. Load + parse the payload (safe_json_loads guards element count)
-      2. Validate options
-      3. Locate the owner's system
-      4. Apply system profile (optional)
-      5. Walk members, building hid -> Member map; per-record errors
-         land in events
-      6. Walk groups (optional)
-      7. Walk switches (optional, the biggest section)
+    Shared by the file and API handlers — by the time this runs the
+    source-specific bit (read a blob vs fetch from the API) is done and
+    `parsed` is the canonical export shape either way.
 
-    The runner commits all DB mutations once the handler returns; per-
-    section flushes keep the SQLAlchemy unit of work happy without
-    locking in partial state on failure (the runner does a rollback
-    when the handler raises).
+    Phases: locate system -> system profile (optional) -> members
+    (per-record errors -> events) -> groups (optional) -> switches
+    (optional, the biggest section). The runner commits everything once
+    the handler returns; per-section flushes keep the unit of work
+    happy without locking in partial state on failure.
     """
-    if job.payload_storage_key is None:
-        raise ImportPayloadError(
-            "PluralKit file job has no payload — was the upload step skipped?"
-        )
-
-    blob = await get_payload(job.payload_storage_key)
-    if blob is None:
-        raise ImportPayloadError(
-            "PluralKit file payload missing from storage — "
-            "the blob may have been swept by orphan cleanup"
-        )
-
-    append_event(
-        job,
-        level="info",
-        stage="parse",
-        message=f"parsed {len(blob)} bytes of payload",
-    )
-
-    parsed = expect_dict(
-        safe_json_loads(blob), descriptor="PluralKit export"
-    )
-    options = _parse_options(job)
-
     system = await _load_user_system(db, job.user_id)
 
     if options.system_profile:
@@ -227,6 +204,87 @@ async def handle_pluralkit_file(job: ImportJob, db: AsyncSession) -> None:
             raise
 
 
+async def handle_pluralkit_file(job: ImportJob, db: AsyncSession) -> None:
+    """Run a PluralKit-file import: load the stashed payload, parse it
+    with the element-count guard, then hand off to the shared processor."""
+    if job.payload_storage_key is None:
+        raise ImportPayloadError(
+            "PluralKit file job has no payload — was the upload step skipped?"
+        )
+
+    blob = await get_payload(job.payload_storage_key)
+    if blob is None:
+        raise ImportPayloadError(
+            "PluralKit file payload missing from storage — "
+            "the blob may have been swept by orphan cleanup"
+        )
+
+    append_event(
+        job,
+        level="info",
+        stage="parse",
+        message=f"parsed {len(blob)} bytes of payload",
+    )
+
+    parsed = expect_dict(safe_json_loads(blob), descriptor="PluralKit export")
+    options = _parse_options(job)
+    await _process_pk_export(job, db, parsed, options)
+
+
+async def handle_pluralkit_api(job: ImportJob, db: AsyncSession) -> None:
+    """Run a PluralKit-API import: decrypt the stashed token, fetch the
+    system live from PluralKit, then hand off to the shared processor.
+
+    This is the migration that actually fixes a bug rather than just
+    hardening one — the live fetch paginates switch history with rate-
+    limit sleeps, which on a big system runs tens of seconds and would
+    blow the HTTP request timeout on the old synchronous endpoint.
+    Off the request path, it just takes as long as it takes.
+    """
+    meta = job.payload_metadata or {}
+    encrypted = meta.get("encrypted_credential")
+    if not encrypted:
+        raise ImportPayloadError(
+            "PluralKit API job has no stored credential — "
+            "the token may have already been wiped by a prior run"
+        )
+    try:
+        token = decrypt(encrypted)
+    except Exception as exc:
+        raise ImportPayloadError(
+            "could not decrypt the stored PluralKit token"
+        ) from exc
+
+    options = _parse_options(job)
+
+    append_event(
+        job,
+        level="info",
+        stage="fetch",
+        message="fetching system from the PluralKit API",
+    )
+    try:
+        parsed = await fetch_export(token, include_switches=options.front_history)
+    except PKApiError as exc:
+        # PK API rejections (bad token, 404, rate limit, upstream 5xx)
+        # are hard failures — surface the PK-provided message verbatim,
+        # it's already user-readable.
+        raise ImportPayloadError(f"PluralKit API: {exc}") from exc
+
+    append_event(
+        job,
+        level="info",
+        stage="fetch",
+        message=(
+            f"fetched {len(_list(parsed, 'members'))} members, "
+            f"{len(_list(parsed, 'groups'))} groups, "
+            f"{len(_list(parsed, 'switches'))} switches"
+        ),
+    )
+    await _process_pk_export(job, db, parsed, options)
+
+
 # Register at module-import time so importing this module from
-# import_runner._register_builtin_handlers wires it up.
+# import_runner._register_builtin_handlers wires both handlers up.
 register_handler(ImportJobSource.PLURALKIT_FILE.value, handle_pluralkit_file)
+register_handler(ImportJobSource.PLURALKIT_API.value, handle_pluralkit_api)
