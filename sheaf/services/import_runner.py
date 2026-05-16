@@ -285,10 +285,10 @@ def _register_builtin_handlers() -> None:
     # pk_import_runner registers both pluralkit_file and pluralkit_api.
     from sheaf.services import (
         pk_import_runner,  # noqa: F401
+        sheaf_import_runner,  # noqa: F401
         sp_import_runner,  # noqa: F401
         tb_import_runner,  # noqa: F401
     )
-    # Phase 6: from sheaf.services import sheaf_import_runner  # noqa: F401
 
 
 _register_builtin_handlers()
