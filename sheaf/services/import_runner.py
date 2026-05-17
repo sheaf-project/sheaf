@@ -27,6 +27,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from sheaf.config import settings
 from sheaf.models.import_job import ImportJob, ImportJobStatus
+from sheaf.services.import_parsing import ImportPayloadError
 from sheaf.services.import_storage import delete_payload
 
 logger = logging.getLogger("sheaf.imports")
@@ -222,7 +223,17 @@ async def run_import_tick(db: AsyncSession) -> dict:
     try:
         await handler(job, db)
     except Exception as exc:
-        logger.exception("import_job %s failed", job_id)
+        # ImportPayloadError is a *classified, expected* failure — bad
+        # payload, PK API unreachable, no system on the account. It is
+        # not a bug. Log it as a clean one-line warning (the message
+        # already names the cause) rather than a 60-line traceback, and
+        # don't dress it up as an "unhandled exception" in the report.
+        # Anything else is an actual bug: full traceback, loud.
+        expected = isinstance(exc, ImportPayloadError)
+        if expected:
+            logger.warning("import_job %s failed: %s", job_id, exc)
+        else:
+            logger.exception("import_job %s failed", job_id)
         # Roll back the importer's uncommitted state, then write the
         # terminal failed record from a *fresh* session. The handler's
         # session is in an unknown state after the raise — reusing it
@@ -245,7 +256,9 @@ async def run_import_tick(db: AsyncSession) -> dict:
                 fresh_job,
                 level="error",
                 stage="runner",
-                message=f"unhandled exception: {exc!s}"[:1000],
+                message=(
+                    str(exc) if expected else f"unhandled exception: {exc!s}"
+                )[:1000],
             )
             await _finalize(
                 fresh_job,

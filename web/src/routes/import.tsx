@@ -1,5 +1,6 @@
 import { type ChangeEvent, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { Loader2Icon } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -484,6 +485,10 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
   const [preview, setPreview] = useState<PKPreviewSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [idemKey] = useState(newIdempotencyKey);
+  // The PK API preview round-trips to pluralkit.me and can take a few
+  // seconds — without an explicit busy state the user gets no feedback
+  // and clicks again, firing duplicate calls (and sometimes a 429).
+  const [apiBusy, setApiBusy] = useState(false);
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
@@ -506,17 +511,24 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
   }
 
   async function handleApiPreview() {
-    if (!token.trim()) {
-      setError("Enter your PluralKit token first.");
+    if (!token.trim() || apiBusy) {
+      if (!token.trim()) setError("Enter your PluralKit token first.");
       return;
     }
     setError(null);
+    setApiBusy(true);
     try {
       const p = await previewPKApi(token);
       setPreview(p);
       setStep("preview");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not reach PluralKit");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not reach PluralKit. Check the token and try again.",
+      );
+    } finally {
+      setApiBusy(false);
     }
   }
 
@@ -651,12 +663,19 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
               />
             </div>
             <div className="flex gap-2">
-              <Button onClick={handleApiPreview} disabled={!token.trim()}>
-                Continue
+              <Button
+                onClick={handleApiPreview}
+                disabled={!token.trim() || apiBusy}
+              >
+                {apiBusy && (
+                  <Loader2Icon className="size-4 animate-spin" />
+                )}
+                {apiBusy ? "Retrieving from PluralKit…" : "Continue"}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
+                disabled={apiBusy}
                 onClick={() => {
                   setToken("");
                   setMethod("choose");
@@ -665,6 +684,12 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
                 Back
               </Button>
             </div>
+            {apiBusy && (
+              <p className="text-xs text-muted-foreground">
+                Fetching your system from the PluralKit API — this can
+                take a few seconds for systems with a long switch history.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

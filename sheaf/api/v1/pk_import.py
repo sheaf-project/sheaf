@@ -100,6 +100,16 @@ async def preview_api_import(
         data = await fetch_export(body.token, include_switches=False)
         switch_sample, has_more = await fetch_switch_sample(body.token)
     except PKApiError as exc:
+        # Log so a PK outage / rate-limiting (as opposed to a user's bad
+        # token) is visible to operators. The token itself is never
+        # logged — only the status code (when it's an HTTP error) and
+        # the message.
+        where = (
+            f"HTTP {exc.status_code}"
+            if exc.status_code is not None
+            else "connection error"
+        )
+        logger.warning("PK API preview failed (%s): %s", where, exc)
         raise _api_error_to_http(exc) from exc
 
     data["switches"] = switch_sample
