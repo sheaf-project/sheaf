@@ -32,6 +32,25 @@ SWITCHES_PAGE_SIZE = 100
 RATE_LIMIT_DELAY_SECONDS = 0.6
 REQUEST_TIMEOUT_SECONDS = 30.0
 
+# Cap on a single PK API response body before we parse it. A PK
+# member / group / switch-page response for even an unusually large
+# system is well under 10MB; 50MB is generous headroom that still
+# refuses a pathological or hostile response before it becomes a
+# multi-GB Python object graph.
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+# Transport-level retries. A *connection* failure (DNS, TCP connect,
+# read timeout) is transient — a cold dial racing flaky egress, the
+# kind of thing a retry usually clears. HTTP status errors (401, 404,
+# 429, 5xx) are NOT retried here: a bad token won't fix itself, and
+# the status-code branch below already classifies them. Only the
+# `httpx.HTTPError` raised by `client.get` itself is retried.
+# Delay grows exponentially from the base, capped — 5 attempts at
+# base 1s give gaps of ~1s, 2s, 4s, 5s before the final failure.
+_CONNECT_RETRY_ATTEMPTS = 5
+_CONNECT_RETRY_BASE_DELAY_SECONDS = 1.0
+_CONNECT_RETRY_MAX_DELAY_SECONDS = 5.0
+
 
 class PKApiError(Exception):
     """Raised when the PluralKit API returns an error or is unreachable."""
@@ -58,16 +77,48 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def _get(client: httpx.AsyncClient, path: str, token: str, **params: Any) -> Any:
-    """Issue one GET against the PK API, mapping HTTP errors to PKApiError."""
-    try:
-        resp = await client.get(
-            f"{PK_API_BASE}{path}",
-            headers=_headers(token),
-            params=params or None,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-    except httpx.HTTPError as exc:
-        raise PKApiError(f"Could not reach PluralKit API: {exc}") from exc
+    """Issue one GET against the PK API, mapping HTTP errors to PKApiError.
+
+    Transport failures (connect / timeout) are retried up to
+    `_CONNECT_RETRY_ATTEMPTS` times with exponential backoff before
+    giving up — they're usually a transient cold-connect hiccup. An
+    actual HTTP response, even an error status, is never retried here;
+    the status-code branch below handles those.
+    """
+    resp: httpx.Response | None = None
+    for attempt in range(1, _CONNECT_RETRY_ATTEMPTS + 1):
+        try:
+            resp = await client.get(
+                f"{PK_API_BASE}{path}",
+                headers=_headers(token),
+                params=params or None,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            break
+        except httpx.HTTPError as exc:
+            if attempt >= _CONNECT_RETRY_ATTEMPTS:
+                raise PKApiError(
+                    f"Could not reach PluralKit API after "
+                    f"{_CONNECT_RETRY_ATTEMPTS} attempts: {exc}"
+                ) from exc
+            delay = min(
+                _CONNECT_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                _CONNECT_RETRY_MAX_DELAY_SECONDS,
+            )
+            logger.warning(
+                "PK API %s: connection attempt %d/%d failed (%s), "
+                "retrying in %.1fs",
+                path,
+                attempt,
+                _CONNECT_RETRY_ATTEMPTS,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    # The loop either set `resp` and broke, or raised on the last
+    # attempt — so `resp` is never None here.
+    assert resp is not None
 
     if resp.status_code == 401:
         raise PKApiError("PluralKit token rejected (401). Check the token and try again.", 401)
@@ -86,6 +137,12 @@ async def _get(client: httpx.AsyncClient, path: str, token: str, **params: Any) 
         raise PKApiError(
             f"PluralKit returned {resp.status_code}: {resp.text[:200]}",
             resp.status_code,
+        )
+
+    if len(resp.content) > MAX_RESPONSE_BYTES:
+        raise PKApiError(
+            f"PluralKit response too large "
+            f"({len(resp.content)} bytes > {MAX_RESPONSE_BYTES} cap)."
         )
 
     try:

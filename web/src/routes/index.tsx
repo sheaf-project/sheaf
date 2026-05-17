@@ -15,6 +15,8 @@ import { SettingsAppearancePage } from "./settings/appearance";
 import { SettingsDataPage } from "./settings/data";
 import { SettingsDangerPage } from "./settings/danger";
 import { ImportPage } from "./import";
+import { ImportsPage } from "./imports";
+import { ImportDetailPage } from "./imports.$id";
 import { AboutPage } from "./about";
 import { JournalsPage } from "./journals";
 import { JournalDetailPage } from "./journals.$id";
@@ -93,6 +95,8 @@ export const router = createBrowserRouter([
         ],
       },
       { path: "import", element: <ImportPage /> },
+      { path: "imports", element: <ImportsPage /> },
+      { path: "imports/:id", element: <ImportDetailPage /> },
       { path: "about", element: <AboutPage /> },
       {
         path: "admin",

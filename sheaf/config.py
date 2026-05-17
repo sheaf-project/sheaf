@@ -278,6 +278,25 @@ class Settings(BaseSettings):
 
     # Front-change notifications
     notifications_dispatch_interval_seconds: int = 5
+
+    # Import runner tick interval. Short by default because a user
+    # who just clicked "import" expects something to happen within a
+    # few seconds, not a minute. Empty-queue ticks are a single indexed
+    # query returning no rows.
+    import_runner_interval_seconds: int = 5
+
+    # Whether the in-process import-runner loop starts at app boot.
+    # On in production. The test stack flips this off so the import
+    # tests can drive the runner deterministically (manually, often
+    # with a stubbed PK API) without a live loop racing them.
+    import_runner_enabled: bool = True
+
+    # How long terminal ImportJob rows live before the cleanup job
+    # deletes them. The uploaded payload blob is wiped at finalize
+    # time independently; this only controls the user-visible report.
+    # 30 days matches the job_runs log retention so 'what was happening
+    # around the same time' queries line up.
+    import_job_retention_days: int = 30
     activation_code_ttl_days: int = 7
     # VAPID keys for web push. Generate with `vapid --gen` (py-vapid) or any
     # WebPush helper. Empty = web_push destination type is rejected.

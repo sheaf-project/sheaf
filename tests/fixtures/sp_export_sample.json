@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "users": [
+    {
+      "_id": "spuser1",
+      "username": "SP Test System",
+      "desc": "Synthetic SimplyPlural export for import-runner tests.",
+      "color": "#aabbcc"
+    }
+  ],
+  "members": [
+    {
+      "_id": "spm1",
+      "name": "SpAlice",
+      "displayName": "Alice (SP)",
+      "desc": "First SP member.",
+      "pronouns": "she/her",
+      "color": "#ff0000",
+      "private": false
+    },
+    {
+      "_id": "spm2",
+      "name": "SpBob",
+      "desc": "Second SP member, private.",
+      "pronouns": "he/him",
+      "private": true
+    }
+  ],
+  "frontStatuses": [],
+  "frontHistory": [],
+  "groups": [],
+  "customFields": [],
+  "notes": []
+}

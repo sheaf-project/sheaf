@@ -36,6 +36,11 @@ services:
       # sandbox tokens). The test stack mimics a dev/staging deploy by
       # flipping it on so apns_dev paths get exercised.
       APNS_DEV_ENABLED: "true"
+      # Import-runner background loop OFF in the test stack: the
+      # import-runner tests drive the runner manually (often with a
+      # stubbed PK API). A live loop would race them and process a job
+      # with the real handler before the stubbed drive gets to it.
+      IMPORT_RUNNER_ENABLED: "false"
     volumes: []
     depends_on:
       db:
