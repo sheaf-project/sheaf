@@ -23,6 +23,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
@@ -37,7 +38,11 @@ from sheaf.schemas.imports import (
     ImportJobRead,
     ImportJobSummary,
 )
-from sheaf.services.import_storage import make_payload_key, put_payload
+from sheaf.services.import_storage import (
+    delete_payload,
+    make_payload_key,
+    put_payload,
+)
 
 logger = logging.getLogger("sheaf.imports.api")
 
@@ -63,6 +68,39 @@ async def _find_existing_idempotent(
         ImportJob.idempotency_key == str(idempotency_key),
     )
     return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def _commit_new_job(
+    db: AsyncSession,
+    job: ImportJob,
+    *,
+    user_id: uuid.UUID,
+    idempotency_key: uuid.UUID,
+) -> ImportJob:
+    """Commit a freshly-built ImportJob, resolving the idempotency race.
+
+    The pre-insert _find_existing_idempotent check is not atomic with
+    the INSERT: two concurrent requests carrying the same key can both
+    miss it and both try to insert. The uq_import_jobs_user_idempotency
+    constraint rejects the loser — turn that IntegrityError into the
+    dedupe behaviour the constraint promises (return the row the winner
+    created) instead of letting it surface as a 500.
+    """
+    db.add(job)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await _find_existing_idempotent(
+            db, user_id=user_id, idempotency_key=idempotency_key
+        )
+        if existing is None:
+            # Not the idempotency constraint — some other integrity
+            # violation. Don't swallow it.
+            raise
+        return existing
+    await db.refresh(job)
+    return job
 
 
 async def _load_owned_job(
@@ -171,9 +209,15 @@ async def create_file_import(
         counts={},
         events=[],
     )
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
+    job = await _commit_new_job(
+        db, job, user_id=user.id, idempotency_key=body.idempotency_key
+    )
+    if job.id != job_id:
+        # Lost the idempotency race — the winning job has its own
+        # payload; the blob we just uploaded for this losing attempt is
+        # now orphaned. Best-effort delete it rather than leave litter.
+        await delete_payload(storage_key)
+        return ImportJobRead.model_validate(job)
     logger.info(
         "import_job %s enqueued (source=%s, user=%s, size=%d)",
         job.id,
@@ -208,7 +252,11 @@ async def create_api_import(
 
     encrypted_token = encrypt(body.pk_token)
 
+    # Explicit id so the post-commit race check can compare against it
+    # (the UUIDMixin default is only applied at flush time).
+    new_id = uuid.uuid4()
     job = ImportJob(
+        id=new_id,
         user_id=user.id,
         source=body.source.value,
         status=ImportJobStatus.PENDING.value,
@@ -221,9 +269,14 @@ async def create_api_import(
         counts={},
         events=[],
     )
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
+    job = await _commit_new_job(
+        db, job, user_id=user.id, idempotency_key=body.idempotency_key
+    )
+    if job.id != new_id:
+        # Lost the idempotency race — return the winner. The losing
+        # row (with its encrypted token) was rolled back, nothing to
+        # clean up.
+        return ImportJobRead.model_validate(job)
     logger.info(
         "import_job %s enqueued (source=%s, user=%s, credential-based)",
         job.id,
@@ -242,11 +295,17 @@ async def list_imports(
     db: AsyncSession = Depends(get_db),
     limit: int = 25,
     include_archived: bool = False,
+    cursor: str | None = None,
 ) -> ImportJobList:
     """List the current user's imports, most-recent first.
 
     Excludes archived rows by default — the UI shows them via a
     separate "show archived" toggle.
+
+    Cursor pagination: when the response carries a `next_cursor`, pass
+    it back as the `cursor` query param to fetch the next page. The
+    cursor is the ISO timestamp of the last row on the current page;
+    the next page is everything strictly older than it.
     """
     if not 1 <= limit <= 100:
         raise HTTPException(
@@ -261,13 +320,22 @@ async def list_imports(
     )
     if not include_archived:
         stmt = stmt.where(ImportJob.archived_at.is_(None))
+    if cursor is not None:
+        try:
+            cursor_dt = datetime.fromisoformat(cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="cursor must be an ISO-8601 timestamp",
+            ) from exc
+        stmt = stmt.where(ImportJob.created_at < cursor_dt)
     rows = list((await db.execute(stmt)).scalars().all())
     next_cursor = None
     if len(rows) > limit:
         # Drop the trailing peek row and synthesize a continuation cursor
-        # from the last-included item's created_at. Keeping the cursor
-        # opaque (datetime ISO string is fine for v1) — the client doesn't
-        # interpret it.
+        # from the last-included item's created_at. created_at carries
+        # enough precision (microseconds) that a strict `<` comparison
+        # won't skip or repeat rows at realistic enqueue rates.
         rows = rows[:limit]
         next_cursor = rows[-1].created_at.isoformat()
     return ImportJobList(

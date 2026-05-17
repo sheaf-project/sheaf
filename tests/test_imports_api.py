@@ -189,14 +189,33 @@ def test_list_returns_user_jobs_most_recent_first(auth_client: httpx.Client):
 
 
 def test_list_paginates_via_next_cursor(auth_client: httpx.Client):
-    """limit=1 with 2+ jobs surfaces next_cursor; raising the limit
-    drops it."""
-    _post_file(auth_client, source="pluralkit_file")
-    _post_file(auth_client, source="tupperbox_file")
-    one = auth_client.get("/v1/imports", params={"limit": 1})
-    assert one.status_code == 200, one.text
-    assert one.json()["next_cursor"] is not None
-    assert len(one.json()["items"]) == 1
+    """limit=1 surfaces next_cursor; passing it back as ?cursor= fetches
+    the next page, and the two pages partition the jobs without overlap."""
+    first = _post_file(auth_client, source="pluralkit_file")
+    second = _post_file(auth_client, source="tupperbox_file")
+
+    page1 = auth_client.get("/v1/imports", params={"limit": 1})
+    assert page1.status_code == 200, page1.text
+    p1 = page1.json()
+    assert len(p1["items"]) == 1
+    assert p1["next_cursor"] is not None
+    # Newest first — page 1 is the second-created job.
+    assert p1["items"][0]["id"] == second.json()["id"]
+
+    # Page 2 via the cursor — the older job, no overlap.
+    page2 = auth_client.get(
+        "/v1/imports", params={"limit": 1, "cursor": p1["next_cursor"]}
+    )
+    assert page2.status_code == 200, page2.text
+    p2 = page2.json()
+    assert len(p2["items"]) == 1
+    assert p2["items"][0]["id"] == first.json()["id"]
+    assert p2["items"][0]["id"] != p1["items"][0]["id"]
+
+
+def test_list_rejects_bad_cursor(auth_client: httpx.Client):
+    resp = auth_client.get("/v1/imports", params={"cursor": "not-a-timestamp"})
+    assert resp.status_code == 422, resp.text
 
 
 def test_list_excludes_archived_by_default(auth_client: httpx.Client):

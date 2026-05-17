@@ -50,7 +50,7 @@ logger = logging.getLogger("sheaf.import.pk")
 _PKID_MAX_LEN = 8
 
 
-def _list(data: dict, key: str) -> list[dict]:
+def get_list(data: dict, key: str) -> list[dict]:
     """Get a list-typed collection from PK data, defaulting to empty."""
     value = data.get(key)
     return value if isinstance(value, list) else []
@@ -74,9 +74,9 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
     minimum-known count when only one page was fetched. The file path
     leaves it None so the count comes straight from the parsed JSON.
     """
-    members = _list(data, "members")
-    groups = _list(data, "groups")
-    switches = _list(data, "switches")
+    members = get_list(data, "members")
+    groups = get_list(data, "groups")
+    switches = get_list(data, "switches")
 
     timestamps = [_parse_iso(s.get("timestamp")) for s in switches]
     timestamps = [t for t in timestamps if t is not None]
@@ -109,7 +109,7 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
 # --- System profile ----------------------------------------------------------
 
 
-def _apply_system_profile(data: dict, system: System) -> None:
+def apply_system_profile(data: dict, system: System) -> None:
     """Copy a few non-destructive fields from the PK system onto Sheaf's.
 
     We never overwrite a name the user has already set (their Sheaf system
@@ -137,7 +137,7 @@ def _apply_system_profile(data: dict, system: System) -> None:
 # --- Members -----------------------------------------------------------------
 
 
-def _build_member(pk_m: dict, system_id: uuid.UUID) -> Member | None:
+def build_member(pk_m: dict, system_id: uuid.UUID) -> Member | None:
     """Construct a Sheaf Member from a PK member object.
 
     Returns None if the source row lacks a usable name. Encryption,
@@ -170,7 +170,7 @@ def _build_member(pk_m: dict, system_id: uuid.UUID) -> Member | None:
 # --- Groups ------------------------------------------------------------------
 
 
-async def _import_groups(
+async def import_groups(
     pk_groups: list[dict],
     system_id: uuid.UUID,
     hid_to_member: dict[str, Member],
@@ -210,7 +210,7 @@ async def _import_groups(
         # - The export file inlines `members` as a list of member HIDs.
         # - The /v2/groups?with_members=true response inlines them as full
         #   member objects, in which case we still want HIDs.
-        for entry in _list(pk_g, "members"):
+        for entry in get_list(pk_g, "members"):
             hid = entry if isinstance(entry, str) else _clean_str(
                 entry.get("id") if isinstance(entry, dict) else None
             )
@@ -229,7 +229,7 @@ async def _import_groups(
 # --- Switches → fronts -------------------------------------------------------
 
 
-async def _import_switches(
+async def import_switches(
     pk_switches: list[dict],
     system_id: uuid.UUID,
     hid_to_member: dict[str, Member],

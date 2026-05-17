@@ -676,6 +676,80 @@ async def _cleanup_import_jobs(db: AsyncSession) -> dict:
     return {"items_processed": result.rowcount or 0}
 
 
+# A job that has crashed the worker this many times is parked as
+# failed rather than reset again — otherwise a payload that
+# reliably kills the runner would loop forever.
+_IMPORT_MAX_ATTEMPTS = 3
+
+
+async def _recover_stale_imports(db: AsyncSession) -> dict:
+    """Reset ImportJob rows stuck in `running` after a worker crash.
+
+    A worker killed mid-import leaves the row at status=running (the
+    claim committed) but the import data never committed (the killed
+    transaction rolled back) — so resetting to `pending` is a clean
+    retry, no risk of double-import.
+
+    failed_attempts is bumped on each reset; once it would exceed
+    _IMPORT_MAX_ATTEMPTS the job is parked as `failed` instead, so a
+    payload that reliably crashes the runner doesn't cycle forever.
+    """
+    from sheaf.models.import_job import ImportJob, ImportJobStatus
+    from sheaf.services.import_runner import append_event
+
+    cutoff = datetime.now(UTC) - timedelta(
+        minutes=settings.import_stale_running_minutes
+    )
+    result = await db.execute(
+        select(ImportJob).where(
+            ImportJob.status == ImportJobStatus.RUNNING.value,
+            ImportJob.claimed_at.is_not(None),
+            ImportJob.claimed_at < cutoff,
+        )
+    )
+    stale = list(result.scalars().all())
+    if not stale:
+        return {"items_processed": 0}
+
+    reset = 0
+    parked = 0
+    for job in stale:
+        job.failed_attempts += 1
+        if job.failed_attempts >= _IMPORT_MAX_ATTEMPTS:
+            job.status = ImportJobStatus.FAILED.value
+            job.finished_at = datetime.now(UTC)
+            job.last_error = (
+                f"import worker did not finish; gave up after "
+                f"{job.failed_attempts} stalled attempts"
+            )
+            append_event(
+                job,
+                level="error",
+                stage="runner",
+                message=(
+                    "import abandoned — the worker stalled on this job "
+                    f"{job.failed_attempts} times"
+                ),
+            )
+            parked += 1
+        else:
+            job.status = ImportJobStatus.PENDING.value
+            job.claimed_at = None
+            job.claimed_by = None
+            reset += 1
+        logger.warning(
+            "recovered stale import_job %s (attempt %d) -> %s",
+            job.id,
+            job.failed_attempts,
+            job.status,
+        )
+    await db.commit()
+    return {
+        "items_processed": len(stale),
+        "details": f"{reset} reset to pending, {parked} parked failed",
+    }
+
+
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -805,6 +879,13 @@ def _register_all_jobs() -> None:
         description="Delete ImportJob rows past their retention window",
         func=_cleanup_import_jobs,
         interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="recover_stale_imports",
+        description="Reset ImportJob rows stuck running after a worker crash",
+        func=_recover_stale_imports,
+        interval_seconds=lambda: settings.import_stale_running_minutes * 60,
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images

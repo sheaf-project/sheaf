@@ -10,7 +10,6 @@ asserting 422 (schema-layer rejection) instead of 500."""
 
 from __future__ import annotations
 
-import os
 import uuid as _uuid
 
 import httpx
