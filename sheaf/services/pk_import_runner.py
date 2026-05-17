@@ -5,10 +5,9 @@ one post-parse processor (`_process_pk_export`): the file handler
 parses an uploaded blob, the API handler fetches the same shape live
 from PluralKit, then both walk members / groups / switches identically.
 
-Bridges the existing per-section importer helpers (`_build_member`,
-`_import_groups`, `_import_switches`) onto the ImportJob runner. The
-legacy synchronous `pk_import.run_import` + `/v1/import/pluralkit*`
-endpoints live alongside this until Phase 6 cleanup.
+Bridges the per-section importer helpers (`build_member`,
+`import_groups`, `import_switches`, `apply_system_profile`,
+`get_list`) in pk_import.py onto the ImportJob runner.
 
 Per-record errors land in `job.events` rather than aborting. Hard
 failures (bad JSON, no system, PK API rejection) raise; the runner's
@@ -19,13 +18,11 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
 from sheaf.models.import_job import ImportJob, ImportJobSource
 from sheaf.models.member import Member
-from sheaf.models.system import System
 from sheaf.schemas.pk_import import PKImportOptions
 from sheaf.services.import_parsing import (
     ImportPayloadError,
@@ -33,31 +30,23 @@ from sheaf.services.import_parsing import (
     parse_options,
     safe_json_loads,
 )
-from sheaf.services.import_runner import append_event, register_handler, update_counts
+from sheaf.services.import_runner import (
+    append_event,
+    load_user_system,
+    register_handler,
+    update_counts,
+)
 from sheaf.services.import_storage import get_payload
 from sheaf.services.pk_api import PKApiError, fetch_export
 from sheaf.services.pk_import import (
-    _apply_system_profile,
-    _build_member,
-    _import_groups,
-    _import_switches,
-    _list,
+    apply_system_profile,
+    build_member,
+    get_list,
+    import_groups,
+    import_switches,
 )
 
 logger = logging.getLogger("sheaf.imports.pk")
-
-
-async def _load_user_system(db: AsyncSession, user_id) -> System:
-    """Mirror of the legacy endpoint's lookup. Raises ImportPayloadError
-    so the runner surfaces it as a parse-stage user-facing failure
-    rather than an unhandled traceback."""
-    result = await db.execute(select(System).where(System.user_id == user_id))
-    system = result.scalar_one_or_none()
-    if system is None:
-        raise ImportPayloadError(
-            "no system found on this account — create a system before importing"
-        )
-    return system
 
 
 async def _process_pk_export(
@@ -78,10 +67,10 @@ async def _process_pk_export(
     the handler returns; per-section flushes keep the unit of work
     happy without locking in partial state on failure.
     """
-    system = await _load_user_system(db, job.user_id)
+    system = await load_user_system(db, job.user_id)
 
     if options.system_profile:
-        _apply_system_profile(parsed, system)
+        apply_system_profile(parsed, system)
         append_event(
             job,
             level="info",
@@ -91,7 +80,7 @@ async def _process_pk_export(
 
     # --- Members ---------------------------------------------------------
 
-    pk_members = _list(parsed, "members")
+    pk_members = get_list(parsed, "members")
     if options.member_ids is not None:
         wanted = set(options.member_ids)
         pk_members = [m for m in pk_members if m.get("id") in wanted]
@@ -103,7 +92,7 @@ async def _process_pk_export(
         # with the HID so the user can see what got skipped.
         hid_for_event = pk_m.get("id") if isinstance(pk_m, dict) else None
         try:
-            member = _build_member(pk_m, system.id)
+            member = build_member(pk_m, system.id)
         except Exception as exc:
             update_counts(job, members_failed=1)
             append_event(
@@ -115,7 +104,7 @@ async def _process_pk_export(
             )
             continue
         if member is None:
-            # _build_member returns None for unusable rows (no name, no id).
+            # build_member returns None for unusable rows (no name, no id).
             update_counts(job, members_failed=1)
             append_event(
                 job,
@@ -137,8 +126,8 @@ async def _process_pk_export(
 
     if options.groups:
         try:
-            count = await _import_groups(
-                _list(parsed, "groups"), system.id, hid_to_member, db
+            count = await import_groups(
+                get_list(parsed, "groups"), system.id, hid_to_member, db
             )
             update_counts(job, groups_imported=count)
             append_event(
@@ -160,8 +149,8 @@ async def _process_pk_export(
 
     if options.front_history:
         try:
-            fronts, warnings = await _import_switches(
-                _list(parsed, "switches"), system.id, hid_to_member, db
+            fronts, warnings = await import_switches(
+                get_list(parsed, "switches"), system.id, hid_to_member, db
             )
             update_counts(job, fronts_imported=fronts)
             append_event(
@@ -256,9 +245,9 @@ async def handle_pluralkit_api(job: ImportJob, db: AsyncSession) -> None:
         level="info",
         stage="fetch",
         message=(
-            f"fetched {len(_list(parsed, 'members'))} members, "
-            f"{len(_list(parsed, 'groups'))} groups, "
-            f"{len(_list(parsed, 'switches'))} switches"
+            f"fetched {len(get_list(parsed, 'members'))} members, "
+            f"{len(get_list(parsed, 'groups'))} groups, "
+            f"{len(get_list(parsed, 'switches'))} switches"
         ),
     )
     await _process_pk_export(job, db, parsed, options)

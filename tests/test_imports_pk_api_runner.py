@@ -11,10 +11,11 @@ take) with a stub before ticking the runner.
 from __future__ import annotations
 
 import subprocess
-import time
 import uuid
 
 import httpx
+
+from tests._import_runner_helpers import drive_import_runner, wait_for_terminal
 
 # Minimal valid PK-export shape the stub fetch returns. One member,
 # no groups, no switches — enough to prove the handler walks the
@@ -34,45 +35,29 @@ _STUB_EXPORT_PY = """{
 
 
 def _drive_runner_pk_api(*, fail_mode: str = "") -> None:
-    """Tick the import runner inside the container with fetch_export
-    stubbed.
+    """Drive the runner with `fetch_export` monkeypatched.
+
+    pk_import_runner does `from ... import fetch_export`, so the stub
+    has to replace *that module's* binding, not pk_api's. The patch is
+    injected via the shared helper's `setup` hook.
 
     fail_mode="" -> stub returns the export above (success path).
     fail_mode="pkapi" -> stub raises PKApiError (rejection path).
     """
     if fail_mode == "pkapi":
-        stub = (
-            "async def fake_fetch(token, *, include_switches=True):\n"
+        body = (
             "    from sheaf.services.pk_api import PKApiError\n"
             "    raise PKApiError('PluralKit token rejected (401).', 401)\n"
         )
     else:
-        stub = (
-            "async def fake_fetch(token, *, include_switches=True):\n"
-            f"    return {_STUB_EXPORT_PY}\n"
-        )
-    script = f"""
-import asyncio
-from sheaf.database import async_session_factory
-from sheaf.services.import_runner import run_import_tick
-import sheaf.services.pk_import_runner as pir
-
-{stub}
-pir.fetch_export = fake_fetch
-
-async def main():
-    while True:
-        async with async_session_factory() as db:
-            result = await run_import_tick(db)
-        if result.get("items_processed", 0) == 0:
-            return
-asyncio.run(main())
-"""
-    subprocess.run(
-        ["docker", "compose", "-p", "sheaf-test", "exec", "-T", "app", "python", "-c", script],
-        check=True,
-        timeout=60,
+        body = f"    return {_STUB_EXPORT_PY}\n"
+    setup = (
+        "import sheaf.services.pk_import_runner as pir\n"
+        "async def fake_fetch(token, *, include_switches=True):\n"
+        f"{body}"
+        "pir.fetch_export = fake_fetch\n"
     )
+    drive_import_runner(setup=setup)
 
 
 def _post_api_import(client: httpx.Client, *, idem_key: str | None = None) -> dict:
@@ -88,20 +73,6 @@ def _post_api_import(client: httpx.Client, *, idem_key: str | None = None) -> di
     return resp.json()
 
 
-def _wait_for_terminal(
-    client: httpx.Client, job_id: str, *, timeout_s: float = 10.0
-) -> dict:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        resp = client.get(f"/v1/imports/{job_id}")
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        if body["status"] in ("complete", "failed", "cancelled"):
-            return body
-        time.sleep(0.2)
-    raise AssertionError(f"job {job_id} not terminal in {timeout_s}s")
-
-
 # --- Happy path ------------------------------------------------------------
 
 
@@ -110,7 +81,7 @@ def test_pk_api_runner_imports_fetched_system(auth_client: httpx.Client):
     into the user's system exactly like the file handler would."""
     job = _post_api_import(auth_client)
     _drive_runner_pk_api()
-    final = _wait_for_terminal(auth_client, job["id"])
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "complete", final
     assert final["counts"]["members_imported"] == 2, final["counts"]
@@ -125,7 +96,7 @@ def test_pk_api_runner_emits_fetch_events(auth_client: httpx.Client):
     the live-pull step distinctly from the file-parse step."""
     job = _post_api_import(auth_client)
     _drive_runner_pk_api()
-    final = _wait_for_terminal(auth_client, job["id"])
+    final = wait_for_terminal(auth_client, job["id"])
 
     fetch_events = [e for e in final["events"] if e["stage"] == "fetch"]
     assert fetch_events, final["events"]
@@ -140,7 +111,7 @@ def test_pk_api_runner_fails_on_pk_rejection(auth_client: httpx.Client):
     failure — status=failed with the PK-provided message surfaced."""
     job = _post_api_import(auth_client)
     _drive_runner_pk_api(fail_mode="pkapi")
-    final = _wait_for_terminal(auth_client, job["id"])
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "failed", final
     assert any(
@@ -158,7 +129,7 @@ def test_pk_api_runner_wipes_credential_on_finalize(auth_client: httpx.Client):
     API response never exposes payload_metadata."""
     job = _post_api_import(auth_client)
     _drive_runner_pk_api()
-    final = _wait_for_terminal(auth_client, job["id"])
+    final = wait_for_terminal(auth_client, job["id"])
     assert final["status"] == "complete"
 
     # Inspect the row in-container: encrypted_credential must be absent.

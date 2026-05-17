@@ -124,10 +124,12 @@ export async function createApiImport(params: {
 }
 
 export async function listImportJobs(
-  includeArchived = false,
+  opts: { cursor?: string; includeArchived?: boolean } = {},
 ): Promise<ImportJobList> {
   const params = new URLSearchParams({ limit: "50" });
-  if (includeArchived) params.set("include_archived", "true");
+  if (opts.includeArchived) params.set("include_archived", "true");
+  // Pass the previous page's next_cursor here to fetch the next page.
+  if (opts.cursor) params.set("cursor", opts.cursor);
   return apiFetch<ImportJobList>(`/v1/imports?${params.toString()}`);
 }
 

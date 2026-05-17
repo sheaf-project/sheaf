@@ -13,11 +13,9 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.models.import_job import ImportJob, ImportJobSource
-from sheaf.models.system import System
 from sheaf.schemas.sp_import import SPImportOptions
 from sheaf.services.import_parsing import (
     ImportPayloadError,
@@ -25,21 +23,16 @@ from sheaf.services.import_parsing import (
     parse_options,
     safe_json_loads,
 )
-from sheaf.services.import_runner import append_event, register_handler, update_counts
+from sheaf.services.import_runner import (
+    append_event,
+    load_user_system,
+    register_handler,
+    update_counts,
+)
 from sheaf.services.import_storage import get_payload
 from sheaf.services.sp_import import run_import as sp_run_import
 
 logger = logging.getLogger("sheaf.imports.sp")
-
-
-async def _load_user_system(db: AsyncSession, user_id) -> System:
-    result = await db.execute(select(System).where(System.user_id == user_id))
-    system = result.scalar_one_or_none()
-    if system is None:
-        raise ImportPayloadError(
-            "no system found on this account — create a system before importing"
-        )
-    return system
 
 
 async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
@@ -65,7 +58,7 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
 
     parsed = expect_dict(safe_json_loads(blob), descriptor="SimplyPlural export")
     options = parse_options(job.payload_metadata, SPImportOptions)
-    system = await _load_user_system(db, job.user_id)
+    system = await load_user_system(db, job.user_id)
 
     result = await sp_run_import(parsed, options, system, db)
 
