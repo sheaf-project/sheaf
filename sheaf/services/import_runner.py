@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +28,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from sheaf.config import settings
 from sheaf.models.import_job import ImportJob, ImportJobStatus
+from sheaf.models.system import System
 from sheaf.services.import_parsing import ImportPayloadError
 from sheaf.services.import_storage import delete_payload
 
@@ -104,6 +106,23 @@ def append_event(
     events.append(entry)
     job.events = events
     flag_modified(job, "events")
+
+
+async def load_user_system(db: AsyncSession, user_id: uuid.UUID) -> System:
+    """Locate the importing user's system, or raise ImportPayloadError.
+
+    Shared by every per-source handler — an import has to land somewhere,
+    and "you haven't created a system yet" is a user-facing precondition
+    failure, not a bug. Raising ImportPayloadError gets it surfaced as a
+    clean failed-job message rather than an unhandled traceback.
+    """
+    result = await db.execute(select(System).where(System.user_id == user_id))
+    system = result.scalar_one_or_none()
+    if system is None:
+        raise ImportPayloadError(
+            "no system found on this account — create a system before importing"
+        )
+    return system
 
 
 def update_counts(job: ImportJob, **deltas: int) -> None:
@@ -321,6 +340,7 @@ __all__ = [
     "MAX_EVENTS_PER_JOB",
     "append_event",
     "import_runner_loop",
+    "load_user_system",
     "register_handler",
     "run_import_tick",
     "update_counts",

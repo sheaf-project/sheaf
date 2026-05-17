@@ -11,39 +11,17 @@ task).
 from __future__ import annotations
 
 import pathlib
-import subprocess
-import time
 import uuid
 
 import httpx
 
+from tests._import_runner_helpers import (
+    drive_import_runner,
+    wait_for_terminal,
+)
+
 TB_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "tupperbox_export_sample.json"
 SP_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "sp_export_sample.json"
-
-
-def _drive_runner() -> None:
-    """Drain the import runner inside the test container until empty."""
-    subprocess.run(
-        [
-            "docker", "compose", "-p", "sheaf-test", "exec", "-T", "app",
-            "python", "-c",
-            """
-import asyncio
-from sheaf.database import async_session_factory
-from sheaf.services.import_runner import run_import_tick
-
-async def main():
-    while True:
-        async with async_session_factory() as db:
-            result = await run_import_tick(db)
-        if result.get("items_processed", 0) == 0:
-            return
-asyncio.run(main())
-""",
-        ],
-        check=True,
-        timeout=60,
-    )
 
 
 def _post_file(
@@ -62,20 +40,6 @@ def _post_file(
     return resp.json()
 
 
-def _wait_for_terminal(
-    client: httpx.Client, job_id: str, *, timeout_s: float = 10.0
-) -> dict:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        resp = client.get(f"/v1/imports/{job_id}")
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        if body["status"] in ("complete", "failed", "cancelled"):
-            return body
-        time.sleep(0.2)
-    raise AssertionError(f"job {job_id} not terminal in {timeout_s}s")
-
-
 # --- Tupperbox -------------------------------------------------------------
 
 
@@ -83,8 +47,8 @@ def test_tupperbox_runner_imports_members(auth_client: httpx.Client):
     job = _post_file(
         auth_client, source="tupperbox_file", payload=TB_FIXTURE.read_bytes()
     )
-    _drive_runner()
-    final = _wait_for_terminal(auth_client, job["id"])
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "complete", final
     assert final["counts"]["members_imported"] >= 1, final["counts"]
@@ -98,8 +62,8 @@ def test_tupperbox_runner_fails_on_invalid_json(auth_client: httpx.Client):
     job = _post_file(
         auth_client, source="tupperbox_file", payload=b"definitely not json"
     )
-    _drive_runner()
-    final = _wait_for_terminal(auth_client, job["id"])
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "failed", final
     assert any("invalid JSON" in e["message"] for e in final["events"])
@@ -107,8 +71,8 @@ def test_tupperbox_runner_fails_on_invalid_json(auth_client: httpx.Client):
 
 def test_tupperbox_runner_fails_on_non_object_root(auth_client: httpx.Client):
     job = _post_file(auth_client, source="tupperbox_file", payload=b"[1, 2, 3]")
-    _drive_runner()
-    final = _wait_for_terminal(auth_client, job["id"])
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "failed", final
     assert any("must be a JSON object" in e["message"] for e in final["events"])
@@ -121,8 +85,8 @@ def test_simplyplural_runner_imports_members(auth_client: httpx.Client):
     job = _post_file(
         auth_client, source="simplyplural_file", payload=SP_FIXTURE.read_bytes()
     )
-    _drive_runner()
-    final = _wait_for_terminal(auth_client, job["id"])
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "complete", final
     assert final["counts"]["members_imported"] == 2, final["counts"]
@@ -136,8 +100,8 @@ def test_simplyplural_runner_fails_on_invalid_json(auth_client: httpx.Client):
     job = _post_file(
         auth_client, source="simplyplural_file", payload=b"{ broken"
     )
-    _drive_runner()
-    final = _wait_for_terminal(auth_client, job["id"])
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "failed", final
     assert any("invalid JSON" in e["message"] for e in final["events"])
@@ -149,8 +113,8 @@ def test_simplyplural_runner_summary_event(auth_client: httpx.Client):
     job = _post_file(
         auth_client, source="simplyplural_file", payload=SP_FIXTURE.read_bytes()
     )
-    _drive_runner()
-    final = _wait_for_terminal(auth_client, job["id"])
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
 
     summary = [
         e for e in final["events"]

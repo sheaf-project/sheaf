@@ -297,6 +297,12 @@ class Settings(BaseSettings):
     # 30 days matches the job_runs log retention so 'what was happening
     # around the same time' queries line up.
     import_job_retention_days: int = 30
+
+    # A job stuck in `running` longer than this is presumed orphaned by
+    # a crashed worker; the recovery sweep resets it to `pending` for a
+    # retry. Generous — a large PluralKit API import paginating switch
+    # history legitimately runs tens of seconds, never minutes.
+    import_stale_running_minutes: int = 15
     activation_code_ttl_days: int = 7
     # VAPID keys for web push. Generate with `vapid --gen` (py-vapid) or any
     # WebPush helper. Empty = web_push destination type is rejected.

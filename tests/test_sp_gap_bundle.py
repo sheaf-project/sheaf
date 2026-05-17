@@ -151,9 +151,9 @@ def _run_file_import(client: httpx.Client, *, source: str, payload: bytes) -> di
     off synchronous endpoints onto the job runner — these SP-gap
     regression tests follow the same enqueue + drive + poll shape as the
     dedicated import-runner tests."""
-    import subprocess
-    import time
     import uuid
+
+    from tests._import_runner_helpers import drive_import_runner, wait_for_terminal
 
     resp = client.post(
         "/v1/imports/file",
@@ -163,35 +163,8 @@ def _run_file_import(client: httpx.Client, *, source: str, payload: bytes) -> di
     assert resp.status_code == 202, resp.text
     job_id = resp.json()["id"]
 
-    subprocess.run(
-        [
-            "docker", "compose", "-p", "sheaf-test", "exec", "-T", "app",
-            "python", "-c",
-            """
-import asyncio
-from sheaf.database import async_session_factory
-from sheaf.services.import_runner import run_import_tick
-
-async def main():
-    while True:
-        async with async_session_factory() as db:
-            result = await run_import_tick(db)
-        if result.get("items_processed", 0) == 0:
-            return
-asyncio.run(main())
-""",
-        ],
-        check=True,
-        timeout=60,
-    )
-
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        body = client.get(f"/v1/imports/{job_id}").json()
-        if body["status"] in ("complete", "failed", "cancelled"):
-            return body
-        time.sleep(0.2)
-    raise AssertionError(f"import job {job_id} did not finish in time")
+    drive_import_runner()
+    return wait_for_terminal(client, job_id)
 
 
 def _sp_export_with_custom_fronts() -> bytes:

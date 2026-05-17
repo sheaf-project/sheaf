@@ -3,10 +3,11 @@
  *
  * Lists the user's past + in-flight imports, polling while any are
  * still active so a freshly-queued job animates toward done without a
- * manual refresh. Each row links to the detail page.
+ * manual refresh. Cursor-paginated via "Load more". Each row links to
+ * the detail page.
  */
 import { Link } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,11 +32,18 @@ function StatusBadge({ status }: { status: ImportJobStatus }) {
   return <Badge variant={variant}>{status}</Badge>;
 }
 
-/** Compact "12 members, 3 groups" summary from a counts dict. */
+/** Compact "12 members, 3 groups" summary from a counts dict.
+ *
+ * Includes every non-zero counter, not just the *_imported ones — a
+ * job whose only counts are failures (e.g. members_failed) still has
+ * something worth showing in the list rather than a bare "—". */
 function countsSummary(counts: Record<string, number>): string {
   const parts = Object.entries(counts)
-    .filter(([key, v]) => v > 0 && key.endsWith("_imported"))
-    .map(([key, v]) => `${v} ${key.replace(/_imported$/, "").replace(/_/g, " ")}`);
+    .filter(([, v]) => v > 0)
+    .map(
+      ([key, v]) =>
+        `${v} ${key.replace(/_imported$/, "").replace(/_/g, " ")}`,
+    );
   return parts.length > 0 ? parts.join(", ") : "—";
 }
 
@@ -60,19 +68,31 @@ function ImportRow({ job }: { job: ImportJobSummary }) {
 }
 
 export function ImportsPage() {
-  const { data, isLoading } = useQuery({
+  const {
+    data,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
     queryKey: ["import-jobs"],
-    queryFn: () => listImportJobs(),
+    queryFn: ({ pageParam }) => listImportJobs({ cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     refetchInterval: (query) => {
-      const items = query.state.data?.items ?? [];
-      const active = items.some(
-        (j) => j.status === "pending" || j.status === "running",
+      // Poll while any loaded job is still in flight. Refetch covers
+      // every loaded page, but pages are small so that's cheap.
+      const pages = query.state.data?.pages ?? [];
+      const active = pages.some((p) =>
+        p.items.some(
+          (j) => j.status === "pending" || j.status === "running",
+        ),
       );
       return active ? 2000 : false;
     },
   });
 
-  const items = data?.items ?? [];
+  const items = data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
     <>
@@ -97,13 +117,25 @@ export function ImportsPage() {
           </CardContent>
         </Card>
       ) : (
-        <Card className="max-w-3xl">
-          <CardContent className="px-0 py-0">
-            {items.map((job) => (
-              <ImportRow key={job.id} job={job} />
-            ))}
-          </CardContent>
-        </Card>
+        <div className="max-w-3xl space-y-3">
+          <Card>
+            <CardContent className="px-0 py-0">
+              {items.map((job) => (
+                <ImportRow key={job.id} job={job} />
+              ))}
+            </CardContent>
+          </Card>
+          {hasNextPage && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fetchNextPage()}
+              disabled={isFetchingNextPage}
+            >
+              {isFetchingNextPage ? "Loading…" : "Load older imports"}
+            </Button>
+          )}
+        </div>
       )}
     </>
   );
