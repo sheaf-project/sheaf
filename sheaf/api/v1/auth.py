@@ -1,7 +1,6 @@
 import hashlib
 import json
 import logging
-import math
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -18,12 +17,13 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import and_, case, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unverified
 from sheaf.auth.jwt import TokenType, create_token, decode_token
+from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
 from sheaf.auth.sessions import (
     cache_refresh_rotation,
@@ -222,58 +222,6 @@ async def _mint_refresh_token(user_id, session_id: str) -> str:
     ttl = settings.jwt_refresh_token_expire_days * 86400
     await register_refresh_jti(jti, session_id, ttl)
     return create_token(user_id, TokenType.REFRESH, session_id=session_id, jti=jti)
-
-
-async def _record_login_failure(db: AsyncSession, user: User) -> None:
-    """Increment the user's failed-login counter and lock if threshold crossed.
-
-    A single atomic UPDATE handles both the increment and the lockout decision
-    so concurrent failed attempts can't race past the threshold. If the user
-    has a stale (expired) lockout, the counter resets to 1 for this attempt
-    instead of incrementing, so a returning user with one typo doesn't get
-    immediately re-locked on top of old failures.
-    """
-    now = datetime.now(UTC)
-    lockout_end = now + timedelta(minutes=settings.login_lockout_minutes)
-    threshold = settings.login_max_failures
-
-    new_count = case(
-        (
-            and_(User.locked_until.is_not(None), User.locked_until < now),
-            1,
-        ),
-        else_=User.failed_login_count + 1,
-    )
-    new_lock = case(
-        (new_count >= threshold, lockout_end),
-        else_=None,
-    )
-
-    await db.execute(
-        update(User)
-        .where(User.id == user.id)
-        .values(failed_login_count=new_count, locked_until=new_lock)
-    )
-    await db.commit()
-    db.expire(user, ["failed_login_count", "locked_until"])
-
-
-def _ensure_not_locked(user: User) -> None:
-    """Raise 423 if the account is inside a failed-attempt lockout window.
-
-    Shared by the credentialed endpoints that verify a short TOTP/recovery
-    code so a stolen session can't be used to brute-force the 6-digit space.
-    """
-    now = datetime.now(UTC)
-    if user.locked_until is not None and user.locked_until > now:
-        mins = max(1, math.ceil((user.locked_until - now).total_seconds() / 60))
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=(
-                f"Account temporarily locked after repeated failed attempts. "
-                f"Try again in {mins} minute{'s' if mins != 1 else ''}."
-            ),
-        )
 
 
 async def _validate_invite_code(db: AsyncSession, code: str):
@@ -823,24 +771,12 @@ async def login(
     # Reject locked accounts before spending argon2 CPU on them. The lockout
     # state leaks that the account exists, but so does a successful login
     # attempt; rate limits + captcha are what stop anonymous enumeration.
-    now = datetime.now(UTC)
-    if (
-        user is not None
-        and user.locked_until is not None
-        and user.locked_until > now
-    ):
-        mins = max(1, math.ceil((user.locked_until - now).total_seconds() / 60))
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=(
-                f"Account temporarily locked after repeated failed attempts. "
-                f"Try again in {mins} minute{'s' if mins != 1 else ''}."
-            ),
-        )
+    if user is not None:
+        ensure_not_locked(user)
 
     if user is None or not verify_password(body.password, user.password_hash):
         if user is not None:
-            await _record_login_failure(db, user)
+            await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -867,7 +803,7 @@ async def login(
             if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
                 db, user, body.totp_code
             ):
-                await _record_login_failure(db, user)
+                await record_login_failure(db, user)
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid TOTP code",
@@ -1477,10 +1413,10 @@ async def totp_disable(
             detail="2FA is not enabled",
         )
 
-    _ensure_not_locked(user)
+    ensure_not_locked(user)
 
     if not verify_password(body.password, user.password_hash):
-        await _record_login_failure(db, user)
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password",
@@ -1496,7 +1432,7 @@ async def totp_disable(
     if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
         db, user, body.totp_code
     ):
-        await _record_login_failure(db, user)
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
@@ -1529,11 +1465,11 @@ async def regenerate_recovery_codes(
             detail="2FA is not enabled",
         )
 
-    _ensure_not_locked(user)
+    ensure_not_locked(user)
 
     secret = decrypt(user.totp_secret)
     if not verify_code(secret, body.code):
-        await _record_login_failure(db, user)
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
