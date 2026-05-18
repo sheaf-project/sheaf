@@ -97,6 +97,37 @@ def test_list_filters_by_member(auth_client: httpx.Client):
     assert a_only["items"][0]["body"] == "for-a"
 
 
+def test_list_cursor_pagination_partitions(auth_client: httpx.Client):
+    """The opaque (created_at, id) cursor walks every entry exactly once
+    with no skips or duplicates across page boundaries."""
+    created = []
+    for i in range(5):
+        r = auth_client.post("/v1/journals", json={"body": f"entry-{i}"})
+        assert r.status_code == 201, r.text
+        created.append(r.json()["id"])
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):  # generous loop bound
+        params: dict[str, str] = {"limit": "2"}
+        if cursor:
+            params["cursor"] = cursor
+        page = auth_client.get("/v1/journals", params=params).json()
+        seen.extend(item["id"] for item in page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+
+    # Every created entry shows up exactly once.
+    assert sorted(seen) == sorted(created), seen
+    assert len(seen) == len(set(seen)), "page boundary produced a duplicate"
+
+
+def test_list_rejects_bad_cursor(auth_client: httpx.Client):
+    resp = auth_client.get("/v1/journals", params={"cursor": "not-a-cursor"})
+    assert resp.status_code == 422, resp.text
+
+
 def test_visibility_only_system_v1(auth_client: httpx.Client):
     resp = auth_client.post(
         "/v1/journals",

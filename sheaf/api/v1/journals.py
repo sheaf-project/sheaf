@@ -8,11 +8,10 @@ history shared with member bios.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.api.v1.members import _get_user_system
@@ -48,6 +47,7 @@ from sheaf.services.journals import (
     unpin_revision_immediate,
     update_journal_entry,
 )
+from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -86,7 +86,7 @@ def _label_for(entry: JournalEntry) -> str:
 async def list_journals(
     member_id: uuid.UUID | None = Query(default=None),
     system_only: bool = Query(default=False),
-    before: datetime | None = Query(default=None),
+    cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -97,6 +97,9 @@ async def list_journals(
       - system_only=true → only entries with member_id IS NULL
       - member_id=<uuid> → only that member's entries
       - neither → all entries owned by the user's system
+
+    Pagination uses an opaque (created_at, id) cursor so entries sharing
+    a created_at can't be skipped or duplicated across page boundaries.
     """
     system = await _get_user_system(user, db)
     stmt = select(JournalEntry).where(JournalEntry.system_id == system.id)
@@ -105,17 +108,38 @@ async def list_journals(
     elif member_id is not None:
         await _verify_member_in_system(member_id, system.id, db)
         stmt = stmt.where(JournalEntry.member_id == member_id)
-    if before is not None:
-        stmt = stmt.where(JournalEntry.created_at < before)
+    if cursor is not None:
+        try:
+            cursor_created, cursor_id = decode_cursor(cursor)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid cursor",
+            ) from None
+        # Row comparison: (created_at, id) strictly before the cursor pair.
+        stmt = stmt.where(
+            tuple_(JournalEntry.created_at, JournalEntry.id)
+            < tuple_(cursor_created, cursor_id)
+        )
     # Fetch one extra to determine if a next cursor exists.
-    stmt = stmt.order_by(JournalEntry.created_at.desc()).limit(limit + 1)
+    stmt = stmt.order_by(
+        JournalEntry.created_at.desc(), JournalEntry.id.desc()
+    ).limit(limit + 1)
     result = await db.execute(stmt)
     rows = list(result.scalars().all())
-    next_cursor = rows[limit].created_at if len(rows) > limit else None
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    # Cursor is the last returned row; the next page asks for rows strictly
+    # past it, so the boundary row is neither skipped nor repeated.
+    next_cursor = (
+        encode_cursor(page[-1].created_at, page[-1].id)
+        if has_more and page
+        else None
+    )
     return JournalListResponse(
         items=[
             JournalEntryRead.model_validate(decrypt_entry_for_read(r))
-            for r in rows[:limit]
+            for r in page
         ],
         next_cursor=next_cursor,
     )

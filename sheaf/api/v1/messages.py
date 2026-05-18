@@ -54,11 +54,13 @@ from sheaf.services.messages import (
     author_display_name,
     board_summaries,
     decrypt_body,
+    display_name,
     encrypt_body,
     fetch_parent_preview,
     front_start_prompt,
     list_messages,
     member_belongs_to_system,
+    preview_for,
     restore_message_revision,
 )
 from sheaf.services.messages import (
@@ -115,6 +117,61 @@ async def _to_read(msg: Message, db: AsyncSession) -> MessageRead:
         created_at=msg.created_at,
         updated_at=msg.updated_at,
     )
+
+
+async def _render_messages(
+    msgs: list[Message], db: AsyncSession
+) -> list[MessageRead]:
+    """Render a page of messages without the per-row N+1 that looping
+    _to_read incurs. Parent messages and member names are each batched
+    into a single query."""
+    if not msgs:
+        return []
+
+    parent_ids = {m.parent_message_id for m in msgs if m.parent_message_id}
+    parents: dict[uuid.UUID, Message] = {}
+    if parent_ids:
+        rows = await db.execute(select(Message).where(Message.id.in_(parent_ids)))
+        parents = {p.id: p for p in rows.scalars()}
+
+    # Members needed: authors of the page plus authors of any parent.
+    member_ids = {m.author_member_id for m in msgs if m.author_member_id}
+    for parent in parents.values():
+        if parent.author_member_id:
+            member_ids.add(parent.author_member_id)
+    members: dict[uuid.UUID, Member] = {}
+    if member_ids:
+        rows = await db.execute(select(Member).where(Member.id.in_(member_ids)))
+        members = {mem.id: mem for mem in rows.scalars()}
+
+    def _name(member_id: uuid.UUID | None) -> str | None:
+        member = members.get(member_id) if member_id else None
+        return display_name(member) if member is not None else None
+
+    rendered: list[MessageRead] = []
+    for msg in msgs:
+        parent_preview: str | None = None
+        parent_author: str | None = None
+        if msg.parent_message_id is not None:
+            parent = parents.get(msg.parent_message_id)
+            if parent is not None and parent.deleted_at is None:
+                parent_preview = preview_for(decrypt_body(parent.body))
+                parent_author = _name(parent.author_member_id)
+        rendered.append(MessageRead(
+            id=msg.id,
+            system_id=msg.system_id,
+            board_kind=msg.board_kind,
+            board_member_id=msg.board_member_id,
+            author_member_id=msg.author_member_id,
+            author_member_name=_name(msg.author_member_id),
+            parent_message_id=msg.parent_message_id,
+            parent_preview=parent_preview,
+            parent_author_member_name=parent_author,
+            body=decrypt_body(msg.body),
+            created_at=msg.created_at,
+            updated_at=msg.updated_at,
+        ))
+    return rendered
 
 
 def _normalise_board(
@@ -218,7 +275,7 @@ async def get_board(
         limit=capped_limit,
         before=before,
     )
-    rendered = [await _to_read(m, db) for m in msgs]
+    rendered = await _render_messages(msgs, db)
 
     caller_last_seen: datetime | None = None
     if caller_member_id is not None:
