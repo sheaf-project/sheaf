@@ -1,3 +1,4 @@
+import logging
 import time
 import uuid
 
@@ -24,6 +25,8 @@ from sheaf.services.system_safety import (
     verify_destructive_auth,
 )
 from sheaf.storage import get_storage
+
+logger = logging.getLogger("sheaf.files")
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -161,37 +164,45 @@ async def upload_file(
     storage = get_storage()
     await storage.put(key, data, actual_mime)
 
-    # Serialize per-user quota accounting. Without this lock, two concurrent
-    # uploads can both pass the quota check above and both insert, landing
-    # the user over their limit. SELECT FOR UPDATE on the user row forces
-    # the second uploader to wait until the first's transaction commits,
-    # then recount with the new row visible.
-    if quota > 0:
-        await db.execute(
-            select(User.id).where(User.id == user.id).with_for_update()
-        )
-        used = await db.scalar(
-            select(func.coalesce(func.sum(UploadedFile.size_bytes), 0))
-            .where(UploadedFile.user_id == user.id)
-        )
-        if (used + file_size) > quota:
-            await storage.delete(key)
-            await db.rollback()
-            quota_mb = quota // (1024 * 1024)
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
+    # The blob now exists in storage. Anything that raises before the
+    # UploadedFile row is committed would orphan it, so everything from
+    # here on is guarded: on any failure, best-effort delete the blob.
+    try:
+        # Serialize per-user quota accounting. Without this lock, two
+        # concurrent uploads can both pass the quota check above and both
+        # insert, landing the user over their limit. SELECT FOR UPDATE on
+        # the user row forces the second uploader to wait until the first's
+        # transaction commits, then recount with the new row visible.
+        if quota > 0:
+            await db.execute(
+                select(User.id).where(User.id == user.id).with_for_update()
             )
+            used = await db.scalar(
+                select(func.coalesce(func.sum(UploadedFile.size_bytes), 0))
+                .where(UploadedFile.user_id == user.id)
+            )
+            if (used + file_size) > quota:
+                quota_mb = quota // (1024 * 1024)
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
+                )
 
-    # Track upload
-    db.add(UploadedFile(
-        user_id=user.id,
-        key=key,
-        purpose=purpose,
-        content_type=actual_mime,
-        size_bytes=file_size,
-    ))
-    await db.commit()
+        db.add(UploadedFile(
+            user_id=user.id,
+            key=key,
+            purpose=purpose,
+            content_type=actual_mime,
+            size_bytes=file_size,
+        ))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        try:
+            await storage.delete(key)
+        except Exception:
+            logger.warning("Failed to clean up orphaned upload blob %s", key)
+        raise
 
     return {"url": resolve_avatar_url(key), "key": key, "size": file_size}
 

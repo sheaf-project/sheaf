@@ -355,7 +355,9 @@ async def list_messages(
             Message.deleted_at.is_(None),
             _board_match_clause(board_kind, board_member_id),
         )
-        .order_by(Message.created_at.desc())
+        # id is the deterministic tiebreaker for rows sharing a created_at,
+        # so ordering stays stable across pages.
+        .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(limit)
     )
     if before is not None:

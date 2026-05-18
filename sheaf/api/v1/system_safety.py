@@ -23,7 +23,7 @@ from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
     SafetyChangeStatus,
 )
-from sheaf.models.system import System
+from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.user import User
 from sheaf.schemas.system_safety import (
     PendingActionRead,
@@ -139,6 +139,20 @@ async def update_system_safety(
         for k, v in external_updates.items()
         if k in _EXTERNAL_TO_INTERNAL
     }
+    # Don't let the auth tier be raised to a TOTP-requiring level unless the
+    # user actually has TOTP enrolled — otherwise the gate would be a no-op
+    # and silently wave destructive actions through. Mirrors the dedicated
+    # /v1/systems delete-confirmation endpoint.
+    new_tier = internal_updates.get("delete_confirmation")
+    if (
+        new_tier in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH)
+        and not user.totp_enabled
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot require TOTP confirmation without 2FA enabled",
+        )
+
     split = split_safety_changes(system, internal_updates)
 
     # Re-auth gate applies to any loosening change. For tightening-only changes

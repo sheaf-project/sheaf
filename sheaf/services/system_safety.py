@@ -132,8 +132,19 @@ def verify_destructive_auth(
     loosening changes.
     """
     level = system.delete_confirmation
+    needs_password = level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH)
+    needs_totp = level in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH)
 
-    if level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH):
+    # Misconfiguration fail-safe: the tier requires TOTP but the user has no
+    # TOTP enrolled. Both settings endpoints and the TOTP-disable path now
+    # prevent reaching this state, so it only happens with legacy data —
+    # fall back to a password check rather than silently waving the action
+    # through (which, for a TOTP-only tier, would be no gate at all).
+    if needs_totp and not user.totp_enabled:
+        needs_password = True
+        needs_totp = False
+
+    if needs_password:
         if not password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -151,11 +162,7 @@ def verify_destructive_auth(
                 detail="Incorrect password",
             )
 
-    if level in (DeleteConfirmation.TOTP, DeleteConfirmation.BOTH):
-        if not user.totp_enabled:
-            # TOTP gate requested but not configured — skip silently, as
-            # elsewhere in the codebase (members.py:154).
-            return
+    if needs_totp:
         if not totp_code:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

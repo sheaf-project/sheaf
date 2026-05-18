@@ -57,7 +57,7 @@ from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
-from sheaf.models.system import System
+from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User
 from sheaf.request import client_ip
@@ -1436,6 +1436,23 @@ async def totp_disable(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
+        )
+
+    # If System Safety requires TOTP for destructive actions, disabling it
+    # here would silently weaken that gate (verify_destructive_auth would
+    # fall back to password-only). Block until the tier is lowered.
+    sys_row = await db.execute(select(System).where(System.user_id == user.id))
+    system = sys_row.scalar_one_or_none()
+    if system is not None and system.delete_confirmation in (
+        DeleteConfirmation.TOTP,
+        DeleteConfirmation.BOTH,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "System Safety requires TOTP for destructive actions. "
+                "Lower that confirmation setting before disabling 2FA."
+            ),
         )
 
     user.totp_enabled = False
