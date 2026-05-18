@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router";
 import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,15 @@ export function ResetPasswordPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const effectiveToken = urlToken || manualToken.trim();
+
+  // Strip the token from the address bar so it doesn't linger in browser
+  // history or leak through the Referer header. urlToken is already
+  // captured above, so the form still submits with it.
+  useEffect(() => {
+    if (urlToken) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, [urlToken]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

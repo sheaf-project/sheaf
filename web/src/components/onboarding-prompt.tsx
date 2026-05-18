@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Shield, KeyRound, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { apiFetch } from "@/lib/api-client";
+import { patchWebSettings } from "@/lib/client-settings";
 
 function useWebSettings() {
   return useQuery({
@@ -44,12 +45,7 @@ export function OnboardingPrompt() {
   async function markComplete() {
     setDismissing(true);
     try {
-      await apiFetch("/v1/settings/client/web", {
-        method: "PUT",
-        body: JSON.stringify({
-          settings: { ...settings, onboarding_complete: true },
-        }),
-      });
+      await patchWebSettings({ onboarding_complete: true });
       qc.invalidateQueries({ queryKey: ["client-settings", "web"] });
     } finally {
       setDismissing(false);

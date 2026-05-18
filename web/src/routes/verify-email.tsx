@@ -16,6 +16,10 @@ export function VerifyEmailPage() {
     if (!token || calledRef.current) return;
     calledRef.current = true;
 
+    // Strip the token from the address bar so it doesn't linger in
+    // browser history or leak through the Referer header.
+    window.history.replaceState(null, "", window.location.pathname);
+
     apiFetch<{ verified: boolean }>(`/v1/auth/verify-email?token=${encodeURIComponent(token)}`)
       .then(() => setState("success"))
       .catch((err) => {

@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -35,6 +35,19 @@ export function TOTPSetup() {
       setLoading(false);
     }
   }
+
+  // Don't leave the recovery codes rendered indefinitely if the user
+  // walks away mid-setup. Five minutes is plenty to save them; after that
+  // we drop back to idle (codes can be regenerated if missed).
+  useEffect(() => {
+    if (step !== "recovery") return;
+    const timer = setTimeout(() => {
+      setStep("idle");
+      setSetup(null);
+      setCode("");
+    }, 300_000);
+    return () => clearTimeout(timer);
+  }, [step]);
 
   async function handleVerify(e: FormEvent) {
     e.preventDefault();
@@ -155,6 +168,17 @@ function TOTPDisable() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [newCodes, setNewCodes] = useState<string[]>([]);
+
+  // Mirror the setup flow: don't leave regenerated recovery codes on
+  // screen forever if the user steps away.
+  useEffect(() => {
+    if (action !== "show-codes") return;
+    const timer = setTimeout(() => {
+      setAction("idle");
+      setNewCodes([]);
+    }, 300_000);
+    return () => clearTimeout(timer);
+  }, [action]);
 
   async function handleDisable(e: FormEvent) {
     e.preventDefault();

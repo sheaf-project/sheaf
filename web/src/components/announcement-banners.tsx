@@ -6,6 +6,7 @@ import {
   type Announcement,
 } from "@/lib/announcements";
 import { apiFetch } from "@/lib/api-client";
+import { patchWebSettings } from "@/lib/client-settings";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -64,12 +65,7 @@ export function AnnouncementBanners() {
   async function handleDontShowAgain(id: string) {
     const updated = [...permanentlyDismissed, id];
     try {
-      await apiFetch(`/v1/settings/client/web`, {
-        method: "PUT",
-        body: JSON.stringify({
-          settings: { ...settings, dismissed_announcements: updated },
-        }),
-      });
+      await patchWebSettings({ dismissed_announcements: updated });
       qc.invalidateQueries({ queryKey: ["client-settings", "web"] });
     } catch {
       // Fall back to session dismiss

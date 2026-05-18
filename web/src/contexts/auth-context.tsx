@@ -1,4 +1,4 @@
-import { createContext, useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { User } from "@/types/api";
 import { bootstrapAuth, setAccessToken } from "@/lib/api-client";
@@ -31,6 +31,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const queryClient = useQueryClient();
+  const authChannelRef = useRef<BroadcastChannel | null>(null);
+
+  // Cross-tab logout: when any tab logs out, the others drop their
+  // in-memory token + user state immediately, instead of carrying a dead
+  // session until their next 401.
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel("sheaf-auth");
+    authChannelRef.current = channel;
+    channel.onmessage = (e) => {
+      if (e.data?.type === "logout") {
+        setAccessToken(null);
+        setUser(null);
+        queryClient.clear();
+      }
+    };
+    return () => {
+      channel.close();
+      authChannelRef.current = null;
+    };
+  }, [queryClient]);
 
   // Try silent refresh on mount using HttpOnly cookie. Routes through the
   // shared single-flight in api-client so StrictMode's double-fire (and any
@@ -111,6 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAccessToken(null);
       setUser(null);
       queryClient.clear();
+      authChannelRef.current?.postMessage({ type: "logout" });
     }
   }, [queryClient]);
 

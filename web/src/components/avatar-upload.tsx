@@ -61,11 +61,18 @@ export function AvatarUpload({
     // stopPropagation the parent form saves with stale state before our
     // onUpload takes effect.
     e.stopPropagation();
-    if (urlValue.trim()) {
-      onUpload(urlValue.trim());
-      setUrlValue("");
-      setShowUrlInput(false);
+    const trimmed = urlValue.trim();
+    if (!trimmed) return;
+    // Allowlist the scheme so a javascript:/data:/file: URL can't ride in
+    // as an avatar src. http and https are both fine for an image URL.
+    if (!/^https?:\/\//i.test(trimmed)) {
+      setError("Image URL must start with http:// or https://");
+      return;
     }
+    setError("");
+    onUpload(trimmed);
+    setUrlValue("");
+    setShowUrlInput(false);
   }
 
   return (
