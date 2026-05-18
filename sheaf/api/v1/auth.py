@@ -7,7 +7,16 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import jwt
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Cookie,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import and_, case, select, update
 from sqlalchemy.exc import IntegrityError
@@ -247,6 +256,24 @@ async def _record_login_failure(db: AsyncSession, user: User) -> None:
     )
     await db.commit()
     db.expire(user, ["failed_login_count", "locked_until"])
+
+
+def _ensure_not_locked(user: User) -> None:
+    """Raise 423 if the account is inside a failed-attempt lockout window.
+
+    Shared by the credentialed endpoints that verify a short TOTP/recovery
+    code so a stolen session can't be used to brute-force the 6-digit space.
+    """
+    now = datetime.now(UTC)
+    if user.locked_until is not None and user.locked_until > now:
+        mins = max(1, math.ceil((user.locked_until - now).total_seconds() / 60))
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=(
+                f"Account temporarily locked after repeated failed attempts. "
+                f"Try again in {mins} minute{'s' if mins != 1 else ''}."
+            ),
+        )
 
 
 async def _validate_invite_code(db: AsyncSession, code: str):
@@ -498,15 +525,32 @@ class EmailChange(BaseModel):
     totp_code: str | None = None
 
 
+async def _deliver_password_reset_email(email: str, token: str, ip: str) -> None:
+    """Send the password-reset email. Runs as a background task so the
+    request handler returns before the SMTP round-trip — otherwise the
+    response time leaks whether the address mapped to a real account."""
+    try:
+        from sheaf.services.email import send_email
+        from sheaf.services.email_templates import password_reset_email
+
+        subject, html, text = password_reset_email(token, ip=ip)
+        await send_email(email, subject, html, text)
+    except Exception:
+        logger.exception("Failed to send password reset email")
+
+
 @router.post("/request-password-reset", dependencies=[rate_limit(3, 60, fail_closed=True)])
 async def request_password_reset(
     body: PasswordResetRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Request a password reset email.
 
-    Always returns 200 to avoid leaking whether the email exists.
+    Always returns 200 to avoid leaking whether the email exists. The
+    actual send is deferred to a background task so the response time is
+    the same whether or not the address matched an account.
     """
     if settings.email_backend == "none":
         raise HTTPException(
@@ -531,15 +575,14 @@ async def request_password_reset(
         user.password_reset_sent_at = datetime.now(UTC)
         await db.commit()
 
-        try:
-            from sheaf.services.email import send_email
-            from sheaf.services.email_templates import password_reset_email
-
-            requester_ip = client_ip(request)
-            subject, html, text = password_reset_email(token, ip=requester_ip)
-            await send_email(body.email, subject, html, text)
-        except Exception:
-            logger.exception("Failed to send password reset email")
+        background.add_task(
+            _deliver_password_reset_email, body.email, token, client_ip(request)
+        )
+    else:
+        # Symmetric work on the no-match branch so CPU cost matches the
+        # real path; the SMTP send is already off the request thread.
+        token = secrets.token_urlsafe(32)
+        hash_mail_token(token)
 
     return {"requested": True}
 
@@ -646,6 +689,11 @@ async def change_password(
     user.password_hash = hash_password(body.new_password)
     user.failed_login_count = 0
     user.locked_until = None
+    # Kill any live password-reset token — changing the password is proof
+    # the legit user has access, so a phished-but-unredeemed reset link
+    # must not outlive this.
+    user.password_reset_token = None
+    user.password_reset_sent_at = None
     # Revoke every trusted device — a password change is the canonical
     # "kick everything off" event.
     await revoke_all_trusted_devices(db, user.id)
@@ -833,6 +881,11 @@ async def login(
     user.failed_login_count = 0
     user.locked_until = None
     user.last_login_at = datetime.now(UTC)
+    # A successful login means the legit user has access; invalidate any
+    # outstanding password-reset token so a phished link can't be redeemed
+    # after the fact.
+    user.password_reset_token = None
+    user.password_reset_sent_at = None
 
     # Create session before committing so a Redis failure rolls back the DB
     session_id = await create_session(
@@ -1407,7 +1460,11 @@ async def totp_verify(
     await db.commit()
 
 
-@router.post("/totp/disable", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/totp/disable",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[rate_limit(5, 60, "user", fail_closed=True)],
+)
 async def totp_disable(
     body: UserLogin,
     user: User = Depends(get_current_user),
@@ -1420,7 +1477,10 @@ async def totp_disable(
             detail="2FA is not enabled",
         )
 
+    _ensure_not_locked(user)
+
     if not verify_password(body.password, user.password_hash):
+        await _record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password",
@@ -1436,6 +1496,7 @@ async def totp_disable(
     if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
         db, user, body.totp_code
     ):
+        await _record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
@@ -1444,13 +1505,18 @@ async def totp_disable(
     user.totp_enabled = False
     user.totp_secret = None
     user.recovery_codes = None
+    user.failed_login_count = 0
+    user.locked_until = None
     # Trusted devices were minted under the old TOTP relationship; wipe
     # them so a stale cookie can't bypass anything if TOTP is re-enabled.
     await revoke_all_trusted_devices(db, user.id)
     await db.commit()
 
 
-@router.post("/totp/regenerate-recovery-codes")
+@router.post(
+    "/totp/regenerate-recovery-codes",
+    dependencies=[rate_limit(5, 60, "user", fail_closed=True)],
+)
 async def regenerate_recovery_codes(
     body: TOTPVerify,
     user: User = Depends(get_current_user),
@@ -1463,8 +1529,11 @@ async def regenerate_recovery_codes(
             detail="2FA is not enabled",
         )
 
+    _ensure_not_locked(user)
+
     secret = decrypt(user.totp_secret)
     if not verify_code(secret, body.code):
+        await _record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
@@ -1472,6 +1541,8 @@ async def regenerate_recovery_codes(
 
     codes = generate_recovery_codes()
     _store_recovery_codes(user, codes)
+    user.failed_login_count = 0
+    user.locked_until = None
     await db.commit()
     return {"recovery_codes": codes}
 
@@ -1606,23 +1677,13 @@ async def request_account_deletion(
                 headers={"X-Sheaf-2FA": "required"},
             )
         totp_secret = decrypt(user.totp_secret)
-        if not verify_code(totp_secret, body.totp_code):
-            # Check recovery codes
-            valid_recovery = False
-            if user.recovery_codes:
-                stored_codes = json.loads(decrypt(user.recovery_codes))
-                candidate = hashlib.sha256(
-                    body.totp_code.strip().lower().encode()
-                ).hexdigest()
-                if candidate in stored_codes:
-                    stored_codes.remove(candidate)
-                    user.recovery_codes = encrypt(json.dumps(stored_codes))
-                    valid_recovery = True
-            if not valid_recovery:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid TOTP code",
-                )
+        if not verify_code(
+            totp_secret, body.totp_code
+        ) and not await _check_recovery_code(db, user, body.totp_code):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid TOTP code",
+            )
 
     now = datetime.now(UTC)
     user.account_status = AccountStatus.PENDING_DELETION

@@ -21,6 +21,7 @@ from sheaf.auth.sessions import list_user_sessions
 from sheaf.auth.totp import verify_code
 from sheaf.crypto import blind_index, decrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.client_settings import ClientSettings
 from sheaf.models.email_suppression import EmailSuppression
@@ -44,7 +45,7 @@ class AccountDataRequest(BaseModel):
     totp_code: str | None = None
 
 
-@router.post("/data")
+@router.post("/data", dependencies=[rate_limit(5, 60, "user", fail_closed=True)])
 async def get_account_data(
     body: AccountDataRequest,
     request: Request,
