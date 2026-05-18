@@ -25,18 +25,31 @@ _SIG_HEADER = "X-Twilio-Email-Event-Webhook-Signature"
 _TS_HEADER = "X-Twilio-Email-Event-Webhook-Timestamp"
 
 
-def _verify_sendgrid_signature(timestamp: str, body: bytes, signature_b64: str) -> bool:
+def _timestamp_within_skew(timestamp: str, max_skew_seconds: int) -> bool:
+    """True if the webhook timestamp is fresh enough not to be a replay.
+
+    Rejects both stale and future-dated timestamps, and a non-numeric
+    header value.
+    """
+    try:
+        skew = abs(time.time() - float(timestamp))
+    except ValueError:
+        return False
+    return skew <= max_skew_seconds
+
+
+def _verify_sendgrid_signature(
+    public_key_b64: str, timestamp: str, body: bytes, signature_b64: str
+) -> bool:
     """Verify SendGrid's Signed Event Webhook signature.
 
     SendGrid signs `timestamp + raw_body` with ECDSA/SHA-256. The header
-    carries a base64 DER signature; the configured verification key is a
-    base64 DER SubjectPublicKeyInfo (EC P-256). The key is public — it can
-    only verify, never sign — so it lives in plain config.
+    carries a base64 DER signature; the verification key is a base64 DER
+    SubjectPublicKeyInfo (EC P-256). The key is public — it can only
+    verify, never sign — so it lives in plain config.
     """
     try:
-        public_key = load_der_public_key(
-            base64.b64decode(settings.sendgrid_webhook_public_key)
-        )
+        public_key = load_der_public_key(base64.b64decode(public_key_b64))
         signature = base64.b64decode(signature_b64)
     except Exception:
         logger.exception("Malformed SendGrid webhook key or signature")
@@ -83,15 +96,15 @@ async def sendgrid_events(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
         # Replay window — reject stale or future-dated timestamps.
-        try:
-            skew = abs(time.time() - float(timestamp))
-        except ValueError:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN) from None
-        if skew > settings.sendgrid_webhook_max_skew_seconds:
-            logger.warning("Rejected SendGrid webhook: timestamp skew %.0fs", skew)
+        if not _timestamp_within_skew(
+            timestamp, settings.sendgrid_webhook_max_skew_seconds
+        ):
+            logger.warning("Rejected SendGrid webhook: stale or bad timestamp")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
-        if not _verify_sendgrid_signature(timestamp, raw_body, signature):
+        if not _verify_sendgrid_signature(
+            settings.sendgrid_webhook_public_key, timestamp, raw_body, signature
+        ):
             logger.warning("Rejected SendGrid webhook: bad signature")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     else:
