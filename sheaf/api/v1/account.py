@@ -16,11 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.sessions import list_user_sessions
 from sheaf.auth.totp import verify_code
 from sheaf.crypto import blind_index, decrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.client_settings import ClientSettings
 from sheaf.models.email_suppression import EmailSuppression
@@ -44,7 +46,7 @@ class AccountDataRequest(BaseModel):
     totp_code: str | None = None
 
 
-@router.post("/data")
+@router.post("/data", dependencies=[rate_limit(5, 60, "user", fail_closed=True)])
 async def get_account_data(
     body: AccountDataRequest,
     request: Request,
@@ -90,9 +92,12 @@ async def get_account_data(
     # Step-up: always password, plus TOTP if enrolled. Independent of
     # System Safety's delete_confirmation tier — that gates deletes; this
     # gates the highest-value read.
+    ensure_not_locked(user)
+
     if not verify_password(body.password, user.password_hash):
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Password incorrect",
@@ -105,6 +110,7 @@ async def get_account_data(
             )
         secret = decrypt(user.totp_secret)
         if not verify_code(secret, body.totp_code):
+            await record_login_failure(db, user)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",

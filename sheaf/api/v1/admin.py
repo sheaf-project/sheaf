@@ -827,7 +827,10 @@ async def admin_change_email(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    new_hash = blind_index(body.new_email)
+    # Normalize before indexing — mirrors self-service /change-email so the
+    # same address in different casings produces a single blind index.
+    normalized_email = body.new_email.strip().lower()
+    new_hash = blind_index(normalized_email)
 
     # Check for conflicts
     existing = await db.execute(select(User).where(User.email_hash == new_hash))
@@ -838,7 +841,7 @@ async def admin_change_email(
             detail="Email already in use by another account",
         )
 
-    target.email = encrypt(body.new_email)
+    target.email = encrypt(normalized_email)
     target.email_hash = new_hash
     target.email_verified = True
     # Clear any pending verification tokens
@@ -846,7 +849,7 @@ async def admin_change_email(
     target.email_verification_sent_at = None
     await db.commit()
 
-    return {"email": body.new_email}
+    return {"email": normalized_email}
 
 
 @router.post("/users/{user_id}/disable-totp")

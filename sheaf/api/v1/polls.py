@@ -217,6 +217,12 @@ async def create_poll(
     if concurrent_cap > 0:
         from sqlalchemy import func
 
+        # Lock the system row so the open-poll cap can't be raced past by
+        # simultaneous creates each passing the count check.
+        await db.execute(
+            select(System.id).where(System.id == system.id).with_for_update()
+        )
+
         now = datetime.now(UTC)
         open_count_result = await db.execute(
             select(func.count(Poll.id)).where(

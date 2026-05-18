@@ -173,10 +173,12 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
     cutoff = datetime.now(UTC) - grace
 
     result = await db.execute(
-        select(User).where(
+        select(User)
+        .where(
             User.account_status == AccountStatus.PENDING_DELETION,
             User.deletion_requested_at <= cutoff,
         )
+        .with_for_update(skip_locked=True)
     )
     users = list(result.scalars().all())
 
@@ -240,10 +242,12 @@ async def _send_deletion_reminders(db: AsyncSession) -> dict:
         return {"items_processed": 0}
 
     result = await db.execute(
-        select(User).where(
+        select(User)
+        .where(
             User.account_status == AccountStatus.PENDING_DELETION,
             User.deletion_requested_at.is_not(None),
         )
+        .with_for_update(skip_locked=True)
     )
     users = list(result.scalars().all())
 
@@ -549,10 +553,12 @@ async def _finalize_pending_actions(db: AsyncSession) -> dict:
 
     now = datetime.now(UTC)
     result = await db.execute(
-        select(PendingAction).where(
+        select(PendingAction)
+        .where(
             PendingAction.status == PendingActionStatus.PENDING,
             PendingAction.finalize_after <= now,
         )
+        .with_for_update(skip_locked=True)
     )
     pending = list(result.scalars().all())
     if not pending:

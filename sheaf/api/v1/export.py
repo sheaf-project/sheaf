@@ -26,6 +26,7 @@ from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import verify_code
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.export_job import ExportJob, ExportJobStatus
@@ -590,7 +591,11 @@ class ExportJobRequest(BaseModel):
     totp_code: str | None = None
 
 
-@router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/jobs",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limit(10, 3600, "user")],
+)
 async def create_export_job(
     body: ExportJobRequest,
     request: Request,
@@ -634,6 +639,12 @@ async def create_export_job(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",
             )
+
+    # Lock the user row so two concurrent POSTs serialize here; the
+    # in-flight check below then can't be raced into a double-insert.
+    await db.execute(
+        select(User.id).where(User.id == user.id).with_for_update()
+    )
 
     # Per-user concurrency: refuse if there's already a non-terminal job.
     in_flight = await db.execute(

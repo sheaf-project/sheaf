@@ -163,7 +163,16 @@ class Settings(BaseSettings):
     # Shared secret for the SendGrid Event Webhook. Configure SendGrid to
     # POST to /v1/webhooks/sendgrid/events?token=<this value>.
     # When empty, the webhook endpoint returns 404.
+    # Legacy fallback only — prefer the signed-webhook key below.
     sendgrid_webhook_secret: str = ""
+    # Base64 DER ECDSA public key for SendGrid's Signed Event Webhook.
+    # Enable "Signed Event Webhook" in the SendGrid UI and paste the
+    # verification key here. When set, requests must carry a valid
+    # signature and the query-string token is ignored.
+    sendgrid_webhook_public_key: str = ""
+    # Max age (seconds) of a signed webhook request before it's rejected
+    # as a possible replay.
+    sendgrid_webhook_max_skew_seconds: int = 600
 
     # Registration
     registration_mode: str = "open"  # "open", "approval", "invite", "closed"
