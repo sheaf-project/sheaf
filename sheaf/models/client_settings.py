@@ -20,4 +20,6 @@ class ClientSettings(UUIDMixin, TimestampMixin, Base):
         index=True,
     )
     client_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    settings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    settings: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )

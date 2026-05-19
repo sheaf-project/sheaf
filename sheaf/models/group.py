@@ -34,9 +34,11 @@ class Group(UUIDMixin, TimestampMixin, Base):
     members: Mapped[list["Member"]] = relationship(
         secondary=group_members, back_populates="groups"
     )
-    children: Mapped[list["Group"]] = relationship(
-        back_populates="parent", cascade="all, delete-orphan"
-    )
+    # No delete-orphan / delete cascade: the DB FK is ON DELETE SET NULL,
+    # so deleting a parent group un-nests its children rather than
+    # destroying them. The ORM cascade must match that, or an ORM-issued
+    # delete and a raw-SQL delete would behave differently.
+    children: Mapped[list["Group"]] = relationship(back_populates="parent")
     parent: Mapped["Group | None"] = relationship(
         back_populates="children", remote_side="Group.id"
     )

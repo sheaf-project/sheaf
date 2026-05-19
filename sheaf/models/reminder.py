@@ -51,6 +51,7 @@ reminder_scope_members = Table(
         UUID(as_uuid=True),
         ForeignKey("members.id", ondelete="CASCADE"),
         primary_key=True,
+        index=True,
     ),
 )
 

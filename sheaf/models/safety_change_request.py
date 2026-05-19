@@ -45,7 +45,10 @@ class SafetyChangeRequest(UUIDMixin, Base):
     changes: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default=SafetyChangeStatus.PENDING
+        String(16),
+        nullable=False,
+        default=SafetyChangeStatus.PENDING,
+        server_default=SafetyChangeStatus.PENDING.value,
     )
     cancelled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

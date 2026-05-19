@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Enum, ForeignKey, Integer, String
+from sqlalchemy import Enum, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -50,6 +50,13 @@ class CustomFieldDefinition(UUIDMixin, TimestampMixin, Base):
 
 class CustomFieldValue(UUIDMixin, Base):
     __tablename__ = "custom_field_values"
+    # One value per (field, member). The constraint also indexes field_id
+    # (leftmost column); member_id gets its own index below.
+    __table_args__ = (
+        UniqueConstraint(
+            "field_id", "member_id", name="uq_custom_field_values_field_member"
+        ),
+    )
 
     field_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -60,6 +67,7 @@ class CustomFieldValue(UUIDMixin, Base):
         UUID(as_uuid=True),
         ForeignKey("members.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
 
     value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
