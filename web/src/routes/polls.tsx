@@ -337,12 +337,12 @@ function CreatePollDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-2">
-              <Label>Kind</Label>
+              <Label htmlFor="poll-kind">Kind</Label>
               <Select
                 value={kind}
                 onValueChange={(v) => setKind(v as PollKind)}
               >
-                <SelectTrigger>
+                <SelectTrigger id="poll-kind">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -352,14 +352,14 @@ function CreatePollDialog({
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>Results visibility</Label>
+              <Label htmlFor="poll-visibility">Results visibility</Label>
               <Select
                 value={visibility}
                 onValueChange={(v) =>
                   setVisibility(v as PollResultsVisibility)
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger id="poll-visibility">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

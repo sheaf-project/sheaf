@@ -218,8 +218,9 @@ export function ApiKeysCard() {
         {showForm && (
           <form onSubmit={handleCreate} className="space-y-4 rounded-md border p-4">
             <div className="space-y-1">
-              <Label className="text-sm">Key name</Label>
+              <Label htmlFor="api-key-name" className="text-sm">Key name</Label>
               <Input
+                id="api-key-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Mobile app, Scripts"

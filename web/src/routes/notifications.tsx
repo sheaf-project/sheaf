@@ -139,8 +139,9 @@ export function NotificationsPage() {
           </DialogHeader>
           <form onSubmit={handleCreate} className="space-y-4">
             <div className="space-y-2">
-              <Label>Label (optional)</Label>
+              <Label htmlFor="new-watcher-label">Label (optional)</Label>
               <Input
+                id="new-watcher-label"
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
                 placeholder="e.g. Mara, my therapist, Discord bot"

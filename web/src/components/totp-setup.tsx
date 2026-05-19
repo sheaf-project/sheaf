@@ -100,9 +100,10 @@ export function TOTPSetup() {
           </code>
         </details>
         <form onSubmit={handleVerify} className="space-y-2">
-          <Label>Verification code</Label>
+          <Label htmlFor="totp-setup-verify">Verification code</Label>
           <div className="flex gap-2">
             <Input
+              id="totp-setup-verify"
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="000000"
@@ -268,8 +269,9 @@ function TOTPDisable() {
           Enter a current TOTP code to generate new recovery codes. This will invalidate your existing codes.
         </p>
         <div className="space-y-1">
-          <Label className="text-sm">TOTP code</Label>
+          <Label htmlFor="totp-regen-code" className="text-sm">TOTP code</Label>
           <Input
+            id="totp-regen-code"
             value={totpCode}
             onChange={(e) => setTotpCode(e.target.value)}
             placeholder="000000"
@@ -300,8 +302,9 @@ function TOTPDisable() {
         Enter your password and a current TOTP code to disable 2FA.
       </p>
       <div className="space-y-1">
-        <Label className="text-sm">Password</Label>
+        <Label htmlFor="totp-disable-password" className="text-sm">Password</Label>
         <Input
+          id="totp-disable-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -309,8 +312,9 @@ function TOTPDisable() {
         />
       </div>
       <div className="space-y-1">
-        <Label className="text-sm">TOTP code</Label>
+        <Label htmlFor="totp-disable-code" className="text-sm">TOTP code</Label>
         <Input
+          id="totp-disable-code"
           value={totpCode}
           onChange={(e) => setTotpCode(e.target.value)}
           placeholder="000000"

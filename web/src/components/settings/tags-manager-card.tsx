@@ -59,8 +59,9 @@ export function TagsManagerCard() {
       <CardContent className="space-y-4">
         <form onSubmit={handleCreate} className="flex items-end gap-2">
           <div className="flex-1 space-y-1">
-            <Label className="text-xs">New tag</Label>
+            <Label htmlFor="new-tag-name" className="text-xs">New tag</Label>
             <Input
+              id="new-tag-name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="Tag name"

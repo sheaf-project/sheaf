@@ -179,9 +179,9 @@ export function L2Card({
 
         {availableGroups.length > 0 && (
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Add group</Label>
+            <Label htmlFor="layer-add-group" className="text-xs text-muted-foreground">Add group</Label>
             <Select onValueChange={add} value="">
-              <SelectTrigger>
+              <SelectTrigger id="layer-add-group">
                 <SelectValue placeholder="Choose a group..." />
               </SelectTrigger>
               <SelectContent>
@@ -278,9 +278,9 @@ export function L3Card({
 
         {availableMembers.length > 0 && (
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Add member</Label>
+            <Label htmlFor="layer-add-member" className="text-xs text-muted-foreground">Add member</Label>
             <Select onValueChange={add} value="">
-              <SelectTrigger>
+              <SelectTrigger id="layer-add-member">
                 <SelectValue placeholder="Choose a member..." />
               </SelectTrigger>
               <SelectContent>

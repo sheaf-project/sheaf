@@ -90,8 +90,9 @@ function StepUpDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1">
-            <Label className="text-sm">Password</Label>
+            <Label htmlFor="data-export-password" className="text-sm">Password</Label>
             <Input
+              id="data-export-password"
               type="password"
               autoComplete="current-password"
               value={password}
@@ -100,8 +101,9 @@ function StepUpDialog({
           </div>
           {totpEnabled && (
             <div className="space-y-1">
-              <Label className="text-sm">TOTP code</Label>
+              <Label htmlFor="data-export-totp" className="text-sm">TOTP code</Label>
               <Input
+                id="data-export-totp"
                 value={totp}
                 onChange={(e) => setTotp(e.target.value)}
                 placeholder="6-digit code"

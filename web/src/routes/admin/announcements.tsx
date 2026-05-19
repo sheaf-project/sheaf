@@ -220,17 +220,18 @@ function EditAnnouncementForm({
     <div className="border-b px-4 py-3 last:border-0 space-y-3">
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1 flex-1 min-w-48">
-          <Label className="text-xs">Title</Label>
+          <Label htmlFor="edit-title" className="text-xs">Title</Label>
           <Input
+            id="edit-title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             maxLength={200}
           />
         </div>
         <div className="space-y-1 w-32">
-          <Label className="text-xs">Severity</Label>
+          <Label htmlFor="edit-severity" className="text-xs">Severity</Label>
           <Select value={severity} onValueChange={setSeverity}>
-            <SelectTrigger>
+            <SelectTrigger id="edit-severity">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -242,8 +243,9 @@ function EditAnnouncementForm({
         </div>
       </div>
       <div className="space-y-1">
-        <Label className="text-xs">Body</Label>
+        <Label htmlFor="edit-body" className="text-xs">Body</Label>
         <Input
+          id="edit-body"
           value={body}
           onChange={(e) => setBody(e.target.value)}
           maxLength={2000}

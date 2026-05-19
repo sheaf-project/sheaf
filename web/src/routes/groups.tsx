@@ -155,13 +155,14 @@ export function GroupsPage() {
           </DialogHeader>
           <form onSubmit={handleCreate} className="space-y-4">
             <div className="space-y-2">
-              <Label>Name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} required />
+              <Label htmlFor="group-create-name">Name</Label>
+              <Input id="group-create-name" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="space-y-2">
-              <Label>Color</Label>
+              <Label htmlFor="group-create-color">Color</Label>
               <div className="flex items-center gap-2">
                 <Input
+                  id="group-create-color"
                   type="color"
                   value={color}
                   onChange={(e) => setColor(e.target.value)}
@@ -191,13 +192,14 @@ export function GroupsPage() {
           </DialogHeader>
           <form onSubmit={handleUpdate} className="space-y-4">
             <div className="space-y-2">
-              <Label>Name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} required />
+              <Label htmlFor="group-edit-name">Name</Label>
+              <Input id="group-edit-name" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="space-y-2">
-              <Label>Color</Label>
+              <Label htmlFor="group-edit-color">Color</Label>
               <div className="flex items-center gap-2">
                 <Input
+                  id="group-edit-color"
                   type="color"
                   value={color}
                   onChange={(e) => setColor(e.target.value)}

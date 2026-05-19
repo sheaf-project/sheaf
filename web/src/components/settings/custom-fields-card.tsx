@@ -63,8 +63,9 @@ export function CustomFieldsCard() {
       <CardContent className="space-y-4">
         <form onSubmit={handleCreate} className="flex items-end gap-2">
           <div className="flex-1 space-y-1">
-            <Label className="text-xs">Field name</Label>
+            <Label htmlFor="new-custom-field-name" className="text-xs">Field name</Label>
             <Input
+              id="new-custom-field-name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="e.g. Species, Role"
