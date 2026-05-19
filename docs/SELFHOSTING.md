@@ -943,6 +943,28 @@ docker compose exec db pg_dump -U sheaf sheaf > sheaf-backup.sql
 docker compose exec -T db psql -U sheaf sheaf < sheaf-backup.sql
 ```
 
+### Handling backups responsibly
+
+Sheaf stores GDPR Article 9 special-category data, so the dump itself is
+sensitive — treat the backup file with the same care as the live database.
+
+- **Encrypt the dump at rest.** Pipe `pg_dump` through `age` or `gpg`
+  before it lands on disk, e.g.
+  `docker compose exec db pg_dump -U sheaf sheaf | age -r <your-key> > sheaf-backup.sql.age`.
+  An unencrypted `.sql` file on a laptop or in object storage is a breach
+  waiting to happen.
+- **Keep a copy off-host**, and rotate it — a backup on the same machine
+  doesn't survive a disk failure or a ransomware event. Rotate old copies
+  out so a single leaked snapshot has a bounded lifetime.
+- **Back up the encryption key separately from the database.** If both
+  live in the same archive, that archive is a single-file total
+  compromise. The key (item 3 above) belongs in a different store than
+  the dump.
+- **Test your restore.** A backup you have never restored is a guess.
+  Periodically restore into a throwaway database and confirm the app
+  starts and decrypts data. The encryption key and the database must be
+  from a consistent point in time, or login (blind-index lookup) breaks.
+
 ---
 
 ## MinIO (local S3-compatible storage)

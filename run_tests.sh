@@ -48,8 +48,11 @@ wait_for_app() {
                 fi
                 sleep 1
             done
-            echo "App ready (docs up, DB check timed out — proceeding anyway)."
-            return 0
+            echo "ERROR: /v1/docs is up but the DB-backed endpoint never"
+            echo "       returned 401. The DB pool failed to warm up;"
+            echo "       proceeding would mask that as test flake."
+            $COMPOSE logs app | tail -30
+            exit 1
         fi
         sleep 2
     done

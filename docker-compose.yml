@@ -28,7 +28,11 @@ services:
   db:
     image: postgres:16-alpine
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Bound to loopback by default — the app talks to Postgres over the
+      # compose network, so the published port is only for local tooling.
+      # Set POSTGRES_BIND_HOST=0.0.0.0 only if you deliberately want it
+      # reachable off-host.
+      - "${POSTGRES_BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     environment:
@@ -45,7 +49,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      # Loopback by default — see the note on the db service above.
+      - "${REDIS_BIND_HOST:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
