@@ -124,8 +124,9 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1">
-              <Label className="text-sm">Revisions per item</Label>
+              <Label htmlFor="revision-max-count" className="text-sm">Revisions per item</Label>
               <Input
+                id="revision-max-count"
                 type="number"
                 min={0}
                 value={draft.max_revisions}
@@ -140,8 +141,9 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
               </p>
             </div>
             <div className="space-y-1">
-              <Label className="text-sm">Revision age (days)</Label>
+              <Label htmlFor="revision-max-days" className="text-sm">Revision age (days)</Label>
               <Input
+                id="revision-max-days"
                 type="number"
                 min={0}
                 value={draft.max_revision_days}
@@ -164,8 +166,9 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
               </p>
               {(authTier === "password" || authTier === "both") && (
                 <div className="space-y-1">
-                  <Label className="text-sm">Password</Label>
+                  <Label htmlFor="revision-retention-password" className="text-sm">Password</Label>
                   <Input
+                    id="revision-retention-password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -176,8 +179,9 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
               {(authTier === "totp" || authTier === "both") &&
                 user?.totp_enabled && (
                   <div className="space-y-1">
-                    <Label className="text-sm">TOTP code</Label>
+                    <Label htmlFor="revision-retention-totp" className="text-sm">TOTP code</Label>
                     <Input
+                      id="revision-retention-totp"
                       value={totpCode}
                       onChange={(e) => setTotpCode(e.target.value)}
                       placeholder="6-digit code"

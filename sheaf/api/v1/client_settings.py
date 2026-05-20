@@ -2,7 +2,8 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
@@ -102,6 +103,56 @@ async def put_client_settings(
 
     await db.commit()
     await db.refresh(row)
+    return {"client_id": row.client_id, "settings": row.settings}
+
+
+@router.patch(
+    "/{client_id}",
+    dependencies=[Depends(require_scope("settings:write"))],
+)
+async def patch_client_settings(
+    client_id: str,
+    body: ClientSettingsBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge the given keys into the stored settings for a client.
+
+    Unlike PUT (which replaces the whole blob), this does an atomic
+    top-level key merge in a single statement, so independent callers
+    each writing their own key can't clobber one another.
+    """
+    if len(client_id) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="client_id must be 64 characters or fewer",
+        )
+
+    payload_size = len(json.dumps(body.settings, separators=(",", ":")).encode())
+    if payload_size > MAX_SETTINGS_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Settings patch exceeds {MAX_SETTINGS_BYTES // 1024}KB limit",
+        )
+
+    insert_stmt = pg_insert(ClientSettings).values(
+        user_id=user.id, client_id=client_id, settings=body.settings
+    )
+    # On conflict, merge: existing JSONB || incoming JSONB (incoming wins
+    # per top-level key). The whole thing is one atomic UPDATE.
+    stmt = insert_stmt.on_conflict_do_update(
+        constraint="uq_client_settings_user_client",
+        set_={
+            "settings": ClientSettings.settings.op("||")(
+                insert_stmt.excluded.settings
+            ),
+            "updated_at": func.now(),
+        },
+    ).returning(ClientSettings.client_id, ClientSettings.settings)
+
+    result = await db.execute(stmt)
+    await db.commit()
+    row = result.one()
     return {"client_id": row.client_id, "settings": row.settings}
 
 

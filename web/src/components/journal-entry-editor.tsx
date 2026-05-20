@@ -46,8 +46,9 @@ export function JournalEntryEditor({
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
       <div className="space-y-1">
-        <Label className="text-sm">Title (optional)</Label>
+        <Label htmlFor="journal-entry-title" className="text-sm">Title (optional)</Label>
         <Input
+          id="journal-entry-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Untitled — will use date in lists"

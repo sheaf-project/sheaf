@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -35,6 +35,19 @@ export function TOTPSetup() {
       setLoading(false);
     }
   }
+
+  // Don't leave the recovery codes rendered indefinitely if the user
+  // walks away mid-setup. Five minutes is plenty to save them; after that
+  // we drop back to idle (codes can be regenerated if missed).
+  useEffect(() => {
+    if (step !== "recovery") return;
+    const timer = setTimeout(() => {
+      setStep("idle");
+      setSetup(null);
+      setCode("");
+    }, 300_000);
+    return () => clearTimeout(timer);
+  }, [step]);
 
   async function handleVerify(e: FormEvent) {
     e.preventDefault();
@@ -87,9 +100,10 @@ export function TOTPSetup() {
           </code>
         </details>
         <form onSubmit={handleVerify} className="space-y-2">
-          <Label>Verification code</Label>
+          <Label htmlFor="totp-setup-verify">Verification code</Label>
           <div className="flex gap-2">
             <Input
+              id="totp-setup-verify"
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="000000"
@@ -155,6 +169,17 @@ function TOTPDisable() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [newCodes, setNewCodes] = useState<string[]>([]);
+
+  // Mirror the setup flow: don't leave regenerated recovery codes on
+  // screen forever if the user steps away.
+  useEffect(() => {
+    if (action !== "show-codes") return;
+    const timer = setTimeout(() => {
+      setAction("idle");
+      setNewCodes([]);
+    }, 300_000);
+    return () => clearTimeout(timer);
+  }, [action]);
 
   async function handleDisable(e: FormEvent) {
     e.preventDefault();
@@ -244,8 +269,9 @@ function TOTPDisable() {
           Enter a current TOTP code to generate new recovery codes. This will invalidate your existing codes.
         </p>
         <div className="space-y-1">
-          <Label className="text-sm">TOTP code</Label>
+          <Label htmlFor="totp-regen-code" className="text-sm">TOTP code</Label>
           <Input
+            id="totp-regen-code"
             value={totpCode}
             onChange={(e) => setTotpCode(e.target.value)}
             placeholder="000000"
@@ -276,8 +302,9 @@ function TOTPDisable() {
         Enter your password and a current TOTP code to disable 2FA.
       </p>
       <div className="space-y-1">
-        <Label className="text-sm">Password</Label>
+        <Label htmlFor="totp-disable-password" className="text-sm">Password</Label>
         <Input
+          id="totp-disable-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -285,8 +312,9 @@ function TOTPDisable() {
         />
       </div>
       <div className="space-y-1">
-        <Label className="text-sm">TOTP code</Label>
+        <Label htmlFor="totp-disable-code" className="text-sm">TOTP code</Label>
         <Input
+          id="totp-disable-code"
           value={totpCode}
           onChange={(e) => setTotpCode(e.target.value)}
           placeholder="000000"

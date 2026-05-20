@@ -60,11 +60,18 @@ class PendingAction(UUIDMixin, Base):
 
     # Snapshot of who was fronting when the action was requested.
     # Frozen — members may be deleted or front composition may change before finalization.
-    fronting_member_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    fronting_member_names: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    fronting_member_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    fronting_member_names: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
 
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default=PendingActionStatus.PENDING
+        String(16),
+        nullable=False,
+        default=PendingActionStatus.PENDING,
+        server_default=PendingActionStatus.PENDING.value,
     )
     cancelled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

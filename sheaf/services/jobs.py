@@ -190,18 +190,31 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
     detail_lines: list[str] = []
 
     for user in users:
-        # Delete storage files before cascade removes the DB rows
+        # Delete storage files before cascade removes the DB rows.
         file_result = await db.execute(
             select(UploadedFile).where(UploadedFile.user_id == user.id)
         )
         files = list(file_result.scalars().all())
         file_keys = []
+        all_blobs_deleted = True
         for f in files:
             try:
                 await storage.delete(f.key)
                 file_keys.append(f.key)
             except Exception:
+                all_blobs_deleted = False
                 logger.warning("Failed to delete file %s for user %s", f.key, user.id)
+
+        # Don't drop the user row while blobs survive: the CASCADE would
+        # erase the UploadedFile records too, orphaning the storage objects
+        # with nothing left to locate them by. Leave the account
+        # PENDING_DELETION and retry on the next sweep.
+        if not all_blobs_deleted:
+            logger.warning(
+                "Deferring deletion of account %s: storage cleanup incomplete",
+                user.id,
+            )
+            continue
 
         # Delete Redis sessions
         try:

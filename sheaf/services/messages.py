@@ -252,7 +252,7 @@ async def board_summaries(
             BoardSummary(
                 board_kind=BoardKind.MEMBER.value,
                 board_member_id=member.id,
-                member_name=_display_name(member),
+                member_name=display_name(member),
                 last_message_at=msgs[0].created_at if msgs else None,
                 last_message_preview=(
                     preview_for(decrypt_body(msgs[0].body)) if msgs else None
@@ -271,7 +271,7 @@ async def board_summaries(
     return summaries + member_summaries
 
 
-def _display_name(member: Member) -> str:
+def display_name(member: Member) -> str:
     if member.display_name:
         return member.display_name
     return decrypt(member.name) if member.name else "(unnamed)"
@@ -355,7 +355,9 @@ async def list_messages(
             Message.deleted_at.is_(None),
             _board_match_clause(board_kind, board_member_id),
         )
-        .order_by(Message.created_at.desc())
+        # id is the deterministic tiebreaker for rows sharing a created_at,
+        # so ordering stays stable across pages.
+        .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(limit)
     )
     if before is not None:
@@ -380,7 +382,7 @@ async def fetch_parent_preview(
     if parent.author_member_id is not None:
         author = await db.get(Member, parent.author_member_id)
         if author is not None:
-            author_name = _display_name(author)
+            author_name = display_name(author)
     return preview_for(body_pt), author_name, parent_id
 
 
@@ -390,7 +392,7 @@ async def author_display_name(
     if author_member_id is None:
         return None
     author = await db.get(Member, author_member_id)
-    return _display_name(author) if author is not None else None
+    return display_name(author) if author is not None else None
 
 
 # ---------------------------------------------------------------------------

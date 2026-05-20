@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
@@ -83,6 +83,14 @@ function UserActions({ user }: { user: AdminUser }) {
     emailChange.isPending ||
     disableTotp.isPending ||
     verifyEmail.isPending;
+
+  // The generated password is shown once for the admin to hand off. Don't
+  // leave it sitting in the DOM indefinitely if the row stays expanded.
+  useEffect(() => {
+    if (!generatedPassword) return;
+    const timer = setTimeout(() => setGeneratedPassword(null), 120_000);
+    return () => clearTimeout(timer);
+  }, [generatedPassword]);
 
   function copyPassword() {
     if (generatedPassword) {

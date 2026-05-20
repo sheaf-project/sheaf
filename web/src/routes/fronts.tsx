@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { apiFetch } from "@/lib/api-client";
+import { patchWebSettings } from "@/lib/client-settings";
 import { ChevronDown, ChevronRight, History, Infinity as InfinityIcon, ListOrdered, Pencil } from "lucide-react";
 import {
   useCurrentFronts,
@@ -101,16 +102,10 @@ export function FrontsPage() {
   })();
 
   async function persistFrontsPrefs(next: FrontsViewPrefs) {
-    // PUT merges client-side: read the existing blob, splice in our key,
-    // write back. Same shape as the announcement-banners dismissal flow.
-    const current = clientSettings ?? {};
+    // Atomic server-side merge of just our key — won't clobber a
+    // concurrent write of some other client-settings key.
     try {
-      await apiFetch("/v1/settings/client/web", {
-        method: "PUT",
-        body: JSON.stringify({
-          settings: { ...current, fronts: { ...savedFrontsPrefs, ...next } },
-        }),
-      });
+      await patchWebSettings({ fronts: { ...savedFrontsPrefs, ...next } });
       qc.invalidateQueries({ queryKey: ["client-settings", "web"] });
     } catch {
       // Persistence failure is non-fatal — URL state still works.

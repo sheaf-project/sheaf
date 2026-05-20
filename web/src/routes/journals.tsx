@@ -155,7 +155,7 @@ function JournalList({
   const query = useInfiniteQuery<JournalListResponse>({
     queryKey: ["journals", params],
     queryFn: ({ pageParam }) =>
-      listJournals({ ...params, before: pageParam as string | undefined }),
+      listJournals({ ...params, cursor: pageParam as string | undefined }),
     initialPageParam: undefined,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });

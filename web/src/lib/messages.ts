@@ -91,10 +91,12 @@ export async function markBoardSeen(
   member_id: string,
   board_kind: BoardKind,
   board_member_id: string | null,
+  signal?: AbortSignal,
 ): Promise<void> {
   await apiFetch<void>("/v1/messages/mark-seen", {
     method: "POST",
     body: JSON.stringify({ member_id, board_kind, board_member_id }),
+    signal,
   });
 }
 

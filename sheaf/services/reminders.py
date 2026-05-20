@@ -251,9 +251,11 @@ async def tick_repeated_reminders(db: AsyncSession) -> int:
     # usually a single small set.
     system_ids = {r.system_id for r in reminders}
     fronting_by_system = await _currently_fronting_by_system(db, system_ids)
+    # Batch the channel lookups too — one query instead of one per reminder.
+    channels_by_id = await _load_channels(db, {r.channel_id for r in reminders})
 
     for reminder in reminders:
-        if not _channel_is_active(await _load_channel(db, reminder.channel_id)):
+        if not _channel_is_active(channels_by_id.get(reminder.channel_id)):
             continue
 
         # Anchor scheduling against last_fired_at (or created_at if never
@@ -520,6 +522,19 @@ async def _load_channel(
             select(NotificationChannel).where(NotificationChannel.id == channel_id)
         )
     ).scalar_one_or_none()
+
+
+async def _load_channels(
+    db: AsyncSession, channel_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, NotificationChannel]:
+    """Batch-load channels by id — avoids a per-reminder query in the
+    repeated-reminder tick."""
+    if not channel_ids:
+        return {}
+    rows = await db.execute(
+        select(NotificationChannel).where(NotificationChannel.id.in_(channel_ids))
+    )
+    return {c.id: c for c in rows.scalars()}
 
 
 def _channel_is_active(channel: NotificationChannel | None) -> bool:

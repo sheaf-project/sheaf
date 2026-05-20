@@ -15,9 +15,12 @@ front_members = Table(
         "front_id", UUID(as_uuid=True),
         ForeignKey("fronts.id", ondelete="CASCADE"), primary_key=True,
     ),
+    # Indexed: the composite PK only serves front_id-leading lookups, so
+    # "which fronts is member X in?" would otherwise heap-scan.
     Column(
         "member_id", UUID(as_uuid=True),
         ForeignKey("members.id", ondelete="CASCADE"), primary_key=True,
+        index=True,
     ),
 )
 
@@ -32,6 +35,7 @@ group_members = Table(
     Column(
         "member_id", UUID(as_uuid=True),
         ForeignKey("members.id", ondelete="CASCADE"), primary_key=True,
+        index=True,
     ),
 )
 
@@ -46,6 +50,7 @@ member_tags = Table(
     Column(
         "member_id", UUID(as_uuid=True),
         ForeignKey("members.id", ondelete="CASCADE"), primary_key=True,
+        index=True,
     ),
 )
 

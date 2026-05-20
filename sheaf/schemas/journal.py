@@ -86,7 +86,8 @@ class JournalEntryReadWithCount(JournalEntryRead):
 
 class JournalListResponse(BaseModel):
     items: list[JournalEntryRead]
-    next_cursor: datetime | None = None
+    # Opaque (created_at, id) cursor — pass back as ?cursor= for the next page.
+    next_cursor: str | None = None
 
 
 class ContentRevisionRead(BaseModel):

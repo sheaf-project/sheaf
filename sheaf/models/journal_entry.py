@@ -16,11 +16,12 @@ class JournalEntry(UUIDMixin, TimestampMixin, Base):
 
     __tablename__ = "journal_entries"
 
+    # No standalone index — the (system_id, created_at) composite below
+    # already serves system_id-only lookups via its leftmost column.
     system_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("systems.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     member_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

@@ -192,8 +192,9 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="space-y-1">
-          <Label className="text-sm">Grace period (days)</Label>
+          <Label htmlFor="safety-grace-period" className="text-sm">Grace period (days)</Label>
           <Input
+            id="safety-grace-period"
             type="number"
             min={0}
             max={365}
@@ -207,12 +208,12 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
           </p>
         </div>
         <div className="space-y-1">
-          <Label className="text-sm">Auth tier</Label>
+          <Label htmlFor="safety-auth-tier" className="text-sm">Auth tier</Label>
           <Select
             value={draft.auth_tier}
             onValueChange={(v) => setField("auth_tier", v as DeleteConfirmation)}
           >
-            <SelectTrigger>
+            <SelectTrigger id="safety-auth-tier">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -280,8 +281,9 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
           </p>
           {(settings.auth_tier === "password" || settings.auth_tier === "both") && (
             <div className="space-y-1">
-              <Label className="text-sm">Password</Label>
+              <Label htmlFor="safety-reauth-password" className="text-sm">Password</Label>
               <Input
+                id="safety-reauth-password"
                 type="password"
                 name="current-password"
                 autoComplete="current-password"
@@ -294,8 +296,9 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
           {(settings.auth_tier === "totp" || settings.auth_tier === "both") &&
             user?.totp_enabled && (
               <div className="space-y-1">
-                <Label className="text-sm">TOTP code</Label>
+                <Label htmlFor="safety-reauth-totp" className="text-sm">TOTP code</Label>
                 <Input
+                  id="safety-reauth-totp"
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
                   placeholder="6-digit code"

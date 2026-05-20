@@ -107,6 +107,9 @@ export function NotificationsRedeemPage() {
       setPhase({ kind: "error", message: "Missing activation code." });
       return;
     }
+    // Strip the activation code from the address bar so it doesn't linger
+    // in browser history or leak through the Referer header.
+    window.history.replaceState(null, "", window.location.pathname);
     let cancelled = false;
     previewActivation(code)
       .then((preview) => {

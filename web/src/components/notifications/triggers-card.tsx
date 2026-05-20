@@ -44,7 +44,10 @@ export function TriggersCard({
           />
           {channel.trigger_on_cofront_change && (
             <div className="ml-6 space-y-1">
-              <Label className="text-xs text-muted-foreground">
+              <Label
+                htmlFor="cofront-redaction-select"
+                className="text-xs text-muted-foreground"
+              >
                 Co-fronter redaction
               </Label>
               <Select
@@ -54,7 +57,7 @@ export function TriggersCard({
                 }
                 disabled={cofrontDisabled}
               >
-                <SelectTrigger className="h-8 w-56">
+                <SelectTrigger id="cofront-redaction-select" className="h-8 w-56">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

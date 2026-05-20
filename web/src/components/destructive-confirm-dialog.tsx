@@ -77,8 +77,9 @@ export function DestructiveConfirmDialog({
           <div className="space-y-3">
             {needsPassword && (
               <div className="space-y-1">
-                <Label className="text-sm">Password</Label>
+                <Label htmlFor="destructive-confirm-password" className="text-sm">Password</Label>
                 <Input
+                  id="destructive-confirm-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -88,8 +89,9 @@ export function DestructiveConfirmDialog({
             )}
             {needsTotp && (
               <div className="space-y-1">
-                <Label className="text-sm">TOTP code</Label>
+                <Label htmlFor="destructive-confirm-totp" className="text-sm">TOTP code</Label>
                 <Input
+                  id="destructive-confirm-totp"
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
                   placeholder="6-digit code"

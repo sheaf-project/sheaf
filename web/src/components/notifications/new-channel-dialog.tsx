@@ -119,8 +119,9 @@ export function NewChannelDialog({
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label>Name</Label>
+            <Label htmlFor="new-channel-name">Name</Label>
             <Input
+              id="new-channel-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Mara's phone"
@@ -128,9 +129,9 @@ export function NewChannelDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label>Destination</Label>
+            <Label htmlFor="new-channel-destination">Destination</Label>
             <Select value={type} onValueChange={(v) => setType(v as DestinationType)}>
-              <SelectTrigger>
+              <SelectTrigger id="new-channel-destination">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -146,8 +147,9 @@ export function NewChannelDialog({
           {type === "webhook" && (
             <>
               <div className="space-y-2">
-                <Label>URL</Label>
+                <Label htmlFor="webhook-url">URL</Label>
                 <Input
+                  id="webhook-url"
                   type="url"
                   value={webhookUrl}
                   onChange={(e) => setWebhookUrl(e.target.value)}
@@ -156,14 +158,14 @@ export function NewChannelDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label>Payload format</Label>
+                <Label htmlFor="webhook-format">Payload format</Label>
                 <Select
                   value={webhookFormat}
                   onValueChange={(v) =>
                     setWebhookFormat(v as typeof webhookFormat)
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="webhook-format">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -188,8 +190,9 @@ export function NewChannelDialog({
               </div>
               {(webhookFormat === "json" || webhookFormat === "plaintext") && (
                 <div className="space-y-2">
-                  <Label>Secret (optional)</Label>
+                  <Label htmlFor="webhook-secret">Secret (optional)</Label>
                   <Input
+                    id="webhook-secret"
                     type="password"
                     value={webhookSecret}
                     onChange={(e) => setWebhookSecret(e.target.value)}
@@ -203,8 +206,9 @@ export function NewChannelDialog({
           {type === "ntfy" && (
             <>
               <div className="space-y-2">
-                <Label>Server URL</Label>
+                <Label htmlFor="ntfy-server">Server URL</Label>
                 <Input
+                  id="ntfy-server"
                   type="url"
                   value={ntfyServer}
                   onChange={(e) => setNtfyServer(e.target.value)}
@@ -212,8 +216,9 @@ export function NewChannelDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label>Topic</Label>
+                <Label htmlFor="ntfy-topic">Topic</Label>
                 <Input
+                  id="ntfy-topic"
                   value={ntfyTopic}
                   onChange={(e) => setNtfyTopic(e.target.value)}
                   required
@@ -225,8 +230,9 @@ export function NewChannelDialog({
           {type === "pushover" && (
             <>
               <div className="space-y-2">
-                <Label>User key</Label>
+                <Label htmlFor="pushover-user-key">User key</Label>
                 <Input
+                  id="pushover-user-key"
                   value={pushoverUserKey}
                   onChange={(e) => setPushoverUserKey(e.target.value)}
                   placeholder="From your Pushover dashboard"
@@ -274,8 +280,9 @@ export function NewChannelDialog({
                       — you'll hit your own account's 10k/month free pool
                       instead.
                     </p>
-                    <Label className="text-xs">App token (optional)</Label>
+                    <Label htmlFor="pushover-app-token" className="text-xs">App token (optional)</Label>
                     <Input
+                      id="pushover-app-token"
                       value={pushoverAppToken}
                       onChange={(e) => setPushoverAppToken(e.target.value)}
                       placeholder="a-30-char-pushover-app-token"

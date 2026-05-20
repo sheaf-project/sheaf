@@ -25,6 +25,7 @@ from sheaf.auth.dependencies import get_current_user_optional
 from sheaf.auth.sessions import get_session_user_id
 from sheaf.config import settings
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.notification_channel import (
     DestinationState,
     DestinationType,
@@ -51,7 +52,11 @@ from sheaf.services.notifications.activation import (
 router = APIRouter(prefix="/notifications", tags=["notifications-public"])
 
 
-@router.get("/redeem-preview", response_model=RedeemPreview)
+@router.get(
+    "/redeem-preview",
+    response_model=RedeemPreview,
+    dependencies=[rate_limit(30, 60)],
+)
 async def preview_activation(
     code: str,
     db: AsyncSession = Depends(get_db),
@@ -114,7 +119,11 @@ async def preview_activation(
     )
 
 
-@router.post("/redeem", response_model=RedeemResponse)
+@router.post(
+    "/redeem",
+    response_model=RedeemResponse,
+    dependencies=[rate_limit(30, 60)],
+)
 async def redeem_activation(
     body: RedeemRequest,
     db: AsyncSession = Depends(get_db),
@@ -274,7 +283,11 @@ async def _channel_by_management_token(
     return channel
 
 
-@router.get("/manage/{mgmt_token}", response_model=ManageChannelView)
+@router.get(
+    "/manage/{mgmt_token}",
+    response_model=ManageChannelView,
+    dependencies=[rate_limit(30, 60)],
+)
 async def view_managed(
     mgmt_token: str,
     session_id: str | None = Cookie(default=None, alias="sheaf_session"),
@@ -308,6 +321,7 @@ async def view_managed(
 @router.post(
     "/manage/{mgmt_token}/unsubscribe",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[rate_limit(30, 60)],
 )
 async def unsubscribe(
     mgmt_token: str,

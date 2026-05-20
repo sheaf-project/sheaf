@@ -194,8 +194,6 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List all users with member counts. Requires admin:read scope or is_admin."""
-    # Email is encrypted — search must happen after decryption, so we fetch
-    # all rows (or all for the unfiltered case), decrypt, filter, then paginate.
     member_count_sq = (
         select(System.user_id, func.count(Member.id).label("member_count"))
         .outerjoin(Member, Member.system_id == System.id)
@@ -223,18 +221,37 @@ async def list_users(
         .order_by(User.created_at.desc())
     )
 
-    rows = await db.execute(query)
-    all_users = []
-    for user, member_count, storage_used_bytes in rows:
+    offset = max(0, (page - 1) * limit)
+
+    def _decrypt_email(user: User) -> str:
         try:
-            email = decrypt(user.email)
+            return decrypt(user.email)
         except Exception:
-            email = "<encrypted>"
+            return "<encrypted>"
 
-        if search and search.lower() not in email.lower():
-            continue
+    if search:
+        # Email is encrypted with no substring index, so a search has to
+        # decrypt and filter in Python. Admin-only and lower-frequency, so
+        # the full scan is acceptable here.
+        rows = await db.execute(query)
+        needle = search.lower()
+        matched = []
+        for user, member_count, storage in rows:
+            email = _decrypt_email(user)
+            if needle in email.lower():
+                matched.append((user, member_count, storage, email))
+        page_rows = matched[offset : offset + limit]
+    else:
+        # Unfiltered list: paginate in SQL so only the current page is
+        # loaded and decrypted, not the entire users table.
+        rows = await db.execute(query.offset(offset).limit(limit))
+        page_rows = [
+            (user, member_count, storage, _decrypt_email(user))
+            for user, member_count, storage in rows
+        ]
 
-        all_users.append(AdminUserRead(
+    return [
+        AdminUserRead(
             id=str(user.id),
             email=email,
             tier=user.tier,
@@ -249,10 +266,9 @@ async def list_users(
             can_upload_images=user.can_upload_images,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
-        ))
-
-    offset = (page - 1) * limit
-    return all_users[offset : offset + limit]
+        )
+        for user, member_count, storage_used_bytes, email in page_rows
+    ]
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserRead)

@@ -283,8 +283,9 @@ function DeleteEntryDialog({
           </p>
           {needsPassword && (
             <div className="space-y-1">
-              <Label className="text-sm">Password</Label>
+              <Label htmlFor="journal-delete-password" className="text-sm">Password</Label>
               <Input
+                id="journal-delete-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -294,8 +295,9 @@ function DeleteEntryDialog({
           )}
           {needsTotp && (
             <div className="space-y-1">
-              <Label className="text-sm">TOTP code</Label>
+              <Label htmlFor="journal-delete-totp" className="text-sm">TOTP code</Label>
               <Input
+                id="journal-delete-totp"
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value)}
                 placeholder="6-digit code"

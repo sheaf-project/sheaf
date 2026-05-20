@@ -236,17 +236,24 @@ function BoardView({
   });
 
   // Mark this board as seen for the caller-member after the page renders
-  // — the act of looking IS the act of reading.
+  // — the act of looking IS the act of reading. The AbortController cancels
+  // the in-flight request on unmount, which also collapses StrictMode's
+  // double-invoke into a single effective POST.
   useEffect(() => {
     if (!callerMemberId) return;
-    markBoardSeen(callerMemberId, boardKind, boardMemberId)
+    const controller = new AbortController();
+    markBoardSeen(callerMemberId, boardKind, boardMemberId, controller.signal)
       .then(() => {
+        if (controller.signal.aborted) return;
         qc.invalidateQueries({ queryKey: ["messages", "boards"] });
         qc.invalidateQueries({ queryKey: ["messages", "unread"] });
       })
-      .catch(() => {
-        // Non-fatal — marking-seen is best-effort.
+      .catch((err) => {
+        // Best-effort, but a real failure shouldn't vanish silently.
+        if (controller.signal.aborted) return;
+        console.error("Failed to mark board as seen", err);
       });
+    return () => controller.abort();
   }, [boardKind, boardMemberId, callerMemberId, qc]);
 
   const memberById = useMemo(

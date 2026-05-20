@@ -14,7 +14,7 @@ import { apiFetch } from "./api-client";
 export interface ListJournalsParams {
   member_id?: string | null;
   system_only?: boolean;
-  before?: string | null;
+  cursor?: string | null;
   limit?: number;
 }
 
@@ -22,7 +22,7 @@ export function listJournals(params: ListJournalsParams = {}) {
   const qs = new URLSearchParams();
   if (params.system_only) qs.set("system_only", "true");
   if (params.member_id) qs.set("member_id", params.member_id);
-  if (params.before) qs.set("before", params.before);
+  if (params.cursor) qs.set("cursor", params.cursor);
   if (params.limit) qs.set("limit", String(params.limit));
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   return apiFetch<JournalListResponse>(`/v1/journals${suffix}`);

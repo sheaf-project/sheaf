@@ -103,21 +103,23 @@ function MemberForm({
         onRemove={() => setAvatarUrl(null)}
       />
       <div className="space-y-2">
-        <Label>Name</Label>
-        <Input value={name} onChange={(e) => setName(e.target.value)} required />
+        <Label htmlFor="member-name">Name</Label>
+        <Input id="member-name" value={name} onChange={(e) => setName(e.target.value)} required />
       </div>
       <div className="grid grid-cols-[1fr_auto] gap-3">
         <div className="space-y-2">
-          <Label>Display name</Label>
+          <Label htmlFor="member-display-name">Display name</Label>
           <Input
+            id="member-display-name"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="Optional, shown instead of name if set"
           />
         </div>
         <div className="space-y-2">
-          <Label>Emoji</Label>
+          <Label htmlFor="member-emoji">Emoji</Label>
           <Input
+            id="member-emoji"
             value={emoji}
             onChange={(e) => setEmoji(e.target.value)}
             placeholder=""
@@ -127,8 +129,9 @@ function MemberForm({
         </div>
       </div>
       <div className="space-y-2">
-        <Label>Pronouns</Label>
+        <Label htmlFor="member-pronouns">Pronouns</Label>
         <Input
+          id="member-pronouns"
           value={pronouns}
           onChange={(e) => setPronouns(e.target.value)}
           placeholder="e.g. she/her"
@@ -136,9 +139,10 @@ function MemberForm({
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label>Color</Label>
+          <Label htmlFor="member-color">Color</Label>
           <div className="flex items-center gap-2">
             <Input
+              id="member-color"
               type="color"
               value={color}
               onChange={(e) => setColor(e.target.value)}
@@ -184,8 +188,9 @@ function MemberForm({
         </p>
       </div>
       <div className="space-y-2">
-        <Label>PluralKit ID</Label>
+        <Label htmlFor="member-pluralkit-id">PluralKit ID</Label>
         <Input
+          id="member-pluralkit-id"
           value={pluralkitId}
           onChange={(e) => setPluralkitId(e.target.value)}
           placeholder="Optional, e.g. wyyetr"
@@ -198,9 +203,9 @@ function MemberForm({
         </p>
       </div>
       <div className="space-y-2">
-        <Label>Privacy</Label>
+        <Label htmlFor="member-privacy">Privacy</Label>
         <Select value={privacy} onValueChange={(v) => setPrivacy(v as PrivacyLevel)}>
-          <SelectTrigger>
+          <SelectTrigger id="member-privacy">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -271,8 +276,9 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
       <p className="text-sm font-medium text-muted-foreground">Custom fields</p>
       {fields.map((f) => (
         <div key={f.id} className="space-y-1">
-          <Label className="text-xs">{f.name}</Label>
+          <Label htmlFor={`custom-field-${f.id}`} className="text-xs">{f.name}</Label>
           <Input
+            id={`custom-field-${f.id}`}
             value={overrides[f.id] ?? serverValues[f.id] ?? ""}
             onChange={(e) => {
               setOverrides((prev) => ({ ...prev, [f.id]: e.target.value }));
@@ -342,8 +348,9 @@ function DeleteMemberDialog({
           <div className="space-y-3">
             {needsPassword && (
               <div className="space-y-1">
-                <Label className="text-sm">Password</Label>
+                <Label htmlFor="member-delete-password" className="text-sm">Password</Label>
                 <Input
+                  id="member-delete-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -353,8 +360,9 @@ function DeleteMemberDialog({
             )}
             {needsTotp && (
               <div className="space-y-1">
-                <Label className="text-sm">TOTP code</Label>
+                <Label htmlFor="member-delete-totp" className="text-sm">TOTP code</Label>
                 <Input
+                  id="member-delete-totp"
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
                   placeholder="6-digit code"
