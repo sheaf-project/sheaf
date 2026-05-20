@@ -69,14 +69,14 @@ export function DeliveryCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
-          <Label>Payload sensitivity</Label>
+          <Label htmlFor="delivery-payload-sensitivity">Payload sensitivity</Label>
           <Select
             value={channel.payload_sensitivity}
             onValueChange={(v) =>
               onChange({ payload_sensitivity: v as PayloadSensitivity })
             }
           >
-            <SelectTrigger>
+            <SelectTrigger id="delivery-payload-sensitivity">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -95,8 +95,9 @@ export function DeliveryCard({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label>Debounce (seconds)</Label>
+            <Label htmlFor="delivery-debounce">Debounce (seconds)</Label>
             <Input
+              id="delivery-debounce"
               type="number"
               min={debounceFloor}
               max={86400}
@@ -130,8 +131,9 @@ export function DeliveryCard({
           </div>
 
           <div className="space-y-2">
-            <Label>Aggregation window (seconds)</Label>
+            <Label htmlFor="delivery-aggregation">Aggregation window (seconds)</Label>
             <Input
+              id="delivery-aggregation"
               type="number"
               min={0}
               max={86400}
@@ -166,8 +168,9 @@ export function DeliveryCard({
           {quietEnabled && (
             <div className="ml-6 grid gap-2 sm:grid-cols-2">
               <div className="space-y-1">
-                <Label className="text-xs">Start</Label>
+                <Label htmlFor="quiet-hours-start" className="text-xs">Start</Label>
                 <Input
+                  id="quiet-hours-start"
                   type="time"
                   value={qh.start}
                   onChange={(e) =>
@@ -176,8 +179,9 @@ export function DeliveryCard({
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs">End</Label>
+                <Label htmlFor="quiet-hours-end" className="text-xs">End</Label>
                 <Input
+                  id="quiet-hours-end"
                   type="time"
                   value={qh.end}
                   onChange={(e) =>
@@ -186,14 +190,14 @@ export function DeliveryCard({
                 />
               </div>
               <div className="col-span-2 space-y-1">
-                <Label className="text-xs">Timezone</Label>
+                <Label htmlFor="quiet-hours-tz" className="text-xs">Timezone</Label>
                 <Select
                   value={qh.tz}
                   onValueChange={(v) =>
                     onChange({ quiet_hours: { ...qh, tz: v } })
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="quiet-hours-tz">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="max-h-72">

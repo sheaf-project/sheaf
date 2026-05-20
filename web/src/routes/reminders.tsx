@@ -495,12 +495,12 @@ function ReminderDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Trigger type</Label>
+              <Label htmlFor="reminder-trigger-type">Trigger type</Label>
               <Select
                 value={triggerType}
                 onValueChange={(v) => setTriggerType(v as ReminderTriggerType)}
               >
-                <SelectTrigger>
+                <SelectTrigger id="reminder-trigger-type">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -592,14 +592,14 @@ function AutomatedSection(props: {
     <div className="space-y-3 rounded-md border p-3 bg-muted/20">
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label>When</Label>
+          <Label htmlFor="reminder-when-member">When</Label>
           <Select
             value={props.triggerMemberId || "_any"}
             onValueChange={(v) =>
               props.setTriggerMemberId(v === "_any" ? "" : v)
             }
           >
-            <SelectTrigger>
+            <SelectTrigger id="reminder-when-member">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -613,14 +613,14 @@ function AutomatedSection(props: {
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>Event</Label>
+          <Label htmlFor="reminder-when-event">Event</Label>
           <Select
             value={props.triggerEvent}
             onValueChange={(v) =>
               props.setTriggerEvent(v as ReminderTriggerEvent)
             }
           >
-            <SelectTrigger>
+            <SelectTrigger id="reminder-when-event">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -715,14 +715,14 @@ function RepeatedSection(props: {
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>Frequency</Label>
+              <Label htmlFor="reminder-frequency">Frequency</Label>
               <Select
                 value={props.scheduleKind}
                 onValueChange={(v) =>
                   props.setScheduleKind(v as ReminderScheduleKind)
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger id="reminder-frequency">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -733,8 +733,9 @@ function RepeatedSection(props: {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Time of day</Label>
+              <Label htmlFor="reminder-time-of-day">Time of day</Label>
               <Input
+                id="reminder-time-of-day"
                 type="time"
                 value={props.scheduleTime}
                 onChange={(e) => props.setScheduleTime(e.target.value)}
@@ -774,8 +775,9 @@ function RepeatedSection(props: {
 
           {props.scheduleKind === "monthly" && (
             <div className="space-y-1.5">
-              <Label>Day of month</Label>
+              <Label htmlFor="reminder-day-of-month">Day of month</Label>
               <Input
+                id="reminder-day-of-month"
                 type="number"
                 min={1}
                 max={31}
@@ -792,9 +794,9 @@ function RepeatedSection(props: {
       )}
 
       <div className="space-y-1.5">
-        <Label>Timezone</Label>
+        <Label htmlFor="reminder-timezone">Timezone</Label>
         <Select value={props.tz} onValueChange={props.setTz}>
-          <SelectTrigger>
+          <SelectTrigger id="reminder-timezone">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="max-h-72">
@@ -808,12 +810,12 @@ function RepeatedSection(props: {
       </div>
 
       <div className="border-t pt-3 space-y-2">
-        <Label>Only fire when…</Label>
+        <Label htmlFor="reminder-scope">Only fire when…</Label>
         <Select
           value={props.scope}
           onValueChange={(v) => props.setScope(v as "system" | "member")}
         >
-          <SelectTrigger>
+          <SelectTrigger id="reminder-scope">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

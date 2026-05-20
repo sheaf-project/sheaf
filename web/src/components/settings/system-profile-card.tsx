@@ -89,12 +89,13 @@ function SystemSettingsForm({
             onRemove={() => setAvatarUrl(null)}
           />
           <div className="space-y-2">
-            <Label>Name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} required />
+            <Label htmlFor="system-name">Name</Label>
+            <Input id="system-name" value={name} onChange={(e) => setName(e.target.value)} required />
           </div>
           <div className="space-y-2">
-            <Label>Description</Label>
+            <Label htmlFor="system-description">Description</Label>
             <Input
+              id="system-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional"
@@ -118,8 +119,9 @@ function SystemSettingsForm({
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Tag</Label>
+              <Label htmlFor="system-tag">Tag</Label>
               <Input
+                id="system-tag"
                 value={tag}
                 onChange={(e) => setTag(e.target.value)}
                 placeholder="Short ID"
@@ -127,9 +129,10 @@ function SystemSettingsForm({
               />
             </div>
             <div className="space-y-2">
-              <Label>Color</Label>
+              <Label htmlFor="system-color">Color</Label>
               <div className="flex items-center gap-2">
                 <Input
+                  id="system-color"
                   type="color"
                   value={color || "#000000"}
                   onChange={(e) => setColor(e.target.value)}
@@ -144,9 +147,9 @@ function SystemSettingsForm({
             </div>
           </div>
           <div className="space-y-2">
-            <Label>Privacy</Label>
+            <Label htmlFor="system-privacy">Privacy</Label>
             <Select value={privacy} onValueChange={(v) => setPrivacy(v as PrivacyLevel)}>
-              <SelectTrigger>
+              <SelectTrigger id="system-privacy">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -157,9 +160,9 @@ function SystemSettingsForm({
             </Select>
           </div>
           <div className="space-y-2">
-            <Label>Date format</Label>
+            <Label htmlFor="system-date-format">Date format</Label>
             <Select value={dateFormat} onValueChange={(v) => setDateFormat(v as DateFormat)}>
-              <SelectTrigger>
+              <SelectTrigger id="system-date-format">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
