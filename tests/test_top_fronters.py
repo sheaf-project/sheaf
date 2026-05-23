@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from sheaf.services.analytics import FrontInterval, score_recent_fronters
+from sheaf.services.sheaf_import import _coerce_pin
 
 # --- scorer unit tests -----------------------------------------------------
 
@@ -110,6 +111,23 @@ def test_limit_caps_result_count(auth_client: httpx.Client):
     for i in range(3):
         _member(auth_client, f"M{i}-{uuid.uuid4().hex[:6]}")
     assert len(_ids(auth_client, limit=2)) == 2
+
+
+def test_coerce_pin_guards_junk():
+    assert _coerce_pin(3) == 3
+    assert _coerce_pin(0) == 0
+    assert _coerce_pin(-1) is None
+    assert _coerce_pin(None) is None
+    assert _coerce_pin(True) is None  # bool is an int subclass; reject it
+    assert _coerce_pin("5") is None
+
+
+def test_export_includes_quick_switch_pin(auth_client: httpx.Client):
+    m = _member(auth_client, f"Pinned-{uuid.uuid4().hex[:6]}")
+    auth_client.patch(f"/v1/members/{m['id']}", json={"quick_switch_pin": 2})
+    export = auth_client.get("/v1/export").json()
+    by_id = {x["id"]: x for x in export["members"]}
+    assert by_id[m["id"]]["quick_switch_pin"] == 2
 
 
 def test_pin_set_and_clear_via_member_patch(auth_client: httpx.Client):

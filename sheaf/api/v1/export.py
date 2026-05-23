@@ -236,6 +236,7 @@ async def export_all(
                 "is_custom_front": m.is_custom_front,
                 "privacy": m.privacy.value,
                 "note": decrypt(m.note) if m.note else None,
+                "quick_switch_pin": m.quick_switch_pin,
                 "created_at": m.created_at.isoformat(),
             }
             for (m, name, description) in members_with_plaintext
