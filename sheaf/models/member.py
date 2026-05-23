@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, Column, Enum, ForeignKey, String, Table, Text
+from sqlalchemy import Boolean, Column, Enum, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -126,6 +126,14 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # wants to be notified about.
     notify_on_front_member_ids: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
+    )
+
+    # Quick-switch pin. NULL = not pinned. A non-null integer pins this
+    # member to the top of the top-fronters / quick-switch list, ahead of
+    # the recency-ranked members, ordered by this value ascending (0 first).
+    # The user controls it; the ranker never sets it.
+    quick_switch_pin: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
     )
 
     # Relationships

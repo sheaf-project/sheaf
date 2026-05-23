@@ -79,6 +79,7 @@ def decrypt_member_for_read(
         "is_custom_front": member.is_custom_front,
         "privacy": member.privacy,
         "note": member_note_plaintext(member),
+        "quick_switch_pin": member.quick_switch_pin,
         "created_at": member.created_at,
         "updated_at": member.updated_at,
         "has_bio_revisions": has_bio_revisions,

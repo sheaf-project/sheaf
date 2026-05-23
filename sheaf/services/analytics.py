@@ -27,6 +27,7 @@ Key semantics:
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -175,6 +176,38 @@ def _bucket_into_hours(
         cursor = slice_end
 
     return buckets
+
+
+def score_recent_fronters(
+    intervals: Iterable[FrontInterval],
+    *,
+    now: datetime,
+    half_life_days: float = 30.0,
+) -> dict[uuid.UUID, float]:
+    """Recency-weighted fronting score per member, for quick-switch ranking.
+
+    Each (window-clipped) front contributes
+    ``duration_seconds * 0.5 ** (age_days / half_life_days)`` to every
+    member who was fronting, where age is measured from the front's end
+    (which is `now` for an ongoing front) back to `now`. So long and
+    recent fronts score highest, and old activity decays smoothly rather
+    than dropping off a window edge. Co-fronting counts for everyone, the
+    same as `aggregate`.
+
+    Returns member_id -> score. Members with no fronting time in the
+    supplied intervals are simply absent (caller treats them as 0).
+    """
+    decay_per_day = math.log(2) / half_life_days
+    scores: dict[uuid.UUID, float] = {}
+    for interval in intervals:
+        duration = (interval.end - interval.start).total_seconds()
+        if duration <= 0:
+            continue
+        age_days = max(0.0, (now - interval.end).total_seconds() / 86400.0)
+        weight = duration * math.exp(-decay_per_day * age_days)
+        for member_id in interval.member_ids:
+            scores[member_id] = scores.get(member_id, 0.0) + weight
+    return scores
 
 
 def clip_intervals(

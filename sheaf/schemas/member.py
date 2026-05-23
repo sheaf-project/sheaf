@@ -25,6 +25,7 @@ class MemberCreate(BaseModel):
     is_custom_front: bool = False
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
     note: str | None = Field(default=None, max_length=5000)
+    quick_switch_pin: int | None = Field(default=None, ge=0)
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -50,6 +51,8 @@ class MemberUpdate(BaseModel):
     is_custom_front: bool | None = None
     privacy: PrivacyLevel | None = None
     note: str | None = Field(default=None, max_length=5000)
+    # Explicit null clears the pin (unpins); omitted leaves it untouched.
+    quick_switch_pin: int | None = Field(default=None, ge=0)
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -95,6 +98,7 @@ class MemberRead(BaseModel):
     is_custom_front: bool
     privacy: PrivacyLevel
     note: str | None
+    quick_switch_pin: int | None = None
     created_at: datetime
     updated_at: datetime
     # True iff at least one ContentRevision exists for this member's bio.
