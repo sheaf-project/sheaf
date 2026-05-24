@@ -39,6 +39,48 @@ def _post(
 # --- System board ----------------------------------------------------------
 
 
+def test_read_state_get_or_create_is_race_safe(auth_client: httpx.Client):
+    """Opening the messages page fires several board-touching requests in
+    parallel, all funnelling through get_or_create_read_state. The old
+    select-then-insert raced: per-member boards 500'd on the unique index
+    and the system board (NULL board_member_id) accumulated duplicate rows
+    that later broke scalar_one_or_none. Hammer both board kinds
+    concurrently and assert no 5xx, then confirm follow-up reads still
+    resolve to a single row."""
+    import concurrent.futures
+
+    member_id = _create_member(auth_client, "Racer")
+    auth_header = auth_client.headers["Authorization"]
+    base_url = str(auth_client.base_url)
+
+    def hit(path: str) -> int:
+        with httpx.Client(
+            base_url=base_url, headers={"Authorization": auth_header}
+        ) as c:
+            return c.get(path).status_code
+
+    system = f"/v1/messages?board_kind=system&caller_member_id={member_id}"
+    wall = (
+        f"/v1/messages?board_kind=member&board_member_id={member_id}"
+        f"&caller_member_id={member_id}"
+    )
+    paths = [system, wall] * 8
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        statuses = list(ex.map(hit, paths))
+
+    assert all(s == 200 for s in statuses), statuses
+    # No duplicate rows left behind: subsequent reads still succeed
+    # (a MultipleResultsFound would surface here as a 500).
+    assert auth_client.get(system).status_code == 200
+    assert (
+        auth_client.get(
+            f"/v1/messages/unread?caller_member_id={member_id}"
+        ).status_code
+        == 200
+    )
+
+
 def test_post_to_system_board(auth_client: httpx.Client):
     alice = _create_member(auth_client, "Alice")
     body = _post(auth_client, author_member_id=alice, body="hello system")
