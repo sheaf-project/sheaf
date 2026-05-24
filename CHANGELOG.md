@@ -6,6 +6,57 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-23
+
+The pre-public-beta hardening release. On top of the features that landed since v0.1.0 (front-change notifications, reminders, polls, messages, journals/notes, mobile push, PluralKit/Tupperbox/SimplyPlural import, analytics, custom fronts), this cycle moved imports onto a background job runner, did a broad security/privacy and performance pass, and added the first quick-switch building block.
+
+### Top-fronters quick-switch endpoint
+
+`GET /v1/members/top-fronters?limit=N` ranks members for a quick-pick list, so UIs (and the mobile apps) can autopopulate a start-front shortcut with the people most likely to be picked.
+
+- Recency-weighted score: per-member sum of fronting seconds with exponential decay (30-day half-life) over a 180-day window. Co-fronting counts for every participant, matching the analytics aggregator.
+- New nullable `members.quick_switch_pin`. Pinned members sort ahead of the recency ranking, ascending by pin value; everyone else follows by score.
+- Member create/edit form gains a "Pin to quick-switch" toggle; the start-front dialog shows a one-tap quick-pick chip row fed by the endpoint.
+- The pin round-trips through Sheaf export and re-import.
+
+### Imports moved onto an async job runner
+
+All five import paths (PluralKit file, PluralKit API, Tupperbox, SimplyPlural, Sheaf re-import) now run as background jobs instead of blocking the request, so a large or slow import no longer ties up a connection or times out.
+
+- New `import_jobs` table. `POST /v1/imports/file` and `/v1/imports/api` return `202` with a pollable job; `GET /v1/imports` (cursor-paginated) and `/v1/imports/{id}` expose status, per-record events, and counts. New `/imports` + `/imports/{id}` report UI.
+- Idempotency key dedupes double-submits (the double-clicked upload). Uploaded payloads are stored off-row and wiped on finalize; API credentials (PK token) are wiped once consumed.
+- File-bounds + JSON-size hardening on parse. A stale-running-job recovery sweep resets jobs orphaned by a worker crash.
+- PluralKit API preview: transient connect-retry, a busy spinner, and server-side logging of upstream API errors.
+
+### Security and privacy hardening
+
+- **SendGrid webhook**: verifies the Signed Event Webhook ECDSA signature with a timestamp replay window (`SENDGRID_WEBHOOK_PUBLIC_KEY`, optional `SENDGRID_WEBHOOK_MAX_SKEW_SECONDS`). The legacy query-string token is a fallback used only when no key is configured.
+- **Unified lockout**: failed-attempt lockout is now shared across login, TOTP disable, recovery-code regeneration, and the account-data endpoint, so attempts can't be spread across endpoints to dodge it. Per-user rate limits added to those plus the anonymous notification redeem / preview / manage endpoints.
+- **Password reset**: closed a timing oracle (the send now runs as a background task with symmetric work on the no-match branch); reset tokens are invalidated on password change and on successful login.
+- **Destructive-auth TOTP gate**: a TOTP-requiring confirmation tier can no longer be set without TOTP enrolled, TOTP can't be disabled while such a tier is active, and the verifier fails safe to a password check for legacy misconfigured rows.
+- **Races**: export-job and poll creation are row-locked; delete-account recovery-code consumption uses the race-safe conditional update; the account-deletion / pending-action / reminder background sweeps claim rows with `FOR UPDATE SKIP LOCKED`.
+- **Storage integrity**: the export-ready email now sends to the decrypted address (it was sending ciphertext); a failed upload deletes the orphaned blob; account deletion defers when storage cleanup is incomplete rather than dropping the row and orphaning blobs.
+- **Frontend**: avatar URL scheme allowlist (blocks `javascript:` / `data:` / `file:`); one-shot tokens (email verification, password reset, notification activation) stripped from the address bar after capture; cross-tab logout via BroadcastChannel; admin-reset passwords and regenerated TOTP recovery codes auto-clear from the DOM after a timeout.
+- Admin change-email normalizes the address before indexing; docker-compose binds the Postgres and Redis published ports to loopback by default (`POSTGRES_BIND_HOST` / `REDIS_BIND_HOST` to override).
+
+### Performance, correctness, and schema
+
+- **Pagination**: the journals list moved to an opaque `(created_at, id)` cursor and board messages gained an id tiebreaker, so entries sharing a timestamp can't be skipped or duplicated across a page boundary.
+- **N+1**: the board-message list and the repeated-reminder tick batch their lookups; `/admin/users` paginates in SQL and decrypts only the current page instead of the whole table.
+- **Client settings**: atomic-merge `PATCH` so independent writers (front prefs, dismissed announcements, onboarding) no longer clobber each other.
+- **Schema**: `UNIQUE(field_id, member_id)` on custom field values (with a dedup migration); indexes on `uploaded_files.user_id` and the member side of the association tables; the redundant single-column journal index dropped; server defaults added to JSONB / status columns on `pending_actions`, `safety_change_requests`, and `client_settings`; the `Group.children` ORM cascade matched to the `ON DELETE SET NULL` foreign key.
+
+### Accessibility
+
+- Form labels associated with their inputs (`htmlFor` / `id`) across ~21 settings, dialog, and route components, so screen readers and click-to-focus behave the same way they already did on the login and register pages.
+
+### Developer & ops
+
+- Alembic autogenerate now compares column types and server defaults, so schema drift isn't silently missed.
+- `run_tests.sh` fails hard if the database-backed endpoint never warms up, instead of proceeding and masking a pool-warmup bug as flake.
+- Added test coverage for login lockout, SendGrid webhook signature verification, client-settings merge, journals cursor pagination, and the top-fronters ranker.
+- README documents `SHEAF_ENCRYPTION_KEY` as a distinct backup target; the self-hosting backup section now covers encrypting the dump, off-host rotation, separating the key from the database backup, and testing restores.
+
 ### Unified `mobile_push` channels (collapse of fcm / apns_dev / apns_prod)
 
 The platform-specific mobile destination types had to be picked at channel creation, even though the owner didn't know which OS the recipient was on. Replaced with a single `mobile_push` type that binds to a Sheaf account at redemption and fans out across every `push_device_tokens` row for that account at delivery time — one channel rings every device the recipient has signed into, iOS or Android.
