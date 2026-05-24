@@ -6,6 +6,14 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-24
+
+### Fixed
+
+- **Sheaf import completeness** The importer only consumed system / members / fronts / groups / tags / custom fields, so journals (and their edit history), board messages, polls, reminders, and the notification config (watch tokens + channels + filter rules) silently vanished on re-import even though the export had always carried them. The importer now round-trips all of them, remapping cross-references (revision targets, poll option/vote refs, channel group/member rules, reminder channel + scope members) onto the freshly minted IDs. The import screen gains per-section selectors (journals, messages, polls, reminders, notifications), and the preview shows a count for each.
+  - Restored references: journal/revision authorship re-points at the importing user, the poll audit-log actor is nulled (old-instance account UUIDs are meaningless on the target), notification channels land in `pending_registration` so nothing dispatches to external recipients until the owner re-activates, and `delete_confirmation` is intentionally not restored (it would otherwise lock destructive actions on an account without the matching TOTP enrolment). Reminders attach to a channel, so they ride the notifications toggle.
+- **Export download failed on KMS-encrypted buckets.** S3 only serves a presigned `GET` for an SSE-KMS-encrypted object (including objects covered by a bucket-default KMS policy) when the URL is signed with SigV4; the boto3 clients weren't pinning a signature version and could fall back to SigV2, so the download 403'd with "requests specifying Server Side Encryption with AWS KMS managed keys require AWS Signature Version 4". Both the export-artefact and image storage clients now pin `s3v4` (harmless for non-KMS buckets and MinIO).
+
 ## [0.2.1] - 2026-05-24
 
 ### Fixed
