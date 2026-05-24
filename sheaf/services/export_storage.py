@@ -56,8 +56,17 @@ def _client(endpoint: str):
     filesystem deployments don't need it.
     """
     import boto3
+    from botocore.config import Config
 
-    kwargs: dict = {"region_name": settings.s3_region}
+    kwargs: dict = {
+        "region_name": settings.s3_region,
+        # SSE-KMS (including a bucket-default KMS encryption policy)
+        # requires SigV4. Presigned GETs fall back to SigV2 otherwise and
+        # S3 rejects them with "requests specifying Server Side Encryption
+        # with AWS KMS managed keys require AWS Signature Version 4". Pin
+        # it so both API calls and presigned URLs are SigV4.
+        "config": Config(signature_version="s3v4"),
+    }
     if settings.s3_access_key and settings.s3_secret_key:
         kwargs["aws_access_key_id"] = settings.s3_access_key
         kwargs["aws_secret_access_key"] = settings.s3_secret_key

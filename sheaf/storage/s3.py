@@ -2,6 +2,7 @@ import asyncio
 from functools import partial
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from sheaf.config import settings
@@ -13,7 +14,13 @@ class S3Storage(StorageBackend):
         # When access/secret are unset, fall through to boto3's default
         # credential chain (IAM instance profile, IRSA, ~/.aws/credentials,
         # AWS_ACCESS_KEY_ID env, etc.). Passing empty strings would block it.
-        kwargs: dict = {"region_name": settings.s3_region}
+        # signature_version is pinned to SigV4 because SSE-KMS (incl. a
+        # bucket-default KMS policy) rejects SigV2-signed presigned GETs with
+        # "requires AWS Signature Version 4". Harmless for non-KMS / MinIO.
+        kwargs: dict = {
+            "region_name": settings.s3_region,
+            "config": Config(signature_version="s3v4"),
+        }
         if settings.s3_access_key and settings.s3_secret_key:
             kwargs["aws_access_key_id"] = settings.s3_access_key
             kwargs["aws_secret_access_key"] = settings.s3_secret_key
