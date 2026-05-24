@@ -1,6 +1,7 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from sheaf.config import settings
 from sheaf.crypto import blind_index, encrypt
 from sheaf.database import get_db
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
+from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
@@ -31,6 +33,7 @@ from sheaf.schemas.member import (
     MemberUpdate,
 )
 from sheaf.schemas.tag import TagRead
+from sheaf.services.analytics import clip_intervals, score_recent_fronters
 from sheaf.services.journals import (
     capture_revision,
     decrypt_revision_for_read,
@@ -189,6 +192,74 @@ async def create_member(
     await db.commit()
     await db.refresh(member)
     return decrypt_member_for_read(member)
+
+
+# Quick-switch ranker tunables. Window is generous relative to the
+# half-life (6 half-lives -> tail weight <2%), so the decay does the
+# real shaping and the window just bounds the query.
+_TOP_FRONTERS_HALF_LIFE_DAYS = 30.0
+_TOP_FRONTERS_WINDOW = timedelta(days=180)
+
+
+@router.get("/top-fronters", response_model=list[MemberRead])
+async def top_fronters(
+    limit: int = Query(default=8, ge=1, le=50),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Members ranked for a quick-switch list.
+
+    Pinned members (quick_switch_pin set) come first, in pin order;
+    everyone else follows by a recency-weighted fronting score
+    (exponential decay, 30-day half-life). Useful for autopopulating a
+    start-front shortcut or a member picker. Returns at most `limit`.
+    """
+    system = await _get_user_system(user, db)
+    now = datetime.now(UTC)
+    since = now - _TOP_FRONTERS_WINDOW
+
+    fronts_result = await db.execute(
+        select(Front)
+        .options(selectinload(Front.members))
+        .where(
+            Front.system_id == system.id,
+            Front.started_at < now,
+            (Front.ended_at.is_(None)) | (Front.ended_at > since),
+        )
+    )
+    rows = [
+        (f.started_at, f.ended_at, [m.id for m in f.members])
+        for f in fronts_result.scalars().all()
+    ]
+    intervals = clip_intervals(rows, since=since, until=now)
+    scores = score_recent_fronters(
+        intervals, now=now, half_life_days=_TOP_FRONTERS_HALF_LIFE_DAYS
+    )
+
+    members_result = await db.execute(
+        select(Member).where(Member.system_id == system.id)
+    )
+    members = list(members_result.scalars().all())
+
+    pinned = sorted(
+        (m for m in members if m.quick_switch_pin is not None),
+        key=lambda m: (m.quick_switch_pin, str(m.id)),
+    )
+    # Highest score first; id as a stable tiebreaker for equal scores
+    # (e.g. the long tail of members who haven't fronted in the window).
+    unpinned = sorted(
+        (m for m in members if m.quick_switch_pin is None),
+        key=lambda m: (-scores.get(m.id, 0.0), str(m.id)),
+    )
+    ordered = (pinned + unpinned)[:limit]
+
+    with_revisions = await _load_bio_revision_existence(
+        db, [m.id for m in ordered]
+    )
+    return [
+        decrypt_member_for_read(m, has_bio_revisions=m.id in with_revisions)
+        for m in ordered
+    ]
 
 
 @router.get("/{member_id}", response_model=MemberRead)

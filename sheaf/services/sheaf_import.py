@@ -164,6 +164,7 @@ async def run_import(
             emoji=_trunc(m_data.get("emoji"), 8),
             is_custom_front=bool(m_data.get("is_custom_front", False)),
             privacy=_privacy(m_data.get("privacy")),
+            quick_switch_pin=_coerce_pin(m_data.get("quick_switch_pin")),
         )
         db.add(member)
         old_id_to_member[old_id] = member
@@ -331,6 +332,14 @@ def _trunc(val: str | None, max_len: int) -> str | None:
     if not val:
         return None
     return val[:max_len]
+
+
+def _coerce_pin(val: object) -> int | None:
+    """Quick-switch pin from import data: a non-negative int, else None.
+    Guards against bools (bool is an int subclass) and junk values."""
+    if isinstance(val, bool) or not isinstance(val, int):
+        return None
+    return val if val >= 0 else None
 
 
 def _parse_iso(val: str | None) -> datetime | None:

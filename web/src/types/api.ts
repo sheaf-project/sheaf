@@ -90,6 +90,10 @@ export interface Member {
   /** Lightweight scratchpad note; deliberately overwrite-only and not
    *  protected by System Safety. ~5kb plaintext cap. */
   note: string | null;
+  /** Quick-switch pin priority. null = unpinned. A number pins the member
+   *  to the top of the top-fronters list ahead of the recency ranking,
+   *  ordered ascending. */
+  quick_switch_pin: number | null;
   created_at: string;
   updated_at: string;
   /** True iff at least one ContentRevision exists for this member's
@@ -113,6 +117,7 @@ export interface MemberCreate {
   is_custom_front?: boolean;
   privacy?: PrivacyLevel;
   note?: string | null;
+  quick_switch_pin?: number | null;
 }
 
 export interface MemberUpdate {
@@ -128,6 +133,8 @@ export interface MemberUpdate {
   is_custom_front?: boolean;
   privacy?: PrivacyLevel;
   note?: string | null;
+  /** Set a number to pin, or null to clear the pin. */
+  quick_switch_pin?: number | null;
 }
 
 export interface Front {

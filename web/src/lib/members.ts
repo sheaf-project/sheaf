@@ -18,6 +18,12 @@ export function getMember(id: string) {
   return apiFetch<Member>(`/v1/members/${id}`);
 }
 
+/** Members ranked for a quick-switch list: pinned first, then by a
+ *  recency-weighted fronting score. */
+export function getTopFronters(limit = 8) {
+  return apiFetch<Member[]>(`/v1/members/top-fronters?limit=${limit}`);
+}
+
 export function createMember(data: MemberCreate) {
   return apiFetch<Member>("/v1/members", {
     method: "POST",

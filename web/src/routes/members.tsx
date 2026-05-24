@@ -75,6 +75,10 @@ function MemberForm({
     initial?.is_custom_front ?? false,
   );
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial?.privacy ?? "private");
+  // Preserve an existing numeric pin priority when toggling stays on; a
+  // freshly-pinned member gets priority 0.
+  const initialPin = initial?.quick_switch_pin ?? null;
+  const [pinned, setPinned] = useState(initialPin != null);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -91,6 +95,7 @@ function MemberForm({
       emoji: emoji.trim() || null,
       is_custom_front: isCustomFront,
       privacy,
+      quick_switch_pin: pinned ? (initialPin ?? 0) : null,
     });
   }
 
@@ -229,6 +234,21 @@ function MemberForm({
             than a system member. Custom fronts can still front and be in
             groups, but don&apos;t count toward member statistics and are
             listed separately from members.
+          </p>
+        </div>
+      </label>
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={pinned}
+          onChange={(e) => setPinned(e.target.checked)}
+          className="h-4 w-4 mt-0.5 rounded border-input"
+        />
+        <div>
+          <span className="text-sm font-medium">Pin to quick-switch</span>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Keeps this member at the top of the start-front quick-pick
+            list, ahead of the recently-fronted suggestions.
           </p>
         </div>
       </label>

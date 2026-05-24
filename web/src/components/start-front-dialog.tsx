@@ -3,7 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useCreateFront } from "@/hooks/use-fronts";
 import { ApiError } from "@/lib/api-client";
+import { getTopFronters } from "@/lib/members";
 import { getMySystem } from "@/lib/systems";
+import { cn } from "@/lib/utils";
+import { ColorDot } from "@/components/color-dot";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -16,6 +19,54 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MemberSelect } from "@/components/member-select";
+
+/** One-tap chips for the members most likely to be picked — pinned
+ *  members and recent fronters, from /v1/members/top-fronters. */
+function QuickPick({
+  open,
+  selected,
+  onToggle,
+}: {
+  open: boolean;
+  selected: string[];
+  onToggle: (id: string) => void;
+}) {
+  const { data: top } = useQuery({
+    queryKey: ["members", "top-fronters"],
+    queryFn: () => getTopFronters(8),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  if (!top || top.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {top.map((m) => {
+        const on = selected.includes(m.id);
+        return (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onToggle(m.id)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+              on
+                ? "border-primary bg-primary/10"
+                : "bg-background hover:bg-muted",
+            )}
+          >
+            {m.emoji ? (
+              <span aria-hidden>{m.emoji}</span>
+            ) : (
+              <ColorDot color={m.color} />
+            )}
+            <span>{m.display_name || m.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export function StartFrontDialog({
   open,
@@ -112,6 +163,17 @@ export function StartFrontDialog({
         <p className="text-sm text-muted-foreground">
           Select who is fronting. Pick multiple for co-fronting.
         </p>
+        <QuickPick
+          open={open}
+          selected={selectedMembers}
+          onToggle={(id) =>
+            setSelectedMembers(
+              selectedMembers.includes(id)
+                ? selectedMembers.filter((x) => x !== id)
+                : [...selectedMembers, id],
+            )
+          }
+        />
         <MemberSelect
           selected={selectedMembers}
           onChange={setSelectedMembers}
