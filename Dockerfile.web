@@ -20,7 +20,7 @@ ENV VITE_BUILD_TIME=${BUILD_TIME}
 
 RUN npm run build
 
-FROM nginx:1.27
+FROM nginx:1.31.0
 
 COPY --from=build /build/dist /usr/share/nginx/html
 

@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 
 def _register(client: httpx.Client) -> str:
@@ -83,8 +84,11 @@ def _set_system_safety_via_db(user_email: str, **fields) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.selfhosted
 def test_get_retention_self_hosted_default(auth_client: httpx.Client):
-    """Default user tier in test env is self_hosted → unlimited (0/0)."""
+    """Default user tier in self-hosted mode is self_hosted → unlimited
+    (0/0). Skipped under saas, where signups default to free (see
+    test_get_retention_free_tier_caps for the free-tier values)."""
     resp = auth_client.get("/v1/retention")
     assert resp.status_code == 200
     body = resp.json()
