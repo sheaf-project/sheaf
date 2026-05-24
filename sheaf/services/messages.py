@@ -14,6 +14,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt, encrypt
@@ -109,6 +110,30 @@ async def get_or_create_read_state(
     board_kind: str,
     board_member_id: uuid.UUID | None,
 ) -> MessageReadState:
+    # Concurrency-safe get-or-create. The messages page fires several
+    # board-touching requests in parallel (get_board, mark-seen, unread),
+    # so a plain select-then-insert races: two callers both miss the select
+    # and both insert. For a per-member board that trips the unique index
+    # (500); for the system board, where board_member_id is NULL, the
+    # NULLS-NOT-DISTINCT index now still catches it. INSERT ... ON CONFLICT
+    # DO NOTHING collapses the race into a no-op, then we read the winner.
+    insert_stmt = (
+        pg_insert(MessageReadState)
+        .values(
+            id=uuid.uuid4(),
+            member_id=member_id,
+            board_kind=board_kind,
+            board_member_id=board_member_id,
+            # Default to "now" so a freshly-created member doesn't
+            # see every historical message as unread.
+            last_seen_at=datetime.now(UTC),
+        )
+        .on_conflict_do_nothing(
+            index_elements=["member_id", "board_kind", "board_member_id"]
+        )
+    )
+    await db.execute(insert_stmt)
+
     result = await db.execute(
         select(MessageReadState).where(
             MessageReadState.member_id == member_id,
@@ -120,20 +145,7 @@ async def get_or_create_read_state(
             ),
         )
     )
-    state = result.scalar_one_or_none()
-    if state is None:
-        state = MessageReadState(
-            id=uuid.uuid4(),
-            member_id=member_id,
-            board_kind=board_kind,
-            board_member_id=board_member_id,
-            # Default to "now" so a freshly-created member doesn't
-            # see every historical message as unread.
-            last_seen_at=datetime.now(UTC),
-        )
-        db.add(state)
-        await db.flush()
-    return state
+    return result.scalar_one()
 
 
 async def mark_seen(

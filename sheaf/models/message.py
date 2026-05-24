@@ -150,5 +150,11 @@ class MessageReadState(UUIDMixin, Base):
             "board_kind",
             "board_member_id",
             unique=True,
+            # board_member_id is NULL for the system board. Without this,
+            # Postgres treats those NULLs as distinct and the unique index
+            # fails to dedupe system-board read-state rows, letting the
+            # get-or-create race create duplicates. NULLS NOT DISTINCT
+            # (PG15+) closes that gap.
+            postgresql_nulls_not_distinct=True,
         ),
     )
