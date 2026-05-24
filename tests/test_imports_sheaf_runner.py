@@ -341,6 +341,50 @@ def test_sheaf_runner_section_toggles_respected(auth_client: httpx.Client):
     assert counts.get("revisions_imported", 0) == 1, counts
 
 
+_FIELDS_EXPORT = {
+    "version": "2",
+    "system": {"name": "Fields System"},
+    "members": [{"id": "m1", "name": "Ada"}],
+    "fronts": [],
+    "groups": [],
+    "tags": [],
+    "custom_fields": [
+        {
+            "id": "f1",
+            "name": "Pronouns",
+            "field_type": "text",
+            "options": None,
+            "order": 0,
+            "privacy": "private",
+            "values": [{"member_id": "m1", "value": "she/her"}],
+        }
+    ],
+}
+
+
+def test_sheaf_runner_dedupes_custom_field_definitions(auth_client: httpx.Client):
+    """Restoring a backup into a system that already has the field reuses the
+    existing definition instead of stacking a second "Pronouns" column."""
+    j1 = _post_file(auth_client, payload=json.dumps(_FIELDS_EXPORT).encode())
+    drive_import_runner()
+    f1 = wait_for_terminal(auth_client, j1["id"])
+    assert f1["status"] == "complete", f1
+    assert f1["counts"]["custom_fields_imported"] == 1, f1["counts"]
+
+    # Second import of the same file: the field already exists, so nothing new
+    # is created.
+    j2 = _post_file(auth_client, payload=json.dumps(_FIELDS_EXPORT).encode())
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, j2["id"])
+    assert f2["status"] == "complete", f2
+    assert f2["counts"].get("custom_fields_imported", 0) == 0, f2["counts"]
+
+    # Exactly one definition named Pronouns survives.
+    fields = auth_client.get("/v1/fields").json()
+    pronouns = [f for f in fields if f["name"] == "Pronouns"]
+    assert len(pronouns) == 1, fields
+
+
 def test_sheaf_runner_fails_on_invalid_json(auth_client: httpx.Client):
     job = _post_file(auth_client, payload=b"not json")
     drive_import_runner()
