@@ -19,6 +19,11 @@ export interface SheafPreviewSummary {
   group_count: number;
   tag_count: number;
   custom_field_count: number;
+  journal_count: number;
+  message_count: number;
+  poll_count: number;
+  reminder_count: number;
+  channel_count: number;
 }
 
 export async function previewSheafImport(file: File): Promise<SheafPreviewSummary> {

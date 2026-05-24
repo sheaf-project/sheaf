@@ -1,10 +1,11 @@
 """Integration tests for the Sheaf-to-Sheaf import *preview* endpoint.
 
 Covers the version-check gate (v1 + v2 accepted, anything else
-rejected) and forward-compat with v2-only top-level keys (reminders /
-polls / etc. silently ignored). The actual re-import now runs through
-the async job runner — covered end-to-end, including a real
-export-then-reimport round-trip, in test_imports_sheaf_runner.py.
+rejected) and the per-section counts the preview surfaces (members,
+journals, messages, polls, reminders, channels). The actual re-import
+now runs through the async job runner — covered end-to-end, including a
+real export-then-reimport round-trip and per-section toggles, in
+test_imports_sheaf_runner.py.
 """
 
 from __future__ import annotations
@@ -60,8 +61,8 @@ def test_preview_accepts_v1(auth_client: httpx.Client):
 
 def test_preview_accepts_v2_with_extra_keys(auth_client: httpx.Client):
     """A current-format export carries reminders / polls / watch_tokens /
-    journals / revisions / uploaded_files. Those aren't re-importable
-    yet but their presence must not gate the preview."""
+    journals / revisions / uploaded_files. The preview surfaces a count for
+    each so the user can see what's about to come across."""
     resp = _upload(
         auth_client,
         "/v1/import/sheaf/preview",
@@ -74,9 +75,10 @@ def test_preview_accepts_v2_with_extra_keys(auth_client: httpx.Client):
             "tags": [],
             "custom_fields": [],
             "reminders": [{"id": "r1", "name": "drift-by"}],
-            "watch_tokens": [{"id": "w1"}],
+            "watch_tokens": [{"id": "w1", "channels": [{"id": "c1"}, {"id": "c2"}]}],
             "polls": [{"id": "p1"}],
             "journals": [{"id": "j1"}],
+            "messages": [{"id": "msg1"}],
             "revisions": [],
             "uploaded_files": [],
         },
@@ -84,3 +86,9 @@ def test_preview_accepts_v2_with_extra_keys(auth_client: httpx.Client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["member_count"] == 1
+    assert body["journal_count"] == 1
+    assert body["message_count"] == 1
+    assert body["poll_count"] == 1
+    assert body["reminder_count"] == 1
+    # channel_count sums channels across all watch tokens.
+    assert body["channel_count"] == 2

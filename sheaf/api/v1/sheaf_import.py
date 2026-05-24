@@ -37,11 +37,10 @@ async def _parse_upload(file: UploadFile) -> dict:
 
     # Accept both legacy v1 exports and current v2 exports. v2 added new
     # top-level keys (reminders, watch_tokens, polls, journals, revisions,
-    # uploaded_files) over time; the importer only consumes the original
-    # set (system / members / fronts / groups / tags / custom_fields) and
-    # silently ignores extras, so accepting v2 is forward-compatible
-    # without requiring per-field handlers for the not-yet-importable
-    # surfaces. New format versions should be added here as they ship.
+    # uploaded_files) over time; the importer now round-trips all of them
+    # except image bytes (which the sync export omits anyway). A v1 file
+    # simply lacks those keys and the importer skips them. New format
+    # versions should be added here as they ship.
     if not isinstance(parsed, dict) or parsed.get("version") not in {"1", "2"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -69,4 +68,9 @@ async def preview_import(
         "group_count": p.group_count,
         "tag_count": p.tag_count,
         "custom_field_count": p.custom_field_count,
+        "journal_count": p.journal_count,
+        "message_count": p.message_count,
+        "poll_count": p.poll_count,
+        "reminder_count": p.reminder_count,
+        "channel_count": p.channel_count,
     }

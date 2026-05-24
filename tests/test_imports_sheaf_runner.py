@@ -74,6 +74,273 @@ def test_sheaf_runner_roundtrip_from_export(auth_client: httpx.Client):
     assert final["counts"]["members_imported"] >= 1, final["counts"]
 
 
+# A fuller export touching every section the importer now round-trips, with
+# the cross-references (revisions -> bio/journal, votes -> options, rules ->
+# group/member, reminder -> channel) the importer has to remap.
+_TS = "2026-01-02T03:04:05+00:00"
+_FULL_EXPORT = {
+    "version": "2",
+    "system": {
+        "name": "Full System",
+        "description": "everything",
+        "safety": {"grace_period_days": 3, "applies_to_journals": True},
+        "retention": {"journal_max_revisions": 7},
+    },
+    "members": [
+        {"id": "m1", "name": "Ada"},
+        {"id": "m2", "name": "Bea"},
+    ],
+    "fronts": [],
+    "groups": [
+        {"id": "g1", "name": "Inner", "member_ids": ["m1"]},
+    ],
+    "tags": [],
+    "custom_fields": [],
+    "journals": [
+        {
+            "id": "j1",
+            "member_id": "m1",
+            "title": "Ada's entry",
+            "body": "dear diary",
+            "visibility": "system",
+            "author_member_ids": ["m1"],
+            "author_member_names": ["Ada"],
+            "image_keys": [],
+            "created_at": _TS,
+            "updated_at": _TS,
+        },
+        {
+            "id": "j2",
+            "member_id": None,
+            "title": "System note",
+            "body": "house meeting",
+            "visibility": "system",
+            "author_member_ids": [],
+            "author_member_names": [],
+            "image_keys": [],
+            "created_at": _TS,
+            "updated_at": _TS,
+        },
+    ],
+    "revisions": [
+        {
+            "id": "rev1",
+            "target_type": "member_bio",
+            "target_id": "m1",
+            "editor_member_ids": ["m1"],
+            "editor_member_names": ["Ada"],
+            "title": None,
+            "body": "old bio",
+            "image_keys": [],
+            "pinned_at": None,
+            "created_at": _TS,
+        },
+        {
+            "id": "rev2",
+            "target_type": "journal_entry",
+            "target_id": "j1",
+            "editor_member_ids": [],
+            "editor_member_names": [],
+            "title": "Ada's entry",
+            "body": "older draft",
+            "image_keys": [],
+            "pinned_at": _TS,
+            "created_at": _TS,
+        },
+    ],
+    "messages": [
+        {
+            "id": "msg1",
+            "board_kind": "system",
+            "board_member_id": None,
+            "author_member_id": "m1",
+            "parent_message_id": None,
+            "body": "hello board",
+            "created_at": _TS,
+            "updated_at": _TS,
+        },
+        {
+            "id": "msg2",
+            "board_kind": "member",
+            "board_member_id": "m2",
+            "author_member_id": "m1",
+            "parent_message_id": None,
+            "body": "hi Bea",
+            "created_at": _TS,
+            "updated_at": _TS,
+        },
+        {
+            "id": "msg3",
+            "board_kind": "system",
+            "board_member_id": None,
+            "author_member_id": "m2",
+            "parent_message_id": "msg1",
+            "body": "replying",
+            "created_at": _TS,
+            "updated_at": _TS,
+        },
+    ],
+    "polls": [
+        {
+            "id": "p1",
+            "question": "lunch?",
+            "description": None,
+            "kind": "single_choice",
+            "results_visibility": "live",
+            "closes_at": _TS,
+            "retention_days": 30,
+            "include_custom_fronts": False,
+            "created_at": _TS,
+            "options": [
+                {"id": "o1", "text": "pizza", "position": 0},
+                {"id": "o2", "text": "sushi", "position": 1},
+            ],
+            "votes": [
+                {
+                    "voted_as_member_id": "m1",
+                    "option_ids": ["o1"],
+                    "created_at": _TS,
+                    "updated_at": _TS,
+                },
+            ],
+            "events": [
+                {
+                    "id": "ev1",
+                    "voted_as_member_id": "m1",
+                    "action": "cast",
+                    "option_ids": ["o1"],
+                    "fronting_member_ids": ["m1"],
+                    "actor_user_id": str(uuid.uuid4()),
+                    "created_at": _TS,
+                },
+            ],
+        },
+    ],
+    "watch_tokens": [
+        {
+            "id": "w1",
+            "label": "Mara",
+            "revoked_at": None,
+            "created_at": _TS,
+            "channels": [
+                {
+                    "id": "c1",
+                    "watch_token_id": "w1",
+                    "name": "Mara webhook",
+                    "destination_type": "webhook",
+                    "destination_config": {"url": "https://example.com/hook"},
+                    "event_type": "front_change",
+                    "base_all_members": False,
+                    "base_include_private": False,
+                    "trigger_on_start": True,
+                    "trigger_on_stop": False,
+                    "trigger_on_cofront_change": False,
+                    "cofront_redaction": "count",
+                    "payload_sensitivity": "minimal",
+                    "debounce_seconds": 30,
+                    "aggregation_window_seconds": 0,
+                    "quiet_hours": None,
+                    "group_rules": [
+                        {"group_id": "g1", "rule": "include", "include_private": "inherit"},
+                    ],
+                    "member_rules": [
+                        {"member_id": "m2", "rule": "include"},
+                    ],
+                    "created_at": _TS,
+                },
+            ],
+        },
+    ],
+    "uploaded_files": [],
+    "reminders": [
+        {
+            "id": "r1",
+            "channel_id": "c1",
+            "name": "wake up",
+            "title": "Good morning",
+            "body": "rise and shine",
+            "enabled": True,
+            "trigger_type": "automated",
+            "trigger_member_id": "m2",
+            "trigger_event": "start",
+            "delay_seconds": 60,
+            "schedule_kind": None,
+            "schedule_time": None,
+            "schedule_dow_mask": None,
+            "schedule_dom": None,
+            "schedule_tz": None,
+            "cron_expression": None,
+            "scope": "system",
+            "scope_member_ids": ["m1"],
+            "digest_when_absent": True,
+            "created_at": _TS,
+        },
+    ],
+}
+
+
+def test_sheaf_runner_imports_all_sections(auth_client: httpx.Client):
+    """Every section the exporter emits round-trips back in, with the
+    cross-references remapped to the freshly minted IDs."""
+    job = _post_file(auth_client, payload=json.dumps(_FULL_EXPORT).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    counts = final["counts"]
+    assert counts["members_imported"] == 2, counts
+    assert counts["groups_imported"] == 1, counts
+    assert counts["journals_imported"] == 2, counts
+    assert counts["revisions_imported"] == 2, counts
+    assert counts["messages_imported"] == 3, counts
+    assert counts["polls_imported"] == 1, counts
+    assert counts["channels_imported"] == 1, counts
+    assert counts["reminders_imported"] == 1, counts
+
+
+def test_sheaf_runner_section_toggles_respected(auth_client: httpx.Client):
+    """Deselecting journals / messages / polls / notifications / reminders
+    skips exactly those sections. Reminders ride on notifications, so with
+    notifications off the reminder is dropped too."""
+    resp = auth_client.post(
+        "/v1/imports/file",
+        files={"file": ("sheaf.json", json.dumps(_FULL_EXPORT).encode(), "application/json")},
+        data={
+            "source": "sheaf_file",
+            "idempotency_key": str(uuid.uuid4()),
+            "options": json.dumps(
+                {
+                    "journals": False,
+                    "messages": False,
+                    "polls": False,
+                    "notifications": False,
+                    "reminders": True,
+                }
+            ),
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    job = resp.json()
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    counts = final["counts"]
+    # Members + groups still come across.
+    assert counts["members_imported"] == 2, counts
+    assert counts["groups_imported"] == 1, counts
+    # The deselected sections are absent (zeroed counts are filtered out of
+    # the JSONB, so the keys are simply missing).
+    assert counts.get("journals_imported", 0) == 0, counts
+    assert counts.get("messages_imported", 0) == 0, counts
+    assert counts.get("polls_imported", 0) == 0, counts
+    assert counts.get("channels_imported", 0) == 0, counts
+    assert counts.get("reminders_imported", 0) == 0, counts
+    # Member-bio revisions still land (they follow members, not journals);
+    # the journal-entry revision is dropped with journals off.
+    assert counts.get("revisions_imported", 0) == 1, counts
+
+
 def test_sheaf_runner_fails_on_invalid_json(auth_client: httpx.Client):
     job = _post_file(auth_client, payload=b"not json")
     drive_import_runner()

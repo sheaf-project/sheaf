@@ -70,6 +70,11 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
         groups=options.groups,
         tags=options.tags,
         custom_fields=options.custom_fields,
+        journals=options.journals,
+        messages=options.messages,
+        polls=options.polls,
+        reminders=options.reminders,
+        notifications=options.notifications,
     )
 
     update_counts(
@@ -79,6 +84,12 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
         groups_imported=result.groups_imported,
         tags_imported=result.tags_imported,
         custom_fields_imported=result.custom_fields_imported,
+        journals_imported=result.journals_imported,
+        revisions_imported=result.revisions_imported,
+        messages_imported=result.messages_imported,
+        polls_imported=result.polls_imported,
+        reminders_imported=result.reminders_imported,
+        channels_imported=result.channels_imported,
     )
     for warning in result.warnings:
         append_event(job, level="warning", stage="import", message=warning)
@@ -91,7 +102,13 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
             f"{result.fronts_imported} fronts, "
             f"{result.groups_imported} groups, "
             f"{result.tags_imported} tags, "
-            f"{result.custom_fields_imported} custom fields"
+            f"{result.custom_fields_imported} custom fields, "
+            f"{result.journals_imported} journals, "
+            f"{result.revisions_imported} revisions, "
+            f"{result.messages_imported} messages, "
+            f"{result.polls_imported} polls, "
+            f"{result.reminders_imported} reminders, "
+            f"{result.channels_imported} notification channels"
         ),
     )
 

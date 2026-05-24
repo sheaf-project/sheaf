@@ -149,6 +149,11 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
   const [importGroups, setImportGroups] = useState(true);
   const [importTags, setImportTags] = useState(true);
   const [importFields, setImportFields] = useState(true);
+  const [importJournals, setImportJournals] = useState(true);
+  const [importMessages, setImportMessages] = useState(true);
+  const [importPolls, setImportPolls] = useState(true);
+  const [importNotifications, setImportNotifications] = useState(true);
+  const [importReminders, setImportReminders] = useState(true);
 
   async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -180,6 +185,13 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
           groups: importGroups,
           tags: importTags,
           custom_fields: importFields,
+          journals: importJournals,
+          messages: importMessages,
+          polls: importPolls,
+          notifications: importNotifications,
+          // Reminders need a channel; without notifications there's nothing
+          // for them to attach to.
+          reminders: importReminders && importNotifications,
         },
       });
       navigate(`/imports/${job.id}`);
@@ -243,6 +255,11 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
               <div>Groups: <strong>{preview.group_count}</strong></div>
               <div>Tags: <strong>{preview.tag_count}</strong></div>
               <div>Custom fields: <strong>{preview.custom_field_count}</strong></div>
+              <div>Journals: <strong>{preview.journal_count}</strong></div>
+              <div>Messages: <strong>{preview.message_count}</strong></div>
+              <div>Polls: <strong>{preview.poll_count}</strong></div>
+              <div>Reminders: <strong>{preview.reminder_count}</strong></div>
+              <div>Notification channels: <strong>{preview.channel_count}</strong></div>
             </CardContent>
           </Card>
 
@@ -252,7 +269,7 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
             </CardHeader>
             <CardContent className="space-y-4">
               <Checkbox
-                label="System profile (name, description, color, tag)"
+                label="System profile (name, description, color, tag, safety + retention settings)"
                 checked={systemProfile}
                 onChange={setSystemProfile}
               />
@@ -276,6 +293,39 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
                 checked={importFields}
                 onChange={setImportFields}
               />
+              <Checkbox
+                label={`Journals (${preview.journal_count.toLocaleString()} entries, with edit history)`}
+                checked={importJournals}
+                onChange={setImportJournals}
+              />
+              <Checkbox
+                label={`Messages (${preview.message_count.toLocaleString()} board posts)`}
+                checked={importMessages}
+                onChange={setImportMessages}
+              />
+              <Checkbox
+                label={`Polls (${preview.poll_count.toLocaleString()}, with votes + audit log)`}
+                checked={importPolls}
+                onChange={setImportPolls}
+              />
+              <Checkbox
+                label={`Notification setup (${preview.channel_count.toLocaleString()} channels — recipients re-activate on this instance)`}
+                checked={importNotifications}
+                onChange={setImportNotifications}
+              />
+              <div>
+                <Checkbox
+                  label={`Reminders (${preview.reminder_count.toLocaleString()})`}
+                  checked={importReminders && importNotifications}
+                  onChange={setImportReminders}
+                />
+                {!importNotifications && (
+                  <p className="ml-6 text-xs text-muted-foreground">
+                    Reminders attach to a notification channel, so they need
+                    Notification setup enabled to come across.
+                  </p>
+                )}
+              </div>
 
               <MemberSelector
                 members={preview.members}
