@@ -61,6 +61,7 @@ markers = [
     "admin_auth_password: requires server running with ADMIN_AUTH_LEVEL=password",
     "admin_auth_totp: requires server running with ADMIN_AUTH_LEVEL=totp",
     "saas: requires server running with SHEAF_MODE=saas",
+    "selfhosted: requires server running with SHEAF_MODE=selfhosted (skipped under saas)",
     "rate_limit: requires server running with RATE_LIMIT_ENABLED=true",
     "uploads_disabled: requires server running with ALLOW_IMAGE_UPLOADS=false",
     "bio_uploads_disabled: requires server running with ALLOW_BIO_IMAGES=false",

@@ -617,9 +617,11 @@ def test_secondary_session_mint_after_parent_revoked_fails(
     assert mint.status_code == 401, mint.text
 
 
+@pytest.mark.selfhosted
 def test_registration_defaults_to_self_hosted_tier(client: httpx.Client):
-    """Default (self-hosted) instance: new signups land on the self_hosted
-    tier (unlimited), matching the model default."""
+    """Self-hosted instance: new signups land on the self_hosted tier
+    (unlimited), matching the model default. SaaS mode is covered by
+    test_registration_defaults_to_free_tier_in_saas."""
     email = f"tier-sh-{uuid.uuid4().hex[:8]}@sheaf.dev"
     reg = client.post(
         "/v1/auth/register", json={"email": email, "password": "testpassword123"}

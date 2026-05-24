@@ -37,6 +37,8 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_ADMIN_AUTH_LEVEL=totp"))
         if "saas" in item.keywords and _SHEAF_MODE != "saas":
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_MODE=saas"))
+        if "selfhosted" in item.keywords and _SHEAF_MODE == "saas":
+            item.add_marker(pytest.mark.skip("requires SHEAF_TEST_MODE=selfhosted"))
         if "rate_limit" in item.keywords and not _RATE_LIMIT:
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_RATE_LIMIT=true"))
         if "uploads_disabled" in item.keywords and not _UPLOADS_DISABLED:
