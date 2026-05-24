@@ -1,15 +1,20 @@
 """Sheaf data import service.
 
 Imports data from Sheaf's own export format. Versions "1" and "2" are
-accepted; "2" added top-level keys over time (reminders, watch_tokens,
-polls, journals, revisions, uploaded_files) which this importer
-deliberately does not consume — those carry runtime state or live
-deliverability info that doesn't round-trip into a fresh instance
-without re-registration. The fields here are silently ignored when
-present.
+accepted. The importer round-trips the full export: system profile +
+preferences, members, fronts, groups, tags, custom fields (+ values),
+journals, content revisions, messages, polls, reminders, and the
+notification config (watch tokens + channels + rules). Per-instance
+runtime state that can't survive a move to a fresh instance is omitted
+by the exporter (push subscriptions, activation hashes, webhook
+secrets, last-fired/last-delivered timestamps, pending queues) and so
+isn't consumed here either.
 
 Generates new UUIDs for all imported entities and maps old IDs to new
-ones for cross-references inside the file.
+ones for cross-references inside the file. References to user accounts
+(journal/revision authorship) are re-pointed at the importing user;
+historical audit actors are dropped, since the original account UUIDs
+are meaningless on the target instance.
 """
 
 import logging
@@ -19,12 +24,38 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
 from sheaf.models.group import Group
+from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member, front_members, group_members, member_tags
-from sheaf.models.system import PrivacyLevel, System
+from sheaf.models.message import Message
+from sheaf.models.notification_channel import (
+    CofrontRedaction,
+    DestinationType,
+    NotificationChannel,
+    PayloadSensitivity,
+)
+from sheaf.models.notification_channel_group_rule import (
+    GroupRuleAction,
+    IncludePrivate,
+    NotificationChannelGroupRule,
+)
+from sheaf.models.notification_channel_member_rule import NotificationChannelMemberRule
+from sheaf.models.poll import (
+    Poll,
+    PollKind,
+    PollOption,
+    PollResultsVisibility,
+    PollVote,
+    PollVoteAction,
+    PollVoteEvent,
+)
+from sheaf.models.reminder import Reminder, reminder_scope_members
+from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
+from sheaf.models.watch_token import WatchToken
 from sheaf.services.custom_fields import encrypt_field_value
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -46,6 +77,45 @@ def _field_type(val: str | None) -> FieldType:
     return FieldType.TEXT
 
 
+_VALID_DATE_FORMAT = {e.value for e in DateFormat}
+_VALID_DESTINATION_TYPE = {e.value for e in DestinationType}
+_VALID_COFRONT_REDACTION = {e.value for e in CofrontRedaction}
+_VALID_PAYLOAD_SENSITIVITY = {e.value for e in PayloadSensitivity}
+_VALID_INCLUDE_PRIVATE = {e.value for e in IncludePrivate}
+# Group and member rules share the same include/exclude vocabulary.
+_VALID_RULE_ACTION = {GroupRuleAction.INCLUDE.value, GroupRuleAction.EXCLUDE.value}
+
+_SAFETY_APPLIES_KEYS = (
+    "applies_to_members",
+    "applies_to_groups",
+    "applies_to_tags",
+    "applies_to_fields",
+    "applies_to_fronts",
+    "applies_to_journals",
+    "applies_to_images",
+    "applies_to_revisions",
+    "applies_to_notifications",
+    "applies_to_reminders",
+    "applies_to_polls",
+    "applies_to_messages",
+)
+
+
+def _date_format(val: object) -> DateFormat | None:
+    if isinstance(val, str) and val in _VALID_DATE_FORMAT:
+        return DateFormat(val)
+    return None
+
+
+def _coerce_int(val: object, *, default: int, minimum: int | None = None) -> int:
+    """Import-data int coercion: reject bools/junk, clamp below a floor."""
+    if isinstance(val, bool) or not isinstance(val, int):
+        return default
+    if minimum is not None and val < minimum:
+        return default
+    return val
+
+
 class SheafPreviewSummary:
     def __init__(self):
         self.system_name: str | None = None
@@ -55,6 +125,11 @@ class SheafPreviewSummary:
         self.group_count: int = 0
         self.tag_count: int = 0
         self.custom_field_count: int = 0
+        self.journal_count: int = 0
+        self.message_count: int = 0
+        self.poll_count: int = 0
+        self.reminder_count: int = 0
+        self.channel_count: int = 0
 
 
 class SheafImportResult:
@@ -64,6 +139,12 @@ class SheafImportResult:
         self.groups_imported: int = 0
         self.tags_imported: int = 0
         self.custom_fields_imported: int = 0
+        self.journals_imported: int = 0
+        self.revisions_imported: int = 0
+        self.messages_imported: int = 0
+        self.polls_imported: int = 0
+        self.reminders_imported: int = 0
+        self.channels_imported: int = 0
         self.warnings: list[str] = []
 
 
@@ -86,6 +167,13 @@ def preview(data: dict) -> SheafPreviewSummary:
     summary.group_count = len(data.get("groups", []))
     summary.tag_count = len(data.get("tags", []))
     summary.custom_field_count = len(data.get("custom_fields", []))
+    summary.journal_count = len(data.get("journals", []))
+    summary.message_count = len(data.get("messages", []))
+    summary.poll_count = len(data.get("polls", []))
+    summary.reminder_count = len(data.get("reminders", []))
+    summary.channel_count = sum(
+        len(t.get("channels", [])) for t in data.get("watch_tokens", [])
+    )
 
     return summary
 
@@ -101,10 +189,21 @@ async def run_import(
     groups: bool = True,
     tags: bool = True,
     custom_fields: bool = True,
+    journals: bool = True,
+    messages: bool = True,
+    polls: bool = True,
+    reminders: bool = True,
+    notifications: bool = True,
 ) -> SheafImportResult:
     """Import Sheaf export data into the user's system."""
     result = SheafImportResult()
     warnings: list[str] = []
+    # Old-export-id -> new-object maps, hoisted to function scope so later
+    # sections can resolve cross-references regardless of which earlier
+    # sections the user opted into.
+    old_gid_to_group: dict[str, Group] = {}
+    old_journal_to_entry: dict[str, JournalEntry] = {}
+    old_channel_to_new: dict[str, NotificationChannel] = {}
 
     # --- System profile ---
     if system_profile:
@@ -125,6 +224,51 @@ async def run_import(
             if "note" in sys_data:
                 note_val = sys_data["note"]
                 system.note = encrypt(note_val) if note_val else None
+            if sys_data.get("avatar_url") is not None:
+                system.avatar_url = _trunc(sys_data["avatar_url"], 500)
+            if "replace_fronts_default" in sys_data:
+                system.replace_fronts_default = bool(
+                    sys_data["replace_fronts_default"]
+                )
+            df = _date_format(sys_data.get("date_format"))
+            if df is not None:
+                system.date_format = df
+
+            # System Safety toggles + grace period + auto-pin. delete_confirmation
+            # is deliberately NOT restored: importing a TOTP-requiring tier onto
+            # an account without TOTP enrolled would lock destructive actions.
+            safety = sys_data.get("safety") or {}
+            if isinstance(safety, dict):
+                if "grace_period_days" in safety:
+                    system.safety_grace_period_days = _coerce_int(
+                        safety["grace_period_days"], default=0, minimum=0
+                    )
+                for key in _SAFETY_APPLIES_KEYS:
+                    if key in safety:
+                        setattr(
+                            system,
+                            f"safety_{key}",
+                            bool(safety[key]),
+                        )
+                if "auto_pin_first_revision" in safety:
+                    system.auto_pin_first_revision = bool(
+                        safety["auto_pin_first_revision"]
+                    )
+
+            # Revision-retention caps.
+            retention = sys_data.get("retention") or {}
+            if isinstance(retention, dict):
+                for key in (
+                    "journal_max_revisions",
+                    "journal_max_revision_days",
+                    "pinned_revision_max_per_target",
+                ):
+                    if key in retention and retention[key] is not None:
+                        setattr(
+                            system,
+                            key,
+                            _coerce_int(retention[key], default=0, minimum=0),
+                        )
 
     # --- Members ---
     export_members = data.get("members", [])
@@ -244,7 +388,6 @@ async def run_import(
     # --- Groups ---
     if groups:
         export_groups = data.get("groups", [])
-        old_gid_to_group: dict[str, Group] = {}
 
         # First pass: create groups without parent links
         for g_data in export_groups:
@@ -324,6 +467,436 @@ async def run_import(
                 )
             result.fronts_imported += 1
 
+    # --- Journals ---
+    if journals:
+        for j_data in data.get("journals", []):
+            old_jid = j_data.get("id", "")
+            old_member_id = j_data.get("member_id")
+            member = None
+            if old_member_id:
+                # System-wide entries have member_id=None; a per-member entry
+                # whose member wasn't imported has nowhere to live, so drop it.
+                member = old_id_to_member.get(old_member_id)
+                if member is None:
+                    continue
+            title = j_data.get("title")
+            entry = JournalEntry(
+                id=uuid.uuid4(),
+                system_id=system.id,
+                member_id=member.id if member else None,
+                title=encrypt(title) if title else None,
+                body=encrypt(j_data.get("body") or ""),
+                visibility=j_data.get("visibility") or "system",
+                # The original authoring account is meaningless on this
+                # instance; attribute the fallback author to the importing user.
+                author_user_id=system.user_id,
+                author_member_ids=[
+                    str(o.id)
+                    for o in _resolve_ids(
+                        j_data.get("author_member_ids"), old_id_to_member
+                    )
+                ],
+                author_member_names=_str_list(j_data.get("author_member_names")),
+                image_keys=_str_list(j_data.get("image_keys")),
+            )
+            created = _parse_iso(j_data.get("created_at"))
+            if created:
+                entry.created_at = created
+            updated = _parse_iso(j_data.get("updated_at"))
+            if updated:
+                entry.updated_at = updated
+            db.add(entry)
+            old_journal_to_entry[old_jid] = entry
+            result.journals_imported += 1
+
+        await db.flush()
+
+    # --- Content revisions (member-bio + journal-entry edit history) ---
+    # Always attempted: each revision resolves its polymorphic target through
+    # the member / journal maps, so bio revisions follow their member and
+    # journal revisions only land if the journals section ran. Message-target
+    # revisions aren't exported, so they never appear here.
+    for r_data in data.get("revisions", []):
+        target_type = r_data.get("target_type")
+        old_target = r_data.get("target_id")
+        if target_type == ContentRevisionTarget.MEMBER_BIO.value:
+            target = old_id_to_member.get(old_target)
+        elif target_type == ContentRevisionTarget.JOURNAL_ENTRY.value:
+            target = old_journal_to_entry.get(old_target)
+        else:
+            target = None
+        if target is None:
+            continue
+        title = r_data.get("title")
+        revision = ContentRevision(
+            id=uuid.uuid4(),
+            target_type=target_type,
+            target_id=target.id,
+            user_id=system.user_id,
+            editor_member_ids=[
+                str(o.id)
+                for o in _resolve_ids(
+                    r_data.get("editor_member_ids"), old_id_to_member
+                )
+            ],
+            editor_member_names=_str_list(r_data.get("editor_member_names")),
+            title=encrypt(title) if title else None,
+            body=encrypt(r_data.get("body") or ""),
+            image_keys=_str_list(r_data.get("image_keys")),
+            pinned_at=_parse_iso(r_data.get("pinned_at")),
+        )
+        created = _parse_iso(r_data.get("created_at"))
+        if created:
+            revision.created_at = created
+        db.add(revision)
+        result.revisions_imported += 1
+
+    # --- Messages (board posts + replies) ---
+    if messages:
+        old_msg_to_new: dict[str, Message] = {}
+        # First pass: create posts without reply links. A member-wall post
+        # whose board member wasn't imported is dropped along with the wall.
+        for msg_data in data.get("messages", []):
+            old_mid = msg_data.get("id", "")
+            board_kind = msg_data.get("board_kind") or "system"
+            board_member = None
+            if board_kind == "member":
+                old_board = msg_data.get("board_member_id")
+                board_member = old_id_to_member.get(old_board) if old_board else None
+                if board_member is None:
+                    continue
+            old_author = msg_data.get("author_member_id")
+            author = old_id_to_member.get(old_author) if old_author else None
+            message = Message(
+                id=uuid.uuid4(),
+                system_id=system.id,
+                board_kind=board_kind,
+                board_member_id=board_member.id if board_member else None,
+                author_member_id=author.id if author else None,
+                body=encrypt(msg_data.get("body") or ""),
+            )
+            created = _parse_iso(msg_data.get("created_at"))
+            if created:
+                message.created_at = created
+            updated = _parse_iso(msg_data.get("updated_at"))
+            if updated:
+                message.updated_at = updated
+            db.add(message)
+            old_msg_to_new[old_mid] = message
+            result.messages_imported += 1
+
+        await db.flush()
+
+        # Second pass: wire reply pointers now every post exists. A parent that
+        # didn't import (deleted, or on a dropped wall) leaves the reply
+        # parentless, which the UI renders as "[deleted]".
+        for msg_data in data.get("messages", []):
+            old_parent = msg_data.get("parent_message_id")
+            if not old_parent:
+                continue
+            child = old_msg_to_new.get(msg_data.get("id", ""))
+            parent = old_msg_to_new.get(old_parent)
+            if child is not None and parent is not None:
+                child.parent_message_id = parent.id
+
+    # --- Polls (config + current votes + audit log) ---
+    if polls:
+        for p_data in data.get("polls", []):
+            closes_at = _parse_iso(p_data.get("closes_at"))
+            if not closes_at:
+                warnings.append(
+                    f"Skipped poll with invalid closes_at: {p_data.get('id', '?')}"
+                )
+                continue
+            description = p_data.get("description")
+            poll = Poll(
+                id=uuid.uuid4(),
+                system_id=system.id,
+                question=encrypt(p_data.get("question") or ""),
+                description=encrypt(description) if description else None,
+                kind=p_data.get("kind") or PollKind.SINGLE_CHOICE.value,
+                results_visibility=(
+                    p_data.get("results_visibility")
+                    or PollResultsVisibility.LIVE.value
+                ),
+                closes_at=closes_at,
+                retention_days=_coerce_int(
+                    p_data.get("retention_days"), default=30, minimum=0
+                ),
+                include_custom_fronts=bool(
+                    p_data.get("include_custom_fronts", False)
+                ),
+            )
+            created = _parse_iso(p_data.get("created_at"))
+            if created:
+                poll.created_at = created
+            db.add(poll)
+
+            # Options first; vote/event option references resolve through this.
+            old_option_to_new: dict[str, PollOption] = {}
+            for o_data in p_data.get("options", []):
+                option = PollOption(
+                    id=uuid.uuid4(),
+                    poll_id=poll.id,
+                    text=encrypt(o_data.get("text") or ""),
+                    position=_coerce_int(
+                        o_data.get("position"), default=0, minimum=0
+                    ),
+                )
+                db.add(option)
+                old_option_to_new[o_data.get("id", "")] = option
+
+            # Current votes (one per member; option refs must resolve).
+            for v_data in p_data.get("votes", []):
+                voter = old_id_to_member.get(v_data.get("voted_as_member_id"))
+                if voter is None:
+                    continue
+                option_ids = [
+                    o.id
+                    for o in _resolve_ids(
+                        v_data.get("option_ids"), old_option_to_new
+                    )
+                ]
+                if not option_ids:
+                    continue
+                vote = PollVote(
+                    id=uuid.uuid4(),
+                    poll_id=poll.id,
+                    voted_as_member_id=voter.id,
+                    option_ids=option_ids,
+                )
+                vcreated = _parse_iso(v_data.get("created_at"))
+                if vcreated:
+                    vote.created_at = vcreated
+                vupdated = _parse_iso(v_data.get("updated_at"))
+                if vupdated:
+                    vote.updated_at = vupdated
+                db.add(vote)
+
+            # Append-only audit log.
+            for e_data in p_data.get("events", []):
+                old_voter = e_data.get("voted_as_member_id")
+                voter = old_id_to_member.get(old_voter) if old_voter else None
+                event = PollVoteEvent(
+                    id=uuid.uuid4(),
+                    poll_id=poll.id,
+                    voted_as_member_id=voter.id if voter else None,
+                    action=e_data.get("action") or PollVoteAction.CAST.value,
+                    option_ids=[
+                        o.id
+                        for o in _resolve_ids(
+                            e_data.get("option_ids"), old_option_to_new
+                        )
+                    ],
+                    fronting_member_ids=[
+                        o.id
+                        for o in _resolve_ids(
+                            e_data.get("fronting_member_ids"), old_id_to_member
+                        )
+                    ],
+                    # The acting account is meaningless on the target instance;
+                    # the member attribution above is the durable part.
+                    actor_user_id=None,
+                )
+                ecreated = _parse_iso(e_data.get("created_at"))
+                if ecreated:
+                    event.created_at = ecreated
+                db.add(event)
+
+            result.polls_imported += 1
+
+        await db.flush()
+
+    # --- Notification config (watch tokens + channels + rules) ---
+    # Per-instance recipient state (activation hashes, push subscriptions,
+    # webhook secrets, delivery bookkeeping) is omitted by the exporter and
+    # not reconstructed here; channels land in their default
+    # pending_registration state so the owner re-activates / re-enters the
+    # secret on the new instance.
+    if notifications:
+        for t_data in data.get("watch_tokens", []):
+            token = WatchToken(
+                id=uuid.uuid4(),
+                system_id=system.id,
+                label=_trunc(t_data.get("label"), 120),
+                revoked_at=_parse_iso(t_data.get("revoked_at")),
+            )
+            tcreated = _parse_iso(t_data.get("created_at"))
+            if tcreated:
+                token.created_at = tcreated
+            db.add(token)
+
+            for c_data in t_data.get("channels", []):
+                dest_type = c_data.get("destination_type")
+                if dest_type not in _VALID_DESTINATION_TYPE:
+                    warnings.append(
+                        f"Skipped channel with unknown destination type: "
+                        f"{dest_type!r}"
+                    )
+                    continue
+                config = c_data.get("destination_config")
+                channel = NotificationChannel(
+                    id=uuid.uuid4(),
+                    watch_token_id=token.id,
+                    name=(c_data.get("name") or "channel")[:120],
+                    destination_type=dest_type,
+                    destination_config=config if isinstance(config, dict) else {},
+                    event_type=c_data.get("event_type") or "front_change",
+                    base_all_members=bool(c_data.get("base_all_members", False)),
+                    base_include_private=bool(
+                        c_data.get("base_include_private", False)
+                    ),
+                    trigger_on_start=bool(c_data.get("trigger_on_start", True)),
+                    trigger_on_stop=bool(c_data.get("trigger_on_stop", False)),
+                    trigger_on_cofront_change=bool(
+                        c_data.get("trigger_on_cofront_change", False)
+                    ),
+                    cofront_redaction=(
+                        c_data["cofront_redaction"]
+                        if c_data.get("cofront_redaction")
+                        in _VALID_COFRONT_REDACTION
+                        else CofrontRedaction.COUNT.value
+                    ),
+                    payload_sensitivity=(
+                        c_data["payload_sensitivity"]
+                        if c_data.get("payload_sensitivity")
+                        in _VALID_PAYLOAD_SENSITIVITY
+                        else PayloadSensitivity.FULL.value
+                    ),
+                    debounce_seconds=_coerce_int(
+                        c_data.get("debounce_seconds"), default=30, minimum=0
+                    ),
+                    aggregation_window_seconds=_coerce_int(
+                        c_data.get("aggregation_window_seconds"),
+                        default=0,
+                        minimum=0,
+                    ),
+                    quiet_hours=(
+                        c_data["quiet_hours"]
+                        if isinstance(c_data.get("quiet_hours"), dict)
+                        else None
+                    ),
+                )
+                ccreated = _parse_iso(c_data.get("created_at"))
+                if ccreated:
+                    channel.created_at = ccreated
+                db.add(channel)
+                old_channel_to_new[c_data.get("id", "")] = channel
+
+                # Group rules resolve against imported groups.
+                for gr in c_data.get("group_rules", []):
+                    group = old_gid_to_group.get(gr.get("group_id"))
+                    if group is None:
+                        continue
+                    rule = gr.get("rule")
+                    if rule not in _VALID_RULE_ACTION:
+                        continue
+                    inc = gr.get("include_private")
+                    db.add(
+                        NotificationChannelGroupRule(
+                            channel_id=channel.id,
+                            group_id=group.id,
+                            rule=rule,
+                            include_private=(
+                                inc
+                                if inc in _VALID_INCLUDE_PRIVATE
+                                else IncludePrivate.INHERIT.value
+                            ),
+                        )
+                    )
+
+                # Member rules resolve against imported members.
+                for mr in c_data.get("member_rules", []):
+                    member = old_id_to_member.get(mr.get("member_id"))
+                    if member is None:
+                        continue
+                    rule = mr.get("rule")
+                    if rule not in _VALID_RULE_ACTION:
+                        continue
+                    db.add(
+                        NotificationChannelMemberRule(
+                            channel_id=channel.id,
+                            member_id=member.id,
+                            rule=rule,
+                        )
+                    )
+
+                result.channels_imported += 1
+
+        await db.flush()
+
+    # --- Reminders ---
+    if reminders:
+        for rm_data in data.get("reminders", []):
+            channel = old_channel_to_new.get(rm_data.get("channel_id"))
+            if channel is None:
+                # channel_id is a NOT NULL FK; a reminder can't outlive its
+                # channel. If notifications weren't imported, every reminder
+                # lands here.
+                warnings.append(
+                    f"Skipped reminder '{rm_data.get('name', '?')}' - its "
+                    "notification channel was not imported"
+                )
+                continue
+            old_tm = rm_data.get("trigger_member_id")
+            trigger_member = old_id_to_member.get(old_tm) if old_tm else None
+            if old_tm and trigger_member is None:
+                warnings.append(
+                    f"Reminder '{rm_data.get('name', '?')}' trigger member "
+                    "was not imported; kept without a member trigger"
+                )
+            body = rm_data.get("body")
+            reminder = Reminder(
+                id=uuid.uuid4(),
+                system_id=system.id,
+                channel_id=channel.id,
+                name=(rm_data.get("name") or "reminder")[:120],
+                title=encrypt(rm_data.get("title") or ""),
+                body=encrypt(body) if body else None,
+                enabled=bool(rm_data.get("enabled", True)),
+                trigger_type=rm_data.get("trigger_type") or "repeated",
+                trigger_member_id=trigger_member.id if trigger_member else None,
+                trigger_event=_trunc(rm_data.get("trigger_event"), 16),
+                delay_seconds=(
+                    _coerce_int(rm_data.get("delay_seconds"), default=0, minimum=0)
+                    if rm_data.get("delay_seconds") is not None
+                    else None
+                ),
+                schedule_kind=_trunc(rm_data.get("schedule_kind"), 16),
+                schedule_time=_trunc(rm_data.get("schedule_time"), 5),
+                schedule_dow_mask=(
+                    _coerce_int(
+                        rm_data.get("schedule_dow_mask"), default=0, minimum=0
+                    )
+                    if rm_data.get("schedule_dow_mask") is not None
+                    else None
+                ),
+                schedule_dom=(
+                    _coerce_int(rm_data.get("schedule_dom"), default=0, minimum=0)
+                    if rm_data.get("schedule_dom") is not None
+                    else None
+                ),
+                schedule_tz=_trunc(rm_data.get("schedule_tz"), 64),
+                cron_expression=_trunc(rm_data.get("cron_expression"), 120),
+                scope=rm_data.get("scope") or "system",
+                digest_when_absent=bool(rm_data.get("digest_when_absent", True)),
+            )
+            rcreated = _parse_iso(rm_data.get("created_at"))
+            if rcreated:
+                reminder.created_at = rcreated
+            db.add(reminder)
+            await db.flush()
+
+            for old_smid in rm_data.get("scope_member_ids", []):
+                scope_member = old_id_to_member.get(old_smid)
+                if scope_member:
+                    await db.execute(
+                        reminder_scope_members.insert().values(
+                            reminder_id=reminder.id, member_id=scope_member.id
+                        )
+                    )
+            result.reminders_imported += 1
+
     result.warnings = warnings
     return result
 
@@ -349,3 +922,22 @@ def _parse_iso(val: str | None) -> datetime | None:
         return datetime.fromisoformat(val)
     except (ValueError, TypeError):
         return None
+
+
+def _str_list(val: object) -> list:
+    """Pass through a JSONB list verbatim, or [] for missing/malformed data."""
+    return val if isinstance(val, list) else []
+
+
+def _resolve_ids(old_ids: object, mapping: dict) -> list:
+    """Map a list of old export IDs to the new ORM objects that imported,
+    dropping any that didn't (filtered out, or never present). Order is
+    preserved. Callers take .id off each object as str (JSONB) or UUID (ARRAY)."""
+    if not isinstance(old_ids, list):
+        return []
+    out = []
+    for oid in old_ids:
+        obj = mapping.get(oid)
+        if obj is not None:
+            out.append(obj)
+    return out

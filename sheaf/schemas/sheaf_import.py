@@ -27,3 +27,10 @@ class SheafImportOptions(BaseModel):
     groups: bool = True
     tags: bool = True
     custom_fields: bool = True
+    journals: bool = True
+    messages: bool = True
+    polls: bool = True
+    reminders: bool = True
+    # Watch tokens + their channels + filter rules. Reminders reference a
+    # channel, so importing reminders without notifications drops them.
+    notifications: bool = True
