@@ -52,14 +52,14 @@ from sheaf.auth.trusted_devices import (
     revoke_trusted_device,
     verify_trusted_device,
 )
-from sheaf.config import settings
+from sheaf.config import SheafMode, settings
 from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
-from sheaf.models.user import AccountStatus, User
+from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
     SecondarySessionRequest,
@@ -321,6 +321,16 @@ async def register(
         account_status = AccountStatus.ACTIVE
     email_verified = settings.email_verification != "required"
 
+    # The model default is SELF_HOSTED (the right default for a self-hosted
+    # instance). In SaaS mode new signups must start on FREE so tier limits
+    # (member count, storage quota, etc.) actually apply; admins bump
+    # individuals up out of band.
+    signup_tier = (
+        UserTier.FREE
+        if settings.sheaf_mode == SheafMode.SAAS
+        else UserTier.SELF_HOSTED
+    )
+
     user = User(
         email=encrypt(body.email),
         email_hash=email_hash,
@@ -328,6 +338,7 @@ async def register(
         account_status=account_status,
         email_verified=email_verified,
         signup_ip=client_ip(request),
+        tier=signup_tier,
         newsletter_opt_in=body.newsletter_opt_in,
         newsletter_opted_in_at=datetime.now(UTC) if body.newsletter_opt_in else None,
     )

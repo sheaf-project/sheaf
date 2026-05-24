@@ -30,6 +30,7 @@ All five import paths (PluralKit file, PluralKit API, Tupperbox, SimplyPlural, S
 
 ### Security and privacy hardening
 
+- **SaaS signup tier**: new registrations in SaaS mode now default to the `free` tier instead of inheriting the model's `self_hosted` default, so member-count and storage-quota limits actually apply to new accounts. Self-hosted instances are unaffected (signups stay `self_hosted`).
 - **SendGrid webhook**: verifies the Signed Event Webhook ECDSA signature with a timestamp replay window (`SENDGRID_WEBHOOK_PUBLIC_KEY`, optional `SENDGRID_WEBHOOK_MAX_SKEW_SECONDS`). The legacy query-string token is a fallback used only when no key is configured.
 - **Unified lockout**: failed-attempt lockout is now shared across login, TOTP disable, recovery-code regeneration, and the account-data endpoint, so attempts can't be spread across endpoints to dodge it. Per-user rate limits added to those plus the anonymous notification redeem / preview / manage endpoints.
 - **Password reset**: closed a timing oracle (the send now runs as a background task with symmetric work on the no-match branch); reset tokens are invalidated on password change and on successful login.
