@@ -6,6 +6,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-24
+
+### Fixed
+
+- **Messages page 500s under concurrency.** Opening a board fires several endpoints in parallel (board list, board contents, mark-seen, unread badge), each of which calls `get_or_create_read_state`. The plain select-then-insert raced: per-member boards hit the unique index (500), and the system board (`board_member_id` NULL) silently accumulated duplicate rows because Postgres treats NULLs as distinct in a unique index, later breaking `scalar_one_or_none`. Now uses `INSERT ... ON CONFLICT DO NOTHING` then selects the winner, and the `ix_message_read_state_lookup` unique index is rebuilt with `NULLS NOT DISTINCT` (PG15+) so the system board is covered too. A migration dedupes existing read-state rows first, keeping the most-recently-seen row per member/board.
+
 ## [0.2.0] - 2026-05-23
 
 The pre-public-beta hardening release. On top of the features that landed since v0.1.0 (front-change notifications, reminders, polls, messages, journals/notes, mobile push, PluralKit/Tupperbox/SimplyPlural import, analytics, custom fronts), this cycle moved imports onto a background job runner, did a broad security/privacy and performance pass, and added the first quick-switch building block.
