@@ -3,6 +3,7 @@ import uuid
 
 import httpx
 import pyotp
+import pytest
 
 
 def test_register(client: httpx.Client):
@@ -614,6 +615,38 @@ def test_secondary_session_mint_after_parent_revoked_fails(
         json={"client_name": "Sheaf watchOS/1.0"},
     )
     assert mint.status_code == 401, mint.text
+
+
+def test_registration_defaults_to_self_hosted_tier(client: httpx.Client):
+    """Default (self-hosted) instance: new signups land on the self_hosted
+    tier (unlimited), matching the model default."""
+    email = f"tier-sh-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = client.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert reg.status_code == 201, reg.text
+    me = client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {reg.json()['access_token']}"},
+    )
+    assert me.json()["tier"] == "self_hosted"
+
+
+@pytest.mark.saas
+def test_registration_defaults_to_free_tier_in_saas(client: httpx.Client):
+    """SaaS instance: new signups must start on the free tier so tier limits
+    (member count, storage quota) actually apply. Admins bump individuals up
+    out of band."""
+    email = f"tier-saas-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = client.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert reg.status_code == 201, reg.text
+    me = client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {reg.json()['access_token']}"},
+    )
+    assert me.json()["tier"] == "free"
 
 
 def _register_and_login(client: httpx.Client, email: str, password: str) -> str:
