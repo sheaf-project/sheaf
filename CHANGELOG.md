@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Re-import no longer duplicates custom field definitions.** Restoring a Sheaf export into a system that already had those fields stacked a second copy of every definition ("Pronouns", "Pronouns", ...). The importer now dedupes definitions by (name, type) against the target system and within the file, reusing the existing one; members and their values are still added (member dedup is a separate, larger piece of work). Field values guard the `UNIQUE(field_id, member_id)` constraint so a shared definition can't trip it mid-import.
+
 ## [0.2.2] - 2026-05-24
 
 ### Fixed

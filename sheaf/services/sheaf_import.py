@@ -15,12 +15,18 @@ ones for cross-references inside the file. References to user accounts
 (journal/revision authorship) are re-pointed at the importing user;
 historical audit actors are dropped, since the original account UUIDs
 are meaningless on the target instance.
+
+Re-import is additive, with one exception: custom field *definitions*
+are deduped by (name, type) against the target system, so restoring a
+backup into a populated system doesn't leave a second copy of every
+field. Members and their data are still added rather than merged.
 """
 
 import logging
 import uuid
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
@@ -349,24 +355,50 @@ async def run_import(
     # --- Custom fields ---
     old_field_to_def: dict[str, CustomFieldDefinition] = {}
     if custom_fields:
+        # Re-import is additive, but duplicating field *definitions* just
+        # litters the field list with a second "Pronouns" etc. Dedupe by
+        # (name, type) against what the system already has, and within the
+        # file itself, reusing the existing definition rather than minting a
+        # twin. Members aren't deduped, so their values still attach to the
+        # fresh member rows under the shared definition. The system's own
+        # config (privacy/order/options) on a reused field is left untouched.
+        existing_fields = await db.execute(
+            select(CustomFieldDefinition).where(
+                CustomFieldDefinition.system_id == system.id
+            )
+        )
+        field_by_key: dict[tuple[str, str], CustomFieldDefinition] = {
+            (fd.name, fd.field_type.value): fd
+            for fd in existing_fields.scalars().all()
+        }
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
-            field_def = CustomFieldDefinition(
-                id=uuid.uuid4(),
-                system_id=system.id,
-                name=(fd_data.get("name") or "field")[:100],
-                field_type=_field_type(fd_data.get("field_type")),
-                options=fd_data.get("options"),
-                order=fd_data.get("order", 0),
-                privacy=_privacy(fd_data.get("privacy")),
-            )
-            db.add(field_def)
+            name = (fd_data.get("name") or "field")[:100]
+            ftype = _field_type(fd_data.get("field_type"))
+            key = (name, ftype.value)
+            field_def = field_by_key.get(key)
+            if field_def is None:
+                field_def = CustomFieldDefinition(
+                    id=uuid.uuid4(),
+                    system_id=system.id,
+                    name=name,
+                    field_type=ftype,
+                    options=fd_data.get("options"),
+                    order=fd_data.get("order", 0),
+                    privacy=_privacy(fd_data.get("privacy")),
+                )
+                db.add(field_def)
+                field_by_key[key] = field_def
+                result.custom_fields_imported += 1
             old_field_to_def[old_fid] = field_def
-            result.custom_fields_imported += 1
 
         await db.flush()
 
-        # Import field values
+        # Import field values. A reused definition can be referenced by more
+        # than one export field (a file with duplicate defs, or future deduped
+        # members), so guard (field, member) uniqueness ourselves to avoid
+        # tripping the UNIQUE(field_id, member_id) constraint mid-import.
+        seen_values: set[tuple[uuid.UUID, uuid.UUID]] = set()
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
             field_def = old_field_to_def.get(old_fid)
@@ -377,6 +409,10 @@ async def run_import(
                 member = old_id_to_member.get(old_mid)
                 if not member:
                     continue
+                vkey = (field_def.id, member.id)
+                if vkey in seen_values:
+                    continue
+                seen_values.add(vkey)
                 cfv = CustomFieldValue(
                     id=uuid.uuid4(),
                     field_id=field_def.id,
