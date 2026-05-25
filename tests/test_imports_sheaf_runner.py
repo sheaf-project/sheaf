@@ -401,3 +401,43 @@ def test_sheaf_runner_fails_on_non_object_root(auth_client: httpx.Client):
 
     assert final["status"] == "failed", final
     assert any("must be a JSON object" in e["message"] for e in final["events"])
+
+
+def test_member_limit_endpoint(auth_client: httpx.Client):
+    """The cap endpoint the import flows read for their warning. Shape is
+    config-independent: self-hosted is unlimited (limit 0, remaining null),
+    SaaS free tier has a numeric cap."""
+    data = auth_client.get("/v1/members/limit").json()
+    assert set(data) == {"limit", "current", "remaining"}
+    assert data["current"] == 0
+    if data["limit"] == 0:
+        assert data["remaining"] is None
+    else:
+        assert data["remaining"] == data["limit"]
+
+
+def test_sheaf_runner_hard_fails_over_member_cap(admin_client: httpx.Client):
+    """An import that would push the account past its member cap fails up
+    front rather than silently overshooting. Uses a per-user override so the
+    check fires regardless of the server's tier config."""
+    me = admin_client.get("/v1/auth/me").json()
+    patched = admin_client.patch(
+        f"/v1/admin/users/{me['id']}", json={"member_limit": 1}
+    )
+    assert patched.status_code == 200, patched.text
+
+    # _SHEAF_EXPORT has two members; cap is 1.
+    job = _post_file(admin_client, payload=json.dumps(_SHEAF_EXPORT).encode())
+    drive_import_runner()
+    final = wait_for_terminal(admin_client, job["id"])
+
+    assert final["status"] == "failed", final
+    blob = (
+        (final.get("last_error") or "")
+        + " "
+        + " ".join(e["message"] for e in final["events"])
+    ).lower()
+    assert "member" in blob and "limit" in blob, final
+
+    # Nothing was written: the account still has zero members.
+    assert admin_client.get("/v1/members/limit").json()["current"] == 0

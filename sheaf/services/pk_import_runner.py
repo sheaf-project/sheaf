@@ -37,6 +37,7 @@ from sheaf.services.import_runner import (
     update_counts,
 )
 from sheaf.services.import_storage import get_payload
+from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.pk_api import PKApiError, fetch_export
 from sheaf.services.pk_import import (
     apply_system_profile,
@@ -84,6 +85,9 @@ async def _process_pk_export(
     if options.member_ids is not None:
         wanted = set(options.member_ids)
         pk_members = [m for m in pk_members if m.get("id") in wanted]
+
+    # Hard-fail before writing anything if this would blow the member cap.
+    await enforce_import_member_cap(db, system, len(pk_members))
 
     hid_to_member: dict[str, Member] = {}
     for pk_m in pk_members:

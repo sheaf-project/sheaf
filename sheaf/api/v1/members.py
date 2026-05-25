@@ -3,12 +3,11 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
-from sheaf.config import settings
 from sheaf.crypto import blind_index, encrypt
 from sheaf.database import get_db
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
@@ -17,7 +16,7 @@ from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
-from sheaf.models.user import User, UserTier
+from sheaf.models.user import User
 from sheaf.schemas.journal import (
     ContentRevisionRead,
     PinRevisionRequest,
@@ -42,6 +41,7 @@ from sheaf.services.journals import (
     restore_member_bio_revision,
     unpin_revision_immediate,
 )
+from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.system_safety import (
     is_safeguarded,
@@ -131,20 +131,6 @@ async def list_members(
     return decoded
 
 
-_MEMBER_LIMIT_MAP = {
-    UserTier.FREE: lambda: settings.member_limit_free,
-    UserTier.PLUS: lambda: settings.member_limit_plus,
-    UserTier.SELF_HOSTED: lambda: settings.member_limit_selfhosted,
-}
-
-
-def _get_member_limit(user: User) -> int:
-    """Return the member limit for a user. 0 means unlimited."""
-    if user.member_limit is not None:
-        return user.member_limit
-    return _MEMBER_LIMIT_MAP.get(user.tier, lambda: 0)()
-
-
 @router.post(
     "",
     response_model=MemberRead,
@@ -158,12 +144,9 @@ async def create_member(
 ):
     system = await _get_user_system(user, db)
 
-    limit = _get_member_limit(user)
+    limit = get_member_limit(user)
     if limit > 0:
-        result = await db.execute(
-            select(func.count()).where(Member.system_id == system.id)
-        )
-        count = result.scalar_one()
+        count = await count_members(db, system.id)
         if count >= limit:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -199,6 +182,26 @@ async def create_member(
 # real shaping and the window just bounds the query.
 _TOP_FRONTERS_HALF_LIFE_DAYS = 30.0
 _TOP_FRONTERS_WINDOW = timedelta(days=180)
+
+
+@router.get("/limit")
+async def member_limit(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Effective member cap and current usage for the account.
+
+    `limit` of 0 means unlimited (and `remaining` is null). Used by the
+    import flows to warn before an import would blow the cap.
+    """
+    system = await _get_user_system(user, db)
+    limit = get_member_limit(user)
+    current = await count_members(db, system.id)
+    return {
+        "limit": limit,
+        "current": current,
+        "remaining": max(limit - current, 0) if limit > 0 else None,
+    }
 
 
 @router.get("/top-fronters", response_model=list[MemberRead])

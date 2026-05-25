@@ -1,6 +1,8 @@
 import { type ChangeEvent, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { useQuery } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
+import { getMemberLimit } from "@/lib/members";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -154,6 +156,10 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
   const [importPolls, setImportPolls] = useState(true);
   const [importNotifications, setImportNotifications] = useState(true);
   const [importReminders, setImportReminders] = useState(true);
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
 
   async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -336,9 +342,7 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
-              <Button onClick={handleImport} className="w-full">
-                Import
-              </Button>
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
         </div>
@@ -368,6 +372,11 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
   const [customFields, setCustomFields] = useState(true);
   const [groups, setGroups] = useState(true);
   const [frontHistory, setFrontHistory] = useState(false);
+
+  // Custom fronts also become members and count toward the cap.
+  const importIncoming =
+    (allMembers ? (preview?.member_count ?? 0) : selectedMembers.size) +
+    (customFronts ? (preview?.custom_front_count ?? 0) : 0);
 
   async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -506,9 +515,7 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
-              <Button onClick={handleImport} className="w-full">
-                Import
-              </Button>
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
         </div>
@@ -545,6 +552,10 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState(true);
   const [frontHistory, setFrontHistory] = useState(false);
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
 
   async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -812,9 +823,7 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
-              <Button onClick={handleImport} className="w-full">
-                Import
-              </Button>
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
         </div>
@@ -840,6 +849,10 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
   const [allMembers, setAllMembers] = useState(true);
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState(true);
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
 
   async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -949,9 +962,7 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
-              <Button onClick={handleImport} className="w-full">
-                Import
-              </Button>
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
         </div>
@@ -1031,6 +1042,37 @@ function MemberSelector({
           {selectedMembers.size} of {totalCount} selected
         </p>
       )}
+    </div>
+  );
+}
+
+function ImportSubmit({
+  incoming,
+  onImport,
+}: {
+  incoming: number;
+  onImport: () => void;
+}) {
+  const { data } = useQuery({
+    queryKey: ["members", "limit"],
+    queryFn: getMemberLimit,
+  });
+  const remaining = data?.remaining ?? null;
+  // remaining null == unlimited. Block + warn only when we know it won't fit.
+  const over = remaining !== null && incoming > remaining;
+  return (
+    <div className="space-y-2">
+      {over && remaining !== null && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          This would import {incoming.toLocaleString()} members, but only{" "}
+          {remaining.toLocaleString()} fit under your account&apos;s member
+          limit. Deselect at least {(incoming - remaining).toLocaleString()} more
+          (or upgrade); the import will be rejected otherwise.
+        </div>
+      )}
+      <Button onClick={onImport} className="w-full" disabled={over}>
+        Import
+      </Button>
     </div>
   );
 }

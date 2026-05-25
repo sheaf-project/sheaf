@@ -43,6 +43,7 @@ from sheaf.schemas.tb_import import (
     TBPreviewMember,
     TBPreviewSummary,
 )
+from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import.tb")
 
@@ -94,6 +95,9 @@ async def run_import(
     if options.member_ids is not None:
         wanted = set(options.member_ids)
         tuppers = [t for t in tuppers if _tupper_id(t) in wanted]
+
+    # Hard-fail before writing anything if this would blow the member cap.
+    await enforce_import_member_cap(db, system, len(tuppers))
 
     id_to_member: dict[str, Member] = {}
     for tupper in tuppers:

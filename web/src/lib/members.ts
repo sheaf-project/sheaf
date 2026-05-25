@@ -24,6 +24,20 @@ export function getTopFronters(limit = 8) {
   return apiFetch<Member[]>(`/v1/members/top-fronters?limit=${limit}`);
 }
 
+export interface MemberLimitStatus {
+  /** 0 means unlimited. */
+  limit: number;
+  current: number;
+  /** null when unlimited. */
+  remaining: number | null;
+}
+
+/** Effective member cap + current usage, for warning before an import would
+ *  exceed it. */
+export function getMemberLimit() {
+  return apiFetch<MemberLimitStatus>("/v1/members/limit");
+}
+
 export function createMember(data: MemberCreate) {
   return apiFetch<Member>("/v1/members", {
     method: "POST",
