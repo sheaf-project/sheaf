@@ -457,8 +457,13 @@ export interface DeleteQueued {
 
 export type DeleteResult = void | DeleteQueued;
 
-export function isDeleteQueued(r: DeleteResult): r is DeleteQueued {
-  return !!r && typeof (r as DeleteQueued).pending_action_id === "string";
+// Accepts unknown so callers whose result is a wider union (e.g. file delete
+// returns FileDeleted | DeleteQueued) can use it too, not just DeleteResult.
+export function isDeleteQueued(r: unknown): r is DeleteQueued {
+  return (
+    !!r &&
+    typeof (r as DeleteQueued).pending_action_id === "string"
+  );
 }
 
 export interface DestructiveConfirm {
