@@ -151,3 +151,37 @@ def test_admin_can_set_can_upload_images(
     )
     assert resp.status_code == 200
     assert resp.json()["can_upload_images"] is False
+
+
+def test_file_references_surfaces_member_avatar(auth_client: httpx.Client):
+    """Selecting an uploaded file should show where it's referenced. An
+    avatar attached to a member surfaces as a member_avatar reference."""
+    up = auth_client.post(
+        "/v1/files/upload",
+        files={"file": ("a.png", io.BytesIO(_png_bytes()), "image/png")},
+    ).json()
+    key = up["key"]
+    files = auth_client.get("/v1/files/list").json()
+    file_id = next(f["id"] for f in files if f["key"] == key)
+
+    # Freshly uploaded, nothing points at it yet.
+    refs0 = auth_client.get(f"/v1/files/{file_id}/references").json()
+    assert refs0["references"] == [], refs0
+
+    # Attach it as a member avatar (avatar_url stores the bare key).
+    created = auth_client.post(
+        "/v1/members", json={"name": "Pic Holder", "avatar_url": key}
+    )
+    assert created.status_code == 201, created.text
+
+    refs1 = auth_client.get(f"/v1/files/{file_id}/references").json()
+    kinds = {r["kind"] for r in refs1["references"]}
+    assert "member_avatar" in kinds, refs1
+    assert any("Pic Holder" in r["label"] for r in refs1["references"]), refs1
+
+
+def test_file_references_404_for_unknown_file(auth_client: httpx.Client):
+    resp = auth_client.get(
+        "/v1/files/00000000-0000-0000-0000-000000000000/references"
+    )
+    assert resp.status_code == 404

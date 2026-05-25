@@ -11,13 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
-from sheaf.models.content_revision import ContentRevision
+from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
+from sheaf.services.journals import entry_plaintext
 from sheaf.services.markdown import extract_image_keys
+from sheaf.services.members import member_plaintext
 from sheaf.storage import get_storage
 
 logger = logging.getLogger("sheaf.cleanup")
@@ -121,6 +123,113 @@ async def find_orphaned_files(
 
     orphaned_keys = uploaded_keys - referenced
     return [f for f in uploaded if f.key in orphaned_keys]
+
+
+async def find_file_references(
+    db: AsyncSession,
+    user_id: str,
+    key: str,
+) -> list[dict]:
+    """Find everywhere a single uploaded-file key is referenced for this user.
+
+    The inverse of find_orphaned_files: rather than collecting every
+    referenced key, it attributes one key to the specific entities that use
+    it, with user-facing labels. Powers the "where is this image used?" view
+    shown before a delete. Computed on demand; there is no persistent
+    reference table. An empty list means the file is an orphan.
+    """
+    refs: list[dict] = []
+
+    sys_result = await db.execute(
+        select(System).join(User).where(User.id == user_id)
+    )
+    system = sys_result.scalar_one_or_none()
+    if system is None:
+        return refs
+
+    if system.avatar_url == key:
+        refs.append({
+            "kind": "system_avatar",
+            "label": "System avatar",
+            "target_type": "system",
+            "target_id": str(system.id),
+        })
+
+    # Members: avatars + bio image embeds. Names/bios are encrypted, so decrypt
+    # via member_plaintext to both scan and label.
+    members_result = await db.execute(
+        select(Member).where(Member.system_id == system.id)
+    )
+    members = list(members_result.scalars().all())
+    member_name: dict[uuid.UUID, str] = {}
+    for m in members:
+        name, description = member_plaintext(m)
+        member_name[m.id] = name
+        if m.avatar_url == key:
+            refs.append({
+                "kind": "member_avatar",
+                "label": f"{name}'s avatar",
+                "target_type": "member",
+                "target_id": str(m.id),
+            })
+        if description and key in _extract_keys_from_markdown(description):
+            refs.append({
+                "kind": "member_bio",
+                "label": f"{name}'s bio",
+                "target_type": "member",
+                "target_id": str(m.id),
+            })
+
+    # Journal entries. image_keys is pre-extracted at write time.
+    journals_result = await db.execute(
+        select(JournalEntry).where(JournalEntry.system_id == system.id)
+    )
+    journal_label: dict[uuid.UUID, str] = {}
+    for e in journals_result.scalars().all():
+        title, _ = entry_plaintext(e)
+        label = title or "Untitled entry"
+        journal_label[e.id] = label
+        if e.image_keys and key in e.image_keys:
+            refs.append({
+                "kind": "journal",
+                "label": f"Journal: {label}",
+                "target_type": "journal_entry",
+                "target_id": str(e.id),
+            })
+
+    # Content revisions (edit history) for this user's members + journals. A
+    # key can appear in several historical revisions of the same target; list
+    # each target once so the view isn't spammed with duplicates.
+    target_ids = set(member_name) | set(journal_label)
+    if target_ids:
+        rev_result = await db.execute(
+            select(ContentRevision).where(
+                ContentRevision.target_id.in_(target_ids)
+            )
+        )
+        seen_targets: set[uuid.UUID] = set()
+        for r in rev_result.scalars().all():
+            if not r.image_keys or key not in r.image_keys:
+                continue
+            if r.target_id in seen_targets:
+                continue
+            seen_targets.add(r.target_id)
+            if r.target_type == ContentRevisionTarget.MEMBER_BIO.value:
+                who = member_name.get(r.target_id, "a member")
+                label = f"Edit history of {who}'s bio"
+            elif r.target_type == ContentRevisionTarget.JOURNAL_ENTRY.value:
+                who = journal_label.get(r.target_id, "an entry")
+                label = f"Edit history of journal: {who}"
+            else:
+                label = "Edit history"
+            refs.append({
+                "kind": "revision",
+                "label": label,
+                "target_type": r.target_type,
+                "target_id": str(r.target_id),
+            })
+
+    return refs
 
 
 async def cleanup_orphaned_files(
