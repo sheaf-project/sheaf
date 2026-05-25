@@ -6,9 +6,24 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **File references view.** Selecting an uploaded image now shows where it's used (system avatar, member avatars and bios, journal entries, and edit history) with deep links to each, so you can see what a delete would break before confirming. An image referenced only by old revisions is flagged as safe to delete (orphan cleanup leaves those in place).
+- **Dedicated board-message API-key scopes.** Board messages now have their own `messages:read` / `messages:write` / `messages:delete` scopes instead of reusing `members:*`, so an API key can be granted message access independently of member access.
+
+### Changed
+
+- **Imports enforce the member cap.** An import (Sheaf, PluralKit, SimplyPlural, Tupperbox) that would push the account past its member limit now fails up front instead of silently overshooting, and the import screen warns and disables the button before you start. New `GET /v1/members/limit` backs the warning.
+
+### Security
+
+- **API keys can no longer manage API keys.** The create / list / revoke key endpoints refuse API-key auth, so a leaked key can't mint a wider-scoped key or revoke others; key management is session/JWT only, matching the account and async-export endpoints. The unused, drifted internal scope list was removed in favour of a single source of truth, with a test asserting every scope the API enforces is actually grantable.
+
 ### Fixed
 
 - **Re-import no longer duplicates custom field definitions.** Restoring a Sheaf export into a system that already had those fields stacked a second copy of every definition ("Pronouns", "Pronouns", ...). The importer now dedupes definitions by (name, type) against the target system and within the file, reusing the existing one; members and their values are still added (member dedup is a separate, larger piece of work). Field values guard the `UNIQUE(field_id, member_id)` constraint so a shared definition can't trip it mid-import.
+- **Image delete now prompts for step-up auth.** When the system's delete-confirmation tier requires a password or TOTP, deleting an uploaded image prompts for it instead of failing with "TOTP code required" and no way to supply it. The System Safety grace period is honoured too (scheduled-deletion toast). A sweep confirmed image delete was the only destructive action whose frontend bypassed the step-up prompt.
+- **Poll creation over an API key returned 403.** The `polls` scope is enforced server-side but was missing from the key-creation UI, so a key could never be granted it. The scope is now offered in the picker.
 
 ## [0.2.2] - 2026-05-24
 
