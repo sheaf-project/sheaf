@@ -86,6 +86,7 @@ _VALID_SCOPES = {
     "settings:read", "settings:write", "settings:delete",
     "notifications:read", "notifications:write", "notifications:delete",
     "polls:read", "polls:write", "polls:delete",
+    "messages:read", "messages:write", "messages:delete",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
@@ -1511,12 +1512,29 @@ async def regenerate_recovery_codes(
     return {"recovery_codes": codes}
 
 
+def _reject_api_key_auth(request: Request) -> None:
+    """Block API-key auth from the key-management endpoints.
+
+    An API key minting or revoking keys is privilege escalation: a leaked
+    read-only key could create a fresh write/delete key (and outlive its own
+    revocation). Key management is a session/JWT-only operation, same posture
+    as the account + async-export endpoints.
+    """
+    if getattr(request.state, "auth_method", None) == "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API keys cannot manage API keys. Sign in with a session or JWT.",
+        )
+
+
 @router.get("/keys", response_model=list[ApiKeyRead])
 async def list_api_keys(
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List the current user's API keys (never returns plaintext key)."""
+    _reject_api_key_auth(request)
     result = await db.execute(select(ApiKey).where(ApiKey.user_id == user.id))
     return [
         ApiKeyRead(
@@ -1539,10 +1557,12 @@ async def list_api_keys(
 )
 async def create_api_key(
     body: ApiKeyCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new API key. The plaintext key is returned once — save it."""
+    _reject_api_key_auth(request)
     unknown = set(body.scopes) - _VALID_SCOPES
     if unknown:
         raise HTTPException(
@@ -1586,10 +1606,12 @@ async def create_api_key(
 @router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_api_key(
     key_id: str,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke an API key. Only the owning user can revoke their own keys."""
+    _reject_api_key_auth(request)
     result = await db.execute(
         select(ApiKey).where(ApiKey.id == key_id, ApiKey.user_id == user.id)
     )

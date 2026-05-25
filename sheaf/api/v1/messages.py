@@ -392,7 +392,7 @@ async def mark_seen(
     "",
     response_model=MessageRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("messages:write"))],
 )
 async def post_message(
     body: MessageCreate,
@@ -455,7 +455,7 @@ async def post_message(
 @router.patch(
     "/{message_id}",
     response_model=MessageRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("messages:write"))],
 )
 async def edit_message(
     message_id: uuid.UUID,
@@ -494,7 +494,7 @@ async def edit_message(
 
 @router.delete(
     "/{message_id}",
-    dependencies=[Depends(require_scope("members:delete"))],
+    dependencies=[Depends(require_scope("messages:delete"))],
 )
 async def delete_message(
     message_id: uuid.UUID,
@@ -547,7 +547,7 @@ async def delete_message(
 
 @router.delete(
     "/{message_id}/thread",
-    dependencies=[Depends(require_scope("members:delete"))],
+    dependencies=[Depends(require_scope("messages:delete"))],
 )
 async def delete_thread(
     message_id: uuid.UUID,
@@ -627,7 +627,7 @@ async def list_revisions(
 @router.post(
     "/{message_id}/restore-revision",
     response_model=MessageRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("messages:write"))],
 )
 async def restore_revision(
     message_id: uuid.UUID,
@@ -653,7 +653,7 @@ async def restore_revision(
 @router.post(
     "/{message_id}/pin-revision",
     response_model=ContentRevisionRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("messages:write"))],
 )
 async def pin_message_revision(
     message_id: uuid.UUID,
@@ -682,7 +682,7 @@ async def pin_message_revision(
 @router.post(
     "/{message_id}/unpin-revision",
     response_model=UnpinRevisionResponse,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("messages:write"))],
 )
 async def unpin_message_revision(
     message_id: uuid.UUID,
@@ -768,7 +768,7 @@ async def get_notify_settings(
 @router.put(
     "/notify-settings/{member_id}",
     response_model=NotifyOnFrontSettings,
-    dependencies=[Depends(require_scope("members:write"))],
+    dependencies=[Depends(require_scope("messages:write"))],
 )
 async def set_notify_settings(
     member_id: uuid.UUID,

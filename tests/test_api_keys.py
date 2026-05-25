@@ -1,6 +1,7 @@
 """Tests for API key creation, listing, revocation, and scope enforcement."""
 
 import os
+import uuid
 
 import httpx
 
@@ -325,3 +326,47 @@ def test_notifications_write_cannot_revoke_watch_token(auth_client: httpx.Client
     with _key_client(plaintext) as c:
         resp = c.delete(f"/v1/watch-tokens/{token_id}")
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# API keys cannot manage API keys (no self-minting / privilege escalation)
+# ---------------------------------------------------------------------------
+
+def test_api_key_cannot_create_keys(auth_client: httpx.Client):
+    """A leaked key must not be able to mint a fresh (wider-scoped) key."""
+    plaintext = _create_key(auth_client, scopes=["members:read"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.post(
+            "/v1/auth/keys",
+            json={"name": "escalated", "scopes": ["members:write", "polls:write"]},
+        )
+    assert resp.status_code == 403
+
+
+def test_api_key_cannot_list_or_revoke_keys(auth_client: httpx.Client):
+    target = _create_key(auth_client, "victim")
+    plaintext = _create_key(auth_client, scopes=["members:read"])["key"]
+    with _key_client(plaintext) as c:
+        assert c.get("/v1/auth/keys").status_code == 403
+        assert c.delete(f"/v1/auth/keys/{target['id']}").status_code == 403
+
+
+def test_api_key_can_use_polls_and_messages_scopes(auth_client: httpx.Client):
+    """The scopes that were previously ungrantable now work end to end."""
+    for scope in ("polls:write", "messages:write"):
+        # Creation with the scope succeeds (it's in _VALID_SCOPES)...
+        data = _create_key(auth_client, name=f"k-{scope}", scopes=[scope])
+        assert scope in data["scopes"]
+        # ...and a key lacking it is refused the matching write.
+        plaintext = _create_key(auth_client, scopes=["members:read"])["key"]
+        with _key_client(plaintext) as c:
+            if scope == "polls:write":
+                r = c.post("/v1/polls", json={"question": "q", "kind": "single_choice",
+                                              "results_visibility": "live",
+                                              "closes_at": "2099-01-01T00:00:00+00:00",
+                                              "options": [{"text": "a"}, {"text": "b"}]})
+            else:
+                r = c.post("/v1/messages", json={"board_kind": "system",
+                                                 "author_member_id": str(uuid.uuid4()),
+                                                 "body": "hi"})
+        assert r.status_code == 403
