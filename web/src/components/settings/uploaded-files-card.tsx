@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listFiles,
   deleteFile,
   getFileReferences,
+  type FileReference,
   type UploadedFileInfo,
 } from "@/lib/files";
 import { getMySystem } from "@/lib/systems";
@@ -21,6 +23,39 @@ import {
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { formatBytes } from "@/lib/utils";
 import { toast } from "sonner";
+
+/** In-app link for a reference target, or null if it isn't deep-linkable.
+ * target_type covers both live refs ("system" / "member" / "journal_entry")
+ * and revision refs ("member_bio" / "journal_entry"). */
+function refHref(r: FileReference): string | null {
+  switch (r.target_type) {
+    case "system":
+      return "/settings/system";
+    case "member":
+    case "member_bio":
+      return `/members?member=${r.target_id}`;
+    case "journal_entry":
+      return `/journals/${r.target_id}`;
+    default:
+      return null;
+  }
+}
+
+function ReferenceItem({ reference }: { reference: FileReference }) {
+  const href = refHref(reference);
+  return (
+    <li className="flex items-baseline gap-2">
+      <span className="text-muted-foreground">•</span>
+      {href ? (
+        <Link to={href} className="text-primary hover:underline">
+          {reference.label}
+        </Link>
+      ) : (
+        <span>{reference.label}</span>
+      )}
+    </li>
+  );
+}
 
 export function UploadedFilesCard() {
   const qc = useQueryClient();
@@ -135,6 +170,9 @@ function FileDetailDialog({
   });
 
   const refs = data?.references ?? [];
+  const liveRefs = refs.filter((r) => r.kind !== "revision");
+  const historyRefs = refs.filter((r) => r.kind === "revision");
+  const historyOnly = liveRefs.length === 0 && historyRefs.length > 0;
 
   return (
     <Dialog open={!!file} onOpenChange={onOpenChange}>
@@ -156,8 +194,7 @@ function FileDetailDialog({
               className="max-h-48 w-auto rounded-md border mx-auto"
             />
 
-            <div className="space-y-2">
-              <p className="text-sm font-medium">Used in</p>
+            <div className="space-y-3">
               {isLoading && (
                 <p className="text-sm text-muted-foreground">
                   Checking references...
@@ -173,18 +210,43 @@ function FileDetailDialog({
                   Not used anywhere. Deleting it won&apos;t break anything.
                 </p>
               )}
-              {!isLoading && !isError && refs.length > 0 && (
-                <ul className="space-y-1 text-sm">
-                  {refs.map((r, i) => (
-                    <li
-                      key={`${r.kind}-${r.target_id}-${i}`}
-                      className="flex items-baseline gap-2"
-                    >
-                      <span className="text-muted-foreground">•</span>
-                      <span>{r.label}</span>
-                    </li>
-                  ))}
-                </ul>
+
+              {!isLoading && !isError && historyOnly && (
+                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+                  Only kept by edit history — it isn&apos;t shown anywhere
+                  current. Deleting it is safe unless you restore an older
+                  revision below. (Orphan cleanup leaves these in place.)
+                </p>
+              )}
+
+              {!isLoading && !isError && liveRefs.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Used in</p>
+                  <ul className="space-y-1 text-sm">
+                    {liveRefs.map((r, i) => (
+                      <ReferenceItem
+                        key={`${r.kind}-${r.target_id}-${i}`}
+                        reference={r}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {!isLoading && !isError && historyRefs.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Edit history
+                  </p>
+                  <ul className="space-y-1 text-sm">
+                    {historyRefs.map((r, i) => (
+                      <ReferenceItem
+                        key={`${r.kind}-${r.target_id}-${i}`}
+                        reference={r}
+                      />
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
           </div>
