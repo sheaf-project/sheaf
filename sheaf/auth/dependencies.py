@@ -16,19 +16,6 @@ from sheaf.request import client_ip
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-_ALL_SCOPES = {
-    "system:read", "system:write",
-    "members:read", "members:write", "members:delete",
-    "fronts:read", "fronts:write", "fronts:delete",
-    "groups:read", "groups:write", "groups:delete",
-    "tags:read", "tags:write", "tags:delete",
-    "fields:read", "fields:write", "fields:delete",
-    "export:read",
-    "notifications:read", "notifications:write",
-    "admin:read", "admin:write",
-}
-
-
 def _hash_key(plaintext: str) -> str:
     return hashlib.sha256(plaintext.encode()).hexdigest()
 

@@ -33,6 +33,8 @@ const SCOPE_GROUPS: ScopeGroup[] = [
       { key: "tags", label: "Tags", hasDelete: true },
       { key: "fields", label: "Custom fields", hasDelete: true },
       { key: "journals", label: "Journals", hasDelete: true },
+      { key: "polls", label: "Polls", hasDelete: true },
+      { key: "messages", label: "Board messages", hasDelete: true },
     ],
   },
   {

@@ -153,11 +153,12 @@ v1_router.include_router(
     dependencies=[Depends(require_scope("polls:read"))],
 )
 
-# Messages share the members:* scope set rather than minting new scopes —
-# the audience and authorization domain are the same as member content.
+# Messages have their own scope set: posting/deleting board messages is a
+# distinct capability from editing members, so a key shouldn't get one via
+# the other.
 v1_router.include_router(
     messages.router,
-    dependencies=[Depends(require_scope("members:read"))],
+    dependencies=[Depends(require_scope("messages:read"))],
 )
 
 # File serve catch-all MUST be last — {path:path} would shadow other routes
