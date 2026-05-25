@@ -63,6 +63,7 @@ from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.watch_token import WatchToken
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import.sheaf")
 
@@ -281,6 +282,9 @@ async def run_import(
     if member_ids is not None:
         selected = set(member_ids)
         export_members = [m for m in export_members if m.get("id") in selected]
+
+    # Hard-fail before writing anything if this would blow the member cap.
+    await enforce_import_member_cap(db, system, len(export_members))
 
     # Map old export ID → new Member
     old_id_to_member: dict[str, Member] = {}

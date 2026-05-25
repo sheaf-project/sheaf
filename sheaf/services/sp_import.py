@@ -32,6 +32,7 @@ from sheaf.schemas.sp_import import (
     SPPreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import")
 
@@ -120,6 +121,13 @@ async def run_import(
     if options.member_ids is not None:
         selected = set(options.member_ids)
         sp_members = [m for m in sp_members if m.get("_id") in selected]
+
+    # Custom fronts also become Member rows and count toward the cap, so fold
+    # them into the headroom check. Hard-fail before writing anything.
+    incoming = len(sp_members)
+    if options.custom_fronts:
+        incoming += len(_get_collection(data, "frontStatuses"))
+    await enforce_import_member_cap(db, system, incoming)
 
     # Map SP member _id → new Sheaf Member for cross-referencing
     sp_id_to_member: dict[str, Member] = {}
