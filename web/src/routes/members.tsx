@@ -1,5 +1,5 @@
 import { type FormEvent, lazy, Suspense, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
@@ -878,6 +878,30 @@ export function MembersPage() {
   const [viewing, setViewing] = useState<Member | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
   const [deleting, setDeleting] = useState<Member | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Deep link: /members?member=<id> opens that member's view dialog (used by
+  // the uploaded-files "where is this used" links). Derived from the URL so it
+  // resolves once members load; a manual card selection takes precedence.
+  // Closing the dialog strips the param.
+  const memberParam = searchParams.get("member");
+  const deepLinked = memberParam
+    ? members?.find((m) => m.id === memberParam) ?? null
+    : null;
+  const viewingMember = viewing ?? deepLinked;
+
+  function closeView() {
+    setViewing(null);
+    if (memberParam) {
+      setSearchParams(
+        (prev) => {
+          prev.delete("member");
+          return prev;
+        },
+        { replace: true },
+      );
+    }
+  }
 
   return (
     <>
@@ -921,14 +945,14 @@ export function MembersPage() {
       )}
 
       {/* View dialog */}
-      {viewing && (
+      {viewingMember && (
         <MemberView
-          member={viewing}
+          member={viewingMember}
           onEdit={() => {
-            setEditing(viewing);
-            setViewing(null);
+            setEditing(viewingMember);
+            closeView();
           }}
-          onClose={() => setViewing(null)}
+          onClose={closeView}
         />
       )}
 

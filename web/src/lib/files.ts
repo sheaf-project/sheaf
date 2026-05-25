@@ -1,4 +1,5 @@
 import { apiFetch } from "./api-client";
+import type { DeleteQueued, DestructiveConfirm } from "@/types/api";
 
 interface UploadResponse {
   url: string;
@@ -48,9 +49,41 @@ export function listFiles() {
   return apiFetch<UploadedFileInfo[]>("/v1/files/list");
 }
 
-export function deleteFile(fileId: string) {
-  return apiFetch<{ deleted: boolean; key: string; freed_bytes: number }>(
-    `/v1/files/${fileId}`,
-    { method: "DELETE" },
+export type FileReferenceKind =
+  | "system_avatar"
+  | "member_avatar"
+  | "member_bio"
+  | "journal"
+  | "revision";
+
+export interface FileReference {
+  kind: FileReferenceKind;
+  label: string;
+  target_type: string;
+  target_id: string;
+}
+
+/** Where an uploaded file is currently referenced. Empty `references` means
+ * the file is an orphan (nothing breaks if it's deleted). */
+export function getFileReferences(fileId: string) {
+  return apiFetch<{ key: string; references: FileReference[] }>(
+    `/v1/files/${fileId}/references`,
   );
+}
+
+export interface FileDeleted {
+  deleted: boolean;
+  key: string;
+  freed_bytes: number;
+}
+
+/** Delete an uploaded file. Returns FileDeleted on an immediate delete, or
+ * DeleteQueued (202) when System Safety's image-delete grace period applies.
+ * `confirm` carries the step-up password / TOTP required by the system's
+ * delete-confirmation tier. */
+export function deleteFile(fileId: string, confirm?: DestructiveConfirm) {
+  return apiFetch<FileDeleted | DeleteQueued>(`/v1/files/${fileId}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }

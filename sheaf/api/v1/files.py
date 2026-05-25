@@ -18,7 +18,10 @@ from sheaf.models.pending_action import PendingActionType
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
 from sheaf.schemas.member import MemberDeleteConfirm
-from sheaf.services.file_cleanup import cleanup_orphaned_files
+from sheaf.services.file_cleanup import (
+    cleanup_orphaned_files,
+    find_file_references,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     queue_pending_action,
@@ -253,6 +256,30 @@ async def list_files(
         }
         for f in files
     ]
+
+
+@router.get("/{file_id}/references")
+async def get_file_references(
+    file_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List everywhere an uploaded file is currently referenced (member
+    avatars/bios, system avatar, journal entries, and edit history). An empty
+    list means the file is an orphan. Lets the owner see what a delete would
+    break before confirming it."""
+    result = await db.execute(
+        select(UploadedFile).where(
+            UploadedFile.id == file_id,
+            UploadedFile.user_id == user.id,
+        )
+    )
+    file = result.scalar_one_or_none()
+    if file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    references = await find_file_references(db, str(user.id), file.key)
+    return {"key": file.key, "references": references}
 
 
 @router.delete("/{file_id}", dependencies=[Depends(require_scope("members:write"))])
