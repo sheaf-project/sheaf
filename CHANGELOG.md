@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-26
+
 ### Added
 
 - **File references view.** Selecting an uploaded image now shows where it's used (system avatar, member avatars and bios, journal entries, and edit history) with deep links to each, so you can see what a delete would break before confirming. An image referenced only by old revisions is flagged as safe to delete (orphan cleanup leaves those in place).
@@ -14,6 +16,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 ### Changed
 
 - **Imports enforce the member cap.** An import (Sheaf, PluralKit, SimplyPlural, Tupperbox) that would push the account past its member limit now fails up front instead of silently overshooting, and the import screen warns and disables the button before you start. New `GET /v1/members/limit` backs the warning.
+- **Modals are less cramped on larger displays.** Default dialog width now scales to `max-w-2xl` (672px) at `lg+` viewports instead of staying at `sm:max-w-lg` (512px), and the member picker caps its height at 40% of the viewport with its own scroll so the surrounding controls (start-front Start button, group/tag editor save) stay visible no matter the roster size.
 
 ### Security
 
@@ -24,6 +27,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 - **Re-import no longer duplicates custom field definitions.** Restoring a Sheaf export into a system that already had those fields stacked a second copy of every definition ("Pronouns", "Pronouns", ...). The importer now dedupes definitions by (name, type) against the target system and within the file, reusing the existing one; members and their values are still added (member dedup is a separate, larger piece of work). Field values guard the `UNIQUE(field_id, member_id)` constraint so a shared definition can't trip it mid-import.
 - **Image delete now prompts for step-up auth.** When the system's delete-confirmation tier requires a password or TOTP, deleting an uploaded image prompts for it instead of failing with "TOTP code required" and no way to supply it. The System Safety grace period is honoured too (scheduled-deletion toast). A sweep confirmed image delete was the only destructive action whose frontend bypassed the step-up prompt.
 - **Poll creation over an API key returned 403.** The `polls` scope is enforced server-side but was missing from the key-creation UI, so a key could never be granted it. The scope is now offered in the picker.
+- **Re-issue activation link for mobile_push channels.** The channel detail page only showed the Re-issue button for `web_push`, leaving mobile-push channels in `pending_registration` (notably re-imported ones, which intentionally don't carry the original activation hash across) with no UI path to a fresh magic link. The backend already accepted either; the frontend gate now matches.
 
 ## [0.2.2] - 2026-05-24
 
