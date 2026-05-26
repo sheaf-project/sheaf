@@ -250,8 +250,13 @@ export function NotificationChannelPage() {
           <span className="text-sm text-muted-foreground">
             State: <strong>{channel.destination_state.replace("_", " ")}</strong>
           </span>
+          {/* Re-issue for both web_push and mobile_push: re-imported channels
+              land in pending_registration with no link, and a token can also
+              get consumed without setup completing. Backend already accepts
+              either; the gate just needs to match. */}
           {channel.destination_state === "pending_registration" &&
-            channel.destination_type === "web_push" && (
+            (channel.destination_type === "web_push" ||
+              channel.destination_type === "mobile_push") && (
               <Button
                 variant="outline"
                 size="sm"
