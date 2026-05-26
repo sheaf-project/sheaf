@@ -120,7 +120,10 @@ export function MemberSelect({
           autoFocus
         />
       )}
-      <div className="flex flex-wrap gap-2">
+      {/* Cap the picker height with its own scroll so a large roster doesn't
+          push the surrounding controls (e.g. the Start button in the switch
+          modal) below the fold. */}
+      <div className="flex flex-wrap gap-2 max-h-[40vh] overflow-y-auto pr-1">
         {filtered.map((m) => (
           <Badge
             key={m.id}
