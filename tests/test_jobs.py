@@ -112,8 +112,20 @@ def test_list_jobs_contains_known_jobs(admin_client: httpx.Client):
         "process_account_deletions",
         "cleanup_job_logs",
         "cleanup_orphaned_files",
+        "cleanup_notification_outbox",
     }
     assert expected.issubset(names)
+
+
+def test_trigger_cleanup_notification_outbox(admin_client: httpx.Client):
+    """The outbox sweep is wired and runnable; with no terminal rows it's a
+    no-op that still reports success + an items_processed count."""
+    resp = admin_client.post("/v1/admin/jobs/cleanup_notification_outbox/run")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["job_name"] == "cleanup_notification_outbox"
+    assert data["status"] == "success"
+    assert "items_processed" in data
 
 
 # ---------------------------------------------------------------------------

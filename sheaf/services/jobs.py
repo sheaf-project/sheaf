@@ -662,6 +662,32 @@ async def _purge_expired_polls(db: AsyncSession) -> dict:
     return {"items_processed": purged}
 
 
+async def _cleanup_notification_outbox(db: AsyncSession) -> dict:
+    """Drop terminal notification_outbox rows past the retention window.
+
+    Every dispatched notification leaves a row behind, and so do the dropped
+    ones - the dispatcher stamps `delivered_at` as the universal sentinel
+    for "this row is done" (whether actually delivered, filtered out by the
+    resolver, revoked, or permanently failed). Without this sweep the outbox
+    grows unbounded; a busy system or a load test can leave thousands of
+    rows. Only terminal rows (`delivered_at IS NOT NULL`) are eligible;
+    anything still awaiting dispatch or in retry backoff is left alone.
+    """
+    from sheaf.models.notification_outbox import NotificationOutboxRow
+
+    cutoff = datetime.now(UTC) - timedelta(
+        days=settings.notification_outbox_retention_days
+    )
+    result = await db.execute(
+        delete(NotificationOutboxRow).where(
+            NotificationOutboxRow.delivered_at.is_not(None),
+            NotificationOutboxRow.delivered_at < cutoff,
+        )
+    )
+    await db.commit()
+    return {"items_processed": result.rowcount or 0}
+
+
 async def _cleanup_import_jobs(db: AsyncSession) -> dict:
     """Drop ImportJob rows past the retention window.
 
@@ -897,6 +923,13 @@ def _register_all_jobs() -> None:
         name="cleanup_import_jobs",
         description="Delete ImportJob rows past their retention window",
         func=_cleanup_import_jobs,
+        interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="cleanup_notification_outbox",
+        description="Delete terminal notification_outbox rows past retention",
+        func=_cleanup_notification_outbox,
         interval_seconds=lambda: 86400,  # daily
     )
 
