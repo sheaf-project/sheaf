@@ -50,6 +50,7 @@ from sheaf.services.journals import (
 from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -136,13 +137,15 @@ async def list_journals(
         if has_more and page
         else None
     )
-    return JournalListResponse(
-        items=[
-            JournalEntryRead.model_validate(decrypt_entry_for_read(r))
-            for r in page
-        ],
-        next_cursor=next_cursor,
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.JOURNAL_DELETE
     )
+    items: list[JournalEntryRead] = []
+    for r in page:
+        item = JournalEntryRead.model_validate(decrypt_entry_for_read(r))
+        item.pending_delete_at = pending.get(r.id)
+        items.append(item)
+    return JournalListResponse(items=items, next_cursor=next_cursor)
 
 
 @router.post(
@@ -188,8 +191,12 @@ async def get_entry(
     count = await revision_count_for(
         ContentRevisionTarget.JOURNAL_ENTRY, entry.id, db
     )
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.JOURNAL_DELETE
+    )
     payload = JournalEntryReadWithCount.model_validate(decrypt_entry_for_read(entry))
     payload.revision_count = count
+    payload.pending_delete_at = pending.get(entry.id)
     return payload
 
 

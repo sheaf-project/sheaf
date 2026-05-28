@@ -28,6 +28,10 @@ class TagRead(BaseModel):
     color: str | None
     created_at: datetime
     updated_at: datetime
+    # finalize_after timestamp if this tag is queued for delete in System
+    # Safety's grace window; null otherwise. Drives the pending-delete
+    # badge + dim styling in list views.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

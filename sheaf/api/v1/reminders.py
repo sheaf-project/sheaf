@@ -8,6 +8,7 @@ permitted to manage reminders that ride those destinations.
 """
 
 import uuid
+from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
@@ -39,6 +40,7 @@ from sheaf.services.reminders import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -208,7 +210,9 @@ def _validate_trigger_config(
             ) from exc
 
 
-def _to_read(reminder: Reminder) -> ReminderRead:
+def _to_read(
+    reminder: Reminder, *, pending_delete_at: datetime | None = None
+) -> ReminderRead:
     decrypted = decrypt_for_read(reminder)
     return ReminderRead(
         id=reminder.id,
@@ -236,6 +240,7 @@ def _to_read(reminder: Reminder) -> ReminderRead:
         next_fire_at=decrypted["next_fire_at"],
         created_at=reminder.created_at,
         updated_at=reminder.updated_at,
+        pending_delete_at=pending_delete_at,
     )
 
 
@@ -257,7 +262,13 @@ async def list_reminders(
         .where(Reminder.system_id == system.id)
         .order_by(Reminder.created_at.desc())
     )
-    return [_to_read(r) for r in result.scalars().all()]
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.REMINDER_DELETE
+    )
+    return [
+        _to_read(r, pending_delete_at=pending.get(r.id))
+        for r in result.scalars().all()
+    ]
 
 
 @router.post(
@@ -326,7 +337,10 @@ async def get_reminder(
 ):
     system = await _get_user_system(user, db)
     reminder = await _get_owned_reminder(reminder_id, system, db)
-    return _to_read(reminder)
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.REMINDER_DELETE
+    )
+    return _to_read(reminder, pending_delete_at=pending.get(reminder.id))
 
 
 @router.patch(

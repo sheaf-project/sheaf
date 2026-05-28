@@ -31,6 +31,7 @@ from sheaf.services.notifications.events import (
 from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -52,6 +53,7 @@ def _front_to_read(
     member_since: dict[str, datetime] | None = None,
     member_since_capped: list[str] | None = None,
     has_audit_history: bool = False,
+    pending_delete_at: datetime | None = None,
 ) -> FrontRead:
     """Project a Front row to its API shape.
 
@@ -82,6 +84,7 @@ def _front_to_read(
         member_since=member_since,
         member_since_capped=member_since_capped or [],
         has_audit_history=has_audit_history,
+        pending_delete_at=pending_delete_at,
     )
 
 
@@ -283,8 +286,16 @@ async def list_fronts(
         response.headers["X-Sheaf-Total-Count"] = str(total_result.scalar_one())
 
     with_audit = await _load_audit_existence(db, [f.id for f in fronts])
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.FRONT_DELETE
+    )
     return [
-        _front_to_read(f, has_audit_history=f.id in with_audit) for f in fronts
+        _front_to_read(
+            f,
+            has_audit_history=f.id in with_audit,
+            pending_delete_at=pending.get(f.id),
+        )
+        for f in fronts
     ]
 
 
@@ -303,12 +314,16 @@ async def get_current_fronts(
     fronts = list(result.scalars().all())
     member_since_map = await _build_coalesced_member_since(db, system, fronts)
     with_audit = await _load_audit_existence(db, [f.id for f in fronts])
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.FRONT_DELETE
+    )
     return [
         _front_to_read(
             f,
             member_since=member_since_map[f.id][0],
             member_since_capped=member_since_map[f.id][1],
             has_audit_history=f.id in with_audit,
+            pending_delete_at=pending.get(f.id),
         )
         for f in fronts
     ]
@@ -533,8 +548,13 @@ async def update_front(
 
     await db.commit()
     await db.refresh(front, ["members"])
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.FRONT_DELETE
+    )
     return _front_to_read(
-        front, has_audit_history=await _front_has_audit(db, front.id)
+        front,
+        has_audit_history=await _front_has_audit(db, front.id),
+        pending_delete_at=pending.get(front.id),
     )
 
 

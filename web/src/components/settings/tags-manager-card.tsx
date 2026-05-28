@@ -9,6 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { cn } from "@/lib/utils";
+import { Clock } from "lucide-react";
+import { Link } from "react-router";
 
 export function TagsManagerCard() {
   const { data: tags } = useTags();
@@ -105,15 +108,32 @@ export function TagsManagerCard() {
               <Badge
                 key={t.id}
                 variant="outline"
-                className="cursor-pointer gap-1.5"
+                className={cn(
+                  "cursor-pointer gap-1.5",
+                  t.pending_delete_at && "opacity-60",
+                )}
                 onClick={() => startEdit(t)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setDeletingTag({ id: t.id, name: t.name });
                 }}
+                title={
+                  t.pending_delete_at
+                    ? `Pending delete - finalises ${new Date(t.pending_delete_at).toLocaleString()}. Click to cancel in Safety.`
+                    : undefined
+                }
               >
                 <ColorDot color={t.color} />
                 {t.name}
+                {t.pending_delete_at && (
+                  <Link
+                    to="/settings/safety"
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label="Pending delete - manage in Safety"
+                  >
+                    <Clock className="ml-1 h-3 w-3 text-amber-600 dark:text-amber-400" />
+                  </Link>
+                )}
               </Badge>
             ),
           )}

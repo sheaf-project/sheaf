@@ -13,8 +13,10 @@ import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { MemberSelect } from "@/components/member-select";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -131,12 +133,21 @@ export function GroupsPage() {
           {groups.map((g) => (
             <Card
               key={g.id}
-              className="cursor-pointer transition-colors hover:bg-accent/50"
+              className={cn(
+                "cursor-pointer transition-colors hover:bg-accent/50",
+                g.pending_delete_at && "opacity-60",
+              )}
               onClick={() => openEdit(g)}
             >
               <CardContent className="flex items-center gap-3 p-4">
                 <ColorDot color={g.color} className="h-4 w-4" />
-                <p className="font-medium">{g.name}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">{g.name}</p>
+                  <PendingDeleteBadge
+                    finalizeAt={g.pending_delete_at}
+                    className="mt-1"
+                  />
+                </div>
               </CardContent>
             </Card>
           ))}

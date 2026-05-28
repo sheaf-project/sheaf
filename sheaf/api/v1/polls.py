@@ -50,6 +50,7 @@ from sheaf.services.polls import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -106,7 +107,12 @@ async def _get_owned_poll(
     return poll
 
 
-def _to_read(poll: Poll, *, now: datetime | None = None) -> PollRead:
+def _to_read(
+    poll: Poll,
+    *,
+    now: datetime | None = None,
+    pending_delete_at: datetime | None = None,
+) -> PollRead:
     now = now or datetime.now(UTC)
     visible = is_results_visible(poll, now=now)
     options = [
@@ -157,6 +163,7 @@ def _to_read(poll: Poll, *, now: datetime | None = None) -> PollRead:
         votes=votes,
         created_at=poll.created_at,
         updated_at=poll.updated_at,
+        pending_delete_at=pending_delete_at,
     )
 
 
@@ -179,7 +186,13 @@ async def list_polls(
         .order_by(Poll.created_at.desc())
     )
     now = datetime.now(UTC)
-    return [_to_read(p, now=now) for p in result.scalars().all()]
+    polls = list(result.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.POLL_DELETE
+    )
+    return [
+        _to_read(p, now=now, pending_delete_at=pending.get(p.id)) for p in polls
+    ]
 
 
 @router.post(
@@ -274,7 +287,10 @@ async def get_poll(
 ):
     system = await _get_user_system(user, db)
     poll = await _get_owned_poll(poll_id, system, db)
-    return _to_read(poll)
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.POLL_DELETE
+    )
+    return _to_read(poll, pending_delete_at=pending.get(poll.id))
 
 
 @router.delete(

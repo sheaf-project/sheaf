@@ -59,6 +59,7 @@ from sheaf.services.notifications.resolution import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -166,7 +167,11 @@ async def _load_owned_channel(
     return channel
 
 
-def _channel_to_read(channel: NotificationChannel) -> ChannelRead:
+def _channel_to_read(
+    channel: NotificationChannel,
+    *,
+    pending_delete_at: datetime | None = None,
+) -> ChannelRead:
     return ChannelRead(
         id=channel.id,
         watch_token_id=channel.watch_token_id,
@@ -202,6 +207,7 @@ def _channel_to_read(channel: NotificationChannel) -> ChannelRead:
         last_delivered_at=channel.last_delivered_at,
         created_at=channel.created_at,
         updated_at=channel.updated_at,
+        pending_delete_at=pending_delete_at,
     )
 
 
@@ -433,7 +439,14 @@ async def list_channels(
         )
         .order_by(NotificationChannel.created_at.desc())
     )
-    return [_channel_to_read(c) for c in result.scalars().all()]
+    channels = list(result.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, token.system_id, PendingActionType.CHANNEL_DELETE
+    )
+    return [
+        _channel_to_read(c, pending_delete_at=pending.get(c.id))
+        for c in channels
+    ]
 
 
 @router.get("/channels", response_model=list[ChannelRead])
@@ -468,7 +481,14 @@ async def list_all_channels(
         )
         .order_by(NotificationChannel.created_at.desc())
     )
-    return [_channel_to_read(c) for c in result.scalars().all()]
+    channels = list(result.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.CHANNEL_DELETE
+    )
+    return [
+        _channel_to_read(c, pending_delete_at=pending.get(c.id))
+        for c in channels
+    ]
 
 
 @router.get("/channels/{channel_id}", response_model=ChannelRead)
@@ -478,7 +498,15 @@ async def get_channel(
     db: AsyncSession = Depends(get_db),
 ) -> ChannelRead:
     channel = await _load_owned_channel(db, user, channel_id)
-    return _channel_to_read(channel)
+    # Resolve via the parent token's system; channel rows don't carry
+    # system_id directly.
+    token = await db.get(WatchToken, channel.watch_token_id)
+    pending: dict = {}
+    if token is not None:
+        pending = await pending_finalize_after_by_target(
+            db, token.system_id, PendingActionType.CHANNEL_DELETE
+        )
+    return _channel_to_read(channel, pending_delete_at=pending.get(channel.id))
 
 
 @router.patch(

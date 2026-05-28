@@ -14,6 +14,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { cn } from "@/lib/utils";
 import type { FieldType } from "@/types/api";
 
 export function CustomFieldsCard() {
@@ -116,11 +118,18 @@ export function CustomFieldsCard() {
             ) : (
               <div
                 key={f.id}
-                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+                className={cn(
+                  "flex items-center justify-between rounded-md border px-3 py-2 text-sm",
+                  f.pending_delete_at && "opacity-60",
+                )}
               >
                 <span className="cursor-pointer" onClick={() => startEdit(f)}>
                   {f.name}
                   <span className="ml-2 text-xs text-muted-foreground">{f.field_type}</span>
+                  <PendingDeleteBadge
+                    finalizeAt={f.pending_delete_at}
+                    className="ml-2"
+                  />
                 </span>
                 <Button
                   variant="ghost"

@@ -21,7 +21,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
-import { formatBytes } from "@/lib/utils";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { cn, formatBytes } from "@/lib/utils";
+import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 /** In-app link for a reference target, or null if it isn't deep-linkable.
@@ -112,7 +114,15 @@ export function UploadedFilesCard() {
                   key={f.id}
                   type="button"
                   onClick={() => setSelected(f)}
-                  className="group relative aspect-square rounded-md border overflow-hidden text-left focus:outline-none focus:ring-2 focus:ring-ring"
+                  className={cn(
+                    "group relative aspect-square rounded-md border overflow-hidden text-left focus:outline-none focus:ring-2 focus:ring-ring",
+                    f.pending_delete_at && "opacity-60",
+                  )}
+                  title={
+                    f.pending_delete_at
+                      ? `Pending delete - finalises ${new Date(f.pending_delete_at).toLocaleString()}. Open to manage.`
+                      : undefined
+                  }
                 >
                   <img
                     src={f.url}
@@ -120,6 +130,14 @@ export function UploadedFilesCard() {
                     className="h-full w-full object-cover"
                   />
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+                  {f.pending_delete_at && (
+                    <span
+                      className="absolute top-1 right-1 rounded-full bg-amber-500/90 p-0.5 text-white shadow"
+                      aria-label="Pending delete"
+                    >
+                      <AlertTriangle className="h-3 w-3" />
+                    </span>
+                  )}
                   <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">
                     {f.purpose} · {formatBytes(f.size_bytes)}
                   </span>
@@ -194,6 +212,8 @@ function FileDetailDialog({
               className="max-h-48 w-auto rounded-md border mx-auto"
             />
 
+            <PendingDeleteBadge finalizeAt={file.pending_delete_at} />
+
             <div className="space-y-3">
               {isLoading && (
                 <p className="text-sm text-muted-foreground">
@@ -257,7 +277,16 @@ function FileDetailDialog({
             Close
           </Button>
           {file && (
-            <Button variant="destructive" onClick={() => onRequestDelete(file)}>
+            <Button
+              variant="destructive"
+              onClick={() => onRequestDelete(file)}
+              disabled={!!file.pending_delete_at}
+              title={
+                file.pending_delete_at
+                  ? "Already queued for deletion. Cancel from Settings -> Safety."
+                  : undefined
+              }
+            >
               Delete
             </Button>
           )}

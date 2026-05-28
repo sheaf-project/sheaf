@@ -5,8 +5,10 @@ import { Pause, Play, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   useChannels,
   useRevokeWatchToken,
@@ -63,7 +65,11 @@ export function WatchTokenCard({
   const isRevoked = token.revoked_at !== null;
 
   return (
-    <Card className={isRevoked ? "opacity-60" : ""}>
+    <Card
+      className={cn(
+        (isRevoked || token.pending_delete_at) && "opacity-60",
+      )}
+    >
       <CardContent className="space-y-4 p-5">
         <div className="flex items-center justify-between">
           <div>
@@ -75,6 +81,10 @@ export function WatchTokenCard({
               {(channels?.length ?? token.channel_count) === 1 ? "" : "s"}
               {isRevoked ? " · revoked" : ""}
             </p>
+            <PendingDeleteBadge
+              finalizeAt={token.pending_delete_at}
+              className="mt-1"
+            />
           </div>
           {!isRevoked && (
             <div className="flex gap-2">
@@ -175,7 +185,12 @@ function ChannelRow({ channel }: { channel: NotificationChannel }) {
     channel.destination_state === "disabled";
 
   return (
-    <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2 hover:bg-accent/40 transition-colors">
+    <div
+      className={cn(
+        "flex items-center justify-between rounded-md border bg-background px-3 py-2 hover:bg-accent/40 transition-colors",
+        channel.pending_delete_at && "opacity-60",
+      )}
+    >
       <Link
         to={`/notifications/${channel.id}`}
         className="flex items-center gap-3 min-w-0 flex-1"
@@ -189,6 +204,10 @@ function ChannelRow({ channel }: { channel: NotificationChannel }) {
           <p className="text-xs text-muted-foreground">
             {destinationLabel(channel.destination_type)}
           </p>
+          <PendingDeleteBadge
+            finalizeAt={channel.pending_delete_at}
+            className="mt-1"
+          />
         </div>
       </Link>
       <div className="flex items-center gap-2 ml-2">

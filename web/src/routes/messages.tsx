@@ -38,6 +38,8 @@ import {
 } from "@/components/ui/dialog";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PageHeader } from "@/components/page-header";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -548,9 +550,11 @@ function MessageRow({
 
   return (
     <div
-      className={`rounded-md border p-3 ${
-        isUnread ? "border-primary/60 bg-primary/5" : ""
-      }`}
+      className={cn(
+        "rounded-md border p-3",
+        isUnread && "border-primary/60 bg-primary/5",
+        msg.pending_delete_at && "opacity-60",
+      )}
     >
       {msg.parent_message_id && (
         <div className="mb-1 flex items-start gap-1 text-xs text-muted-foreground">
@@ -585,6 +589,10 @@ function MessageRow({
         </span>
       </div>
       <p className="mt-1 whitespace-pre-wrap text-sm">{msg.body}</p>
+      <PendingDeleteBadge
+        finalizeAt={msg.pending_delete_at}
+        className="mt-2"
+      />
       <div className="mt-2 flex gap-1">
         <Button size="sm" variant="ghost" onClick={onReply}>
           Reply

@@ -24,6 +24,7 @@ from sheaf.schemas.notifications import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -42,7 +43,10 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
 
 
 async def _watch_token_to_read(
-    db: AsyncSession, token: WatchToken
+    db: AsyncSession,
+    token: WatchToken,
+    *,
+    pending_delete_at: datetime | None = None,
 ) -> WatchTokenRead:
     count_result = await db.execute(
         select(func.count())
@@ -57,6 +61,7 @@ async def _watch_token_to_read(
         created_at=token.created_at,
         updated_at=token.updated_at,
         channel_count=count_result.scalar_one(),
+        pending_delete_at=pending_delete_at,
     )
 
 
@@ -105,7 +110,13 @@ async def list_watch_tokens(
         .order_by(WatchToken.created_at.desc())
     )
     tokens = list(result.scalars().all())
-    return [await _watch_token_to_read(db, t) for t in tokens]
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.WATCH_TOKEN_REVOKE
+    )
+    return [
+        await _watch_token_to_read(db, t, pending_delete_at=pending.get(t.id))
+        for t in tokens
+    ]
 
 
 async def _load_owned_token(
@@ -135,7 +146,12 @@ async def get_watch_token(
     db: AsyncSession = Depends(get_db),
 ) -> WatchTokenRead:
     token = await _load_owned_token(db, user, token_id)
-    return await _watch_token_to_read(db, token)
+    pending = await pending_finalize_after_by_target(
+        db, token.system_id, PendingActionType.WATCH_TOKEN_REVOKE
+    )
+    return await _watch_token_to_read(
+        db, token, pending_delete_at=pending.get(token.id)
+    )
 
 
 @router.patch(
@@ -154,7 +170,12 @@ async def update_watch_token(
         token.label = body.label
     await db.commit()
     await db.refresh(token)
-    return await _watch_token_to_read(db, token)
+    pending = await pending_finalize_after_by_target(
+        db, token.system_id, PendingActionType.WATCH_TOKEN_REVOKE
+    )
+    return await _watch_token_to_read(
+        db, token, pending_delete_at=pending.get(token.id)
+    )
 
 
 @router.delete(

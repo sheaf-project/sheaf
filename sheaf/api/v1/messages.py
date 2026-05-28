@@ -68,6 +68,7 @@ from sheaf.services.messages import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -99,7 +100,32 @@ async def _get_owned_message(
     return msg
 
 
-async def _to_read(msg: Message, db: AsyncSession) -> MessageRead:
+async def _message_pending_map(
+    db: AsyncSession, system_id: uuid.UUID
+) -> dict[uuid.UUID, datetime]:
+    """Union MESSAGE_DELETE + MESSAGE_THREAD_DELETE pending actions by
+    target_id. Either type marks a message row for delete in the grace
+    window, so the badge surfaces both."""
+    direct = await pending_finalize_after_by_target(
+        db, system_id, PendingActionType.MESSAGE_DELETE
+    )
+    thread = await pending_finalize_after_by_target(
+        db, system_id, PendingActionType.MESSAGE_THREAD_DELETE
+    )
+    # Earliest finalize wins if a row appears in both (unlikely; defensive).
+    out = dict(direct)
+    for k, v in thread.items():
+        if k not in out or v < out[k]:
+            out[k] = v
+    return out
+
+
+async def _to_read(
+    msg: Message,
+    db: AsyncSession,
+    *,
+    pending_delete_at: datetime | None = None,
+) -> MessageRead:
     parent_preview, parent_author, _ = await fetch_parent_preview(
         db, msg.parent_message_id
     )
@@ -116,11 +142,15 @@ async def _to_read(msg: Message, db: AsyncSession) -> MessageRead:
         body=decrypt_body(msg.body),
         created_at=msg.created_at,
         updated_at=msg.updated_at,
+        pending_delete_at=pending_delete_at,
     )
 
 
 async def _render_messages(
-    msgs: list[Message], db: AsyncSession
+    msgs: list[Message],
+    db: AsyncSession,
+    *,
+    pending_delete_at_by_id: dict[uuid.UUID, datetime] | None = None,
 ) -> list[MessageRead]:
     """Render a page of messages without the per-row N+1 that looping
     _to_read incurs. Parent messages and member names are each batched
@@ -157,6 +187,11 @@ async def _render_messages(
             if parent is not None and parent.deleted_at is None:
                 parent_preview = preview_for(decrypt_body(parent.body))
                 parent_author = _name(parent.author_member_id)
+        pending_at = (
+            pending_delete_at_by_id.get(msg.id)
+            if pending_delete_at_by_id
+            else None
+        )
         rendered.append(MessageRead(
             id=msg.id,
             system_id=msg.system_id,
@@ -170,6 +205,7 @@ async def _render_messages(
             body=decrypt_body(msg.body),
             created_at=msg.created_at,
             updated_at=msg.updated_at,
+            pending_delete_at=pending_at,
         ))
     return rendered
 
@@ -275,7 +311,10 @@ async def get_board(
         limit=capped_limit,
         before=before,
     )
-    rendered = await _render_messages(msgs, db)
+    pending_map = await _message_pending_map(db, system.id)
+    rendered = await _render_messages(
+        msgs, db, pending_delete_at_by_id=pending_map
+    )
 
     caller_last_seen: datetime | None = None
     if caller_member_id is not None:

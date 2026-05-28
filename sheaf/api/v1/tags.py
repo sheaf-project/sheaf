@@ -18,6 +18,7 @@ from sheaf.schemas.tag import TagCreate, TagMemberUpdate, TagRead, TagUpdate
 from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -42,7 +43,16 @@ async def list_tags(
     result = await db.execute(
         select(Tag).where(Tag.system_id == system.id).order_by(Tag.name)
     )
-    return result.scalars().all()
+    tags = list(result.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.TAG_DELETE
+    )
+    out: list[TagRead] = []
+    for t in tags:
+        tr = TagRead.model_validate(t)
+        tr.pending_delete_at = pending.get(t.id)
+        out.append(tr)
+    return out
 
 
 @router.post(
@@ -77,7 +87,12 @@ async def get_tag(
     tag = result.scalar_one_or_none()
     if tag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
-    return tag
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.TAG_DELETE
+    )
+    tr = TagRead.model_validate(tag)
+    tr.pending_delete_at = pending.get(tag.id)
+    return tr
 
 
 @router.patch(
