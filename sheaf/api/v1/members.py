@@ -45,6 +45,7 @@ from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -121,9 +122,14 @@ async def list_members(
     with_revisions = await _load_bio_revision_existence(
         db, [m.id for m in members]
     )
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.MEMBER_DELETE
+    )
     decoded = [
         decrypt_member_for_read(
-            m, has_bio_revisions=m.id in with_revisions
+            m,
+            has_bio_revisions=m.id in with_revisions,
+            pending_delete_at=pending.get(m.id),
         )
         for m in members
     ]
@@ -259,8 +265,15 @@ async def top_fronters(
     with_revisions = await _load_bio_revision_existence(
         db, [m.id for m in ordered]
     )
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.MEMBER_DELETE
+    )
     return [
-        decrypt_member_for_read(m, has_bio_revisions=m.id in with_revisions)
+        decrypt_member_for_read(
+            m,
+            has_bio_revisions=m.id in with_revisions,
+            pending_delete_at=pending.get(m.id),
+        )
         for m in ordered
     ]
 
@@ -273,9 +286,13 @@ async def get_member(
 ):
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.MEMBER_DELETE
+    )
     return decrypt_member_for_read(
         member,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+        pending_delete_at=pending.get(member.id),
     )
 
 

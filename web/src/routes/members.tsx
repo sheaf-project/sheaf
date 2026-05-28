@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
+import { cn } from "@/lib/utils";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
   getMemberTags,
   listMemberBioRevisions,
@@ -1041,7 +1043,10 @@ function MemberGrid({
       {members.map((m) => (
         <Card
           key={m.id}
-          className="cursor-pointer transition-colors hover:bg-accent/50"
+          className={cn(
+            "cursor-pointer transition-colors hover:bg-accent/50",
+            m.pending_delete_at && "opacity-60",
+          )}
           onClick={() => onView(m)}
         >
           <CardContent className="flex items-center gap-3 p-4">
@@ -1064,6 +1069,10 @@ function MemberGrid({
               {m.pronouns && (
                 <p className="text-sm text-muted-foreground">{m.pronouns}</p>
               )}
+              <PendingDeleteBadge
+                finalizeAt={m.pending_delete_at}
+                className="mt-1"
+              />
             </div>
           </CardContent>
         </Card>

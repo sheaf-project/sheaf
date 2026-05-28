@@ -332,6 +332,30 @@ def has_pending_action_for_target(
     )
 
 
+async def pending_finalize_after_by_target(
+    db: AsyncSession,
+    system_id: uuid.UUID,
+    action_type: PendingActionType,
+) -> dict[uuid.UUID, datetime]:
+    """Map target_id -> finalize_after for every still-pending action of one
+    type in this system.
+
+    List endpoints call this once per request to flag pending-delete items
+    in their Read responses (a `pending_delete_at` field driving the badge
+    in the UI). Cancelled / completed / errored actions are excluded so a
+    re-queue after cancel shows up correctly.
+    """
+    result = await db.execute(
+        select(PendingAction.target_id, PendingAction.finalize_after)
+        .where(
+            PendingAction.system_id == system_id,
+            PendingAction.action_type == action_type.value,
+            PendingAction.status == PendingActionStatus.PENDING.value,
+        )
+    )
+    return {row.target_id: row.finalize_after for row in result}
+
+
 # ---------------------------------------------------------------------------
 # Finalize pending action
 # ---------------------------------------------------------------------------

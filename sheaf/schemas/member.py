@@ -107,6 +107,10 @@ class MemberRead(BaseModel):
     # (e.g. nested in tag / group responses) where computing this would
     # be a needless round-trip.
     has_bio_revisions: bool = False
+    # finalize_after timestamp if this member is in System Safety's grace
+    # queue for deletion; null otherwise. Drives the "Pending delete" badge
+    # in list views; cancelling via Settings -> Safety clears it.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

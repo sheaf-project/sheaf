@@ -102,6 +102,10 @@ export interface Member {
    *  history exists — open the bio history modal from the members
    *  route for an accurate signal. */
   has_bio_revisions: boolean;
+  /** finalize_after timestamp if this member is in System Safety's
+   *  pending-delete grace queue; null otherwise. Drives the "Pending
+   *  delete" badge + dim styling in list views. */
+  pending_delete_at: string | null;
 }
 
 export interface MemberCreate {
