@@ -464,3 +464,42 @@ def test_delete_endpoint_reauth_then_queues_when_safeguarded(client: httpx.Clien
     assert ok.status_code == 202
     assert client.get(f"/v1/members/{member['id']}").status_code == 200
     assert len(client.get("/v1/system/safety").json()["pending_actions"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# pending_delete_at on list/get responses
+# ---------------------------------------------------------------------------
+
+
+def test_member_lists_surface_pending_delete_at(client: httpx.Client):
+    """A queued member-delete shows up as pending_delete_at on the member's
+    list + GET responses so the UI can flag it in the listing."""
+    email, _ = _register(client)
+    _set_system_safety_via_db(
+        email,
+        safety_grace_period_days=7,
+        safety_applies_to_members=True,
+    )
+    member = client.post("/v1/members", json={"name": "Doomed"}).json()
+    assert (
+        client.delete(f"/v1/members/{member['id']}").status_code == 202
+    )
+
+    listed = client.get("/v1/members").json()
+    doomed = next(m for m in listed if m["id"] == member["id"])
+    assert doomed["pending_delete_at"] is not None
+
+    single = client.get(f"/v1/members/{member['id']}").json()
+    assert single["pending_delete_at"] is not None
+    # Same timestamp from both endpoints.
+    assert single["pending_delete_at"] == doomed["pending_delete_at"]
+
+
+def test_member_pending_delete_at_null_when_not_queued(client: httpx.Client):
+    """No queued action -> pending_delete_at is null on every response."""
+    _register(client)
+    member = client.post("/v1/members", json={"name": "Safe"}).json()
+    assert member["pending_delete_at"] is None
+    assert client.get(f"/v1/members/{member['id']}").json()["pending_delete_at"] is None
+    listed = client.get("/v1/members").json()
+    assert next(m for m in listed if m["id"] == member["id"])["pending_delete_at"] is None

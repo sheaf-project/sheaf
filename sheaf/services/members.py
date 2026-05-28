@@ -12,6 +12,8 @@ decrypt the whole table.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sheaf.crypto import blind_index, decrypt, encrypt
 from sheaf.models.member import Member
 from sheaf.schemas.member import MemberRead
@@ -54,7 +56,10 @@ def set_member_note(member: Member, plaintext: str | None) -> None:
 
 
 def decrypt_member_for_read(
-    member: Member, *, has_bio_revisions: bool = False
+    member: Member,
+    *,
+    has_bio_revisions: bool = False,
+    pending_delete_at: datetime | None = None,
 ) -> MemberRead:
     """Build a MemberRead with name + description decrypted to plaintext.
 
@@ -63,6 +68,11 @@ def decrypt_member_for_read(
     look it up and pass through. Nested contexts (tag / group member
     lists) default to False; the bio history modal is opened from the
     members route, not from those, so a stale value there is harmless.
+
+    `pending_delete_at` is the finalize_after timestamp from a queued
+    MEMBER_DELETE pending action, or None. Same opt-in pattern - list
+    endpoints look it up once per request and pass through; nested
+    contexts pass None.
     """
     return MemberRead.model_validate({
         "id": member.id,
@@ -83,6 +93,7 @@ def decrypt_member_for_read(
         "created_at": member.created_at,
         "updated_at": member.updated_at,
         "has_bio_revisions": has_bio_revisions,
+        "pending_delete_at": pending_delete_at,
     })
 
 
