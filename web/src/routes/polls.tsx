@@ -13,6 +13,8 @@ import {
 } from "@/lib/polls";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PageHeader } from "@/components/page-header";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -196,7 +198,12 @@ function PollSummaryCard({
   onDelete: () => void;
 }) {
   return (
-    <div className="rounded-md border p-4">
+    <div
+      className={cn(
+        "rounded-md border p-4",
+        poll.pending_delete_at && "opacity-60",
+      )}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <Link
@@ -228,6 +235,10 @@ function PollSummaryCard({
               {poll.total_votes} {poll.total_votes === 1 ? "vote" : "votes"}
             </span>
           </div>
+          <PendingDeleteBadge
+            finalizeAt={poll.pending_delete_at}
+            className="mt-2"
+          />
         </div>
         <Button
           size="icon"

@@ -16,6 +16,8 @@ import {
 } from "@/lib/reminders";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PageHeader } from "@/components/page-header";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -225,7 +227,12 @@ function ReminderRow({
     ? new Date(reminder.next_fire_at).toLocaleString()
     : null;
   return (
-    <div className="rounded-md border p-4">
+    <div
+      className={cn(
+        "rounded-md border p-4",
+        reminder.pending_delete_at && "opacity-60",
+      )}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -247,6 +254,10 @@ function ReminderRow({
             via {channelName}
             {nextFire && ` · next ${nextFire}`}
           </p>
+          <PendingDeleteBadge
+            finalizeAt={reminder.pending_delete_at}
+            className="mt-2"
+          />
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button

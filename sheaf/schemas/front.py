@@ -77,5 +77,7 @@ class FrontRead(BaseModel):
     # Lets the UI grey out the history button on entries that have never
     # been edited, without making the recipient pay for a per-row fetch.
     has_audit_history: bool = False
+    # finalize_after timestamp if queued for delete; null otherwise.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}

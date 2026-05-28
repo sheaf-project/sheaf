@@ -163,6 +163,10 @@ export interface Front {
   // True iff at least one audit row exists for this front. Lets the UI
   // grey out the history button on entries that have never been edited.
   has_audit_history: boolean;
+  /** finalize_after timestamp if this front is in System Safety's
+   *  pending-delete grace queue; null otherwise. Drives the "Pending
+   *  delete" badge + dim styling in list views. */
+  pending_delete_at: string | null;
 }
 
 export interface FrontCreate {
@@ -205,6 +209,8 @@ export interface Reminder {
   next_fire_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface ReminderCreate {
@@ -284,6 +290,8 @@ export interface Group {
   parent_id: string | null;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface GroupCreate {
@@ -307,6 +315,8 @@ export interface Tag {
   color: string | null;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface TagCreate {
@@ -331,6 +341,8 @@ export interface CustomField {
   privacy: PrivacyLevel;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface CustomFieldCreate {
@@ -369,7 +381,11 @@ export type PendingActionType =
   | "image_delete"
   | "revision_unpin"
   | "watch_token_revoke"
-  | "channel_delete";
+  | "channel_delete"
+  | "reminder_delete"
+  | "poll_delete"
+  | "message_delete"
+  | "message_thread_delete";
 
 export type PendingActionStatus =
   | "pending"
@@ -493,6 +509,8 @@ export interface JournalEntry {
   author_member_names: string[];
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface JournalEntryWithCount extends JournalEntry {
@@ -606,6 +624,9 @@ export interface WatchToken {
   created_at: string;
   updated_at: string;
   channel_count: number;
+  /** Pending-revoke grace timestamp from System Safety; null when not
+   *  queued. Drives the "Pending delete" badge in the watchers list. */
+  pending_delete_at: string | null;
 }
 
 export interface WatchTokenCreate {
@@ -659,6 +680,8 @@ export interface NotificationChannel {
   last_delivered_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface ChannelCreate {
@@ -789,6 +812,9 @@ export interface Message {
   body: string;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. Unioned
+   *  across single-message and thread deletes. */
+  pending_delete_at: string | null;
 }
 
 export interface MessageCreate {
@@ -881,6 +907,8 @@ export interface Poll {
   votes: PollVote[] | null;
   created_at: string;
   updated_at: string;
+  /** Pending-delete grace timestamp; null when not queued. */
+  pending_delete_at: string | null;
 }
 
 export interface PollOptionCreate {

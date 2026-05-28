@@ -37,6 +37,9 @@ class WatchTokenRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     channel_count: int = 0
+    # finalize_after timestamp if this token is queued for revoke in
+    # System Safety's grace window; null otherwise.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -187,6 +190,8 @@ class ChannelRead(BaseModel):
     last_delivered_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # finalize_after timestamp if queued for delete; null otherwise.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

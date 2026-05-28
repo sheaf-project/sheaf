@@ -43,6 +43,10 @@ export interface UploadedFileInfo {
   content_type: string;
   size_bytes: number;
   created_at: string;
+  /** Pending-delete grace timestamp from System Safety; null when not
+   *  queued. Drives the warning marker on the thumbnail + full badge in
+   *  the file detail modal. */
+  pending_delete_at: string | null;
 }
 
 export function listFiles() {

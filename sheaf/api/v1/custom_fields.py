@@ -26,6 +26,7 @@ from sheaf.services.custom_fields import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -63,7 +64,16 @@ async def list_fields(
         .where(CustomFieldDefinition.system_id == system.id)
         .order_by(CustomFieldDefinition.order)
     )
-    return result.scalars().all()
+    fields = list(result.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.FIELD_DELETE
+    )
+    out: list[CustomFieldRead] = []
+    for f in fields:
+        fr = CustomFieldRead.model_validate(f)
+        fr.pending_delete_at = pending.get(f.id)
+        out.append(fr)
+    return out
 
 
 @router.post(
@@ -101,7 +111,12 @@ async def get_field(
     field = result.scalar_one_or_none()
     if field is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
-    return field
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.FIELD_DELETE
+    )
+    fr = CustomFieldRead.model_validate(field)
+    fr.pending_delete_at = pending.get(field.id)
+    return fr
 
 
 @router.patch(

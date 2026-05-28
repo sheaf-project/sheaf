@@ -49,6 +49,10 @@ class MessageRead(BaseModel):
     body: str
     created_at: datetime
     updated_at: datetime
+    # finalize_after timestamp if this message (or its thread) is queued
+    # for delete in System Safety's grace window; null otherwise. Unioned
+    # across MESSAGE_DELETE and MESSAGE_THREAD_DELETE pending actions.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

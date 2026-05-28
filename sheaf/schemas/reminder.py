@@ -137,5 +137,7 @@ class ReminderRead(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+    # finalize_after timestamp if queued for delete; null otherwise.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}

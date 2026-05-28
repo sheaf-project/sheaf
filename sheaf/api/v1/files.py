@@ -24,6 +24,7 @@ from sheaf.services.file_cleanup import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -244,6 +245,13 @@ async def list_files(
         .order_by(UploadedFile.created_at.desc())
     )
     files = result.scalars().all()
+    # Images are owned by a User but image-delete pending actions are
+    # scoped by system_id (System Safety operates per-system). Look up
+    # the caller's system once and key into the resulting map by file id.
+    system = await _get_user_system(user, db)
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.IMAGE_DELETE
+    )
     return [
         {
             "id": str(f.id),
@@ -253,6 +261,9 @@ async def list_files(
             "content_type": f.content_type,
             "size_bytes": f.size_bytes,
             "created_at": f.created_at.isoformat(),
+            "pending_delete_at": (
+                pending[f.id].isoformat() if f.id in pending else None
+            ),
         }
         for f in files
     ]

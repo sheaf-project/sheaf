@@ -1,6 +1,8 @@
 import { Link } from "react-router";
 import { Card, CardContent } from "@/components/ui/card";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { formatDateTime } from "@/lib/date-format";
+import { cn } from "@/lib/utils";
 import type { DateFormat, JournalEntry, Member } from "@/types/api";
 
 const SNIPPET_CHARS = 180;
@@ -33,7 +35,12 @@ export function JournalEntryCard({
 
   return (
     <Link to={`/journals/${entry.id}`} className="block">
-      <Card className="cursor-pointer transition-colors hover:bg-accent/50">
+      <Card
+        className={cn(
+          "cursor-pointer transition-colors hover:bg-accent/50",
+          entry.pending_delete_at && "opacity-60",
+        )}
+      >
         <CardContent className="space-y-1 p-4">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="font-medium truncate">{titleDisplay}</p>
@@ -56,6 +63,7 @@ export function JournalEntryCard({
           <p className="text-sm text-muted-foreground line-clamp-2">
             {snippet(entry.body) || "(empty)"}
           </p>
+          <PendingDeleteBadge finalizeAt={entry.pending_delete_at} />
         </CardContent>
       </Card>
     </Link>

@@ -31,8 +31,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatDateTime, timeAgo } from "@/lib/utils";
+import { cn, formatDateTime, timeAgo } from "@/lib/utils";
 import { getMySystem } from "@/lib/systems";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import type { Front } from "@/types/api";
 
 const HISTORY_PAGE_SIZES = [25, 50, 100] as const;
@@ -221,7 +222,10 @@ export function FrontsPage() {
               {current.map((front) => (
                 <div
                   key={front.id}
-                  className="rounded-md border p-3 space-y-2"
+                  className={cn(
+                    "rounded-md border p-3 space-y-2",
+                    front.pending_delete_at && "opacity-60",
+                  )}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
@@ -237,6 +241,10 @@ export function FrontsPage() {
                           &ldquo;{front.custom_status}&rdquo;
                         </p>
                       )}
+                      <PendingDeleteBadge
+                        finalizeAt={front.pending_delete_at}
+                        className="mt-2"
+                      />
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <Button
@@ -349,7 +357,13 @@ export function FrontsPage() {
       ) : history && history.length > 0 ? (
         <div className="space-y-2">
           {history.map((front) => (
-            <div key={front.id} className="rounded-md border p-3 space-y-2">
+            <div
+              key={front.id}
+              className={cn(
+                "rounded-md border p-3 space-y-2",
+                front.pending_delete_at && "opacity-60",
+              )}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -360,6 +374,10 @@ export function FrontsPage() {
                       &ldquo;{front.custom_status}&rdquo;
                     </p>
                   )}
+                  <PendingDeleteBadge
+                    finalizeAt={front.pending_delete_at}
+                    className="mt-2"
+                  />
                 </div>
                 <div className="flex items-center gap-3 text-sm text-muted-foreground shrink-0">
                   <span>

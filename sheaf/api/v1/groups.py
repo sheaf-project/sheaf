@@ -18,6 +18,7 @@ from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -52,7 +53,16 @@ async def list_groups(
     result = await db.execute(
         select(Group).where(Group.system_id == system.id).order_by(Group.name)
     )
-    return result.scalars().all()
+    groups = list(result.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.GROUP_DELETE
+    )
+    out: list[GroupRead] = []
+    for g in groups:
+        gr = GroupRead.model_validate(g)
+        gr.pending_delete_at = pending.get(g.id)
+        out.append(gr)
+    return out
 
 
 @router.post(
@@ -85,7 +95,13 @@ async def get_group(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
-    return await _get_own_group(group_id, system, db)
+    group = await _get_own_group(group_id, system, db)
+    pending = await pending_finalize_after_by_target(
+        db, system.id, PendingActionType.GROUP_DELETE
+    )
+    gr = GroupRead.model_validate(group)
+    gr.pending_delete_at = pending.get(group.id)
+    return gr
 
 
 @router.patch(
