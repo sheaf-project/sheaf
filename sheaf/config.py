@@ -307,6 +307,12 @@ class Settings(BaseSettings):
     # around the same time' queries line up.
     import_job_retention_days: int = 30
 
+    # How long terminal notification_outbox rows are kept for audit before
+    # the cleanup sweep deletes them. Both delivered and dropped rows
+    # (filtered out, revoked, permanent failure) stamp delivered_at, so a
+    # single age cutoff covers everything in a done state.
+    notification_outbox_retention_days: int = 30
+
     # A job stuck in `running` longer than this is presumed orphaned by
     # a crashed worker; the recovery sweep resets it to `pending` for a
     # retry. Generous — a large PluralKit API import paginating switch
