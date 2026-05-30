@@ -42,20 +42,35 @@ async def mint_trusted_device(
     user_agent: str,
     ip: str | None,
     nickname: str | None = None,
+    client_name: str = "",
 ) -> tuple[str, TrustedDevice]:
     """Create a new trusted-device row and return (raw_token, row).
 
     The caller sets the cookie with the raw token; the DB only ever sees
     the HMAC.
+
+    `client_name` is the parsed/friendly client identifier (the same
+    string sessions store), supplied by the caller after consulting
+    X-Sheaf-Client and falling back to a User-Agent parse. Stored
+    verbatim on the row so the trusted-devices list can show a clean
+    label without re-parsing on every render.
+
+    `last_used_at` is seeded to the same moment as creation so the row
+    reads as "last used: just now" in the UI right after minting,
+    rather than blank until the next login.
     """
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(days=TRUSTED_DEVICE_TTL_DAYS)
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(days=TRUSTED_DEVICE_TTL_DAYS)
     device = TrustedDevice(
         user_id=user_id,
         token_hash=_hash_token(token),
         nickname=nickname,
         user_agent=user_agent[:500],
+        client_name=client_name[:64],
         created_ip=ip,
+        last_used_at=now,
+        last_used_ip=ip,
         expires_at=expires_at,
     )
     db.add(device)

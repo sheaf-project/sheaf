@@ -872,11 +872,17 @@ async def login(
         and user.totp_enabled
         and not bypassed_via_trusted_device
     ):
+        from sheaf.auth.sessions import _parse_client_name
+
+        ua = request.headers.get("user-agent", "")
+        client_header = request.headers.get("x-sheaf-client")
         device_token, _ = await mint_trusted_device(
             db,
             user.id,
-            user_agent=request.headers.get("user-agent", ""),
+            user_agent=ua,
             ip=client_ip(request),
+            nickname=body.device_nickname,
+            client_name=_parse_client_name(ua, client_header),
         )
         await db.commit()
         response.set_cookie(
@@ -1090,11 +1096,18 @@ async def get_trusted_devices(
         from sheaf.auth.trusted_devices import _hash_token
 
         current_hash = _hash_token(trusted_cookie)
+    # Legacy rows have client_name="" (server-default backfill from the
+    # migration). For those, re-parse user_agent on the fly so the UI
+    # still shows something better than "Unknown". New rows always
+    # populate client_name at mint time and are returned as-is.
+    from sheaf.auth.sessions import _parse_client_name
+
     return [
         {
             "id": str(d.id),
             "nickname": d.nickname,
             "user_agent": d.user_agent,
+            "client_name": d.client_name or _parse_client_name(d.user_agent),
             "created_at": d.created_at,
             "created_ip": d.created_ip,
             "last_used_at": d.last_used_at,

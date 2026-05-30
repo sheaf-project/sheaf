@@ -54,6 +54,7 @@ export function login(
   totp_code?: string,
   captcha?: string,
   remember_device?: boolean,
+  device_nickname?: string,
 ) {
   return apiFetch<TokenResponse>("/v1/auth/login", {
     method: "POST",
@@ -64,6 +65,7 @@ export function login(
       ...(totp_code ? { totp_code } : {}),
       ...(captcha ? { captcha } : {}),
       ...(remember_device ? { remember_device } : {}),
+      ...(device_nickname ? { device_nickname } : {}),
     }),
   });
 }
@@ -188,6 +190,12 @@ export function getSessions() {
 export interface TrustedDevice {
   id: string;
   nickname: string | null;
+  /** Friendly client identifier, e.g. "Sheaf Android", "Firefox".
+   *  Populated at mint time from X-Sheaf-Client when supplied; falls
+   *  back to a User-Agent parse for legacy rows (and on the server
+   *  side, for rows that pre-date the column). Prefer this in the UI
+   *  over user_agent. */
+  client_name: string;
   user_agent: string;
   created_at: string;
   created_ip: string | null;
