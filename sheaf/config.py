@@ -460,6 +460,20 @@ class Settings(BaseSettings):
     s3_export_endpoint: str = ""
     s3_export_presign_endpoint: str = ""
 
+    # Shield mode (Cloudflare break-glass DDoS posture).
+    # When enabled, the operator's cf-shield script POSTs to
+    # /v1/internal/shield-mode/state to flip Sheaf's view of shield
+    # state. Users with disable_cdn_during_ddos=true get their sessions
+    # invalidated on the up edge so they don't unwittingly traverse the
+    # CDN. Default off so selfhosters without a Cloudflare break-glass
+    # setup never see the toggle in their UI and never have to think
+    # about the webhook.
+    shield_mode_enabled: bool = False
+    # HMAC shared secret with the cf-shield script. Required when
+    # shield_mode_enabled is true; ignored otherwise. Used to verify
+    # the webhook signature on /v1/internal/shield-mode/state.
+    shield_mode_webhook_secret: str = ""
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"
@@ -583,6 +597,15 @@ def _validate_settings() -> None:
             "REGISTRATION_MODE=approval with EMAIL_BACKEND=none — "
             "users won't receive notification when approved. Consider configuring email."
         )
+
+    if settings.shield_mode_enabled and not settings.shield_mode_webhook_secret:
+        logger.critical(
+            "SHIELD_MODE_ENABLED=true but SHIELD_MODE_WEBHOOK_SECRET is not set. "
+            "The cf-shield script needs a shared HMAC secret to authenticate the "
+            "state-flip webhook. Generate one with `openssl rand -hex 32` and set "
+            "it in both the backend env and the operator's SSM parameter."
+        )
+        sys.exit(1)
 
     if settings.sheaf_mode == SheafMode.SAAS and problems:
         logger.critical("REFUSING TO START IN SAAS MODE WITH INSECURE DEFAULTS:")

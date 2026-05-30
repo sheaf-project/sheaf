@@ -142,6 +142,21 @@ class User(UUIDMixin, TimestampMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # Shield-mode opt-out. When the operator engages cf-shield (Cloudflare
+    # under-attack + revoked direct-origin SG ingress), every login on the
+    # SaaS necessarily routes through the CDN. Users who explicitly do not
+    # want their traffic proxied by Cloudflare set this flag; on the up
+    # edge their sessions are invalidated so they cannot unwittingly
+    # traverse the CDN. They are bounced to login (also CDN-fronted) and
+    # will not be able to authenticate again until shield mode clears.
+    # The flag has no effect on instances that don't have a Cloudflare
+    # break-glass setup (settings.shield_mode_enabled=false), but the
+    # column always exists so selfhosters don't need a conditional
+    # migration.
+    disable_cdn_during_ddos: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     # Relationships
     system: Mapped["System"] = relationship(back_populates="user", uselist=False)
     api_keys: Mapped[list["ApiKey"]] = relationship(

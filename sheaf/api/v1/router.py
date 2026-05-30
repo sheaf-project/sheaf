@@ -24,6 +24,7 @@ from sheaf.api.v1 import (
     reminders,
     retention,
     sheaf_import,
+    shield_mode,
     sp_import,
     system_safety,
     systems,
@@ -39,6 +40,12 @@ v1_router = APIRouter(prefix="/v1")
 
 # Public (no auth): build provenance for verifiability tooling.
 v1_router.include_router(version.router)
+
+# Shield mode: unauthenticated GET /status (clients poll voluntarily)
+# and HMAC-authenticated POST /internal/...state from the cf-shield
+# script. Both routes are dormant when settings.shield_mode_enabled is
+# false; the module guards itself.
+v1_router.include_router(shield_mode.router)
 
 # Auth, admin, announcements: no scope enforcement
 v1_router.include_router(auth.router)
