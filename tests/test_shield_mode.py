@@ -171,7 +171,26 @@ def _reset_redis_singleton() -> None:
     sessions_mod._redis = None
 
 
-def test_apply_transition_clears_redis_state_after_down() -> None:
+def _patch_redis_url_for_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point `settings.redis_url` at the test stack's host-mapped port.
+
+    The default redis_url is `redis://redis:6379/0`, which only resolves
+    from inside the docker-compose network. Tests that exercise the
+    Redis client directly (rather than going through the HTTP app) need
+    the host-port-mapped URL instead. run_tests.sh exports this as
+    SHEAF_TEST_REDIS_URL; when invoked manually, the default falls back
+    to the compose convention (localhost:6380)."""
+    from sheaf.config import settings
+
+    test_redis_url = (
+        os.environ.get("SHEAF_TEST_REDIS_URL") or "redis://localhost:6380/0"
+    )
+    monkeypatch.setattr(settings, "redis_url", test_redis_url)
+
+
+def test_apply_transition_clears_redis_state_after_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A down transition writes active=false. A subsequent up writes
     active=true with a fresh `since`. Re-applying the same state is a
     no-op (since does not get rewritten)."""
@@ -182,6 +201,7 @@ def test_apply_transition_clears_redis_state_after_down() -> None:
         get_state,
     )
 
+    _patch_redis_url_for_host(monkeypatch)
     _reset_redis_singleton()
 
     async def _run() -> None:
@@ -215,7 +235,9 @@ def test_apply_transition_clears_redis_state_after_down() -> None:
     asyncio.run(_run())
 
 
-def test_mass_invalidate_only_touches_opted_out_users() -> None:
+def test_mass_invalidate_only_touches_opted_out_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An up transition deletes sessions for users with the flag set
     and leaves everyone else's sessions alone."""
     from sqlalchemy import select
@@ -232,6 +254,7 @@ def test_mass_invalidate_only_touches_opted_out_users() -> None:
         apply_transition,
     )
 
+    _patch_redis_url_for_host(monkeypatch)
     _reset_redis_singleton()
 
     # Two fresh users — one opted out, one not. Register via HTTP so

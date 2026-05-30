@@ -12,6 +12,12 @@ set -euo pipefail
 COMPOSE="docker compose -p sheaf-test -f docker-compose.yml -f docker-compose.test.yml"
 TEST_URL="http://localhost:8001"
 TEST_DB_URL="postgresql+asyncpg://sheaf:sheaftest@localhost:5433/sheaf"
+# Most tests drive Redis transitively (sessions, rate limits) via HTTP and
+# never touch it from the host. The shield-mode unit tests do though — they
+# call get_redis() directly to exercise the state machine and the mass-
+# invalidate pass. Expose the test stack's host-mapped Redis URL the same
+# way SHEAF_TEST_DB_URL is exposed so those tests work in CI.
+TEST_REDIS_URL="redis://localhost:6380/0"
 BUILD_FLAG="--build"
 FAILED=()
 
@@ -86,6 +92,7 @@ run_config() {
 
     if SHEAF_TEST_URL="$TEST_URL" \
        SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
        SHEAF_TEST_ADMIN_AUTH_LEVEL="$admin_auth_level" \
        SHEAF_TEST_MODE="$sheaf_mode" \
        uv run --extra dev pytest "${pytest_args[@]}"; then
