@@ -229,6 +229,7 @@ async def get_account_data(
             ),
             "email_soft_bounce_count": user.email_soft_bounce_count,
             "email_revalidation_required": user.email_revalidation_required,
+            "disable_cdn_during_ddos": user.disable_cdn_during_ddos,
         },
         "sessions": [
             {

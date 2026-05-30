@@ -38,7 +38,10 @@ export function register(
   });
 }
 
-export function updateMe(update: { newsletter_opt_in?: boolean }) {
+export function updateMe(update: {
+  newsletter_opt_in?: boolean;
+  disable_cdn_during_ddos?: boolean;
+}) {
   return apiFetch<User>("/v1/auth/me", {
     method: "PATCH",
     body: JSON.stringify(update),

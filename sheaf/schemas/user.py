@@ -62,6 +62,12 @@ class UserRead(BaseModel):
     newsletter_opt_in: bool = False
     email_delivery_status: str = "ok"
     email_revalidation_required: bool = False
+    # When the operator engages cf-shield (Cloudflare under-attack mode),
+    # users with this flag set have their sessions invalidated so their
+    # traffic does not unwittingly traverse the CDN. Always present in
+    # the response; the frontend hides the toggle unless the instance
+    # reports shield_mode feature_enabled=true via /v1/shield-mode/status.
+    disable_cdn_during_ddos: bool = False
     # Effective permission — True if global uploads are on, the user is an
     # admin, or the user is individually allowlisted.
     uploads_allowed: bool = True
@@ -77,6 +83,7 @@ class UserRead(BaseModel):
 
 class UserUpdate(BaseModel):
     newsletter_opt_in: bool | None = None
+    disable_cdn_during_ddos: bool | None = None
 
 
 class TOTPSetupResponse(BaseModel):

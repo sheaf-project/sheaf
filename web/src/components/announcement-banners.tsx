@@ -146,9 +146,14 @@ function AnnouncementBanner({
     >
       <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", config.iconColor)} />
       <div className={cn("flex-1 min-w-0", config.text)}>
-        <span className="font-medium">{announcement.title}</span>
+        <span className="font-semibold">{announcement.title}</span>
         {announcement.body && (
-          <span className="ml-1.5">{announcement.body}</span>
+          <>
+            <span className="mx-2 opacity-50" aria-hidden="true">
+              ·
+            </span>
+            <span className="opacity-90">{announcement.body}</span>
+          </>
         )}
       </div>
       {announcement.dismissible && (

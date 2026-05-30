@@ -23,9 +23,23 @@ export interface User {
   newsletter_opt_in: boolean;
   email_delivery_status: "ok" | "soft_bouncing" | "hard_bounced" | "complained";
   email_revalidation_required: boolean;
+  /** When the operator engages cf-shield, sessions for users with this
+   *  flag set are invalidated so their traffic does not unwittingly
+   *  traverse the Cloudflare CDN. Persisted regardless of whether the
+   *  instance has shield_mode_enabled - the UI hides the toggle when
+   *  the feature is dormant. */
+  disable_cdn_during_ddos: boolean;
   uploads_allowed: boolean;
   bio_uploads_allowed: boolean;
   external_images_allowed: boolean;
+}
+
+/** Public payload from GET /v1/shield-mode/status. `feature_enabled`
+ *  drives whether the Privacy/Security toggle is rendered at all. */
+export interface ShieldModeStatus {
+  feature_enabled: boolean;
+  active: boolean;
+  since: string | null;
 }
 
 export interface ApiKey {

@@ -1293,6 +1293,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         newsletter_opt_in=user.newsletter_opt_in,
         email_delivery_status=user.email_delivery_status.value,
         email_revalidation_required=user.email_revalidation_required,
+        disable_cdn_during_ddos=user.disable_cdn_during_ddos,
         uploads_allowed=(
             user.is_admin or settings.allow_image_uploads or user.can_upload_images
         ),
@@ -1313,6 +1314,17 @@ async def update_me(
     if body.newsletter_opt_in is not None and body.newsletter_opt_in != user.newsletter_opt_in:
         user.newsletter_opt_in = body.newsletter_opt_in
         user.newsletter_opted_in_at = datetime.now(UTC) if body.newsletter_opt_in else None
+
+    if (
+        body.disable_cdn_during_ddos is not None
+        and body.disable_cdn_during_ddos != user.disable_cdn_during_ddos
+    ):
+        # Persist regardless of settings.shield_mode_enabled — the user
+        # may set the preference on a selfhost instance now and migrate
+        # to a SaaS deployment later, or vice versa. The flag is only
+        # acted on when the cf-shield script flips state, so it's a
+        # no-op on instances where the feature isn't wired.
+        user.disable_cdn_during_ddos = body.disable_cdn_during_ddos
 
     await db.commit()
     await db.refresh(user)
@@ -1338,6 +1350,7 @@ async def update_me(
         newsletter_opt_in=user.newsletter_opt_in,
         email_delivery_status=user.email_delivery_status.value,
         email_revalidation_required=user.email_revalidation_required,
+        disable_cdn_during_ddos=user.disable_cdn_during_ddos,
         uploads_allowed=(
             user.is_admin or settings.allow_image_uploads or user.can_upload_images
         ),
