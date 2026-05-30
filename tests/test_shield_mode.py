@@ -44,9 +44,25 @@ def _register(client: httpx.Client) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _stack_has_shield_mode_enabled(client: httpx.Client) -> bool:
+    """Probe the running stack to see whether SHIELD_MODE_ENABLED is on.
+
+    The two tests below assert dormant-path behaviour (feature_enabled
+    is false, internal webhook 404s); they only make sense when the
+    stack is in its default off-state. Operators / developers who flip
+    the feature on locally (to smoketest cf-shield) end up here, so we
+    detect at runtime and skip rather than fail noisily."""
+    resp = client.get("/v1/shield-mode/status")
+    if resp.status_code != 200:
+        return False
+    return bool(resp.json().get("feature_enabled"))
+
+
 def test_status_endpoint_reports_feature_disabled(client: httpx.Client) -> None:
     """When shield_mode_enabled is false the status endpoint says so
     and reports active=false. No auth required."""
+    if _stack_has_shield_mode_enabled(client):
+        pytest.skip("stack has SHIELD_MODE_ENABLED=true; dormant-path test n/a")
     resp = client.get("/v1/shield-mode/status")
     assert resp.status_code == 200
     body = resp.json()
@@ -58,6 +74,8 @@ def test_status_endpoint_reports_feature_disabled(client: httpx.Client) -> None:
 def test_internal_webhook_404_when_feature_disabled(client: httpx.Client) -> None:
     """The internal webhook must not even appear to exist when the
     feature is off; a probe gets a flat 404 rather than a hint."""
+    if _stack_has_shield_mode_enabled(client):
+        pytest.skip("stack has SHIELD_MODE_ENABLED=true; dormant-path test n/a")
     resp = client.post(
         "/v1/internal/shield-mode/state",
         json={"active": True},
