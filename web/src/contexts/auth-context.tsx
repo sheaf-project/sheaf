@@ -13,6 +13,7 @@ interface AuthState {
     totp_code?: string,
     captcha?: string,
     remember_device?: boolean,
+    device_nickname?: string,
   ) => Promise<void>;
   register: (
     email: string,
@@ -81,9 +82,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       totp_code?: string,
       captcha?: string,
       remember_device?: boolean,
+      device_nickname?: string,
     ) => {
       const tokens = await authApi.login(
-        email, password, totp_code, captcha, remember_device,
+        email,
+        password,
+        totp_code,
+        captcha,
+        remember_device,
+        device_nickname,
       );
       // Drop any cached query data from a prior session before fetching the
       // new user, in case a previous logout was skipped (silent token expiry).

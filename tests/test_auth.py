@@ -1070,6 +1070,93 @@ def test_list_and_revoke_trusted_device(client: httpx.Client):
     assert r.status_code == 401
 
 
+def test_trusted_device_populates_client_name_and_initial_last_used(
+    client: httpx.Client,
+):
+    """Three fixes in one round-trip:
+
+    1. `client_name` is populated at mint time, from X-Sheaf-Client when
+       the request supplies it (so the mobile app shows up as 'Sheaf
+       Android' instead of okhttp/4.12.0).
+    2. `last_used_at` is set to creation time on insert, not left null
+       until the next login.
+    3. The optional `device_nickname` on the login body becomes the
+       row's nickname so users can name the device at create time
+       rather than only via the rename endpoint.
+    """
+    email = f"rd-fixes-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    totp = _enrol_totp(client)
+
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email,
+            "password": password,
+            "totp_code": totp.now(),
+            "remember_device": True,
+            "device_nickname": "Mara's phone",
+        },
+        headers={"X-Sheaf-Client": "Sheaf Android/1.0.0"},
+    )
+    assert r.status_code == 200, r.text
+    cookie = r.cookies.get("sheaf_trusted_device")
+    assert cookie
+
+    r = client.get(
+        "/v1/auth/trusted-devices",
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    assert r.status_code == 200, r.text
+    devices = r.json()
+    assert len(devices) == 1
+    d = devices[0]
+    assert d["nickname"] == "Mara's phone"
+    assert d["client_name"] == "Sheaf Android/1.0.0"
+    # last_used_at is populated immediately, not left null until reuse.
+    assert d["last_used_at"] is not None
+
+
+def test_trusted_device_client_name_falls_back_to_user_agent_parse(
+    client: httpx.Client,
+):
+    """When X-Sheaf-Client is not supplied (older clients), client_name
+    falls back to a User-Agent parse. Firefox is the canary because it's
+    cleanly identifiable in the UA."""
+    email = f"rd-ua-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "testpassword123"
+    token = _register_and_login(client, email, password)
+    client.headers["Authorization"] = f"Bearer {token}"
+    totp = _enrol_totp(client)
+
+    r = client.post(
+        "/v1/auth/login",
+        json={
+            "email": email,
+            "password": password,
+            "totp_code": totp.now(),
+            "remember_device": True,
+        },
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 "
+                "Firefox/128.0"
+            ),
+        },
+    )
+    assert r.status_code == 200, r.text
+    cookie = r.cookies.get("sheaf_trusted_device")
+
+    r = client.get(
+        "/v1/auth/trusted-devices",
+        cookies={"sheaf_trusted_device": cookie},
+    )
+    devices = r.json()
+    assert devices[0]["client_name"] == "Firefox"
+
+
 def test_change_password_revokes_other_sessions(client: httpx.Client):
     email = f"chpw-rev-{uuid.uuid4().hex[:8]}@sheaf.dev"
     password = "oldpassword123"

@@ -18,6 +18,11 @@ class UserLogin(BaseModel):
     totp_code: str | None = None
     captcha: str | None = None
     remember_device: bool = False
+    # Optional friendly label for the trusted-device row when
+    # `remember_device=true`. Empty / unset = the row shows as
+    # unnamed in Settings -> Account until the user renames it
+    # there. Capped at 128 chars at write time.
+    device_nickname: str | None = None
 
 
 class TokenResponse(BaseModel):

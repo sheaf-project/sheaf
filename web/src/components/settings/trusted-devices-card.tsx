@@ -110,7 +110,7 @@ export function TrustedDevicesCard() {
                     className="inline-flex items-center gap-1 font-medium hover:text-muted-foreground transition-colors"
                     onClick={() => startEdit(d)}
                   >
-                    {d.nickname || d.user_agent.slice(0, 60) || "Device"}
+                    {d.nickname || d.client_name || "Device"}
                     <Pencil className="h-3 w-3 text-muted-foreground" />
                   </button>
                 )}
@@ -120,9 +120,17 @@ export function TrustedDevicesCard() {
                   </Badge>
                 )}
               </div>
-              {d.nickname && editingId !== d.id && (
+              {/* Always show client_name + user_agent as the secondary
+                  line. When the device has a custom nickname, this is
+                  the only place the actual client/UA shows; when it
+                  doesn't, the nickname slot above already shows
+                  client_name, but the UA detail below remains useful
+                  for telling apart e.g. two Firefox profiles. */}
+              {editingId !== d.id && (
                 <p className="text-xs text-muted-foreground truncate">
-                  {d.user_agent}
+                  {d.nickname && d.client_name
+                    ? `${d.client_name} · ${d.user_agent}`
+                    : d.user_agent}
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
