@@ -6,6 +6,21 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-05-30
+
+### Added
+
+- **Opt-out of CDN proxying during DDoS mitigation.** A new Privacy toggle in Settings -> Account lets users refuse Cloudflare proxying when the operator engages DDoS mitigation. When set, the user's sessions are ended the moment mitigation engages; they cannot sign back in until mitigation clears (the direct origin is closed for the duration of the incident). The toggle only renders on instances where the operator has wired the feature via `SHIELD_MODE_ENABLED` and a webhook secret. A new public `GET /v1/shield-mode/status` endpoint exposes the current posture for API and mobile clients that want to honour the preference voluntarily. While mitigation is active, a non-dismissable banner appears across every page (logged-in or not) explaining that traffic is currently routed through the CDN.
+- **Pending-delete badges across every listing.** Members, groups, tags, custom fields, fronts (current and history), journal entries, polls, board messages, watch tokens, notification channels, and uploaded images now show a "Pending delete" badge and dim styling whenever they're sitting in System Safety's grace window for deletion. Uploaded images additionally get a corner warning marker on the thumbnail; the detail modal's Delete button is disabled while a delete is already queued, with a tooltip pointing to Settings -> Safety where the queued action can be cancelled.
+
+### Changed
+
+- **Announcement banner readability.** The title and body of an announcement banner now use stronger weight contrast and a middle-dot separator so the two pieces no longer read as a single run-on sentence.
+
+### Fixed
+
+- **Notification outbox no longer grows unbounded.** Delivered notification rows are now swept on a regular schedule so the outbox table stays bounded over time; previously they accumulated indefinitely with no cleanup.
+
 ## [0.2.3] - 2026-05-26
 
 ### Added
