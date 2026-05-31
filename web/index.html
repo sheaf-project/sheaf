@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark" style="color-scheme: dark">
+<html lang="en" class="dark" style="color-scheme: dark" data-palette="classic">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -29,11 +29,26 @@
     />
     <meta name="twitter:image" content="/og-image.png" />
     <script>
-      // Apply saved theme before first paint to avoid flash
+      // Apply saved theme + palette before first paint to avoid flash.
+      // Default mode = dark, default palette = classic; matches the
+      // look the app shipped with before the picker existed.
+      // Backend-synced values are applied later (after auth + fetch);
+      // this script only resolves localStorage so the very first paint
+      // never flashes the wrong colours on browsers that have a local
+      // pick.
       (function() {
-        var t = localStorage.getItem("sheaf_theme") || "dark";
-        document.documentElement.classList.toggle("dark", t === "dark");
-        document.documentElement.style.colorScheme = t;
+        var mode = localStorage.getItem("sheaf_theme") || "dark";
+        var palette = localStorage.getItem("sheaf_palette") || "classic";
+        var dark;
+        if (mode === "system") {
+          dark = window.matchMedia
+            && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        } else {
+          dark = mode === "dark";
+        }
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        document.documentElement.setAttribute("data-palette", palette);
       })();
     </script>
   </head>

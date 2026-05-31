@@ -32,9 +32,9 @@ import { type AuthConfig, getAuthConfig } from "@/lib/auth";
 const HLJS_LINK_ID = "hljs-theme-stylesheet";
 
 function useHljsTheme() {
-  const { theme } = useTheme();
+  const { effectiveMode } = useTheme();
   useEffect(() => {
-    const href = theme === "dark" ? hljsDarkUrl : hljsLightUrl;
+    const href = effectiveMode === "dark" ? hljsDarkUrl : hljsLightUrl;
     let link = document.getElementById(
       HLJS_LINK_ID,
     ) as HTMLLinkElement | null;
@@ -47,7 +47,7 @@ function useHljsTheme() {
     if (link.href !== new URL(href, document.baseURI).href) {
       link.href = href;
     }
-  }, [theme]);
+  }, [effectiveMode]);
 }
 
 function isHostedImage(src: string, cdnBase: string | null) {

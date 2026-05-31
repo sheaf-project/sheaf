@@ -1,7 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Link, Navigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
-import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,13 +12,12 @@ import { Captcha } from "@/components/captcha";
 import { Logo } from "@/components/logo";
 import { LegalFooter } from "@/components/legal-footer";
 import { LoggedOutAnnouncementBanners } from "@/components/announcement-banners";
+import { ThemeModeToggle } from "@/components/theme-mode-toggle";
 import { ApiError } from "@/lib/api-client";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
-import { Sun, Moon } from "lucide-react";
 
 export function LoginPage() {
   const { user, loading, login, register } = useAuth();
-  const { theme, toggleTheme } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -89,19 +87,7 @@ export function LoginPage() {
   return (
     <div className="relative flex min-h-screen flex-col bg-background">
       <LoggedOutAnnouncementBanners />
-      <Button
-        variant="ghost"
-        size="icon"
-        className="absolute top-4 right-4 text-muted-foreground"
-        onClick={toggleTheme}
-        aria-label="Toggle theme"
-      >
-        {theme === "dark" ? (
-          <Sun className="h-4 w-4" />
-        ) : (
-          <Moon className="h-4 w-4" />
-        )}
-      </Button>
+      <ThemeModeToggle className="absolute top-4 right-4 text-muted-foreground" />
       <div className="flex flex-1 items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">

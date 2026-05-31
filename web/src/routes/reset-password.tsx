@@ -1,6 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router";
-import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -12,12 +11,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordField } from "@/components/password-field";
+import { ThemeModeToggle } from "@/components/theme-mode-toggle";
 import { ApiError } from "@/lib/api-client";
 import { resetPassword } from "@/lib/auth";
-import { Check, X, Sun, Moon } from "lucide-react";
+import { Check, X } from "lucide-react";
 
 export function ResetPasswordPage() {
-  const { theme, toggleTheme } = useTheme();
   const [params] = useSearchParams();
   const urlToken = params.get("token");
   const [manualToken, setManualToken] = useState("");
@@ -63,19 +62,7 @@ export function ResetPasswordPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <Button
-        variant="ghost"
-        size="icon"
-        className="absolute top-4 right-4 text-muted-foreground"
-        onClick={toggleTheme}
-        aria-label="Toggle theme"
-      >
-        {theme === "dark" ? (
-          <Sun className="h-4 w-4" />
-        ) : (
-          <Moon className="h-4 w-4" />
-        )}
-      </Button>
+      <ThemeModeToggle className="absolute top-4 right-4 text-muted-foreground" />
       <Card className="w-full max-w-sm">
         {state === "form" && (
           <>
