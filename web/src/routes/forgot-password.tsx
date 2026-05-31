@@ -1,16 +1,14 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router";
-import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ThemeModeToggle } from "@/components/theme-mode-toggle";
 import { ApiError } from "@/lib/api-client";
 import { requestPasswordReset } from "@/lib/auth";
-import { Sun, Moon } from "lucide-react";
 
 export function ForgotPasswordPage() {
-  const { theme, toggleTheme } = useTheme();
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
@@ -36,19 +34,7 @@ export function ForgotPasswordPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <Button
-        variant="ghost"
-        size="icon"
-        className="absolute top-4 right-4 text-muted-foreground"
-        onClick={toggleTheme}
-        aria-label="Toggle theme"
-      >
-        {theme === "dark" ? (
-          <Sun className="h-4 w-4" />
-        ) : (
-          <Moon className="h-4 w-4" />
-        )}
-      </Button>
+      <ThemeModeToggle className="absolute top-4 right-4 text-muted-foreground" />
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-semibold">Sheaf</CardTitle>

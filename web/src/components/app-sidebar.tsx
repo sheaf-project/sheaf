@@ -1,11 +1,11 @@
 import { NavLink } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
-import { useTheme } from "@/hooks/use-theme";
 import { useCurrentFronts } from "@/hooks/use-fronts";
 import { getUnread } from "@/lib/messages";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/logo";
+import { ThemeModeToggle } from "@/components/theme-mode-toggle";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -14,8 +14,6 @@ import {
   FolderOpen,
   Settings,
   LogOut,
-  Sun,
-  Moon,
   Shield,
   BookOpen,
   Bell,
@@ -64,7 +62,6 @@ export function AppSidebar({
   onMobileClose?: () => void;
 }) {
   const { user, logout } = useAuth();
-  const { theme, toggleTheme } = useTheme();
 
   // Pick the first fronting member as the perspective for unread counts.
   // If no one is fronting, skip the query - badge stays hidden.
@@ -116,19 +113,7 @@ export function AppSidebar({
         {isCollapsed && <Logo className="h-7 w-7 rounded-md" />}
         {!isCollapsed && (
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-sidebar-foreground/70"
-              onClick={toggleTheme}
-              aria-label="Toggle theme"
-            >
-              {theme === "dark" ? (
-                <Sun className="h-4 w-4" />
-              ) : (
-                <Moon className="h-4 w-4" />
-              )}
-            </Button>
+            <ThemeModeToggle className="text-sidebar-foreground/70" />
             {/* Mobile-only close button */}
             {onMobileClose && (
               <Button

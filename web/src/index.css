@@ -115,6 +115,293 @@
   --sidebar-ring: oklch(0.439 0 0);
 }
 
+/* ===========================================================================
+ * Palette overrides
+ * ---------------------------------------------------------------------------
+ * The base :root / .dark blocks above ARE the Classic palette (= the look
+ * the web app has shipped with since launch). data-palette="classic" matches
+ * no selector below and inherits the base, so picking Classic is a no-op
+ * from the user's perspective and existing users see no visual change on
+ * upgrade.
+ *
+ * Hex values are direct ports from the matching Android palette files
+ * (sheaf-android/app/src/main/java/systems/lupine/sheaf/ui/theme/*.kt)
+ * so the two clients stay visually identifiable as "the same theme".
+ * Material 3's primaryContainer slot (Android FAB / nav indicator) doesn't
+ * have a 1:1 shadcn equivalent; we fold the recognisable flag colours into
+ * --primary itself on web because there's no FAB to carry them otherwise.
+ *
+ * Selector specificity: :root[data-palette=...] beats :root,
+ * .dark[data-palette=...] beats .dark. No need for !important.
+ * =========================================================================== */
+
+/* --- Purple ---------------------------------------------------------------
+ * iOS-aligned purple shipped as Android's default. Slightly violet tint on
+ * surfaces in dark mode. */
+:root[data-palette="purple"] {
+  --primary: #4F46E5;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EEF2FF;
+  --secondary-foreground: #1E1B4B;
+  --accent: #EDE9FE;
+  --accent-foreground: #4338CA;
+  --ring: #8B7BFF;
+  --sidebar-primary: #4F46E5;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EDE9FE;
+  --sidebar-accent-foreground: #4338CA;
+  --sidebar-ring: #8B7BFF;
+}
+.dark[data-palette="purple"] {
+  --background: #0F0C29;
+  --foreground: #E5DEFF;
+  --card: #15123A;
+  --card-foreground: #E5DEFF;
+  --popover: #15123A;
+  --popover-foreground: #E5DEFF;
+  --primary: #A78BFA;
+  --primary-foreground: #1E1B4B;
+  --secondary: #2A2452;
+  --secondary-foreground: #E5DEFF;
+  --muted: #2A2452;
+  --muted-foreground: #B8B1D9;
+  --accent: #312E81;
+  --accent-foreground: #E5DEFF;
+  --border: #2A2452;
+  --input: #2A2452;
+  --ring: #6D5FE6;
+  --sidebar: #15123A;
+  --sidebar-foreground: #E5DEFF;
+  --sidebar-primary: #A78BFA;
+  --sidebar-primary-foreground: #1E1B4B;
+  --sidebar-accent: #312E81;
+  --sidebar-accent-foreground: #E5DEFF;
+  --sidebar-border: #2A2452;
+  --sidebar-ring: #6D5FE6;
+}
+
+/* --- OLED -----------------------------------------------------------------
+ * True-black background for AMOLED-screen devices. Light mode stays mostly
+ * standard; the iconic look is the dark variant. */
+:root[data-palette="oled"] {
+  --primary: #8B5CF6;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F5F3FF;
+  --secondary-foreground: #1A0F45;
+  --accent: #EDE9FE;
+  --accent-foreground: #5B21B6;
+  --ring: #8B5CF6;
+  --sidebar-primary: #8B5CF6;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EDE9FE;
+  --sidebar-accent-foreground: #5B21B6;
+  --sidebar-ring: #8B5CF6;
+}
+.dark[data-palette="oled"] {
+  --background: #000000;
+  --foreground: #F5F3FF;
+  --card: #000000;
+  --card-foreground: #F5F3FF;
+  --popover: #0A0A0A;
+  --popover-foreground: #F5F3FF;
+  --primary: #8B5CF6;
+  --primary-foreground: #FFFFFF;
+  --secondary: #1A1A1A;
+  --secondary-foreground: #F5F3FF;
+  --muted: #1A1A1A;
+  --muted-foreground: #A8A8B8;
+  --accent: #2A1F50;
+  --accent-foreground: #F5F3FF;
+  --border: #1F1F1F;
+  --input: #1F1F1F;
+  --ring: #8B5CF6;
+  --sidebar: #000000;
+  --sidebar-foreground: #F5F3FF;
+  --sidebar-primary: #8B5CF6;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #2A1F50;
+  --sidebar-accent-foreground: #F5F3FF;
+  --sidebar-border: #1F1F1F;
+  --sidebar-ring: #8B5CF6;
+}
+
+/* --- Pride ----------------------------------------------------------------
+ * Rainbow-flag-inspired. Hero pink + orange/yellow secondary + purple accent
+ * so the chrome reads as the warm-to-cool sweep of the flag without
+ * dumping every stripe into the UI. */
+:root[data-palette="pride"] {
+  --background: #FFF8FA;
+  --foreground: #1F0A18;
+  --card: #FFFFFF;
+  --card-foreground: #1F0A18;
+  --popover: #FFFFFF;
+  --popover-foreground: #1F0A18;
+  --primary: #D81B60;
+  --primary-foreground: #FFFFFF;
+  --secondary: #FFF3D6;
+  --secondary-foreground: #3D2F00;
+  --muted: #F8E8EE;
+  --muted-foreground: #6E3A50;
+  --accent: #F3E5F5;
+  --accent-foreground: #4A148C;
+  --border: #E6BCC7;
+  --input: #E6BCC7;
+  --ring: #D81B60;
+  --sidebar: #FFF0F4;
+  --sidebar-foreground: #1F0A18;
+  --sidebar-primary: #D81B60;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F3E5F5;
+  --sidebar-accent-foreground: #4A148C;
+  --sidebar-border: #E6BCC7;
+  --sidebar-ring: #D81B60;
+}
+.dark[data-palette="pride"] {
+  --background: #1A0F1A;
+  --foreground: #EAD6E0;
+  --card: #231423;
+  --card-foreground: #EAD6E0;
+  --popover: #231423;
+  --popover-foreground: #EAD6E0;
+  --primary: #F06292;
+  --primary-foreground: #3D0418;
+  --secondary: #D4A800;
+  --secondary-foreground: #3A2A00;
+  --muted: #3A1F30;
+  --muted-foreground: #C9A5B8;
+  --accent: #5E2D8C;
+  --accent-foreground: #F3E5F5;
+  --border: #503245;
+  --input: #503245;
+  --ring: #F06292;
+  --sidebar: #231423;
+  --sidebar-foreground: #EAD6E0;
+  --sidebar-primary: #F06292;
+  --sidebar-primary-foreground: #3D0418;
+  --sidebar-accent: #5E2D8C;
+  --sidebar-accent-foreground: #F3E5F5;
+  --sidebar-border: #503245;
+  --sidebar-ring: #F06292;
+}
+
+/* --- Trans ----------------------------------------------------------------
+ * Trans-flag pink + blue, with a soft white-stripe near-neutral for accent.
+ * Flag white doesn't work as a primary on white surfaces, so the deeper
+ * pink leads in light mode and the lighter flag pink leads in dark. */
+:root[data-palette="trans"] {
+  --background: #FFFAFC;
+  --foreground: #1B1A1F;
+  --card: #FFFFFF;
+  --card-foreground: #1B1A1F;
+  --popover: #FFFFFF;
+  --popover-foreground: #1B1A1F;
+  --primary: #E16A8C;
+  --primary-foreground: #FFFFFF;
+  --secondary: #DCF1FB;
+  --secondary-foreground: #062F45;
+  --muted: #F5E1E8;
+  --muted-foreground: #6E3A4F;
+  --accent: #E2EAF2;
+  --accent-foreground: #1B2638;
+  --border: #E9C0CC;
+  --input: #E9C0CC;
+  --ring: #E16A8C;
+  --sidebar: #FFF0F5;
+  --sidebar-foreground: #1B1A1F;
+  --sidebar-primary: #E16A8C;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #E2EAF2;
+  --sidebar-accent-foreground: #1B2638;
+  --sidebar-border: #E9C0CC;
+  --sidebar-ring: #E16A8C;
+}
+.dark[data-palette="trans"] {
+  --background: #161220;
+  --foreground: #E5E1EE;
+  --card: #1F1A2D;
+  --card-foreground: #E5E1EE;
+  --popover: #1F1A2D;
+  --popover-foreground: #E5E1EE;
+  --primary: #F7A8B8;
+  --primary-foreground: #3D0418;
+  --secondary: #2A9FD6;
+  --secondary-foreground: #FFFFFF;
+  --muted: #2D2B36;
+  --muted-foreground: #C4B8C8;
+  --accent: #3A4A5E;
+  --accent-foreground: #C9D6E2;
+  --border: #45354A;
+  --input: #45354A;
+  --ring: #F7A8B8;
+  --sidebar: #1F1A2D;
+  --sidebar-foreground: #E5E1EE;
+  --sidebar-primary: #F7A8B8;
+  --sidebar-primary-foreground: #3D0418;
+  --sidebar-accent: #3A4A5E;
+  --sidebar-accent-foreground: #C9D6E2;
+  --sidebar-border: #45354A;
+  --sidebar-ring: #F7A8B8;
+}
+
+/* --- Non-binary -----------------------------------------------------------
+ * NB-flag purple + yellow. Yellow doesn't pass contrast as a primary on
+ * white, so flag purple leads and yellow takes the secondary slot where
+ * it reads as a vivid accent. */
+:root[data-palette="nonbinary"] {
+  --background: #FCFAFD;
+  --foreground: #1B102B;
+  --card: #FFFFFF;
+  --card-foreground: #1B102B;
+  --popover: #FFFFFF;
+  --popover-foreground: #1B102B;
+  --primary: #7B3FA4;
+  --primary-foreground: #FFFFFF;
+  --secondary: #FFF5C2;
+  --secondary-foreground: #3D2F00;
+  --muted: #EDE3F5;
+  --muted-foreground: #5E4870;
+  --accent: #E8E2EE;
+  --accent-foreground: #2D1F3E;
+  --border: #D9C7E8;
+  --input: #D9C7E8;
+  --ring: #7B3FA4;
+  --sidebar: #F7F0FC;
+  --sidebar-foreground: #1B102B;
+  --sidebar-primary: #7B3FA4;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #E8E2EE;
+  --sidebar-accent-foreground: #2D1F3E;
+  --sidebar-border: #D9C7E8;
+  --sidebar-ring: #7B3FA4;
+}
+.dark[data-palette="nonbinary"] {
+  --background: #1A1B23;
+  --foreground: #E3D8EE;
+  --card: #22202B;
+  --card-foreground: #E3D8EE;
+  --popover: #22202B;
+  --popover-foreground: #E3D8EE;
+  --primary: #9C59D1;
+  --primary-foreground: #2E0F50;
+  --secondary: #B69500;
+  --secondary-foreground: #FFFFFF;
+  --muted: #2D1F3E;
+  --muted-foreground: #BFAFCC;
+  --accent: #3A2E4F;
+  --accent-foreground: #D8C8E8;
+  --border: #42384F;
+  --input: #42384F;
+  --ring: #9C59D1;
+  --sidebar: #22202B;
+  --sidebar-foreground: #E3D8EE;
+  --sidebar-primary: #9C59D1;
+  --sidebar-primary-foreground: #2E0F50;
+  --sidebar-accent: #3A2E4F;
+  --sidebar-accent-foreground: #D8C8E8;
+  --sidebar-border: #42384F;
+  --sidebar-ring: #9C59D1;
+}
+
 @layer base {
   * {
     @apply border-border;
