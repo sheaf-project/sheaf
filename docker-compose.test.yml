@@ -5,6 +5,14 @@ services:
       dockerfile: Dockerfile.backend
     ports: !override
       - "8001:8000"
+    # Clear the env_file inherited from the base compose so the test
+    # stack does not pick up whatever the developer has in their .env
+    # (e.g. SHIELD_MODE_ENABLED, FCM credentials, captcha keys). The
+    # CI test stack has no .env at all, so any reliance on inheritance
+    # creates a silent localdev-vs-CI divergence. Test config lives
+    # only in this file's `environment:` block + the run_tests.sh
+    # exports.
+    env_file: !override []
     environment:
       DATABASE_URL: postgresql+asyncpg://sheaf:sheaftest@db:5432/sheaf
       REDIS_URL: redis://redis:6379/0
