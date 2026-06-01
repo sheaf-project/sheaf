@@ -230,7 +230,7 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 - [x] Signed image URLs with S3 presign support (hotlink protection)
 - [ ] Custom-defined user tiers by server admin instead of placeholder free/plus/selfhosted
 - [ ] Android+iOS apps (in progress — API-first, OpenAPI spec available for client generation)
-- [ ] Prometheus-compatible /metrics endpoint
+- [x] Prometheus-compatible `/metrics` endpoint ([docs/METRICS.md](docs/METRICS.md))
 - [ ] Terraform module for cloud deployment
 - [ ] More 2FA methods — WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
 - [ ] Alternate secrets management methods - AWS Secrets Manager, Vault, others?

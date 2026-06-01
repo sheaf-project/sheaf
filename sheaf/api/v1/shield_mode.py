@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
 from sheaf.database import get_db
+from sheaf.observability.metrics import webhook_signature_failures_total
 from sheaf.services.shield_mode import (
     SIGNATURE_HEADER,
     apply_transition,
@@ -91,6 +92,7 @@ async def shield_mode_transition(
     if not verify_signature(body, sig):
         # Generic 401 - don't distinguish "missing header" from
         # "wrong digest" so a probe can't fingerprint the secret.
+        webhook_signature_failures_total.labels(endpoint="cf_shield").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid signature",

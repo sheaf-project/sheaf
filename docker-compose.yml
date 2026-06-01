@@ -7,6 +7,14 @@ services:
         INCLUDE_DEV_TOOLS: "${INCLUDE_DEV_TOOLS:-false}"
     ports:
       - "${SHEAF_PORT:-8000}:${SHEAF_PORT:-8000}"
+      # Metrics endpoint. The host side publishes on loopback by default
+      # (same posture as db/redis above) — METRICS_PUBLISH_HOST controls
+      # that. The in-container bind is separately controlled by
+      # METRICS_BIND_HOST inside the app; flip it to 0.0.0.0 in .env so
+      # the listener is reachable through this port mapping at all (it
+      # defaults to 127.0.0.1 inside the container for selfhosters who
+      # haven't thought about it). See docs/METRICS.md.
+      - "${METRICS_PUBLISH_HOST:-127.0.0.1}:${METRICS_BIND_PORT:-8090}:8090"
     env_file:
       - path: .env
         required: false

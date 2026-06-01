@@ -2,6 +2,12 @@
 
 import abc
 import logging
+import time
+
+from sheaf.observability.metrics import (
+    email_send_duration_seconds,
+    emails_sent_total,
+)
 
 logger = logging.getLogger("sheaf.email")
 
@@ -81,19 +87,53 @@ async def send_email(
     body_text: str,
     *,
     force: bool = False,
+    kind: str = "other",
 ) -> None:
     """Send a transactional email via the configured backend.
 
     If the recipient has a non-OK email_delivery_status (bounced or
     complained), the send is skipped. Pass force=True for revalidation
     flows that must reach the user regardless of current state.
+
+    `kind` labels the metric increment so the per-kind funnel
+    (verification / password_reset / lockout_notify / etc.) is visible
+    without parsing the subject line.
     """
+    from sheaf.config import settings as _settings
+
+    provider = _settings.email_backend or "none"
+
     if not force and await _is_blocked_recipient(to):
         logger.info("Skipping send to %s (blocked by delivery status): %s", to, subject)
+        emails_sent_total.labels(
+            kind=kind, provider=provider, outcome="blocked_recipient",
+        ).inc()
         return
 
     backend = get_email_backend()
-    await backend.send(to, subject, body_html, body_text)
+    if isinstance(backend, NoneBackend):
+        await backend.send(to, subject, body_html, body_text)
+        emails_sent_total.labels(
+            kind=kind, provider=provider, outcome="skipped_no_provider",
+        ).inc()
+        return
+
+    start = time.perf_counter()
+    try:
+        await backend.send(to, subject, body_html, body_text)
+    except Exception:
+        emails_sent_total.labels(
+            kind=kind, provider=provider, outcome="send_failed",
+        ).inc()
+        raise
+    else:
+        emails_sent_total.labels(
+            kind=kind, provider=provider, outcome="sent",
+        ).inc()
+    finally:
+        email_send_duration_seconds.labels(provider=provider).observe(
+            time.perf_counter() - start
+        )
 
 
 async def _is_blocked_recipient(email: str) -> bool:

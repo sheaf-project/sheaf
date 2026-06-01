@@ -23,6 +23,7 @@ from sheaf.database import async_session_factory
 from sheaf.models.export_job import ExportJob, ExportJobStatus
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
+from sheaf.observability.metrics import export_size_bytes, exports_built_total
 from sheaf.services import export_storage
 from sheaf.storage import get_storage
 
@@ -119,6 +120,8 @@ async def _build(job_id: uuid.UUID) -> None:
             hours=settings.export_job_ttl_hours
         )
         await db.commit()
+        exports_built_total.labels(outcome="done").inc()
+        export_size_bytes.observe(job.file_size_bytes)
         logger.info(
             "Export job %s completed (%d bytes, expires %s)",
             job.id,
@@ -138,6 +141,7 @@ async def _mark_failed(db: AsyncSession, job: ExportJob, reason: str) -> None:
     job.completed_at = datetime.now(UTC)
     job.error = reason
     await db.commit()
+    exports_built_total.labels(outcome="failed").inc()
 
 
 async def _assemble_zip(
@@ -228,6 +232,7 @@ async def _send_completion_email(*, user_email: str, job_id: uuid.UUID) -> None:
             subject=subject,
             body_html=body_html,
             body_text=body_text,
+            kind="export_ready",
         )
     except Exception:  # noqa: BLE001
         logger.exception("Export completion email error")
@@ -270,5 +275,6 @@ async def run_cleanup_tick() -> int:
                     continue
             job.status = ExportJobStatus.EXPIRED
             job.file_location = None
+            exports_built_total.labels(outcome="expired").inc()
         await db.commit()
         return len(jobs)

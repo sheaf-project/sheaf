@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
 from sheaf.models.user import User
+from sheaf.observability.metrics import auth_lockout_events_total
 
 
 def ensure_not_locked(user: User) -> None:
@@ -35,7 +36,9 @@ def ensure_not_locked(user: User) -> None:
         )
 
 
-async def record_login_failure(db: AsyncSession, user: User) -> None:
+async def record_login_failure(
+    db: AsyncSession, user: User, reason: str = "login_failures",
+) -> None:
     """Increment the user's failed-attempt counter and lock if threshold crossed.
 
     A single atomic UPDATE handles both the increment and the lockout decision
@@ -43,10 +46,23 @@ async def record_login_failure(db: AsyncSession, user: User) -> None:
     has a stale (expired) lockout, the counter resets to 1 for this attempt
     instead of incrementing, so a returning user with one typo doesn't get
     immediately re-locked on top of old failures.
+
+    `reason` labels the metric bumped when a lockout fires: "login_failures"
+    for password / unknown-user / generic auth failures, "totp_failures" for
+    TOTP-verification failures.
     """
     now = datetime.now(UTC)
     lockout_end = now + timedelta(minutes=settings.login_lockout_minutes)
     threshold = settings.login_max_failures
+
+    # Capture pre-update state so we can detect whether this attempt
+    # crossed the threshold. The atomic UPDATE below remains authoritative;
+    # this just lets the metric bump match the actual transition.
+    had_stale_lock = (
+        user.locked_until is not None and user.locked_until < now
+    )
+    prior_count = 0 if had_stale_lock else (user.failed_login_count or 0)
+    effective_new_count = prior_count + 1
 
     new_count = case(
         (
@@ -67,3 +83,6 @@ async def record_login_failure(db: AsyncSession, user: User) -> None:
     )
     await db.commit()
     db.expire(user, ["failed_login_count", "locked_until"])
+
+    if effective_new_count >= threshold:
+        auth_lockout_events_total.labels(reason=reason).inc()

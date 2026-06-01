@@ -13,6 +13,7 @@ from typing import Any
 from altcha import create_challenge, verify_solution
 
 from sheaf.config import settings
+from sheaf.observability.metrics import captcha_challenges_total
 
 logger = logging.getLogger("sheaf.captcha")
 
@@ -46,17 +47,20 @@ def issue_challenge() -> dict[str, Any]:
         hmac_secret=settings.altcha_hmac_key,
         expires_at=expires,
     )
+    captcha_challenges_total.labels(outcome="issued").inc()
     return challenge.to_dict()
 
 
 def verify(payload: str | None) -> bool:
     """Verify a client-submitted solution payload (base64-encoded JSON)."""
     if not payload:
+        captcha_challenges_total.labels(outcome="failed").inc()
         return False
     try:
         result = verify_solution(payload, settings.altcha_hmac_key)
     except Exception:
         logger.exception("Captcha verification raised")
+        captcha_challenges_total.labels(outcome="failed").inc()
         return False
     if not result.verified:
         logger.info(
@@ -65,4 +69,7 @@ def verify(payload: str | None) -> bool:
             result.invalid_signature,
             result.invalid_solution,
         )
+        captcha_challenges_total.labels(outcome="failed").inc()
+    else:
+        captcha_challenges_total.labels(outcome="solved").inc()
     return result.verified

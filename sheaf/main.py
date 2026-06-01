@@ -13,6 +13,12 @@ from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
+from sheaf.observability import (
+    MetricsMiddleware,
+    init_registry,
+    setup_metrics_endpoint,
+)
+from sheaf.observability.metrics import build_info, prewarm_metrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +67,16 @@ async def lifespan(app: FastAPI):
     # Eagerly initialise encryption key so we get the warning at startup
     settings.get_encryption_key()
     logger.info("Sheaf %s starting in %s mode", __version__, settings.sheaf_mode.value)
+
+    # Metrics: init registry before any bump call site has a chance to fire.
+    init_registry()
+    build_info.labels(
+        version=__version__,
+        sheaf_mode=settings.sheaf_mode.value,
+        git_commit=settings.sheaf_git_commit or "unknown",
+    ).set(1)
+    prewarm_metrics()
+    setup_metrics_endpoint(app, settings)
 
     await _promote_admin_emails()
 
@@ -175,6 +191,11 @@ app.add_middleware(
     MaxBodySizeMiddleware,
     max_bytes=settings.max_request_body_size_mb * 1024 * 1024,
 )
+# Outermost middleware so the duration histogram captures total
+# user-facing latency including body-size and rate-limit checks.
+# Cheap no-op when metrics_enabled=false.
+if settings.metrics_enabled:
+    app.add_middleware(MetricsMiddleware)
 
 app.include_router(v1_router)
 

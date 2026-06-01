@@ -52,6 +52,24 @@ def decrypt(token: str) -> str:
     return box.decrypt(raw).decode()
 
 
+def decrypt_field(token: str, field: str) -> str:
+    """`decrypt()` wrapper that bumps the decrypt-failure metric on error.
+
+    `field` labels the failure so dashboards can answer "which field is
+    drifting?" — should always be zero; non-zero indicates encryption-key
+    drift or storage corruption. Re-raises the original exception so
+    callers behave identically to plain `decrypt()`.
+    """
+    try:
+        return decrypt(token)
+    except Exception:
+        # Import here to avoid an import cycle (crypto is imported very
+        # early in the bootstrap path before observability is ready).
+        from sheaf.observability.metrics import decrypt_failures_total
+        decrypt_failures_total.labels(field=field).inc()
+        raise
+
+
 _blind_index_key_cache: bytes | None = None
 
 

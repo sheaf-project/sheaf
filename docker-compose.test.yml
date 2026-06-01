@@ -49,6 +49,12 @@ services:
       # stubbed PK API). A live loop would race them and process a job
       # with the real handler before the stubbed drive gets to it.
       IMPORT_RUNNER_ENABLED: "false"
+      # Metrics endpoint. Default off so most configs do not have to
+      # think about it; the dedicated metrics config row in run_tests.sh
+      # flips ENABLED=true + BIND=main + TOKEN to exercise the endpoint.
+      METRICS_ENABLED: "${METRICS_ENABLED:-false}"
+      METRICS_BIND: "${METRICS_BIND:-disabled}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
     volumes: []
     depends_on:
       db:

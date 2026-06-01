@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Prometheus-compatible `/metrics` endpoint.** Sheaf now exposes a full set of application metrics: HTTP RED (request volume, latency, in-flight), the auth funnel broken down by outcome (password incorrect, locked, TOTP required/invalid, recovery code used, trusted-device bypass, etc.), rate-limit hits per bucket, captcha lifecycle, lockout events, notification dispatch per channel type and outcome, outbox depth and oldest-pending age, per-kind email sends, SendGrid feedback events, cf-shield engagements, scheduled-job runs with duration and consecutive-failure tracking, imports and exports by source/outcome, System Safety pending-action grace, decrypt failures per field, plus base data-shape gauges (users, systems, members, active sessions, trusted devices, DB pool, Redis up). The endpoint defaults to a separate listener on `127.0.0.1:8090` with no auth (safe for single-node deploys scraped over loopback or a private network), with `METRICS_BIND=main` + bearer-token auth available for shared-listener and remote-scrape setups. Per-IP and per-account request rates are surfaced as histograms-of-rates so the distribution is visible without ever putting an IP or account ID into a label. Multi-worker uvicorn is supported out of the box via `PROMETHEUS_MULTIPROC_DIR`. Full catalog, cardinality rules, and scrape configuration examples in `docs/METRICS.md`.
+
 ## [0.2.4] - 2026-05-30
 
 ### Added

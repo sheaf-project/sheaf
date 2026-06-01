@@ -60,6 +60,11 @@ from sheaf.models.api_key import ApiKey
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User, UserTier
+from sheaf.observability.metrics import (
+    auth_logins_total,
+    auth_password_reset_total,
+    auth_recovery_codes_used_total,
+)
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
     SecondarySessionRequest,
@@ -261,7 +266,7 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
 
     subject, html, text = verification_email(token)
     try:
-        await send_email(email, subject, html, text)
+        await send_email(email, subject, html, text, kind="verification")
     except Exception:
         logger.exception("Failed to send verification email to user %s", user.id)
 
@@ -494,7 +499,7 @@ async def _deliver_password_reset_email(email: str, token: str, ip: str) -> None
         from sheaf.services.email_templates import password_reset_email
 
         subject, html, text = password_reset_email(token, ip=ip)
-        await send_email(email, subject, html, text)
+        await send_email(email, subject, html, text, kind="password_reset")
     except Exception:
         logger.exception("Failed to send password reset email")
 
@@ -544,6 +549,10 @@ async def request_password_reset(
         token = secrets.token_urlsafe(32)
         hash_mail_token(token)
 
+    # Counted regardless of whether an email actually went out — the rate
+    # at which reset is requested is the signal, not the email count
+    # (which is leaky anyway).
+    auth_password_reset_total.labels(stage="requested").inc()
     return {"requested": True}
 
 
@@ -570,6 +579,10 @@ async def reset_password(
     )
     user = result.scalar_one_or_none()
     if user is None:
+        # Unknown / already-consumed token. We can't distinguish "expired
+        # and purged" from "never existed" here, so both increment the same
+        # stage; the requested-vs-completed funnel still tells the story.
+        auth_password_reset_total.labels(stage="expired").inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
@@ -579,6 +592,7 @@ async def reset_password(
     if user.password_reset_sent_at is not None:
         age = (datetime.now(UTC) - user.password_reset_sent_at).total_seconds()
         if age > 3600:
+            auth_password_reset_total.labels(stage="expired").inc()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Reset token has expired. Please request a new one.",
@@ -588,6 +602,7 @@ async def reset_password(
     user.password_reset_token = None
     user.password_reset_sent_at = None
     await db.commit()
+    auth_password_reset_total.labels(stage="completed").inc()
     return {"reset": True}
 
 
@@ -771,6 +786,7 @@ async def login(
     ),
 ):
     if captcha.required_for_login() and not captcha.verify(body.captcha):
+        auth_logins_total.labels(outcome="captcha_failed").inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Captcha verification failed",
@@ -784,11 +800,18 @@ async def login(
     # state leaks that the account exists, but so does a successful login
     # attempt; rate limits + captcha are what stop anonymous enumeration.
     if user is not None:
-        ensure_not_locked(user)
+        try:
+            ensure_not_locked(user)
+        except HTTPException:
+            auth_logins_total.labels(outcome="locked").inc()
+            raise
 
     if user is None or not verify_password(body.password, user.password_hash):
         if user is not None:
             await record_login_failure(db, user)
+            auth_logins_total.labels(outcome="password_incorrect").inc()
+        else:
+            auth_logins_total.labels(outcome="user_not_found").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -798,6 +821,7 @@ async def login(
     # Enforce TOTP if enabled — unless the browser presents a valid
     # trusted-device cookie for this user.
     bypassed_via_trusted_device = False
+    recovery_code_used = False
     if user.totp_enabled:
         trusted = await verify_trusted_device(
             db, trusted_device_cookie, user.id, ip=client_ip(request),
@@ -806,20 +830,23 @@ async def login(
             bypassed_via_trusted_device = True
         else:
             if not body.totp_code:
+                auth_logins_total.labels(outcome="totp_required").inc()
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="TOTP code required",
                     headers={"X-Sheaf-2FA": "required"},
                 )
             secret = decrypt(user.totp_secret)
-            if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
-                db, user, body.totp_code
-            ):
-                await record_login_failure(db, user)
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid TOTP code",
-                )
+            if not verify_code(secret, body.totp_code):
+                if await _check_recovery_code(db, user, body.totp_code):
+                    recovery_code_used = True
+                else:
+                    await record_login_failure(db, user, reason="totp_failures")
+                    auth_logins_total.labels(outcome="totp_invalid").inc()
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid TOTP code",
+                    )
 
     # Rehash if argon2 params have been upgraded
     if needs_rehash(user.password_hash):
@@ -894,6 +921,14 @@ async def login(
             max_age=TRUSTED_DEVICE_TTL_DAYS * 86400,
             path="/v1/auth",
         )
+
+    if bypassed_via_trusted_device:
+        auth_logins_total.labels(outcome="trusted_device_bypass").inc()
+    elif recovery_code_used:
+        auth_logins_total.labels(outcome="recovery_code_used").inc()
+        auth_recovery_codes_used_total.inc()
+    else:
+        auth_logins_total.labels(outcome="success").inc()
 
     return TokenResponse(
         access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
@@ -1714,7 +1749,7 @@ async def request_account_deletion(
             subject, html, text = deletion_confirmation_email(
                 deletion_date.strftime("%B %d, %Y")
             )
-            await send_email(email, subject, html, text)
+            await send_email(email, subject, html, text, kind="deletion_confirmed")
         except Exception:
             logger.exception("Failed to send deletion confirmation email")
 
