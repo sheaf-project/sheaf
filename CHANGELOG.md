@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-02
+
 ### Added
 
 - **Avatar and bio image cropper.** Picking a file for an avatar or a bio embed now opens a crop dialog. Avatars get a 1:1 aspect lock and a circular preview mask, so what you see in the cropper is exactly what the round avatar component will render. Bio embeds use a freeform rectangular crop. Both support zoom and rotation. Drag-and-drop avatar uploads route through the cropper too.
