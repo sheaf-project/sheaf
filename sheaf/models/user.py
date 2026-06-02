@@ -54,6 +54,13 @@ class User(UUIDMixin, TimestampMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # Per-user override for animated avatars (GIF / animated WebP). Combined
+    # with the settings.allow_animated_uploads master switch and the
+    # tier-based eligibility set in sheaf.files.animation_allowed.
+    can_upload_animated_images: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     account_status: Mapped[AccountStatus] = mapped_column(
         Enum(AccountStatus, values_callable=lambda e: [m.value for m in e]),
         default=AccountStatus.ACTIVE,

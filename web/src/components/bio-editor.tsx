@@ -126,9 +126,11 @@ function MarkdownPreview({
 export function BioEditor({
   value,
   onChange,
+  placeholder = "Write a bio... (supports markdown)",
 }: {
   value: string;
   onChange: (value: string) => void;
+  placeholder?: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [tab, setTab] = useState<string>("write");
@@ -346,7 +348,7 @@ export function BioEditor({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-y"
-            placeholder="Write a bio... (supports markdown)"
+            placeholder={placeholder}
           />
         </TabsContent>
         <TabsContent value="preview" className="mt-1">

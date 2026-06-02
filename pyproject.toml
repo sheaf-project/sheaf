@@ -29,6 +29,7 @@ dependencies = [
     "pywebpush>=2.0.0",
     "croniter>=2.0.0",
     "prometheus-client>=0.20.0",
+    "Pillow>=11.0.0",
 ]
 
 [project.optional-dependencies]

@@ -55,6 +55,7 @@ from sheaf.auth.trusted_devices import (
 from sheaf.config import SheafMode, settings
 from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
+from sheaf.image_processing import animation_allowed
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
 from sheaf.models.system import DeleteConfirmation, System
@@ -1350,6 +1351,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
             and (user.is_admin or settings.allow_bio_images or user.can_upload_images)
         ),
         external_images_allowed=settings.allow_external_images,
+        animated_uploads_allowed=animation_allowed(user, settings),
     )
 
 
@@ -1407,6 +1409,7 @@ async def update_me(
             and (user.is_admin or settings.allow_bio_images or user.can_upload_images)
         ),
         external_images_allowed=settings.allow_external_images,
+        animated_uploads_allowed=animation_allowed(user, settings),
     )
 
 

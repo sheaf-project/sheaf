@@ -13,6 +13,11 @@ from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.files import resolve_avatar_url, verify_file_token
+from sheaf.image_processing import (
+    ImageNormalizationError,
+    animation_allowed,
+    normalize_image,
+)
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.uploaded_file import UploadedFile
@@ -145,6 +150,28 @@ async def upload_file(
             detail="File content does not match a supported image format.",
         )
 
+    # Server-side normalization pass: decode, dim-cap, EXIF strip, re-encode.
+    # Also enforces the animation gate: animated input flattens to a single
+    # static frame when the user is not eligible. After this point `data`,
+    # `actual_mime`, and `file_size` describe the *stored* bytes, not the
+    # uploaded bytes. The size limit above still applies to the raw upload.
+    try:
+        data, actual_mime, was_animated = normalize_image(
+            data,
+            actual_mime,
+            allow_animation=animation_allowed(user, settings),
+            max_dim=settings.max_image_dimension,
+            max_frames=settings.max_animated_frames,
+            max_decoded_bytes=settings.max_animated_decoded_bytes,
+        )
+    except ImageNormalizationError as e:
+        logger.info("image normalization rejected upload: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not process image.",
+        ) from e
+    file_size = len(data)
+
     # Cheap pre-check: reject obviously over-quota uploads before touching
     # storage. The authoritative check runs under a row lock below.
     quota = _get_quota_bytes(user)
@@ -215,7 +242,15 @@ async def upload_file(
             logger.warning("Failed to clean up orphaned upload blob %s", key)
         raise
 
-    return {"url": resolve_avatar_url(key), "key": key, "size": file_size}
+    return {
+        "url": resolve_avatar_url(key),
+        "key": key,
+        "size": file_size,
+        # True iff the original upload had more than one frame. When the
+        # animation gate is closed, the stored blob is the flattened
+        # first frame and the client can surface that to the user.
+        "animated": was_animated,
+    }
 
 
 @router.get("/usage")

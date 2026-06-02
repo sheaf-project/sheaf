@@ -74,7 +74,11 @@ export function JournalEntryEditor({
             <p className="text-sm text-muted-foreground">Loading editor…</p>
           }
         >
-          <BioEditor value={body} onChange={setBody} />
+          <BioEditor
+            value={body}
+            onChange={setBody}
+            placeholder="Write an entry... (supports markdown)"
+          />
         </Suspense>
       </div>
       <div className="flex gap-2">

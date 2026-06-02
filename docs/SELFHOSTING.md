@@ -763,6 +763,34 @@ MAX_AVATAR_SIZE_MB=1
 MAX_BIO_IMAGE_SIZE_MB=10
 ```
 
+### Server-side normalization
+
+Every accepted upload is decoded, dimension-capped, EXIF-stripped, and re-encoded through Pillow before it ever lands in storage. This is unconditional - there is no env var to turn it off - and it protects against three classes of issue:
+
+- **Decompression bombs.** A small-on-disk PNG can declare 50000x50000 pixels in its header and OOM a downstream renderer. Sheaf reads the declared dimensions before decoding and rejects anything whose pixel count would exceed `MAX_ANIMATED_DECODED_BYTES` (default 100 MB).
+- **Metadata leaks.** Phone photos carry GPS coordinates, camera serial numbers, and capture timestamps in EXIF. Re-encoding through a clean Pillow image drops all of it.
+- **Polyglot / parser tricks.** Re-encoding canonicalises the container so anything malicious in the original bytes is normalised out.
+
+Tuning knobs (all optional):
+
+```env
+MAX_IMAGE_DIMENSION=4096         # longest edge in px; larger gets downscaled
+MAX_ANIMATED_FRAMES=100          # cap for GIF / animated WebP
+MAX_ANIMATED_DECODED_BYTES=104857600  # 100 MB decompression-bomb cap
+```
+
+### Animated avatars
+
+Animated GIF / animated WebP uploads are **flattened to their first frame by default**, regardless of how they were uploaded. To allow animation:
+
+```env
+ALLOW_ANIMATED_UPLOADS=true
+```
+
+The master switch alone is not enough - eligibility is also per-user. You can either grant it to a specific account from the admin users page (or via `PATCH /v1/admin/users/{id}` with `{"can_upload_animated_images": true}`), or - in a future release - by tier. Admins always bypass the per-user check when the master switch is on. With the master switch off, even admins get flattened uploads.
+
+This split keeps the door open for "animated avatars as a premium feature" without code changes: SaaS deployments flip `ALLOW_ANIMATED_UPLOADS=true` and let the tier rule gate things; self-hosters who don't care just leave it off (today's behaviour) or turn it on for everyone via per-user grants.
+
 ---
 
 ## Public test / demo instance mode

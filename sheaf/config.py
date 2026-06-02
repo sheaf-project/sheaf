@@ -125,6 +125,20 @@ class Settings(BaseSettings):
     # allow_image_uploads wins if it is False.
     allow_bio_images: bool = True
 
+    # Master switch for animated avatars (GIF / animated WebP). When False
+    # (default), uploads of animated formats are flattened to their first
+    # frame and re-encoded as static WebP. When True, eligibility is decided
+    # per-user by tier + the can_upload_animated_images override.
+    allow_animated_uploads: bool = False
+    # Longest-edge cap (px) for stored images. Anything larger is downscaled
+    # during the server-side normalization pass; aspect ratio preserved.
+    max_image_dimension: int = 4096
+    # Frame-count cap for animated uploads. Rejected outright above this.
+    max_animated_frames: int = 100
+    # Decompression-bomb guard: reject before decoding when the declared
+    # pixel-count * 4 bytes would exceed this. 100 MB default.
+    max_animated_decoded_bytes: int = 100 * 1024 * 1024
+
     # Image serving mode: "signed" (default) or "unsigned".
     # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.
     #   S3: private bucket; serve endpoint redirects to a presigned S3 URL.

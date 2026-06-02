@@ -4,6 +4,11 @@ import type { DeleteQueued, DestructiveConfirm } from "@/types/api";
 interface UploadResponse {
   url: string;
   key: string;
+  size: number;
+  /** True iff the original upload had more than one frame. When the
+   *  per-user animation entitlement is off, the stored blob is the
+   *  flattened first frame and the UI can tell the user that. */
+  animated: boolean;
 }
 
 export function uploadFile(file: File, purpose: "avatar" | "bio" = "avatar"): Promise<UploadResponse> {

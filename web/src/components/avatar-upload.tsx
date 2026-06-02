@@ -1,6 +1,8 @@
 import { type FormEvent, useRef, useState } from "react";
+import { toast } from "sonner";
 import { uploadFile } from "@/lib/files";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AvatarCropperDialog } from "@/components/avatar-cropper-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Camera, X, Link } from "lucide-react";
@@ -24,17 +26,30 @@ export function AvatarUpload({
   const [urlValue, setUrlValue] = useState("");
   // Signed preview URL after upload — separate from the stored key
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // File staged for the cropper; non-null while the dialog is open.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const { user } = useAuth();
   const uploadsAllowed = user?.uploads_allowed ?? true;
   const externalAllowed = user?.external_images_allowed ?? true;
 
-  async function handleFile(file: File) {
+  async function handleCroppedBlob(blob: Blob) {
+    setPendingFile(null);
     setError("");
     setUploading(true);
     try {
-      const res = await uploadFile(file);
+      // Wrap the Blob back into a File so the FormData entry carries a
+      // sensible filename and content-type; the backend re-derives the
+      // extension from the magic-byte sniff anyway.
+      const named = new File([blob], "avatar.png", { type: blob.type });
+      const res = await uploadFile(named);
       setPreviewUrl(res.url); // show signed URL immediately
       onUpload(res.key);      // store the key, not the expiring URL
+      // Canvas crop already strips animation, so res.animated here means
+      // the original source was animated and the cropper flattened it.
+      // Tell the user so they aren't surprised by a still avatar.
+      if (res.animated) {
+        toast.info("Animated image was flattened to a single frame.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -44,14 +59,14 @@ export function AvatarUpload({
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    if (file) setPendingFile(file);
     e.target.value = "";
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith("image/")) handleFile(file);
+    if (file && file.type.startsWith("image/")) setPendingFile(file);
   }
 
   function handleUrlSubmit(e: FormEvent) {
@@ -152,6 +167,15 @@ export function AvatarUpload({
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
+      <AvatarCropperDialog
+        open={pendingFile !== null}
+        file={pendingFile}
+        aspect={1}
+        cropShape="round"
+        outputMime="image/png"
+        onConfirm={handleCroppedBlob}
+        onCancel={() => setPendingFile(null)}
+      />
     </div>
   );
 }
