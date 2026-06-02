@@ -36,6 +36,7 @@ from sheaf.models.notification_channel import (
 from sheaf.models.notification_outbox import NotificationOutboxRow
 from sheaf.observability.metrics import (
     notifications_dispatch_duration_seconds,
+    notifications_dispatch_lag_seconds,
     notifications_dispatched_total,
 )
 from sheaf.services.members import member_name_plaintext
@@ -313,6 +314,10 @@ async def _deliver_or_retry(
         notifications_dispatched_total.labels(
             channel_type=ct, outcome="success",
         ).inc()
+        lag = (row.delivered_at - row.enqueued_at).total_seconds()
+        notifications_dispatch_lag_seconds.labels(channel_type=ct).observe(
+            max(lag, 0)
+        )
         return
 
     if outcome.permanent:

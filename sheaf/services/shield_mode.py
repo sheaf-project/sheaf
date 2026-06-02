@@ -40,6 +40,7 @@ from sheaf.config import settings
 from sheaf.models.user import User
 from sheaf.observability.metrics import (
     auth_sessions_invalidated_total,
+    cf_shield_active,
     cf_shield_engagements_total,
     cf_shield_session_revocations_total,
 )
@@ -111,6 +112,7 @@ async def apply_transition(*, active: bool, db: AsyncSession) -> ShieldState:
 
     new_state = ShieldState(active=active, since=now)
     await _write_state(new_state)
+    cf_shield_active.set(1 if active else 0)
 
     if active:
         # Up edge: run the mass-invalidate pass. Anything that fails

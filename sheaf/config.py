@@ -492,6 +492,11 @@ class Settings(BaseSettings):
     # that are effectively rounded up. 60 seconds is a reasonable floor
     # for a per-15-minute loop without pretending we can refresh faster.
     metrics_gauge_refresh_seconds: int = 60
+    # Fast-gauges refresh interval for the small set of metrics that
+    # genuinely move fast (redis_up, db pool connection counts, outbox
+    # depth). Bounded below by job_check_interval_minutes * 60 same as
+    # the slow refresh; values below that effectively round up.
+    metrics_fast_gauge_refresh_seconds: int = 10
 
     # Server
     sheaf_port: int = 8000

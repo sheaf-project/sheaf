@@ -27,6 +27,22 @@ logging.basicConfig(
 logger = logging.getLogger("sheaf")
 
 
+async def _fast_gauges_loop() -> None:
+    """Refresh fast-moving metrics gauges (redis_up, db_pool, outbox_depth)
+    on a short cadence so up/down detection isn't bounded by the
+    job-runner's coarse wake interval. The slow sweep stays on the job
+    runner."""
+    from sheaf.observability.gauges import refresh_fast_gauges
+
+    interval = max(settings.metrics_fast_gauge_refresh_seconds, 1)
+    while True:
+        try:
+            await refresh_fast_gauges()
+        except Exception:
+            logger.exception("Fast-gauges refresh raised; continuing")
+        await asyncio.sleep(interval)
+
+
 async def _promote_admin_emails() -> None:
     """Promote configured admin emails to is_admin=True on startup."""
     emails = settings.admin_email_list
@@ -107,16 +123,30 @@ async def lifespan(app: FastAPI):
         else None
     )
 
+    # Fast-gauges loop: redis_up / db_pool / outbox_depth refreshed every
+    # ~10s so up/down detection isn't bounded by the job-runner cadence.
+    # The full DB+Redis sweep stays on the jobs.py registry (slow path).
+    fast_gauges_task = (
+        asyncio.create_task(_fast_gauges_loop())
+        if settings.metrics_enabled
+        else None
+    )
+
     yield
 
     jobs_task.cancel()
     dispatcher_task.cancel()
     if import_task is not None:
         import_task.cancel()
+    if fast_gauges_task is not None:
+        fast_gauges_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await jobs_task
     with contextlib.suppress(asyncio.CancelledError):
         await dispatcher_task
+    if fast_gauges_task is not None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await fast_gauges_task
     if import_task is not None:
         with contextlib.suppress(asyncio.CancelledError):
             await import_task

@@ -17,6 +17,7 @@ from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
+from sheaf.observability.metrics import tier_label, tier_limit_hits_total
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.file_cleanup import (
     cleanup_orphaned_files,
@@ -154,6 +155,9 @@ async def upload_file(
         )
         if (used + file_size) > quota:
             quota_mb = quota // (1024 * 1024)
+            tier_limit_hits_total.labels(
+                limit="storage", tier=tier_label(user.tier),
+            ).inc()
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"Storage quota exceeded. Limit: {quota_mb}MB",
@@ -187,6 +191,9 @@ async def upload_file(
             )
             if (used + file_size) > quota:
                 quota_mb = quota // (1024 * 1024)
+                tier_limit_hits_total.labels(
+                    limit="storage", tier=tier_label(user.tier),
+                ).inc()
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=f"Storage quota exceeded. Limit: {quota_mb}MB",

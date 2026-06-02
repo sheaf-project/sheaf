@@ -99,6 +99,15 @@ DecryptField = Literal[
     "email", "totp_secret", "recovery_codes", "channel_config", "other"
 ]
 
+TierLimit = Literal[
+    "members",
+    "storage",
+    "polls_concurrent",
+    "pushover_user",
+    "pushover_global",
+]
+TierLabel = Literal["free", "plus", "self_hosted", "unknown"]
+
 DbPoolState = Literal["checked_in", "checked_out"]
 StatusClass = Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
 
@@ -266,6 +275,13 @@ notifications_dispatch_duration_seconds = _H(
     ["channel_type"],
     buckets=DISPATCH_LATENCY_BUCKETS,
 )
+notifications_dispatch_lag_seconds = _H(
+    "sheaf_notifications_dispatch_lag_seconds",
+    "Time from outbox row enqueued to dispatched (success only). "
+    "Distributional cousin of outbox_oldest_pending_seconds.",
+    ["channel_type"],
+    buckets=DISPATCH_LATENCY_BUCKETS,
+)
 notifications_outbox_depth = _G(
     "sheaf_notifications_outbox_depth",
     "Outbox rows with delivered_at IS NULL.",
@@ -392,6 +408,12 @@ cf_shield_session_revocations_total = _C(
     "sheaf_cf_shield_session_revocations_total",
     "User sessions invalidated by shield-mode deactivation.",
 )
+cf_shield_active = _G(
+    "sheaf_cf_shield_active",
+    "1 when the backend believes shield mode is engaged, else 0. "
+    "Mirrors the value /v1/shield-mode/status returns.",
+    multiprocess_mode="max",
+)
 
 # ---------------------------------------------------------------------------
 # Encryption / data integrity
@@ -402,6 +424,13 @@ decrypt_failures_total = _C(
     "Field-decrypt failures by field. Should always be zero; non-zero "
     "indicates key drift or corruption.",
     ["field"],
+)
+tier_limit_hits_total = _C(
+    "sheaf_tier_limit_hits_total",
+    "Quota-rejection callsites by limit category and account tier. "
+    "Tracks where users bump into per-tier caps; informs pricing / "
+    "limit-adjustment decisions.",
+    ["limit", "tier"],
 )
 users_total = _G(
     "sheaf_users_total",
@@ -432,9 +461,28 @@ db_pool_connections = _G(
     "SQLAlchemy async pool connection counts.",
     ["state"],
 )
+db_query_duration_seconds = _H(
+    "sheaf_db_query_duration_seconds",
+    "DB query execution time bucketed by SQL operation. Operation is the "
+    "leading verb (select / insert / update / delete / ddl / other) so "
+    "cardinality stays bounded.",
+    ["operation"],
+    buckets=HTTP_LATENCY_BUCKETS,
+)
 redis_up = _G(
     "sheaf_redis_up",
     "1 if Redis PING succeeded on the last gauge refresh, else 0.",
+)
+s3_operations_total = _C(
+    "sheaf_s3_operations_total",
+    "S3 operations attempted by the storage backends, by op and outcome.",
+    ["op", "outcome"],
+)
+s3_operation_duration_seconds = _H(
+    "sheaf_s3_operation_duration_seconds",
+    "S3 operation runtime.",
+    ["op"],
+    buckets=DISPATCH_LATENCY_BUCKETS,
 )
 
 # ---------------------------------------------------------------------------
@@ -503,3 +551,50 @@ def prewarm_metrics() -> None:
 
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)
+
+    for limit_name in (
+        "members", "storage", "polls_concurrent",
+        "pushover_user", "pushover_global",
+    ):
+        for tier in ("free", "plus", "self_hosted"):
+            tier_limit_hits_total.labels(limit=limit_name, tier=tier).inc(0)
+
+
+async def observe_s3(op: str, awaitable):
+    """Wrap an awaitable S3 call with the s3_operations counter + duration.
+
+    Use at the call site:
+        result = await observe_s3("put", self._run(self.client.put_object, ...))
+    Re-raises on failure after labelling outcome=error.
+    """
+    import time as _time
+
+    start = _time.perf_counter()
+    try:
+        result = await awaitable
+    except Exception:
+        s3_operations_total.labels(op=op, outcome="error").inc()
+        s3_operation_duration_seconds.labels(op=op).observe(
+            _time.perf_counter() - start
+        )
+        raise
+    else:
+        s3_operations_total.labels(op=op, outcome="success").inc()
+        s3_operation_duration_seconds.labels(op=op).observe(
+            _time.perf_counter() - start
+        )
+        return result
+
+
+def tier_label(tier: object) -> str:
+    """Coerce a user tier value (UserTier enum or string) to a metric label.
+
+    Returns "unknown" for None / unexpected values so the metric stays
+    safe to call without bespoke null-checking at every site.
+    """
+    if tier is None:
+        return "unknown"
+    value = getattr(tier, "value", tier)
+    if value in ("free", "plus", "self_hosted"):
+        return value
+    return "unknown"

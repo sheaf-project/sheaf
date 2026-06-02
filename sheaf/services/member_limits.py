@@ -17,6 +17,7 @@ from sheaf.config import settings
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
+from sheaf.observability.metrics import tier_label, tier_limit_hits_total
 from sheaf.services.import_parsing import ImportPayloadError
 
 _MEMBER_LIMIT_MAP = {
@@ -70,6 +71,9 @@ async def enforce_import_member_cap(
     current = await count_members(db, system.id)
     if current + incoming > limit:
         over = current + incoming - limit
+        tier_limit_hits_total.labels(
+            limit="members", tier=tier_label(user.tier),
+        ).inc()
         raise ImportPayloadError(
             f"This import would add {incoming} members, but your account is "
             f"limited to {limit} ({current} already in use) — {over} over the "

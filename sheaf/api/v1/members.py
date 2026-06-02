@@ -17,6 +17,7 @@ from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
+from sheaf.observability.metrics import tier_label, tier_limit_hits_total
 from sheaf.schemas.journal import (
     ContentRevisionRead,
     PinRevisionRequest,
@@ -154,6 +155,9 @@ async def create_member(
     if limit > 0:
         count = await count_members(db, system.id)
         if count >= limit:
+            tier_limit_hits_total.labels(
+                limit="members", tier=tier_label(user.tier),
+            ).inc()
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Member limit reached ({limit}). Contact support for an increase.",

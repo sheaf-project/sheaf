@@ -25,6 +25,7 @@ from sheaf.observability.metrics import (
     auth_sessions_active,
     auth_totp_enabled,
     auth_trusted_devices_active,
+    cf_shield_active,
     db_pool_connections,
     imports_in_progress,
     members_custom_front,
@@ -51,7 +52,14 @@ _MAX_RATE_LIMIT_KEYS_PER_REFRESH = 50_000
 
 
 async def refresh_gauges(db: AsyncSession) -> dict:
-    """One refresh pass. Returns the jobs.py-style result dict."""
+    """Slow-gauges pass. Runs on the job-runner cadence, so detection
+    lag is bounded by job_check_interval_minutes. Use this for counts
+    that don't move on a per-second timescale (user/system counts,
+    subscriptions, pending actions, full rate-limit histogram sampling).
+
+    Fast-moving signals (redis_up, db_pool, outbox depth) ride
+    `refresh_fast_gauges()` on the dedicated lifespan task instead.
+    """
     # DB-sourced counts. Each query is a single COUNT(*) against an
     # indexed predicate (locked_until, expires_at, deliver_after).
     await _refresh_db_counts(db)
@@ -60,13 +68,23 @@ async def refresh_gauges(db: AsyncSession) -> dict:
     await _refresh_imports_in_progress(db)
     await _refresh_subscriptions(db)
 
-    # Redis-sourced. Each is a SCAN-and-count or a single value read.
-    await _refresh_redis_gauges()
-
-    # Engine pool stats. Free to read; doesn't touch the DB.
-    _refresh_db_pool()
+    # Per-IP / per-account rate-distribution sampling — slow because it
+    # walks every rate-limit counter in Redis.
+    await _refresh_rate_distribution()
+    await _refresh_shield_state()
 
     return {"items_processed": 1}
+
+
+async def refresh_fast_gauges() -> None:
+    """Fast-gauges pass. Runs on the dedicated `fast_gauges_loop` task
+    on a short (~10s) cadence so up/down detection isn't bounded by the
+    job-runner's coarse wake interval. Keeps the work cheap: a Redis
+    PING, the pool's checked-in/out counters, one outbox COUNT(*).
+    """
+    await _refresh_redis_up_only()
+    _refresh_db_pool()
+    await _refresh_outbox_depth_only()
 
 
 async def _refresh_db_counts(db: AsyncSession) -> None:
@@ -194,21 +212,45 @@ async def _refresh_subscriptions(db: AsyncSession) -> None:
         )
 
 
-async def _refresh_redis_gauges() -> None:
+async def _refresh_redis_up_only() -> None:
+    """Just the PING. Used by the fast-gauges loop."""
     try:
         from sheaf.auth.sessions import get_redis
 
         r = await get_redis()
-    except Exception:
-        redis_up.set(0)
-        return
-
-    try:
         await r.ping()
     except Exception:
         redis_up.set(0)
         return
     redis_up.set(1)
+
+
+async def _refresh_outbox_depth_only() -> None:
+    """Outbox depth without the oldest-pending walk. Used by the
+    fast-gauges loop; the full _refresh_outbox is on the slow path."""
+    from sheaf.database import async_session_factory
+    from sheaf.models.notification_outbox import NotificationOutboxRow
+
+    async with async_session_factory() as db:
+        try:
+            pending = await db.scalar(
+                select(func.count(NotificationOutboxRow.id)).where(
+                    NotificationOutboxRow.delivered_at.is_(None)
+                )
+            )
+        except Exception:
+            return
+    notifications_outbox_depth.set(int(pending or 0))
+
+
+async def _refresh_rate_distribution() -> None:
+    try:
+        from sheaf.auth.sessions import get_redis
+
+        r = await get_redis()
+        await r.ping()
+    except Exception:
+        return
 
     # Active sessions. SCAN with COUNT hint; bail if it gets long.
     sessions = 0
@@ -271,6 +313,22 @@ async def _scan(r, pattern: str, cap: int) -> AsyncIterator[str]:
                 return
         if cursor in (0, "0"):
             return
+
+
+async def _refresh_shield_state() -> None:
+    """Pull current shield_mode state from Redis into the gauge.
+
+    apply_transition() sets the gauge on every edge, but a backend
+    restarting mid-incident wouldn't know until the next transition.
+    The refresher closes that gap within one cycle.
+    """
+    from sheaf.services.shield_mode import get_state
+
+    try:
+        state = await get_state()
+    except Exception:
+        return
+    cf_shield_active.set(1 if state.active else 0)
 
 
 def _refresh_db_pool() -> None:

@@ -162,6 +162,7 @@ percentiles means abuse.
 |---|---|---|
 | `sheaf_notifications_dispatched_total` | counter | `channel_type`, `outcome` ∈ {success, transient_failure, permanent_failure, filtered, revoked, dropped} |
 | `sheaf_notifications_dispatch_duration_seconds` | histogram | `channel_type` |
+| `sheaf_notifications_dispatch_lag_seconds` | histogram | `channel_type` |
 | `sheaf_notifications_outbox_depth` | gauge | — |
 | `sheaf_notifications_outbox_oldest_pending_seconds` | gauge | — |
 | `sheaf_notifications_subscriptions_active` | gauge | `channel_type` |
@@ -171,6 +172,9 @@ percentiles means abuse.
 `outbox_depth` shows pending volume; `outbox_oldest_pending_seconds`
 catches the "depth is fine but one row is stuck" case where a single
 wedged dispatch can otherwise hide behind a healthy aggregate.
+`dispatch_lag_seconds` is the per-row distribution: time from outbox
+enqueue to dispatch on successful deliveries, the distributional cousin
+of `oldest_pending_seconds`.
 
 ### Email
 
@@ -231,6 +235,11 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 |---|---|---|
 | `sheaf_cf_shield_engagements_total` | counter | `direction` ∈ {activated, deactivated} |
 | `sheaf_cf_shield_session_revocations_total` | counter | — |
+| `sheaf_cf_shield_active` | gauge | — |
+
+`sheaf_cf_shield_active` is 1 when the backend believes shield mode is
+currently engaged, else 0. Use it to alert on "shield-mode active for
+> N minutes" and to cross-check against cf-shield's view of CF.
 
 ### Encryption / data integrity
 
@@ -239,6 +248,16 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 | `sheaf_decrypt_failures_total` | counter | `field` |
 | `sheaf_users_total` | gauge | — |
 | `sheaf_users_pending_delete` | gauge | — |
+| `sheaf_tier_limit_hits_total` | counter | `limit`, `tier` |
+
+`limit` ∈ {members, storage, polls_concurrent, pushover_user,
+pushover_global}.
+
+`tier` ∈ {free, plus, self_hosted, unknown}.
+
+Tracks where users bump into per-tier caps. Useful for pricing and
+limit-adjustment decisions — a sustained `members{tier="free"}` rate
+suggests the free cap needs revisiting.
 
 `field` ∈ {email, totp_secret, recovery_codes, channel_config, other}.
 
@@ -258,7 +277,24 @@ detect non-zero from the first scrape.
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_db_pool_connections` | gauge | `state` ∈ {checked_in, checked_out} |
+| `sheaf_db_query_duration_seconds` | histogram | `operation` ∈ {select, insert, update, delete, ddl, other} |
 | `sheaf_redis_up` | gauge | — |
+| `sheaf_s3_operations_total` | counter | `op`, `outcome` ∈ {success, error} |
+| `sheaf_s3_operation_duration_seconds` | histogram | `op` |
+
+`db_query_duration_seconds` complements the HTTP RED histogram — handler
+latency is the user-facing number, but a query-time spike vs handler-
+time spike tells you where to look.
+
+`op` for S3 metrics ∈ {put, get, delete, head, list, presign}. Catches
+"upload failures" and "image fetch storms" without bucket-name
+cardinality (the wrapper covers both the images bucket and the
+exports bucket).
+
+`redis_up` and `db_pool_connections` are refreshed every
+`METRICS_FAST_GAUGE_REFRESH_SECONDS` (default 10s) on a dedicated
+asyncio loop, so up/down detection is bounded by that interval rather
+than the slower DB-counts refresh.
 
 ### Build info
 
