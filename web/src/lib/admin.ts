@@ -20,6 +20,7 @@ export interface AdminUser {
   storage_used_bytes: number;
   member_count: number;
   can_upload_images: boolean;
+  can_upload_animated_images: boolean;
   created_at: string;
   last_login_at: string | null;
 }
@@ -37,6 +38,7 @@ export interface AdminUserPatch {
   is_admin?: boolean;
   member_limit?: number | null;
   can_upload_images?: boolean;
+  can_upload_animated_images?: boolean;
 }
 
 export interface AdminAuthStatus {

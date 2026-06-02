@@ -32,6 +32,9 @@ export interface User {
   uploads_allowed: boolean;
   bio_uploads_allowed: boolean;
   external_images_allowed: boolean;
+  /** Whether this user may upload animated avatars (GIF / animated WebP).
+   *  When false the cropper always flattens animated input to a still. */
+  animated_uploads_allowed: boolean;
 }
 
 /** Public payload from GET /v1/shield-mode/status. `feature_enabled`

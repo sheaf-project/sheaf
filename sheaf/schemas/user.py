@@ -82,6 +82,11 @@ class UserRead(BaseModel):
     # Instance policy for linking to external images (bio embeds + avatar URLs).
     # Not user-gated — it's a privacy/CSP setting that applies uniformly.
     external_images_allowed: bool = True
+    # Whether this user may upload animated avatars (GIF / animated WebP).
+    # When False, the upload endpoint flattens animated input to its first
+    # frame. The frontend uses this to decide whether to offer a
+    # "keep animation" path in the cropper.
+    animated_uploads_allowed: bool = False
 
     model_config = {"from_attributes": True}
 

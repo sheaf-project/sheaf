@@ -6,6 +6,18 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-02
+
+### Added
+
+- **Avatar and bio image cropper.** Picking a file for an avatar or a bio embed now opens a crop dialog. Avatars get a 1:1 aspect lock and a circular preview mask, so what you see in the cropper is exactly what the round avatar component will render. Bio embeds use a freeform rectangular crop. Both support zoom and rotation. Drag-and-drop avatar uploads route through the cropper too.
+- **Server-side image normalization.** Every upload now decodes through Pillow, gets its longest edge capped to `MAX_IMAGE_DIMENSION` (default 4096 px), has EXIF and ICC metadata stripped, and is re-encoded into a clean container before storage. Closes a privacy leak (phone photos retained GPS) and adds defence in depth against decompression-bomb uploads (the cap is on declared decoded bytes, not on-disk size, and runs before Pillow asks for the pixel data).
+- **Animation gate for animated avatars.** Animated GIF and animated WebP uploads now flatten to their first frame by default. A new master switch `ALLOW_ANIMATED_UPLOADS` plus a per-user `can_upload_animated_images` flag (settable from the admin UI) opt selected accounts back in. The hook is wired through to the upload pipeline so a future tier-based rollout (e.g. "animated avatars on the Plus tier") needs no callsite changes.
+
+### Fixed
+
+- **Journal entry editor placeholder.** The body field no longer reads "Write a bio..." - it now matches its context.
+
 ## [0.3.0] - 2026-06-02
 
 ### Added

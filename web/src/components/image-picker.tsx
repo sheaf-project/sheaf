@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload, ImagePlus, Link } from "lucide-react";
+import { AvatarCropperDialog } from "@/components/avatar-cropper-dialog";
 import { useAuth } from "@/hooks/use-auth";
 
 function formatBytes(bytes: number): string {
@@ -98,6 +99,7 @@ export function ImagePickerDialog({
 function UploadTab({ onUploaded }: { onUploaded: (key: string) => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const qc = useQueryClient();
   const upload = useMutation({
     mutationFn: (file: File) => uploadFile(file, "bio"),
@@ -110,6 +112,15 @@ function UploadTab({ onUploaded }: { onUploaded: (key: string) => void }) {
       setError(err instanceof Error ? err.message : "Upload failed");
     },
   });
+
+  function handleCroppedBlob(blob: Blob) {
+    setPendingFile(null);
+    setError("");
+    // Bio uploads default to JPEG (better compression for photos); the
+    // server normalizes anyway so the extension is just a hint here.
+    const ext = blob.type === "image/jpeg" ? "jpg" : "png";
+    upload.mutate(new File([blob], `bio.${ext}`, { type: blob.type }));
+  }
 
   return (
     <div className="space-y-3">
@@ -131,9 +142,19 @@ function UploadTab({ onUploaded }: { onUploaded: (key: string) => void }) {
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) upload.mutate(file);
+          if (file) setPendingFile(file);
           e.target.value = "";
         }}
+      />
+      <AvatarCropperDialog
+        open={pendingFile !== null}
+        file={pendingFile}
+        // Freeform crop for bio embeds: no aspect lock, rectangular preview.
+        aspect={undefined}
+        cropShape="rect"
+        outputMime="image/jpeg"
+        onConfirm={handleCroppedBlob}
+        onCancel={() => setPendingFile(null)}
       />
     </div>
   );
