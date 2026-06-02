@@ -23,8 +23,46 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from sheaf.config import settings
+from sheaf.observability.metrics import rate_limit_checks_total
 
 logger = logging.getLogger("sheaf.ratelimit")
+
+
+# Map route templates to a stable bucket label. The set is intentionally
+# small so dashboards stay legible; routes that don't match collapse to
+# "other" (which is itself useful — a sudden spike there means a new
+# rate-limited endpoint shipped without a bucket mapping).
+def _route_to_bucket(route: str) -> str:
+    if route.startswith("/v1/auth/"):
+        suffix = route[len("/v1/auth/"):]
+        if suffix == "login":
+            return "login"
+        if suffix == "register":
+            return "register"
+        if suffix in ("request-password-reset", "reset-password", "forgot-password"):
+            return "password_reset"
+        if suffix in ("verify-email", "resend-verification"):
+            return "email_verification"
+        if suffix.startswith("totp"):
+            return "totp"
+        if suffix in ("delete-account",):
+            return "account_delete"
+        if suffix.startswith("change-"):
+            return "account_change"
+        return "auth_other"
+    if route.startswith("/v1/account/"):
+        return "account_data"
+    if route.startswith("/v1/files"):
+        return "upload"
+    if route.startswith("/v1/exports") or route.startswith("/v1/export"):
+        return "export"
+    if route.startswith("/v1/notifications/"):
+        return "redeem"
+    if route.startswith("/v1/webhooks/"):
+        return "webhook"
+    if route.startswith("/v1/admin/"):
+        return "admin"
+    return "other"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +181,17 @@ def rate_limit(
 
         allowed, remaining, reset = await _check_limit(r, redis_key, limit)
 
+        # Bucket is derived from the matched route template when available
+        # so per-instance path noise doesn't bloat label cardinality.
+        route_obj = request.scope.get("route")
+        bucket = _route_to_bucket(getattr(route_obj, "path", None) or route)
+        scope_label = "per_user" if (key == "user" and identifier.startswith("user:")) else "per_ip"
+        rate_limit_checks_total.labels(
+            bucket=bucket,
+            scope=scope_label,
+            outcome="allowed" if allowed else "blocked",
+        ).inc()
+
         if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -199,6 +248,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         allowed, remaining, reset = await _check_limit(
             r, f"ip:{ip}:global", limit,
         )
+
+        rate_limit_checks_total.labels(
+            bucket="global",
+            scope="global",
+            outcome="allowed" if allowed else "blocked",
+        ).inc()
 
         if not allowed:
             return JSONResponse(

@@ -19,6 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import SheafMode, settings
 from sheaf.models.job_run import JobRun
+from sheaf.observability.metrics import (
+    job_consecutive_failures,
+    job_items_processed_total,
+    job_last_success_timestamp,
+    job_run_duration_seconds,
+    job_runs_total,
+)
 
 logger = logging.getLogger("sheaf.jobs")
 
@@ -88,7 +95,36 @@ async def run_job(job_name: str, db: AsyncSession) -> JobRun:
         logger.exception("Job %s failed", job_name)
 
     await db.flush()
+
+    # Metrics: count outcome, observe duration, update items_processed,
+    # set last-success timestamp, and track consecutive failures so
+    # alerts can fire on "job has failed 5 times in a row".
+    elapsed = (run.finished_at - run.started_at).total_seconds()
+    job_runs_total.labels(job=job_name, outcome=run.status).inc()
+    job_run_duration_seconds.labels(job=job_name).observe(elapsed)
+    if run.status == "success":
+        if run.items_processed:
+            job_items_processed_total.labels(job=job_name).inc(run.items_processed)
+        job_last_success_timestamp.labels(job=job_name).set(
+            run.finished_at.timestamp()
+        )
+        _consecutive_failures[job_name] = 0
+        job_consecutive_failures.labels(job=job_name).set(0)
+    else:
+        # Counter would be wrong here — failures aren't monotonic, they
+        # reset on success. Use a private state dict so we can increment
+        # against the current value without re-querying the registry.
+        prev = _consecutive_failures.get(job_name, 0)
+        _consecutive_failures[job_name] = prev + 1
+        job_consecutive_failures.labels(job=job_name).set(prev + 1)
+
     return run
+
+
+# Process-local consecutive-failure counter. Multiproc-safe-enough for v1:
+# the gauge is set with multiprocess_mode="max" so the highest worker view
+# wins, which matches the "have any of my workers seen 5 in a row?" intent.
+_consecutive_failures: dict[str, int] = {}
 
 
 async def _get_last_success(job_name: str, db: AsyncSession) -> datetime | None:
@@ -293,7 +329,7 @@ async def _send_deletion_reminders(db: AsyncSession) -> dict:
                     subject, html, text = deletion_reminder_email(
                         max(days_remaining, 0)
                     )
-                    await send_email(email, subject, html, text)
+                    await send_email(email, subject, html, text, kind="deletion_reminder")
                     already_sent.add(reminder_day)
                     user_reminders.append(reminder_day)
                     sent += 1
@@ -577,16 +613,24 @@ async def _finalize_pending_actions(db: AsyncSession) -> dict:
     if not pending:
         return {"items_processed": 0}
 
+    from sheaf.observability.metrics import pending_actions_finalized_total
+
     detail_lines: list[str] = []
     for row in pending:
         try:
             await finalize_pending_action(row, db)
             detail_lines.append(f"{row.action_type} {row.target_label}")
+            pending_actions_finalized_total.labels(
+                category=row.action_type, outcome="completed",
+            ).inc()
         except Exception as exc:
             row.status = PendingActionStatus.ERRORED
             row.error_message = str(exc)[:1000]
             row.completed_at = datetime.now(UTC)
             logger.exception("Failed to finalize pending action %s", row.id)
+            pending_actions_finalized_total.labels(
+                category=row.action_type, outcome="errored",
+            ).inc()
 
     return {
         "items_processed": len(pending),
@@ -938,6 +982,20 @@ def _register_all_jobs() -> None:
         description="Reset ImportJob rows stuck running after a worker crash",
         func=_recover_stale_imports,
         interval_seconds=lambda: settings.import_stale_running_minutes * 60,
+    )
+
+    # Background refresher for DB- and Redis-sourced metrics gauges.
+    # Cheap; the queries are all COUNT(*) on indexed predicates plus
+    # bounded Redis SCANs. Disabled when metrics are off so it doesn't
+    # waste a tick on every deployment.
+    from sheaf.observability.gauges import refresh_gauges as _refresh_metrics_gauges
+
+    register_job(
+        name="refresh_metrics_gauges",
+        description="Refresh DB- and Redis-sourced Prometheus gauges",
+        func=_refresh_metrics_gauges,
+        interval_seconds=lambda: settings.metrics_gauge_refresh_seconds,
+        enabled=lambda: settings.metrics_enabled,
     )
 
     # Dev-only jobs — sheaf_dev is NOT installed in production Docker images

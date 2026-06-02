@@ -13,12 +13,34 @@ from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
+from sheaf.observability import (
+    MetricsMiddleware,
+    init_registry,
+    setup_metrics_endpoint,
+)
+from sheaf.observability.metrics import build_info, prewarm_metrics
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("sheaf")
+
+
+async def _fast_gauges_loop() -> None:
+    """Refresh fast-moving metrics gauges (redis_up, db_pool, outbox_depth)
+    on a short cadence so up/down detection isn't bounded by the
+    job-runner's coarse wake interval. The slow sweep stays on the job
+    runner."""
+    from sheaf.observability.gauges import refresh_fast_gauges
+
+    interval = max(settings.metrics_fast_gauge_refresh_seconds, 1)
+    while True:
+        try:
+            await refresh_fast_gauges()
+        except Exception:
+            logger.exception("Fast-gauges refresh raised; continuing")
+        await asyncio.sleep(interval)
 
 
 async def _promote_admin_emails() -> None:
@@ -62,6 +84,16 @@ async def lifespan(app: FastAPI):
     settings.get_encryption_key()
     logger.info("Sheaf %s starting in %s mode", __version__, settings.sheaf_mode.value)
 
+    # Metrics: init registry before any bump call site has a chance to fire.
+    init_registry()
+    build_info.labels(
+        version=__version__,
+        sheaf_mode=settings.sheaf_mode.value,
+        git_commit=settings.sheaf_git_commit or "unknown",
+    ).set(1)
+    prewarm_metrics()
+    setup_metrics_endpoint(app, settings)
+
     await _promote_admin_emails()
 
     # Dev-only startup tasks (sheaf_dev not installed in production)
@@ -91,16 +123,30 @@ async def lifespan(app: FastAPI):
         else None
     )
 
+    # Fast-gauges loop: redis_up / db_pool / outbox_depth refreshed every
+    # ~10s so up/down detection isn't bounded by the job-runner cadence.
+    # The full DB+Redis sweep stays on the jobs.py registry (slow path).
+    fast_gauges_task = (
+        asyncio.create_task(_fast_gauges_loop())
+        if settings.metrics_enabled
+        else None
+    )
+
     yield
 
     jobs_task.cancel()
     dispatcher_task.cancel()
     if import_task is not None:
         import_task.cancel()
+    if fast_gauges_task is not None:
+        fast_gauges_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await jobs_task
     with contextlib.suppress(asyncio.CancelledError):
         await dispatcher_task
+    if fast_gauges_task is not None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await fast_gauges_task
     if import_task is not None:
         with contextlib.suppress(asyncio.CancelledError):
             await import_task
@@ -175,6 +221,11 @@ app.add_middleware(
     MaxBodySizeMiddleware,
     max_bytes=settings.max_request_body_size_mb * 1024 * 1024,
 )
+# Outermost middleware so the duration histogram captures total
+# user-facing latency including body-size and rate-limit checks.
+# Cheap no-op when metrics_enabled=false.
+if settings.metrics_enabled:
+    app.add_middleware(MetricsMiddleware)
 
 app.include_router(v1_router)
 

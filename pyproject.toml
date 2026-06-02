@@ -28,6 +28,7 @@ dependencies = [
     "httpx[http2]>=0.28.0",
     "pywebpush>=2.0.0",
     "croniter>=2.0.0",
+    "prometheus-client>=0.20.0",
 ]
 
 [project.optional-dependencies]

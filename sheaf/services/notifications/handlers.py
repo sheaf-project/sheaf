@@ -25,6 +25,7 @@ from sheaf.models.notification_channel import (
     DestinationType,
     NotificationChannel,
 )
+from sheaf.observability.metrics import tier_label, tier_limit_hits_total
 from sheaf.services.notifications.payload import RenderedMessage
 from sheaf.services.notifications.safe_http import (
     SsrfRejected,
@@ -334,6 +335,9 @@ async def _deliver_pushover(
         if owner_user_id is not None and await is_user_over_cap(
             owner_user_id, owner_tier
         ):
+            tier_limit_hits_total.labels(
+                limit="pushover_user", tier=tier_label(owner_tier),
+            ).inc()
             return transient(
                 "your monthly Pushover allotment on this instance is "
                 "reached; the operator can raise your tier's cap, or you "
@@ -342,6 +346,9 @@ async def _deliver_pushover(
             )
 
         if await is_over_cap():
+            tier_limit_hits_total.labels(
+                limit="pushover_global", tier=tier_label(owner_tier),
+            ).inc()
             return transient(
                 "shared Pushover app monthly cap reached; "
                 "ask the operator or set destination_config.app_token "

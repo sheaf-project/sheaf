@@ -15,6 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.observability.metrics import (
+    email_provider_events_total,
+    webhook_signature_failures_total,
+)
 
 logger = logging.getLogger("sheaf.webhooks")
 
@@ -93,6 +97,7 @@ async def sendgrid_events(
         signature = request.headers.get(_SIG_HEADER, "")
         timestamp = request.headers.get(_TS_HEADER, "")
         if not signature or not timestamp:
+            webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
         # Replay window — reject stale or future-dated timestamps.
@@ -100,18 +105,21 @@ async def sendgrid_events(
             timestamp, settings.sendgrid_webhook_max_skew_seconds
         ):
             logger.warning("Rejected SendGrid webhook: stale or bad timestamp")
+            webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
         if not _verify_sendgrid_signature(
             settings.sendgrid_webhook_public_key, timestamp, raw_body, signature
         ):
             logger.warning("Rejected SendGrid webhook: bad signature")
+            webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     else:
         # Legacy shared-secret fallback. Deprecated — configure
         # SENDGRID_WEBHOOK_PUBLIC_KEY and enable the signed webhook.
         token = request.query_params.get("token", "")
         if not secrets.compare_digest(token, settings.sendgrid_webhook_secret):
+            webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     from sheaf.services.email_events import apply_bounce, apply_complaint
@@ -135,6 +143,11 @@ async def sendgrid_events(
         email = event.get("email")
         if not email or not event_type:
             continue
+
+        if event_type in ("bounce", "blocked", "dropped", "deferred", "spamreport"):
+            email_provider_events_total.labels(
+                provider="sendgrid", event=event_type,
+            ).inc()
 
         try:
             if event_type in ("bounce", "blocked", "dropped"):

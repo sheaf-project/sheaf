@@ -25,6 +25,7 @@ from sheaf.models.safety_change_request import (
 )
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.user import User
+from sheaf.observability.metrics import pending_actions_finalized_total
 from sheaf.schemas.system_safety import (
     PendingActionRead,
     SafetyChangeRequestRead,
@@ -222,6 +223,9 @@ async def cancel_pending_action(
     pending.cancelled_at = datetime.now(UTC)
     pending.cancelled_by_user_id = user.id
     await db.commit()
+    pending_actions_finalized_total.labels(
+        category=pending.action_type, outcome="cancelled",
+    ).inc()
 
 
 @router.delete(

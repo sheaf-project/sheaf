@@ -23,6 +23,7 @@ from sheaf.models.pending_action import PendingActionType
 from sheaf.models.poll import Poll, PollOption, PollVoteEvent
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.observability.metrics import tier_label, tier_limit_hits_total
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.poll import (
     PollAuditRead,
@@ -245,6 +246,9 @@ async def create_poll(
         )
         open_count = open_count_result.scalar_one()
         if open_count >= concurrent_cap:
+            tier_limit_hits_total.labels(
+                limit="polls_concurrent", tier=tier_label(user.tier),
+            ).inc()
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(

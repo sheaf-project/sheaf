@@ -38,6 +38,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.sessions import delete_all_user_sessions, get_redis
 from sheaf.config import settings
 from sheaf.models.user import User
+from sheaf.observability.metrics import (
+    auth_sessions_invalidated_total,
+    cf_shield_active,
+    cf_shield_engagements_total,
+    cf_shield_session_revocations_total,
+)
 
 logger = logging.getLogger("sheaf.shield_mode")
 
@@ -106,6 +112,7 @@ async def apply_transition(*, active: bool, db: AsyncSession) -> ShieldState:
 
     new_state = ShieldState(active=active, since=now)
     await _write_state(new_state)
+    cf_shield_active.set(1 if active else 0)
 
     if active:
         # Up edge: run the mass-invalidate pass. Anything that fails
@@ -114,12 +121,17 @@ async def apply_transition(*, active: bool, db: AsyncSession) -> ShieldState:
         # mode, so the state is correct even if we couldn't kick a
         # particular user.
         revoked = await _invalidate_opted_out_users(db)
+        cf_shield_engagements_total.labels(direction="activated").inc()
+        cf_shield_session_revocations_total.inc(revoked)
+        if revoked > 0:
+            auth_sessions_invalidated_total.labels(reason="cf_shield").inc(revoked)
         logger.warning(
             "shield_mode: engaged at %s, invalidated %d opted-out user(s)",
             now.isoformat(),
             revoked,
         )
     else:
+        cf_shield_engagements_total.labels(direction="deactivated").inc()
         logger.warning("shield_mode: disengaged at %s", now.isoformat())
 
     return new_state

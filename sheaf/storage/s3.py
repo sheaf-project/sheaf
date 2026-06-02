@@ -6,6 +6,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from sheaf.config import settings
+from sheaf.observability.metrics import observe_s3
 from sheaf.storage.base import StorageBackend
 
 
@@ -41,28 +42,35 @@ class S3Storage(StorageBackend):
         return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
 
     async def put(self, key: str, data: bytes, content_type: str) -> str:
-        await self._run(
-            self.client.put_object,
-            Bucket=self.bucket,
-            Key=key,
-            Body=data,
-            ContentType=content_type,
+        await observe_s3(
+            "put",
+            self._run(
+                self.client.put_object,
+                Bucket=self.bucket,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+            ),
         )
         return key
 
     async def presign(self, key: str, expiry_seconds: int) -> str:
         """Generate a presigned GET URL for a private S3 object."""
-        return await self._run(
-            self._presign_client.generate_presigned_url,
-            "get_object",
-            Params={"Bucket": self.bucket, "Key": key},
-            ExpiresIn=expiry_seconds,
+        return await observe_s3(
+            "presign",
+            self._run(
+                self._presign_client.generate_presigned_url,
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=expiry_seconds,
+            ),
         )
 
     async def get(self, key: str) -> bytes | None:
         try:
-            resp = await self._run(
-                self.client.get_object, Bucket=self.bucket, Key=key
+            resp = await observe_s3(
+                "get",
+                self._run(self.client.get_object, Bucket=self.bucket, Key=key),
             )
             return resp["Body"].read()
         except ClientError as e:
@@ -71,11 +79,17 @@ class S3Storage(StorageBackend):
             raise
 
     async def delete(self, key: str) -> None:
-        await self._run(self.client.delete_object, Bucket=self.bucket, Key=key)
+        await observe_s3(
+            "delete",
+            self._run(self.client.delete_object, Bucket=self.bucket, Key=key),
+        )
 
     async def exists(self, key: str) -> bool:
         try:
-            await self._run(self.client.head_object, Bucket=self.bucket, Key=key)
+            await observe_s3(
+                "head",
+                self._run(self.client.head_object, Bucket=self.bucket, Key=key),
+            )
             return True
         except ClientError:
             return False
@@ -87,12 +101,15 @@ class S3Storage(StorageBackend):
         for page in pages:
             for obj in page.get("Contents", []):
                 keys.append(obj["Key"])
+        from sheaf.observability.metrics import s3_operations_total
+        s3_operations_total.labels(op="list", outcome="success").inc()
         return keys
 
     async def size(self, key: str) -> int:
         try:
-            resp = await self._run(
-                self.client.head_object, Bucket=self.bucket, Key=key
+            resp = await observe_s3(
+                "head",
+                self._run(self.client.head_object, Bucket=self.bucket, Key=key),
             )
             return resp.get("ContentLength", 0)
         except ClientError:

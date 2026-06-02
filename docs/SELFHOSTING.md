@@ -711,6 +711,14 @@ Entries accept either a literal IP (`127.0.0.1`, `::1`) or a CIDR range (`172.16
 
 ---
 
+## Metrics
+
+Sheaf exposes a Prometheus-compatible `/metrics` endpoint covering HTTP RED, the auth funnel, rate-limit hits, notification dispatch, email send, job runner, imports/exports, System Safety, cf-shield events, and core data-shape gauges. Defaults bind a separate listener on `127.0.0.1:8090` with no auth - safe for single-node deploys scraped over loopback or a private network, NOT safe to forward through your edge without flipping `METRICS_AUTH=token`.
+
+Full catalog, cardinality rules, multi-worker setup, and scrape-config examples live in [METRICS.md](METRICS.md).
+
+---
+
 ## External images
 
 By default, member bios and descriptions can reference external image URLs, and avatars can be set to an arbitrary HTTPS URL. To restrict images to only hosted uploads:

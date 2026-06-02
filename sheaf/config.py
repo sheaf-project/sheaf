@@ -474,6 +474,30 @@ class Settings(BaseSettings):
     # the webhook signature on /v1/internal/shield-mode/state.
     shield_mode_webhook_secret: str = ""
 
+    # Prometheus /metrics exposure.
+    # bind:
+    #   "main"      — /metrics mounted on the API listener (always token-gated).
+    #   "separate"  — second listener on metrics_bind_host:metrics_bind_port.
+    #                 Default for safety: 127.0.0.1, no auth required at that bind.
+    #                 Flip to a non-loopback bind for remote scraping and turn auth on.
+    #   "disabled"  — endpoint not exposed anywhere.
+    metrics_enabled: bool = True
+    metrics_bind: str = "separate"
+    metrics_bind_host: str = "127.0.0.1"
+    metrics_bind_port: int = 8090
+    metrics_auth: str = "none"  # "none" | "token"
+    metrics_token: str = ""
+    # The gauge refresher is registered with the job runner. The runner
+    # itself only wakes every job_check_interval_minutes, so values below
+    # that are effectively rounded up. 60 seconds is a reasonable floor
+    # for a per-15-minute loop without pretending we can refresh faster.
+    metrics_gauge_refresh_seconds: int = 60
+    # Fast-gauges refresh interval for the small set of metrics that
+    # genuinely move fast (redis_up, db pool connection counts, outbox
+    # depth). Bounded below by job_check_interval_minutes * 60 same as
+    # the slow refresh; values below that effectively round up.
+    metrics_fast_gauge_refresh_seconds: int = 10
+
     # Server
     sheaf_port: int = 8000
     sheaf_host: str = "0.0.0.0"
@@ -597,6 +621,72 @@ def _validate_settings() -> None:
             "REGISTRATION_MODE=approval with EMAIL_BACKEND=none — "
             "users won't receive notification when approved. Consider configuring email."
         )
+
+    if settings.metrics_enabled and settings.metrics_bind not in ("main", "separate", "disabled"):
+        logger.critical(
+            "METRICS_BIND=%s is not recognised. Supported: main, separate, disabled.",
+            settings.metrics_bind,
+        )
+        sys.exit(1)
+
+    if settings.metrics_enabled and settings.metrics_auth not in ("none", "token"):
+        logger.critical(
+            "METRICS_AUTH=%s is not recognised. Supported: none, token.",
+            settings.metrics_auth,
+        )
+        sys.exit(1)
+
+    # Token is required when metrics_auth=token OR when metrics_bind=main
+    # (mounting on the public listener always forces auth, regardless of the
+    # metrics_auth setting). Without it, operators would discover the missing
+    # token at first scrape attempt rather than at startup.
+    _metrics_needs_token = settings.metrics_enabled and (
+        settings.metrics_auth == "token" or settings.metrics_bind == "main"
+    )
+    if _metrics_needs_token and not settings.metrics_token:
+        logger.critical(
+            "METRICS_TOKEN is required when METRICS_AUTH=token or METRICS_BIND=main. "
+            "Generate one with `openssl rand -hex 32` and set it."
+        )
+        sys.exit(1)
+
+    # Unauthenticated /metrics on a non-loopback / non-RFC1918 bind is a
+    # foot-gun: the auth funnel, lockout counters, and rate-limit signal
+    # become readable by anything that can reach the port. We can't
+    # judge external reachability with full confidence though — a docker
+    # container binding 0.0.0.0 is still fronted by the host's own port-
+    # publish posture, and the .env config that points to a non-private
+    # bind may be deliberate. So warn, don't refuse.
+    if (
+        settings.metrics_enabled
+        and settings.metrics_bind == "separate"
+        and settings.metrics_auth == "none"
+    ):
+        from ipaddress import ip_address
+
+        try:
+            _bind_ip = ip_address(settings.metrics_bind_host)
+            # `is_private` includes 0.0.0.0/8 (the "this network" range)
+            # which would falsely class 0.0.0.0 as safe — but as a listen
+            # address that's the bind-everywhere wildcard. Same goes for
+            # :: on v6. Exclude unspecified explicitly.
+            _bind_is_safe = (
+                not _bind_ip.is_unspecified
+                and (_bind_ip.is_loopback or _bind_ip.is_private)
+            )
+        except ValueError:
+            # Hostname rather than an IP — can't judge reachability;
+            # warn so the operator confirms they meant to skip auth.
+            _bind_is_safe = False
+        if not _bind_is_safe:
+            logger.warning(
+                "METRICS_BIND_HOST=%s with METRICS_AUTH=none: anything that "
+                "can reach this address+port will see auth-funnel, lockout, "
+                "and rate-limit metrics. Confirm the perimeter (firewall / "
+                "container port-publish posture) is doing the work — or set "
+                "METRICS_AUTH=token + METRICS_TOKEN.",
+                settings.metrics_bind_host,
+            )
 
     if settings.shield_mode_enabled and not settings.shield_mode_webhook_secret:
         logger.critical(

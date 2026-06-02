@@ -34,6 +34,11 @@ from sheaf.models.notification_channel import (
     NotificationChannel,
 )
 from sheaf.models.notification_outbox import NotificationOutboxRow
+from sheaf.observability.metrics import (
+    notifications_dispatch_duration_seconds,
+    notifications_dispatch_lag_seconds,
+    notifications_dispatched_total,
+)
 from sheaf.services.members import member_name_plaintext
 from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.payload import RenderedMessage
@@ -147,10 +152,18 @@ async def _process_row(
 
         channel = await _load_channel(db, row.channel_id)
         if channel is None or channel.watch_token.revoked_at is not None:
-            await _drop(db, row, "channel revoked or missing")
+            # channel_type may be unknown here (channel could be None)
+            ct = channel.destination_type if channel is not None else None
+            await _drop(
+                db, row, "channel revoked or missing",
+                channel_type=ct, outcome="revoked",
+            )
             return
         if channel.destination_state != DestinationState.ACTIVE.value:
-            await _drop(db, row, f"channel state {channel.destination_state}")
+            await _drop(
+                db, row, f"channel state {channel.destination_state}",
+                channel_type=channel.destination_type, outcome="revoked",
+            )
             return
 
         # Reminders take a separate code path: no member resolution, no
@@ -189,7 +202,10 @@ async def _process_row(
         # Rows are short-lived so this only matters during a deploy window.
         payload = row.event_payload
         if "kind" in payload or "fronting_before" not in payload:
-            await _drop(db, row, "legacy payload format dropped on upgrade")
+            await _drop(
+                db, row, "legacy payload format dropped on upgrade",
+                channel_type=channel.destination_type, outcome="dropped",
+            )
             return
 
         # Resolve every member in the before/after sets so the renderer can
@@ -201,7 +217,10 @@ async def _process_row(
         for s in payload.get("fronting_after", []):
             member_ids.add(uuid.UUID(s))
         if not member_ids:
-            await _drop(db, row, "empty fronting set")
+            await _drop(
+                db, row, "empty fronting set",
+                channel_type=channel.destination_type, outcome="filtered",
+            )
             return
 
         member_names, visible_set = await _resolve_members(
@@ -217,7 +236,10 @@ async def _process_row(
             visible_member_ids=visible_set,
         )
         if message.suppress:
-            await _drop(db, row, "no visible content for this channel")
+            await _drop(
+                db, row, "no visible content for this channel",
+                channel_type=channel.destination_type, outcome="filtered",
+            )
             return
 
         await _deliver_or_retry(db, row, channel, message, sems)
@@ -265,30 +287,45 @@ async def _deliver_or_retry(
     """Common delivery tail used by both front-change and reminder rows."""
     sem = sems.get(channel.destination_type)
     if sem is None:
-        await _drop(db, row, f"no handler for {channel.destination_type}")
+        await _drop(
+            db, row, f"no handler for {channel.destination_type}",
+            channel_type=channel.destination_type, outcome="dropped",
+        )
         return
 
     owner_user_id, owner_tier = await _resolve_channel_owner(db, channel)
 
-    async with sem:
-        outcome = await deliver(
-            channel,
-            message,
-            event_id=str(row.event_id),
-            owner_user_id=owner_user_id,
-            owner_tier=owner_tier,
-            db=db,
-        )
+    ct = channel.destination_type
+    with notifications_dispatch_duration_seconds.labels(channel_type=ct).time():
+        async with sem:
+            outcome = await deliver(
+                channel,
+                message,
+                event_id=str(row.event_id),
+                owner_user_id=owner_user_id,
+                owner_tier=owner_tier,
+                db=db,
+            )
 
     if outcome.ok:
         row.delivered_at = datetime.now(UTC)
         channel.last_delivered_at = row.delivered_at
         await db.commit()
+        notifications_dispatched_total.labels(
+            channel_type=ct, outcome="success",
+        ).inc()
+        lag = (row.delivered_at - row.enqueued_at).total_seconds()
+        notifications_dispatch_lag_seconds.labels(channel_type=ct).observe(
+            max(lag, 0)
+        )
         return
 
     if outcome.permanent:
         channel.destination_state = DestinationState.DISABLED.value
-        await _drop(db, row, f"permanent: {outcome.error}")
+        await _drop(
+            db, row, f"permanent: {outcome.error}",
+            channel_type=ct, outcome="permanent_failure",
+        )
         return
 
     # Transient: backoff + requeue.
@@ -300,6 +337,9 @@ async def _deliver_or_retry(
     row.claimed_at = None
     row.claimed_by = None
     await db.commit()
+    notifications_dispatched_total.labels(
+        channel_type=ct, outcome="transient_failure",
+    ).inc()
 
 
 async def _load_row(
@@ -390,13 +430,27 @@ async def _requeue(
 
 
 async def _drop(
-    db: AsyncSession, row: NotificationOutboxRow, reason: str
+    db: AsyncSession,
+    row: NotificationOutboxRow,
+    reason: str,
+    *,
+    channel_type: str | None = None,
+    outcome: str = "dropped",
 ) -> None:
     """Mark a row 'delivered' with no actual delivery (filtered out, revoked,
-    permanent failure). delivered_at is the natural sentinel for done."""
+    permanent failure). delivered_at is the natural sentinel for done.
+
+    `channel_type` and `outcome` feed the dispatched-total metric. When
+    channel_type is None we skip the bump — happens only when the channel
+    row itself couldn't be loaded.
+    """
     row.delivered_at = datetime.now(UTC)
     row.last_error = reason
     await db.commit()
+    if channel_type:
+        notifications_dispatched_total.labels(
+            channel_type=channel_type, outcome=outcome,
+        ).inc()
 
 
 def _quiet_hours_end(quiet_hours: dict | None, now: datetime) -> datetime | None:

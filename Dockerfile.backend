@@ -22,6 +22,12 @@ RUN if [ "$INCLUDE_DEV_TOOLS" = "true" ]; then \
     fi && rm -rf sheaf_dev/
 
 RUN mkdir -p /app/data && chown sheaf:sheaf /app/data
+# Multi-process Prometheus mmap directory. The entrypoint wipes stale
+# files before uvicorn starts so a previous container's leftover
+# values can't resurrect into a fresh deploy. Created world-writable
+# because uvicorn workers spawned under uid:gid sheaf:sheaf write here.
+RUN mkdir -p /var/run/prometheus-multiproc && chown sheaf:sheaf /var/run/prometheus-multiproc
+ENV PROMETHEUS_MULTIPROC_DIR=/var/run/prometheus-multiproc
 
 # Build provenance — populated by CI (or `docker build --build-arg`).
 # Late in the file so the heavyweight pip-install cache layer survives
@@ -38,6 +44,6 @@ LABEL org.opencontainers.image.source=https://github.com/sheaf-project/sheaf
 
 USER sheaf
 
-EXPOSE 8000
+EXPOSE 8000 8090
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn sheaf.main:app --host 0.0.0.0 --port ${SHEAF_PORT:-8000} --proxy-headers --forwarded-allow-ips=\"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]
+CMD ["sh", "-c", "rm -f \"$PROMETHEUS_MULTIPROC_DIR\"/*.db && alembic upgrade head && uvicorn sheaf.main:app --host 0.0.0.0 --port ${SHEAF_PORT:-8000} --proxy-headers --forwarded-allow-ips=\"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

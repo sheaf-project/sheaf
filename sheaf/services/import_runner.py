@@ -29,6 +29,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from sheaf.config import settings
 from sheaf.models.import_job import ImportJob, ImportJobStatus
 from sheaf.models.system import System
+from sheaf.observability.metrics import (
+    imports_completed_total,
+    imports_started_total,
+)
 from sheaf.services.import_parsing import ImportPayloadError
 from sheaf.services.import_storage import delete_payload
 
@@ -169,6 +173,7 @@ async def _claim_next_pending(db: AsyncSession) -> ImportJob | None:
     job.claimed_by = _worker_id()
     await db.flush()
     await db.commit()
+    imports_started_total.labels(source=job.source).inc()
     return job
 
 
@@ -201,6 +206,18 @@ async def _finalize(
     await db.commit()
     if storage_key:
         await delete_payload(storage_key)
+    # Map ImportJobStatus -> a small terminal-outcome label set so the
+    # completed counter is alertable. Anything not in the map (shouldn't
+    # happen — only the three terminal statuses pass through here) gets
+    # "failed" to err on the side of visibility.
+    outcome_label = {
+        ImportJobStatus.COMPLETE: "complete",
+        ImportJobStatus.FAILED: "failed",
+        ImportJobStatus.CANCELLED: "cancelled",
+    }.get(status, "failed")
+    imports_completed_total.labels(
+        source=job.source, outcome=outcome_label,
+    ).inc()
 
 
 async def run_import_tick(db: AsyncSession) -> dict:

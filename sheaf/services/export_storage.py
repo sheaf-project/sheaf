@@ -23,6 +23,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from sheaf.config import settings
+from sheaf.observability.metrics import observe_s3
 
 _FILESYSTEM_ROOT = Path("/app/data/exports")
 
@@ -103,12 +104,15 @@ async def put(user_id: uuid.UUID, job_id: uuid.UUID, data: bytes) -> str:
         # right mechanism for "encrypt everything in this bucket at rest"
         # is the bucket's default encryption policy — operator config, set
         # once, applies to every PUT. Documented in SELFHOSTING.md.
-        await _run(
-            client.put_object,
-            Bucket=_bucket(),
-            Key=key,
-            Body=data,
-            ContentType="application/zip",
+        await observe_s3(
+            "put",
+            _run(
+                client.put_object,
+                Bucket=_bucket(),
+                Key=key,
+                Body=data,
+                ContentType="application/zip",
+            ),
         )
         return key
     path = _filesystem_path(user_id, job_id)
@@ -125,7 +129,10 @@ async def delete(file_location: str) -> None:
 
         client = _client(_endpoint())
         try:
-            await _run(client.delete_object, Bucket=_bucket(), Key=file_location)
+            await observe_s3(
+                "delete",
+                _run(client.delete_object, Bucket=_bucket(), Key=file_location),
+            )
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
                 return
@@ -147,15 +154,18 @@ async def download_response(file_location: str, filename: str) -> Response:
     """
     if _is_s3():
         client = _client(_presign_endpoint())
-        url = await _run(
-            client.generate_presigned_url,
-            "get_object",
-            Params={
-                "Bucket": _bucket(),
-                "Key": file_location,
-                "ResponseContentDisposition": f'attachment; filename="{filename}"',
-            },
-            ExpiresIn=300,  # 5 min — enough for the redirect + download
+        url = await observe_s3(
+            "presign",
+            _run(
+                client.generate_presigned_url,
+                "get_object",
+                Params={
+                    "Bucket": _bucket(),
+                    "Key": file_location,
+                    "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                },
+                ExpiresIn=300,  # 5 min — enough for the redirect + download
+            ),
         )
         return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
     if not os.path.exists(file_location):

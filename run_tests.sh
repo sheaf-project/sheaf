@@ -23,8 +23,12 @@ FAILED=()
 
 # Total config count (kept in sync with the configs run below). Update when
 # adding/removing a config so the "[N/TOTAL]" progress prefix stays accurate.
-TOTAL_CONFIGS=8
+TOTAL_CONFIGS=9
 CONFIG_INDEX=0
+
+# Shared bearer token used by the metrics config row. Random per run so
+# it can't accidentally leak into a real deployment.
+METRICS_TOKEN="test-metrics-token-$(openssl rand -hex 8 2>/dev/null || echo deadbeef)"
 
 # The conftest fixtures query the DB directly with blind_index() — keyed
 # HMAC derived from the encryption key — so the host-side pytest must share
@@ -234,6 +238,34 @@ if SHEAF_TEST_URL="$TEST_URL" \
 else
     echo "FAILED: selfhosted/external_images_disabled"
     FAILED+=("selfhosted/external_images_disabled")
+fi
+
+# 9. Metrics endpoint — METRICS_BIND=main + a bearer token. Runs only
+# the metrics test file so the rest of the suite (which assumes /metrics
+# isn't on port 8001) doesn't get confused.
+CONFIG_INDEX=$((CONFIG_INDEX + 1))
+echo ""
+echo "================================================================"
+echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/metrics"
+echo "================================================================"
+
+ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
+    METRICS_ENABLED=true METRICS_BIND=main METRICS_TOKEN="$METRICS_TOKEN" \
+    $COMPOSE up -d app
+
+wait_for_app
+
+if SHEAF_TEST_URL="$TEST_URL" \
+   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+   SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
+   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+   SHEAF_TEST_MODE=selfhosted \
+   SHEAF_TEST_METRICS_TOKEN="$METRICS_TOKEN" \
+   uv run --extra dev pytest -q tests/test_metrics.py; then
+    echo "PASSED: selfhosted/metrics"
+else
+    echo "FAILED: selfhosted/metrics"
+    FAILED+=("selfhosted/metrics")
 fi
 
 # ---------------------------------------------------------------------------
