@@ -441,3 +441,103 @@ def test_sheaf_runner_hard_fails_over_member_cap(admin_client: httpx.Client):
 
     # Nothing was written: the account still has zero members.
     assert admin_client.get("/v1/members/limit").json()["current"] == 0
+
+
+# A foreign-looking owner UUID. Doesn't have to exist as a real user; the
+# import only inspects the structural shape of the key path, not whether
+# the embedded user_id resolves to anything live.
+_FOREIGN_OWNER = "99999999-9999-9999-9999-999999999999"
+
+# Export carrying every kind of cross-account image reference the
+# importer used to leak through. Designed so the resulting account ends
+# up with zero references back to the foreign owner's storage.
+_CROSS_ACCOUNT_EXPORT = {
+    "version": "2",
+    "system": {
+        "name": "Borrowed",
+        "avatar_url": f"avatars/{_FOREIGN_OWNER}/sysav.png",
+        "description": (
+            "Hi see "
+            f"![pic](/v1/files/bios/{_FOREIGN_OWNER}/inline.png)"
+            " also https://gravatar.com/x.png"
+        ),
+        "note": f"note ![n](/v1/files/bios/{_FOREIGN_OWNER}/n.png)",
+    },
+    "members": [
+        {
+            "id": "mx",
+            "name": "Borrower",
+            "avatar_url": f"avatars/{_FOREIGN_OWNER}/m-av.png",
+            "description": (
+                "bio with internal "
+                f"![inline](/v1/files/bios/{_FOREIGN_OWNER}/m-inline.png)"
+                " plus external ![ext](https://imgur.com/x.png)"
+            ),
+        },
+        {
+            "id": "my",
+            "name": "Externals",
+            "avatar_url": "https://gravatar.com/avatar/hash.png",
+            "description": "just ![ok](https://imgur.com/y.png)",
+        },
+    ],
+    "fronts": [],
+    "groups": [],
+    "tags": [],
+    "custom_fields": [],
+    "journals": [
+        {
+            "id": "j1",
+            "title": "entry",
+            "body": (
+                f"body ![pic](/v1/files/bios/{_FOREIGN_OWNER}/j-pic.png)"
+            ),
+            "image_keys": [
+                f"avatars/{_FOREIGN_OWNER}/jk1.png",
+                f"bios/{_FOREIGN_OWNER}/jk2.png",
+            ],
+        }
+    ],
+}
+
+
+def test_sheaf_runner_strips_cross_account_image_refs(auth_client: httpx.Client):
+    """Importing an export whose image refs point at another account's
+    storage strips those refs rather than carrying them through. External
+    URLs (gravatar, imgur) are preserved."""
+    me = auth_client.get("/v1/auth/me").json()
+    importer_id = me["id"]
+    assert importer_id != _FOREIGN_OWNER
+
+    job = _post_file(
+        auth_client, payload=json.dumps(_CROSS_ACCOUNT_EXPORT).encode()
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    # System avatar with foreign owner -> dropped. Description keeps the
+    # external https URL but loses the /v1/files embed.
+    system = auth_client.get("/v1/systems/me").json()
+    assert system["avatar_url"] is None, system
+    assert "v1/files" not in (system["description"] or "")
+    assert "gravatar.com" in (system["description"] or "")
+
+    # Members:
+    #  - The borrowing member's foreign-key avatar -> None; the external-
+    #    URL member's avatar survives untouched.
+    members = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    assert members["Borrower"]["avatar_url"] is None, members["Borrower"]
+    assert members["Externals"]["avatar_url"] == (
+        "https://gravatar.com/avatar/hash.png"
+    ), members["Externals"]
+    # Borrower's bio dropped the internal embed, kept the external one.
+    borrower_bio = members["Borrower"]["description"] or ""
+    assert "v1/files" not in borrower_bio
+    assert "imgur.com" in borrower_bio
+
+    # Journal entry body lost the internal embed; image_keys is now empty.
+    journals = auth_client.get("/v1/journals").json()
+    j = next(j for j in journals["items"] if j["title"] == "entry")
+    assert "v1/files" not in (j["body"] or "")
+    assert j["image_keys"] == [], j

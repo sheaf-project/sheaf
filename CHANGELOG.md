@@ -6,6 +6,9 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sheaf-to-Sheaf import no longer attaches another account's images.** When a Sheaf JSON export was imported into a different account (e.g. cloning a member roster to a fresh account on the same instance), the importer copied hosted `avatar_url` values and bio image references verbatim. The new account ended up with `/v1/files/...` references pointing at the original account's storage — silently borrowing blobs it did not own, invisible to quota tracking, and at risk of breaking the moment the original account triggered orphan cleanup. The importer now strips any internal storage references (avatars, bio image embeds, journal image keys) during the JSON import path; external image URLs (Gravatar, Imgur, etc.) are preserved unchanged. Restoring images on a Sheaf-to-Sheaf migration now requires re-uploading them on the new account; the proper fix is the planned export-with-images zip format that ships blob bytes alongside the JSON.
 ### Added
 
 - **"Show technical error details" setting.** New Advanced tab in Settings with a toggle that swaps friendly error toasts for the raw HTTP status code and backend error message. Off by default; useful for reporting bugs or diagnosing flaky network paths. Backend-stored so the choice follows the account across browsers.
