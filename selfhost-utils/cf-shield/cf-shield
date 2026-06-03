@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+#
+# cf-shield — break-glass DDoS shield for a Sheaf deployment on
+# AWS + Cloudflare. See README.md for what it assumes and how to adapt.
+#
+# Steady state has BOTH the webapp and api DNS records grey-cloud
+# (direct to origin, deliberate privacy choice so CF never sees normal
+# traffic). Shield mode:
+#   1. Flips both records' proxied flag to true (CF in path for both).
+#   2. Turns on Cloudflare "Under Attack Mode" zone-wide. The webapp
+#      gets the JS interstitial; the api host is exempted by a
+#      Cloudflare Configuration Rule (zone scope, http_config_settings
+#      phase, expression `(http.host eq "<api host>")`) that pins it at
+#      security_level=essentially_off, so non-browser API clients
+#      (mobile, webhooks, scripts) never see a challenge. The api host
+#      still gets CF L3/L4 DDoS protection and the free managed WAF;
+#      just no L7 reputation challenges. You configure this rule
+#      once in the Cloudflare dashboard - see README.md.
+#   3. Revokes the SG ingress rule that allows 443 from 0.0.0.0/0+::/0,
+#      leaving only the Cloudflare-CIDR allowlist on the instance's SG.
+#      Both hosts are now reachable only via CF, killing direct-to-IP
+#      bypass for the duration of the incident.
+#
+# Usage:
+#   cf-shield up       # shield ON
+#   cf-shield down     # shield OFF, restore steady state
+#   cf-shield status   # show current proxied flag + UAM level
+#
+# Required env:
+#   CF_API_TOKEN       Cloudflare token, scope Zone:DNS:Edit +
+#                      Zone:Zone Settings:Edit on your zone. Fetch
+#                      from your operator secret store however you
+#                      normally would.
+#   CF_ZONE_ID         Cloudflare zone ID for your domain.
+#   CF_APP_RECORD_ID   DNS record ID of the webapp host (the user-
+#                      facing one that gets UAM during shield).
+#   CF_API_RECORD_ID   DNS record ID of the API host (stays challenge-
+#                      free via the Configuration Rule).
+#   AWS_PROFILE        Whatever your AWS profile/SSO arrangement is.
+#   SG_ID              Instance security group ID for the target env.
+#
+# Optional env (skips the backend webhook if either is unset — script
+# still flips Cloudflare + SG; the backend opt-out invalidation just
+# does not run):
+#   SHEAF_SHIELD_WEBHOOK_URL     e.g. https://api.example.com/v1/internal/shield-mode/state
+#                                Hits the api host; during shield mode
+#                                that's via CF (proxied) but the
+#                                Configuration Rule keeps it challenge-free.
+#                                Fired BEFORE revoke_world_ingress on
+#                                up and AFTER restore_world_ingress on
+#                                down so the SG never blocks it.
+#   SHEAF_SHIELD_WEBHOOK_SECRET  Shared HMAC secret. Matches the
+#                                backend's SHIELD_MODE_WEBHOOK_SECRET.
+#                                Fetch from your operator secret store.
+#
+# Your IaC tool (Terraform, Pulumi, OpenTofu, ...) will show drift on
+# the DNS record's `proxied` field and on the SG world rule while
+# shield is active. Expected — `cf-shield down` restores both and the
+# next apply reconciles. Add a lifecycle.ignore_changes on `proxied`
+# in your DNS record resource if the noise bothers you.
+
+set -euo pipefail
+
+: "${CF_API_TOKEN:?CF_API_TOKEN must be set}"
+: "${CF_ZONE_ID:?CF_ZONE_ID must be set}"
+: "${CF_APP_RECORD_ID:?CF_APP_RECORD_ID must be set}"
+: "${CF_API_RECORD_ID:?CF_API_RECORD_ID must be set}"
+: "${AWS_PROFILE:?AWS_PROFILE must be set}"
+: "${SG_ID:?SG_ID must be set (instance security group ID)}"
+
+CF_API="https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}"
+
+cf_curl() {
+  curl -fsS \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" \
+    -H "Content-Type: application/json" \
+    "$@"
+}
+
+patch_proxied() {
+  local record_id=$1 value=$2
+  cf_curl -X PATCH \
+    --data "{\"proxied\":${value}}" \
+    "${CF_API}/dns_records/${record_id}" >/dev/null
+}
+
+patch_security_level() {
+  local value=$1
+  cf_curl -X PATCH \
+    --data "{\"value\":\"${value}\"}" \
+    "${CF_API}/settings/security_level" >/dev/null
+}
+
+# Revoke the "HTTPS from world" ingress rules on the instance SG.
+# The script identifies them by SG rule description - your SG must
+# tag the world-allow rules with a description containing the
+# string "HTTPS from world". See README.md for the convention.
+revoke_world_ingress() {
+  local ids
+  ids=$(aws ec2 describe-security-group-rules \
+    --filters "Name=group-id,Values=${SG_ID}" \
+    --query 'SecurityGroupRules[?!IsEgress && contains(Description, `HTTPS from world`)].SecurityGroupRuleId' \
+    --output text)
+  if [ -z "$ids" ]; then
+    echo "cf-shield: no 'HTTPS from world' rules found on ${SG_ID} — already revoked?"
+    return 0
+  fi
+  for id in $ids; do
+    echo "Revoking SG rule $id"
+    aws ec2 revoke-security-group-ingress \
+      --group-id "${SG_ID}" \
+      --security-group-rule-ids "$id" >/dev/null
+  done
+}
+
+# POST {active: bool} to the backend's shield-mode webhook with an
+# HMAC-SHA256 signature so the backend can run its opt-out session
+# invalidation. Best-effort: failure logs a warning but does not
+# abort the Cloudflare/SG transition - the CF + SG state is the
+# source of truth, and the script can be re-run to converge the
+# backend.
+#
+# Called BETWEEN the CF flip and the SG revoke on the UP path so the
+# direct origin is still reachable, and AFTER the SG restore on the
+# DOWN path. Both env vars optional - empty means skip entirely.
+notify_backend() {
+  local active=$1
+  if [ -z "${SHEAF_SHIELD_WEBHOOK_URL:-}" ] || [ -z "${SHEAF_SHIELD_WEBHOOK_SECRET:-}" ]; then
+    echo "  (SHEAF_SHIELD_WEBHOOK_URL / _SECRET unset; backend not notified)"
+    return 0
+  fi
+  local body sig
+  body=$(printf '{"active":%s}' "$active")
+  sig=$(printf '%s' "$body" \
+    | openssl dgst -sha256 -hmac "$SHEAF_SHIELD_WEBHOOK_SECRET" \
+    | awk '{print $2}')
+  if ! curl -fsS -X POST "$SHEAF_SHIELD_WEBHOOK_URL" \
+      -H "Content-Type: application/json" \
+      -H "X-Sheaf-Signature: $sig" \
+      --data "$body" \
+      --max-time 10 \
+      -o /dev/null; then
+    echo "  WARN: backend webhook POST failed (active=$active). CF + SG still flipped; re-run when reachable." >&2
+  fi
+}
+
+# Re-add the world ingress rules (v4 + v6). Matches the rule
+# description shape the script also looks for on revoke, so your IaC
+# tool's next reconcile sees a matching rule and does not want to
+# recreate them.
+restore_world_ingress() {
+  echo "Authorizing 443 from 0.0.0.0/0 on ${SG_ID}"
+  aws ec2 authorize-security-group-ingress \
+    --group-id "${SG_ID}" \
+    --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0,Description=\"HTTPS from world (cf-shield revokes this during incidents)\"}]" \
+    >/dev/null 2>&1 || echo "  (already present)"
+  echo "Authorizing 443 from ::/0 on ${SG_ID}"
+  aws ec2 authorize-security-group-ingress \
+    --group-id "${SG_ID}" \
+    --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,Ipv6Ranges=[{CidrIpv6=::/0,Description=\"HTTPS from world v6 (cf-shield revokes this during incidents)\"}]" \
+    >/dev/null 2>&1 || echo "  (already present)"
+}
+
+case "${1:-}" in
+  up)
+    echo "== cf-shield UP =="
+    echo "1a. Flipping webapp record ${CF_APP_RECORD_ID} to proxied=true"
+    patch_proxied "$CF_APP_RECORD_ID" true
+    echo "1b. Flipping api record ${CF_API_RECORD_ID} to proxied=true"
+    patch_proxied "$CF_API_RECORD_ID" true
+    echo "2. Setting zone security_level=under_attack"
+    echo "   (api host stays at essentially_off via Configuration Rule)"
+    patch_security_level under_attack
+    # Notify backend BEFORE revoking SG. The webhook endpoint lives on
+    # the api host (now proxied via CF), and the world-ingress SG rule
+    # still gates direct hits to the origin; once we revoke that rule,
+    # operator IPs that haven't been allowlisted on the SG can no
+    # longer reach the origin directly until cf-shield down restores
+    # it. The CF path keeps working throughout.
+    echo "3. Notifying backend shield-mode=active"
+    notify_backend true
+    echo "4. Revoking HTTPS-from-world SG ingress"
+    revoke_world_ingress
+    echo "Done. Both records now route through Cloudflare; webapp sees UAM,"
+    echo "api stays challenge-free via the Configuration Rule. Run"
+    echo "'cf-shield down' when over."
+    ;;
+  down)
+    echo "== cf-shield DOWN =="
+    # Restore SG ingress FIRST so the webhook below can reach the
+    # origin again, then flip the CF posture back.
+    echo "1. Restoring HTTPS-from-world SG ingress"
+    restore_world_ingress
+    echo "2. Notifying backend shield-mode=inactive"
+    notify_backend false
+    echo "3a. Flipping webapp record ${CF_APP_RECORD_ID} to proxied=false"
+    patch_proxied "$CF_APP_RECORD_ID" false
+    echo "3b. Flipping api record ${CF_API_RECORD_ID} to proxied=false"
+    patch_proxied "$CF_API_RECORD_ID" false
+    echo "4. Setting zone security_level=medium"
+    patch_security_level medium
+    echo "Done. Reconcile any dashboard-side changes back into your IaC before the next apply."
+    ;;
+  status)
+    echo "== cf-shield STATUS =="
+    app_proxied=$(cf_curl "${CF_API}/dns_records/${CF_APP_RECORD_ID}" | jq -r '.result.proxied')
+    api_proxied=$(cf_curl "${CF_API}/dns_records/${CF_API_RECORD_ID}" | jq -r '.result.proxied')
+    sec=$(cf_curl "${CF_API}/settings/security_level" | jq -r '.result.value')
+    world_rules=$(aws ec2 describe-security-group-rules \
+      --filters "Name=group-id,Values=${SG_ID}" \
+      --query 'SecurityGroupRules[?!IsEgress && contains(Description, `HTTPS from world`)].SecurityGroupRuleId' \
+      --output text)
+    echo "webapp_proxied=${app_proxied}"
+    echo "api_proxied=${api_proxied}"
+    echo "security_level=${sec}"
+    echo "sg_world_rules=${world_rules:-<none>}"
+    # Backend's view, unauthenticated. Helpful when diagnosing drift
+    # between the CF/SG side and what the app thinks. URL derivation:
+    # if SHEAF_SHIELD_WEBHOOK_URL is set, swap the path to /status;
+    # otherwise skip (no fallback - we won't guess hostnames).
+    if [ -n "${SHEAF_SHIELD_WEBHOOK_URL:-}" ]; then
+      status_url=${SHEAF_SHIELD_WEBHOOK_URL%/internal/shield-mode/state}/shield-mode/status
+      backend=$(curl -fsS "$status_url" 2>/dev/null || echo "<unreachable>")
+      echo "backend_status=${backend}"
+    fi
+    ;;
+  *)
+    sed -n '2,40p' "$0"
+    exit 64
+    ;;
+esac

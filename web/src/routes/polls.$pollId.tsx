@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { showApiErrorToast } from "@/lib/api-errors";
 
 import { useMembers } from "@/hooks/use-members";
 import { getCurrentFronts } from "@/lib/fronts";
@@ -231,7 +232,7 @@ function VoteCard({
       qc.invalidateQueries({ queryKey: ["poll", poll.id, "audit"] });
       toast.success("Vote recorded");
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => showApiErrorToast(err),
   });
 
   const withdrawMut = useMutation({
@@ -242,7 +243,7 @@ function VoteCard({
       setPicked(new Set());
       toast.success("Vote withdrawn");
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => showApiErrorToast(err),
   });
 
   if (frontingMembers.length === 0) {

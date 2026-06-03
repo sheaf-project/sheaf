@@ -63,7 +63,10 @@ async def _get_own_entry(
 ) -> JournalEntry:
     entry = await db.get(JournalEntry, entry_id)
     if entry is None or entry.system_id != system_id:
-        raise HTTPException(status_code=404, detail="Journal entry not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Journal entry not found",
+        )
     return entry
 
 
@@ -72,7 +75,10 @@ async def _verify_member_in_system(
 ) -> None:
     member = await db.get(Member, member_id)
     if member is None or member.system_id != system_id:
-        raise HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found",
+        )
 
 
 def _label_for(entry: JournalEntry) -> str:
@@ -174,7 +180,10 @@ async def create_entry(
             author_member_ids=body.author_member_ids,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     await db.commit()
     await db.refresh(entry)
     return JournalEntryRead.model_validate(decrypt_entry_for_read(entry))
@@ -225,7 +234,10 @@ async def patch_entry(
             author_member_ids=update_data.get("author_member_ids"),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     await db.commit()
     await db.refresh(entry)
     return JournalEntryRead.model_validate(decrypt_entry_for_read(entry))
@@ -324,7 +336,10 @@ async def restore_revision(
         or revision.target_type != ContentRevisionTarget.JOURNAL_ENTRY.value
         or revision.target_id != entry.id
     ):
-        raise HTTPException(status_code=404, detail="Revision not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Revision not found",
+        )
     await restore_journal_revision(
         db=db, user=user, entry=entry, revision=revision
     )
@@ -352,11 +367,17 @@ async def pin_journal_revision(
         or revision.target_type != ContentRevisionTarget.JOURNAL_ENTRY.value
         or revision.target_id != entry.id
     ):
-        raise HTTPException(status_code=404, detail="Revision not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Revision not found",
+        )
     try:
         await pin_revision(db=db, user=user, system=system, revision=revision)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     await db.commit()
     await db.refresh(revision)
     return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision))
@@ -381,9 +402,15 @@ async def unpin_journal_revision(
         or revision.target_type != ContentRevisionTarget.JOURNAL_ENTRY.value
         or revision.target_id != entry.id
     ):
-        raise HTTPException(status_code=404, detail="Revision not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Revision not found",
+        )
     if revision.pinned_at is None:
-        raise HTTPException(status_code=409, detail="Revision is not pinned")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Revision is not pinned",
+        )
 
     if is_safeguarded(system, PendingActionType.REVISION_UNPIN):
         verify_destructive_auth(user, system, body.password, body.totp_code)

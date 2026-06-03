@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { changeEmail } from "@/lib/auth";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,7 +49,7 @@ export function ChangeEmail() {
       }
       toast.success(`Email changed to ${res.email}.${parts.length ? " " + parts.join(" ") : ""}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Change failed");
+      setError(apiErrorMessage(err, "Change failed"));
     } finally {
       setLoading(false);
     }

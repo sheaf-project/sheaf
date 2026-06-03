@@ -38,6 +38,7 @@ import {
 } from "@/lib/journals";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { isDeleteQueued } from "@/types/api";
 
 const MarkdownPreview = lazy(() =>
@@ -264,7 +265,7 @@ function DeleteEntryDialog({
       onDeleted(isDeleteQueued(result));
       onClose();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Failed"),
+    onError: (err) => setError(apiErrorMessage(err, "Failed")),
   });
 
   const needsPassword = authTier === "password" || authTier === "both";
