@@ -86,6 +86,14 @@ class Poll(UUIDMixin, TimestampMixin, Base):
     include_custom_fronts: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # When true, only members in the current front at vote time may cast
+    # or change a vote. Default false matches the journals model (any
+    # member can author / vote regardless of front state). Set true on
+    # creation for decisions the system wants the active fronters to own
+    # ("what to wear today") rather than opening to absent members.
+    restrict_voting_to_fronters: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     options: Mapped[list[PollOption]] = relationship(
         back_populates="poll",

@@ -33,6 +33,11 @@ class PollCreate(BaseModel):
     closes_at: datetime
     retention_days: int | None = Field(default=None, ge=1, le=3650)
     include_custom_fronts: bool = False
+    # When True, voting is gated on the voted-as member being part of
+    # the current front at vote/withdraw time. When False (default),
+    # any system member may vote regardless of front state — matches
+    # the journals model where any member can author.
+    restrict_voting_to_fronters: bool = False
     options: list[PollOptionCreate] = Field(min_length=2, max_length=20)
 
     @field_validator("options")
@@ -68,6 +73,7 @@ class PollRead(BaseModel):
     closes_at: datetime
     retention_days: int
     include_custom_fronts: bool
+    restrict_voting_to_fronters: bool
     options: list[PollOptionRead]
 
     is_closed: bool

@@ -7,8 +7,13 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 
-def _member(client: httpx.Client, name: str) -> str:
-    resp = client.post("/v1/members", json={"name": name})
+def _member(
+    client: httpx.Client, name: str, *, is_custom_front: bool = False
+) -> str:
+    resp = client.post(
+        "/v1/members",
+        json={"name": name, "is_custom_front": is_custom_front},
+    )
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
@@ -32,6 +37,7 @@ def _create_poll(
     closes_at: str | None = None,
     options: list[str] | None = None,
     include_custom_fronts: bool = False,
+    restrict_voting_to_fronters: bool = False,
 ) -> dict:
     resp = client.post(
         "/v1/polls",
@@ -41,6 +47,7 @@ def _create_poll(
             "results_visibility": visibility,
             "closes_at": closes_at or _closes_in(86400),
             "include_custom_fronts": include_custom_fronts,
+            "restrict_voting_to_fronters": restrict_voting_to_fronters,
             "options": [{"text": t} for t in (options or ["Pizza", "Sushi"])],
         },
     )
@@ -130,13 +137,15 @@ def test_reject_too_few_options(auth_client: httpx.Client):
 # --- Voting ---------------------------------------------------------------
 
 
-def test_cast_vote_requires_fronting(auth_client: httpx.Client):
-    """A member who isn't fronting cannot cast a vote attributed to them."""
+def test_cast_vote_requires_fronting_when_restricted(auth_client: httpx.Client):
+    """A poll created with restrict_voting_to_fronters=True only accepts
+    votes from members currently in the front."""
     alice = _member(auth_client, "Alice")
     bob = _member(auth_client, "Bob")
     _front(auth_client, [alice])  # only alice is up
 
-    poll = _create_poll(auth_client)
+    poll = _create_poll(auth_client, restrict_voting_to_fronters=True)
+    assert poll["restrict_voting_to_fronters"] is True
 
     # Attempt to vote as Bob (not fronting)
     resp = auth_client.post(
@@ -148,6 +157,71 @@ def test_cast_vote_requires_fronting(auth_client: httpx.Client):
     )
     assert resp.status_code == 400
     assert "front" in resp.json()["detail"].lower()
+
+
+def test_cast_vote_open_to_non_fronting_member_by_default(auth_client: httpx.Client):
+    """The default poll (restrict_voting_to_fronters=False) accepts votes
+    from any system member, regardless of front state — matches the
+    journals authoring model."""
+    alice = _member(auth_client, "Alice")
+    bob = _member(auth_client, "Bob")
+    _front(auth_client, [alice])  # only alice is up
+
+    poll = _create_poll(auth_client)
+    assert poll["restrict_voting_to_fronters"] is False
+
+    # Bob is not fronting but the poll is open to all members.
+    resp = auth_client.post(
+        f"/v1/polls/{poll['id']}/votes",
+        json={
+            "voted_as_member_id": bob,
+            "option_ids": [poll["options"][0]["id"]],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_withdraw_vote_open_to_non_fronting_member_by_default(
+    auth_client: httpx.Client,
+):
+    """Withdraw obeys the same gate: by default, non-fronting members can
+    withdraw a vote they cast earlier."""
+    alice = _member(auth_client, "Alice")
+    bob = _member(auth_client, "Bob")
+    _front(auth_client, [alice, bob])
+    poll = _create_poll(auth_client)
+    resp = auth_client.post(
+        f"/v1/polls/{poll['id']}/votes",
+        json={
+            "voted_as_member_id": bob,
+            "option_ids": [poll["options"][0]["id"]],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    # Bob steps out of the front.
+    _front(auth_client, [alice])
+
+    resp = auth_client.delete(f"/v1/polls/{poll['id']}/votes/{bob}")
+    assert resp.status_code == 204, resp.text
+
+
+def test_custom_front_exclusion_still_applies_when_unrestricted(
+    auth_client: httpx.Client,
+):
+    """Even with restrict_voting_to_fronters=False, a custom-front member
+    can't vote unless include_custom_fronts is also set."""
+    nap = _member(auth_client, "Asleep", is_custom_front=True)
+    poll = _create_poll(auth_client)  # neither flag set
+
+    resp = auth_client.post(
+        f"/v1/polls/{poll['id']}/votes",
+        json={
+            "voted_as_member_id": nap,
+            "option_ids": [poll["options"][0]["id"]],
+        },
+    )
+    assert resp.status_code == 400
+    assert "custom front" in resp.json()["detail"].lower()
 
 
 def test_cast_vote_succeeds_for_fronting_member(auth_client: httpx.Client):

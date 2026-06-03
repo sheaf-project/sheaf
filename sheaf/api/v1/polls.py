@@ -155,6 +155,7 @@ def _to_read(
         closes_at=poll.closes_at,
         retention_days=poll.retention_days,
         include_custom_fronts=poll.include_custom_fronts,
+        restrict_voting_to_fronters=poll.restrict_voting_to_fronters,
         options=options,
         is_closed=poll.closes_at <= now,
         closed_since=poll.closes_at if poll.closes_at <= now else None,
@@ -268,6 +269,7 @@ async def create_poll(
         closes_at=body.closes_at,
         retention_days=retention_days,
         include_custom_fronts=body.include_custom_fronts,
+        restrict_voting_to_fronters=body.restrict_voting_to_fronters,
     )
     for index, opt in enumerate(body.options):
         poll.options.append(
