@@ -63,6 +63,12 @@ from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.watch_token import WatchToken
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_image_strip import (
+    strip_internal_avatar_url,
+    strip_internal_image_keys,
+    strip_internal_image_refs_md,
+    strip_internal_image_refs_md_to_none,
+)
 from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -219,7 +225,11 @@ async def run_import(
             if sys_data.get("name"):
                 system.name = sys_data["name"][:100]
             if sys_data.get("description") is not None:
-                system.description = sys_data["description"]
+                # Strip any /v1/files/... image embeds — those keys belong
+                # to the exporting account, not this one.
+                system.description = strip_internal_image_refs_md(
+                    sys_data["description"]
+                )
             if sys_data.get("tag") is not None:
                 system.tag = sys_data["tag"][:8] if sys_data["tag"] else None
             if sys_data.get("color") is not None:
@@ -229,10 +239,18 @@ async def run_import(
             # Notes are encrypted at rest. Empty-string clears (matches the
             # PATCH /systems/me semantics).
             if "note" in sys_data:
-                note_val = sys_data["note"]
+                note_val = strip_internal_image_refs_md_to_none(
+                    sys_data.get("note")
+                )
                 system.note = encrypt(note_val) if note_val else None
             if sys_data.get("avatar_url") is not None:
-                system.avatar_url = _trunc(sys_data["avatar_url"], 500)
+                # An avatar key like avatars/<old_user_id>/<uuid>.png points
+                # at the original account's storage; we can't fetch the
+                # bytes, so drop the reference. External URLs (gravatar
+                # etc.) pass through unchanged.
+                system.avatar_url = _trunc(
+                    strip_internal_avatar_url(sys_data["avatar_url"]), 500
+                )
             if "replace_fronts_default" in sys_data:
                 system.replace_fronts_default = bool(
                     sys_data["replace_fronts_default"]
@@ -292,8 +310,15 @@ async def run_import(
     for m_data in export_members:
         old_id = m_data.get("id", "")
         plaintext_name = (m_data.get("name") or "unnamed")[:100]
-        plaintext_description = m_data.get("description")
-        plaintext_note = m_data.get("note")
+        # Drop /v1/files/... markdown image embeds in the bio + note;
+        # the keys point at the exporting account's storage and we can't
+        # rehost them on import. External URLs survive.
+        plaintext_description = strip_internal_image_refs_md(
+            m_data.get("description")
+        )
+        plaintext_note = strip_internal_image_refs_md_to_none(
+            m_data.get("note")
+        )
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -311,7 +336,9 @@ async def run_import(
                 else None
             ),
             pronouns=_trunc(m_data.get("pronouns"), 100),
-            avatar_url=_trunc(m_data.get("avatar_url"), 500),
+            avatar_url=_trunc(
+                strip_internal_avatar_url(m_data.get("avatar_url")), 500
+            ),
             color=_trunc(m_data.get("color"), 7),
             birthday=_trunc(m_data.get("birthday"), 10),
             pluralkit_id=_trunc(m_data.get("pluralkit_id"), 8),
@@ -436,7 +463,7 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=(g_data.get("name") or "unnamed")[:100],
-                description=g_data.get("description"),
+                description=strip_internal_image_refs_md(g_data.get("description")),
                 color=_trunc(g_data.get("color"), 7),
             )
             db.add(group)
@@ -525,7 +552,9 @@ async def run_import(
                 system_id=system.id,
                 member_id=member.id if member else None,
                 title=encrypt(title) if title else None,
-                body=encrypt(j_data.get("body") or ""),
+                body=encrypt(
+                    strip_internal_image_refs_md(j_data.get("body")) or ""
+                ),
                 visibility=j_data.get("visibility") or "system",
                 # The original authoring account is meaningless on this
                 # instance; attribute the fallback author to the importing user.
@@ -537,7 +566,12 @@ async def run_import(
                     )
                 ],
                 author_member_names=_str_list(j_data.get("author_member_names")),
-                image_keys=_str_list(j_data.get("image_keys")),
+                # image_keys is a pre-extracted hosted-keys list; every entry
+                # here is by construction a key belonging to the exporting
+                # account. Drop them all rather than carrying dangling refs.
+                image_keys=strip_internal_image_keys(
+                    _str_list(j_data.get("image_keys"))
+                ),
             )
             created = _parse_iso(j_data.get("created_at"))
             if created:
@@ -581,8 +615,12 @@ async def run_import(
             ],
             editor_member_names=_str_list(r_data.get("editor_member_names")),
             title=encrypt(title) if title else None,
-            body=encrypt(r_data.get("body") or ""),
-            image_keys=_str_list(r_data.get("image_keys")),
+            body=encrypt(
+                strip_internal_image_refs_md(r_data.get("body")) or ""
+            ),
+            image_keys=strip_internal_image_keys(
+                _str_list(r_data.get("image_keys"))
+            ),
             pinned_at=_parse_iso(r_data.get("pinned_at")),
         )
         created = _parse_iso(r_data.get("created_at"))
@@ -613,7 +651,9 @@ async def run_import(
                 board_kind=board_kind,
                 board_member_id=board_member.id if board_member else None,
                 author_member_id=author.id if author else None,
-                body=encrypt(msg_data.get("body") or ""),
+                body=encrypt(
+                    strip_internal_image_refs_md(msg_data.get("body")) or ""
+                ),
             )
             created = _parse_iso(msg_data.get("created_at"))
             if created:
@@ -885,7 +925,7 @@ async def run_import(
                     f"Reminder '{rm_data.get('name', '?')}' trigger member "
                     "was not imported; kept without a member trigger"
                 )
-            body = rm_data.get("body")
+            body = strip_internal_image_refs_md_to_none(rm_data.get("body"))
             reminder = Reminder(
                 id=uuid.uuid4(),
                 system_id=system.id,
