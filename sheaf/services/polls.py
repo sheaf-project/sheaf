@@ -215,8 +215,10 @@ async def record_vote(
     - Refuses if the poll is closed.
     - Refuses if any option_id isn't part of the poll.
     - Refuses if the kind is single_choice and more than one option supplied.
-    - Refuses if the voted-as member isn't currently fronting (per
-      `member_is_currently_fronting`).
+    - Refuses if the voted-as member isn't currently fronting AND the
+      poll was created with `restrict_voting_to_fronters=True`. Polls
+      without that flag accept votes from any system member regardless
+      of front state, matching the journals authoring model.
 
     Writes both the current-state poll_votes row and the audit event in
     the same transaction. The caller commits.
@@ -251,11 +253,11 @@ async def record_vote(
             "This poll does not accept votes from custom fronts."
         )
 
-    if not await member_is_currently_fronting(
+    if poll.restrict_voting_to_fronters and not await member_is_currently_fronting(
         db, system_id=poll.system_id, member_id=voted_as_member_id
     ):
         raise VoteError(
-            "The voted-as member must be part of the current front."
+            "This poll only accepts votes from members in the current front."
         )
 
     fronting_ids = await current_front_member_ids(db, system_id=poll.system_id)
@@ -313,7 +315,7 @@ async def withdraw_vote(
     if poll.closes_at <= now:
         raise VoteError("Poll is closed.")
 
-    if not await member_is_currently_fronting(
+    if poll.restrict_voting_to_fronters and not await member_is_currently_fronting(
         db, system_id=poll.system_id, member_id=voted_as_member_id
     ):
         raise VoteError(

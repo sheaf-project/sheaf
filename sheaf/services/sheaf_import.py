@@ -666,6 +666,9 @@ async def run_import(
                 include_custom_fronts=bool(
                     p_data.get("include_custom_fronts", False)
                 ),
+                restrict_voting_to_fronters=bool(
+                    p_data.get("restrict_voting_to_fronters", False)
+                ),
             )
             created = _parse_iso(p_data.get("created_at"))
             if created:

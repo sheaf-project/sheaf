@@ -915,6 +915,10 @@ export interface Poll {
   closes_at: string;
   retention_days: number;
   include_custom_fronts: boolean;
+  /** When true, only members in the current front at vote time may
+   *  cast or change a vote. Default false; matches the journals model
+   *  where any member can author regardless of front state. */
+  restrict_voting_to_fronters: boolean;
   options: PollOption[];
   is_closed: boolean;
   closed_since: string | null;
@@ -940,6 +944,7 @@ export interface PollCreate {
   closes_at: string;
   retention_days?: number | null;
   include_custom_fronts?: boolean;
+  restrict_voting_to_fronters?: boolean;
   options: PollOptionCreate[];
 }
 

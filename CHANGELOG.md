@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- **Polls no longer require voters to be fronting by default.** Voting is now open to any system member regardless of front state, matching the journals authoring model (an author doesn't need to be in the current front either). Polls that genuinely want the fronter-only gate ("what should we wear today") opt in via a new "Restrict voting to current fronters" checkbox at create time. Existing polls in v0.3.1 betas adopt the new permissive default; create restricted polls when you want the old behaviour. The custom-front exclusion (`include_custom_fronts`) still applies independently — system-state members like Asleep / Away can't vote unless that flag is on.
+
 ## [0.3.1] - 2026-06-02
 
 ### Added

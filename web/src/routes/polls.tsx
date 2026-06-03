@@ -267,6 +267,7 @@ function CreatePollDialog({
   const [visibility, setVisibility] = useState<PollResultsVisibility>("live");
   const [closesAtLocal, setClosesAtLocal] = useState(defaultClosesAtLocal());
   const [includeCustomFronts, setIncludeCustomFronts] = useState(false);
+  const [restrictToFronters, setRestrictToFronters] = useState(false);
   const [retentionDays, setRetentionDays] = useState<number>(
     serverConfig?.default_retention_days ?? 30,
   );
@@ -308,6 +309,7 @@ function CreatePollDialog({
       results_visibility: visibility,
       closes_at: closesAt,
       include_custom_fronts: includeCustomFronts,
+      restrict_voting_to_fronters: restrictToFronters,
       retention_days: retentionDays,
       options: trimmedOptions.map((text) => ({ text })),
     });
@@ -433,6 +435,24 @@ function CreatePollDialog({
               <span className="text-xs text-muted-foreground">
                 Custom fronts (Asleep, Away, etc.) are normally system states,
                 not voters. Off by default.
+              </span>
+            </div>
+          </label>
+
+          <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer hover:bg-accent">
+            <Checkbox
+              checked={restrictToFronters}
+              onCheckedChange={(v) => setRestrictToFronters(v === true)}
+            />
+            <div className="grid gap-1">
+              <span className="text-sm font-medium">
+                Restrict voting to current fronters
+              </span>
+              <span className="text-xs text-muted-foreground">
+                When on, only members in the front at vote time can cast or
+                change a vote. Off by default — any member may vote, matching
+                journals. Turn on for decisions you want the active fronters
+                to own (e.g. &quot;what to wear today&quot;).
               </span>
             </div>
           </label>

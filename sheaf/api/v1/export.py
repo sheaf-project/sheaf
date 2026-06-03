@@ -541,6 +541,7 @@ def _poll_dict(poll) -> dict:
         "closes_at": poll.closes_at.isoformat(),
         "retention_days": poll.retention_days,
         "include_custom_fronts": poll.include_custom_fronts,
+        "restrict_voting_to_fronters": poll.restrict_voting_to_fronters,
         "created_at": poll.created_at.isoformat(),
         "options": [
             {

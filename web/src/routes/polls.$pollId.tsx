@@ -133,6 +133,11 @@ export function PollDetailPage() {
                 ? "Live results"
                 : "Results at close"}
             </Badge>
+            <Badge variant="outline">
+              {poll.restrict_voting_to_fronters
+                ? "Fronters only"
+                : "Open to all members"}
+            </Badge>
             {poll.is_closed ? (
               <Badge variant="secondary">Closed</Badge>
             ) : (
@@ -196,18 +201,29 @@ function VoteCard({
   memberById: Map<string, Member>;
 }) {
   const qc = useQueryClient();
-  const frontingMembers = useMemo(
+  // Eligible voter set:
+  //  - When the poll restricts voting to current fronters, only members
+  //    in the front (minus custom fronts unless include_custom_fronts).
+  //  - Otherwise, any system member, with the same custom-front exclusion.
+  const eligibleMembers = useMemo(
     () =>
-      members.filter(
-        (m) =>
-          frontingIds.has(m.id) &&
-          (poll.include_custom_fronts || !m.is_custom_front),
-      ),
-    [members, frontingIds, poll.include_custom_fronts],
+      members.filter((m) => {
+        if (!poll.include_custom_fronts && m.is_custom_front) return false;
+        if (poll.restrict_voting_to_fronters && !frontingIds.has(m.id)) {
+          return false;
+        }
+        return true;
+      }),
+    [
+      members,
+      frontingIds,
+      poll.include_custom_fronts,
+      poll.restrict_voting_to_fronters,
+    ],
   );
 
   const [selectedMemberId, setSelectedMemberId] = useState<string>(
-    () => frontingMembers[0]?.id ?? "",
+    () => eligibleMembers[0]?.id ?? "",
   );
   const [picked, setPicked] = useState<Set<string>>(() => {
     if (!poll.votes || !selectedMemberId) return new Set();
@@ -245,15 +261,18 @@ function VoteCard({
     onError: (err: Error) => toast.error(err.message),
   });
 
-  if (frontingMembers.length === 0) {
+  if (eligibleMembers.length === 0) {
     const allFrontingAreCustom =
+      poll.restrict_voting_to_fronters &&
       !poll.include_custom_fronts &&
       members.some((m) => frontingIds.has(m.id) && m.is_custom_front);
     return (
       <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
         {allFrontingAreCustom
           ? "Only custom fronts are currently fronting, and this poll doesn't accept votes from custom fronts."
-          : "No member is currently fronting. A member has to be in the front to cast or change a vote."}
+          : poll.restrict_voting_to_fronters
+          ? "No member is currently fronting. A member has to be in the front to cast or change a vote on this poll."
+          : "No eligible voters in this system."}
       </div>
     );
   }
@@ -284,7 +303,7 @@ function VoteCard({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {frontingMembers.map((m) => {
+            {eligibleMembers.map((m) => {
               const member = memberById.get(m.id) ?? m;
               return (
                 <SelectItem key={m.id} value={m.id}>
