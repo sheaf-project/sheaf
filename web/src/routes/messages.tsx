@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { showApiErrorToast } from "@/lib/api-errors";
 
 import { useMembers } from "@/hooks/use-members";
 import { getCurrentFronts } from "@/lib/fronts";
@@ -655,7 +656,7 @@ function Composer({
       onClearReply();
       onPosted();
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => showApiErrorToast(err),
   });
 
   function submit() {
@@ -736,7 +737,7 @@ function EditDialog({
       toast.success("Edited");
       onSaved();
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => showApiErrorToast(err),
   });
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">

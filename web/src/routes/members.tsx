@@ -23,6 +23,7 @@ import { ColorDot } from "@/components/color-dot";
 import { ContentRevisionList } from "@/components/content-revision-list";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { apiErrorMessage, showApiErrorToast } from "@/lib/api-errors";
 
 const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
@@ -352,7 +353,7 @@ function DeleteMemberDialog({
       { id: member.id, confirm: Object.keys(confirm).length > 0 ? confirm : undefined },
       {
         onSuccess: () => onDeleted(),
-        onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+        onError: (err) => setError(apiErrorMessage(err, "Delete failed")),
       },
     );
   }
@@ -436,8 +437,7 @@ function MemberTagsEditor({ memberId }: { memberId: string }) {
       setEditing(false);
       toast.success("Tags updated");
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Failed to update tags"),
+    onError: (err) => showApiErrorToast(err, "Couldn't update tags."),
   });
   const [editing, setEditing] = useState(false);
   const [draftIds, setDraftIds] = useState<string[]>([]);
@@ -545,8 +545,7 @@ function NotifyOnFrontEditor({ member }: { member: Member }) {
       qc.invalidateQueries({ queryKey: ["messages", "notify-settings", member.id] });
       toast.success("Notification preferences updated");
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Failed to update"),
+    onError: (err) => showApiErrorToast(err, "Couldn't update notification preferences."),
   });
 
   const [editing, setEditing] = useState(false);

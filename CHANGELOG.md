@@ -6,6 +6,15 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **"Show technical error details" setting.** New Advanced tab in Settings with a toggle that swaps friendly error toasts for the raw HTTP status code and backend error message. Off by default; useful for reporting bugs or diagnosing flaky network paths. Backend-stored so the choice follows the account across browsers.
+
+### Changed
+
+- **Friendly error toasts.** Failed API calls now show a status-aware summary ("Not found.", "Slow down — too many requests.", "Server error — please try again.") instead of either a generic "Server error" or the raw backend detail. Inline error messages (red text under forms in the TOTP, password change, email change, import, and System Safety surfaces) follow the same toggle. Operators or bug reporters can opt back into raw detail via the new Advanced setting.
+- **Status codes audit.** Several endpoints that returned `400 Bad Request` for state mismatches ("Not pending" on already-cancelled trim notices, system-safety pending actions, and pending changes) now correctly return `409 Conflict`. Cosmetic raw-int `status_code=404`/`400` raises across the API layer were swapped for the named `status.HTTP_*` constants for consistency. No client-visible behaviour change beyond the 400→409 swaps above.
+
 ## [0.3.1] - 2026-06-02
 
 ### Added

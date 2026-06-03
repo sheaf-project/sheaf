@@ -19,7 +19,7 @@ export function AccountInfoCard() {
       await refreshUser();
       toast.success("Preferences saved");
     },
-    onError: () => toast.error("Failed to save preferences"),
+    // api-client auto-toasts the error; no caller-side onError needed.
   });
 
   return (

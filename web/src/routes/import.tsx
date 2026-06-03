@@ -2,6 +2,7 @@ import { type ChangeEvent, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { getMemberLimit } from "@/lib/members";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -171,7 +172,7 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
       setPreview(p);
       setStep("preview");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to parse file");
+      setError(apiErrorMessage(err, "Failed to parse file"));
     }
   }
 
@@ -202,7 +203,7 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
       });
       navigate(`/imports/${job.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(apiErrorMessage(err, "Import failed"));
       setStep("preview");
     }
   }
@@ -388,7 +389,7 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
       setPreview(p);
       setStep("preview");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to parse file");
+      setError(apiErrorMessage(err, "Failed to parse file"));
     }
   }
 
@@ -412,7 +413,7 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
       });
       navigate(`/imports/${job.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(apiErrorMessage(err, "Import failed"));
       setStep("preview");
     }
   }
@@ -567,7 +568,7 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
       setPreview(p);
       setStep("preview");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to parse file");
+      setError(apiErrorMessage(err, "Failed to parse file"));
     }
   }
 
@@ -622,7 +623,7 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
       setToken("");
       navigate(`/imports/${job.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(apiErrorMessage(err, "Import failed"));
       setStep("preview");
     }
   }
@@ -864,7 +865,7 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
       setPreview(p);
       setStep("preview");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to parse file");
+      setError(apiErrorMessage(err, "Failed to parse file"));
     }
   }
 
@@ -884,7 +885,7 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
       });
       navigate(`/imports/${job.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(apiErrorMessage(err, "Import failed"));
       setStep("preview");
     }
   }

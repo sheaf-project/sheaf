@@ -25,6 +25,7 @@ import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { cn, formatBytes } from "@/lib/utils";
 import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import { showApiErrorToast } from "@/lib/api-errors";
 
 /** In-app link for a reference target, or null if it isn't deep-linkable.
  * target_type covers both live refs ("system" / "member" / "journal_entry")
@@ -87,8 +88,7 @@ export function UploadedFilesCard() {
         toast.success("File deleted");
       }
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Delete failed"),
+    onError: (err) => showApiErrorToast(err, "Couldn't delete file."),
   });
 
   return (

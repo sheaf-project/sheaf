@@ -1,5 +1,7 @@
 import { toast } from "sonner";
 
+import { getShowTechnicalErrors } from "./developer-prefs-snapshot";
+
 let accessToken: string | null = null;
 let refreshPromise: Promise<string | null> | null = null;
 
@@ -68,16 +70,12 @@ async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
-export class ApiError extends Error {
-  status: number;
-  detail: string;
-
-  constructor(status: number, detail: string) {
-    super(detail);
-    this.status = status;
-    this.detail = detail;
-  }
-}
+// ApiError lives in `./api-error` so non-api-client modules (e.g. the
+// shared `showApiErrorToast` helper) can import the class without
+// pulling in this file's fetch implementation. Re-exported here so
+// existing imports of `ApiError` from `@/lib/api-client` keep working.
+export { ApiError } from "./api-error";
+import { ApiError } from "./api-error";
 
 interface ApiFetchOptions extends RequestInit {
   /** Skip automatic token refresh on 401. Use for login/register endpoints. */
@@ -136,19 +134,14 @@ export async function apiFetch<T>(
     }
 
     // Show toast for non-auth errors (auth errors during login/register are
-    // handled inline by the form, not via toast).
-    if (resp.status >= 500) {
-      toast.error("Server error — please try again");
-    } else if (resp.status === 401 && attemptedRefresh) {
-      // Post-retry 401: refresh succeeded but the action itself still
-      // came back unauthorized. Not an auth-flow concern (the silent
-      // refresh already ran) — surface it like any other error so the
-      // user sees what went wrong instead of clicking into silence.
-      toast.error(detail);
-    } else if (resp.status !== 401 && resp.status !== 409) {
-      // Skip pre-retry 401 (the refresh dance handles it) and 409
-      // (conflict, shown inline by the caller).
-      toast.error(detail);
+    // handled inline by the form, not via toast). Pre-retry 401 is handled
+    // by the silent-refresh dance, and 409 is shown inline by the caller.
+    if (resp.status === 401 && !attemptedRefresh) {
+      // pre-retry 401: silent refresh handles this; no toast.
+    } else if (resp.status === 409) {
+      // 409: caller shows it inline.
+    } else {
+      autoToastError(resp.status, detail);
     }
 
     throw new ApiError(resp.status, detail);
@@ -214,17 +207,38 @@ export async function apiFetchWithHeaders<T>(
       }, 1500);
       throw new ApiError(resp.status, detail);
     }
-    if (resp.status >= 500) {
-      toast.error("Server error — please try again");
-    } else if (resp.status === 401 && attemptedRefresh) {
-      // Post-retry 401: refresh succeeded but the action itself still
-      // came back unauthorized. Surface it like any other error.
-      toast.error(detail);
-    } else if (resp.status !== 401 && resp.status !== 409) {
-      toast.error(detail);
+    if (resp.status === 401 && !attemptedRefresh) {
+      // pre-retry 401: silent refresh handles this; no toast.
+    } else if (resp.status === 409) {
+      // 409: caller shows it inline.
+    } else {
+      autoToastError(resp.status, detail);
     }
     throw new ApiError(resp.status, detail);
   }
 
   return { body: await resp.json(), headers: resp.headers };
+}
+
+// Inline mirror of the friendly-summary mapping used by the shared
+// `showApiErrorToast` helper. Duplicated here (rather than imported)
+// to avoid a cycle: api-errors.ts already imports ApiError, and
+// importing showApiErrorToast back into api-client would close the
+// loop. Both paths consult the same module-level snapshot so the
+// behaviour stays consistent.
+function autoToastError(httpStatus: number, detail: string): void {
+  if (getShowTechnicalErrors()) {
+    toast.error(`[${httpStatus}] ${detail}`);
+    return;
+  }
+  if (httpStatus === 400) toast.error("Invalid request.");
+  else if (httpStatus === 401) toast.error("You need to sign in to do that.");
+  else if (httpStatus === 403) toast.error("You don't have permission to do that.");
+  else if (httpStatus === 404) toast.error("Not found.");
+  else if (httpStatus === 413) toast.error("That's too large.");
+  else if (httpStatus === 422) toast.error("We couldn't understand that request.");
+  else if (httpStatus === 423) toast.error("Account temporarily locked.");
+  else if (httpStatus === 429) toast.error("Slow down — too many requests.");
+  else if (httpStatus >= 500) toast.error("Server error — please try again.");
+  else toast.error(detail);
 }
