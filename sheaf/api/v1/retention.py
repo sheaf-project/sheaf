@@ -165,9 +165,17 @@ async def cancel_trim_notice(
     re-upgrade (`on_tier_change`)."""
     notice = await db.get(RetentionTrimNotice, notice_id)
     if notice is None or notice.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Trim notice not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Trim notice not found",
+        )
     if notice.status != RetentionTrimStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Not pending")
+        # 409: the resource exists but is in a state that doesn't permit
+        # the requested operation (already cancelled / already applied).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Trim notice is not pending.",
+        )
     notice.status = RetentionTrimStatus.CANCELLED
     notice.cancelled_at = datetime.now(UTC)
     await db.commit()

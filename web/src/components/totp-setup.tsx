@@ -8,6 +8,7 @@ import {
   regenerateRecoveryCodes,
   type TOTPSetupResponse,
 } from "@/lib/auth";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,7 +31,7 @@ export function TOTPSetup() {
       setSetup(data);
       setStep("qr");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Setup failed");
+      setError(apiErrorMessage(err, "Setup failed"));
     } finally {
       setLoading(false);
     }
@@ -58,7 +59,7 @@ export function TOTPSetup() {
       await refreshUser();
       setStep("recovery");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Verification failed");
+      setError(apiErrorMessage(err, "Verification failed"));
     } finally {
       setLoading(false);
     }
@@ -190,7 +191,7 @@ function TOTPDisable() {
       await refreshUser();
       setAction("idle");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to disable 2FA");
+      setError(apiErrorMessage(err, "Failed to disable 2FA"));
     } finally {
       setLoading(false);
     }
@@ -206,7 +207,7 @@ function TOTPDisable() {
       setAction("show-codes");
       setTotpCode("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to regenerate codes");
+      setError(apiErrorMessage(err, "Failed to regenerate codes"));
     } finally {
       setLoading(false);
     }

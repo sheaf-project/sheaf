@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { Plus, Trash2, Vote } from "lucide-react";
 import { toast } from "sonner";
+import { showApiErrorToast } from "@/lib/api-errors";
 
 import { getMySystem } from "@/lib/systems";
 import {
@@ -289,7 +290,7 @@ function CreatePollDialog({
       toast.success("Poll created");
       onClose();
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => showApiErrorToast(err),
   });
 
   const trimmedOptions = options.map((o) => o.trim()).filter(Boolean);

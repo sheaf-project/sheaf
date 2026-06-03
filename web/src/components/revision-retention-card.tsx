@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { getRetention, updateRetention } from "@/lib/retention";
 import { getSystemSafety } from "@/lib/system-safety";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -79,7 +80,7 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
       });
       toast.success("Retention settings saved");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Failed"),
+    onError: (err) => setError(apiErrorMessage(err, "Failed")),
   });
 
   const parsedRev = parseOverride(draft.max_revisions);

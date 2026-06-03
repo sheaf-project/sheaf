@@ -8,6 +8,7 @@ import {
   getSystemSafety,
   updateSystemSafety,
 } from "@/lib/system-safety";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -162,7 +163,7 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
         toast.success("Safety settings saved");
       }
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Failed"),
+    onError: (err) => setError(apiErrorMessage(err, "Failed")),
   });
 
   const dirty = hasDiff(settings, draft);

@@ -11,6 +11,7 @@ import { SettingsIndex } from "./settings/index";
 import { SettingsSystemPage } from "./settings/system";
 import { SettingsSafetyPage } from "./settings/safety";
 import { SettingsAccountPage } from "./settings/account";
+import { SettingsAdvancedPage } from "./settings/advanced";
 import { SettingsAppearancePage } from "./settings/appearance";
 import { SettingsDataPage } from "./settings/data";
 import { SettingsDangerPage } from "./settings/danger";
@@ -91,6 +92,7 @@ export const router = createBrowserRouter([
           { path: "account", element: <SettingsAccountPage /> },
           { path: "appearance", element: <SettingsAppearancePage /> },
           { path: "data", element: <SettingsDataPage /> },
+          { path: "advanced", element: <SettingsAdvancedPage /> },
           { path: "danger", element: <SettingsDangerPage /> },
         ],
       },

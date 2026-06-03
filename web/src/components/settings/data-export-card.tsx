@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { showApiErrorToast } from "@/lib/api-errors";
 
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -177,8 +178,7 @@ export function DataExportCard() {
       setMode(null);
       toast.success("Account data downloaded");
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : "Failed to fetch account data"),
+    onError: (err) => showApiErrorToast(err, "Couldn't fetch account data."),
   });
 
   async function handleSyncJsonExport() {
@@ -195,8 +195,11 @@ export function DataExportCard() {
       a.click();
       URL.revokeObjectURL(url);
       toast.success("Data exported");
-    } catch {
-      toast.error("Export failed");
+    } catch (err) {
+      // API errors are already toasted by the api-client; this helper
+      // skips re-toasting them. Non-API failures (Blob/URL constructor)
+      // fall through to the fallback.
+      showApiErrorToast(err, "Couldn't export data.");
     } finally {
       setSyncing(false);
     }

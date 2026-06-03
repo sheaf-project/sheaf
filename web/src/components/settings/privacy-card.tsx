@@ -35,7 +35,7 @@ export function PrivacyCard() {
       await refreshUser();
       toast.success("Preference saved");
     },
-    onError: () => toast.error("Failed to save preference"),
+    // api-client auto-toasts the error; no caller-side onError needed.
   });
 
   if (!shieldStatus?.feature_enabled) {

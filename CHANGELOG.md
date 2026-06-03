@@ -6,8 +6,14 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **"Show technical error details" setting.** New Advanced tab in Settings with a toggle that swaps friendly error toasts for the raw HTTP status code and backend error message. Off by default; useful for reporting bugs or diagnosing flaky network paths. Backend-stored so the choice follows the account across browsers.
+
 ### Changed
 
+- **Friendly error toasts.** Failed API calls now show a status-aware summary ("Not found.", "Slow down — too many requests.", "Server error — please try again.") instead of either a generic "Server error" or the raw backend detail. Inline error messages (red text under forms in the TOTP, password change, email change, import, and System Safety surfaces) follow the same toggle. Operators or bug reporters can opt back into raw detail via the new Advanced setting.
+- **Status codes audit.** Several endpoints that returned `400 Bad Request` for state mismatches ("Not pending" on already-cancelled trim notices, system-safety pending actions, and pending changes) now correctly return `409 Conflict`. Cosmetic raw-int `status_code=404`/`400` raises across the API layer were swapped for the named `status.HTTP_*` constants for consistency. No client-visible behaviour change beyond the 400→409 swaps above.
 - **Polls no longer require voters to be fronting by default.** Voting is now open to any system member regardless of front state, matching the journals authoring model (an author doesn't need to be in the current front either). Polls that genuinely want the fronter-only gate ("what should we wear today") opt in via a new "Restrict voting to current fronters" checkbox at create time. Existing polls in v0.3.1 betas adopt the new permissive default; create restricted polls when you want the old behaviour. The custom-front exclusion (`include_custom_fronts`) still applies independently — system-state members like Asleep / Away can't vote unless that flag is on.
 
 ## [0.3.1] - 2026-06-02

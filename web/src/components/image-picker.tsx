@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listFiles, uploadFile } from "@/lib/files";
+import { apiErrorMessage } from "@/lib/api-errors";
 import {
   Dialog,
   DialogContent,
@@ -109,7 +110,7 @@ function UploadTab({ onUploaded }: { onUploaded: (key: string) => void }) {
       onUploaded(res.key);
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      setError(apiErrorMessage(err, "Upload failed"));
     },
   });
 
