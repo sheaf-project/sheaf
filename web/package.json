@@ -28,7 +28,7 @@
     "react-dom": "^19.2.4",
     "react-easy-crop": "^5.5.7",
     "react-markdown": "^10.1.0",
-    "react-router": "^7.13.1",
+    "react-router": "^7.15.0",
     "recharts": "^3.8.1",
     "rehype-autolink-headings": "^7.1.0",
     "rehype-highlight": "^7.0.2",
