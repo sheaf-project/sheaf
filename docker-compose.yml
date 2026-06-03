@@ -5,6 +5,12 @@ services:
       dockerfile: Dockerfile.backend
       args:
         INCLUDE_DEV_TOOLS: "${INCLUDE_DEV_TOOLS:-false}"
+        # Optional pip index overrides — empty unless set in .env on the
+        # host. Selfhosters who run a private PyPI mirror or cache (e.g.
+        # proxpi, devpi, Artifactory) drop one of these into their
+        # gitignored .env and rebuild. See docs/SELFHOSTING.md.
+        PIP_INDEX_URL: "${PIP_INDEX_URL:-}"
+        PIP_EXTRA_INDEX_URL: "${PIP_EXTRA_INDEX_URL:-}"
     ports:
       - "${SHEAF_PORT:-8000}:${SHEAF_PORT:-8000}"
       # Metrics endpoint. The host side publishes on loopback by default
