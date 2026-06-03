@@ -1,6 +1,7 @@
 import { type FormEvent, useRef, useState } from "react";
 import { toast } from "sonner";
 import { uploadFile } from "@/lib/files";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { AvatarCropperDialog } from "@/components/avatar-cropper-dialog";
 import { Button } from "@/components/ui/button";
@@ -51,7 +52,7 @@ export function AvatarUpload({
         toast.info("Animated image was flattened to a single frame.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      setError(apiErrorMessage(err, "Upload failed"));
     } finally {
       setUploading(false);
     }

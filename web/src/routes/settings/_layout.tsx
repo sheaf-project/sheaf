@@ -7,6 +7,7 @@ import {
   KeyRound,
   Palette,
   Database,
+  Wrench,
   AlertTriangle,
 } from "lucide-react";
 
@@ -16,6 +17,7 @@ const sections = [
   { to: "/settings/account", label: "Account", icon: KeyRound },
   { to: "/settings/appearance", label: "Appearance", icon: Palette },
   { to: "/settings/data", label: "Data", icon: Database },
+  { to: "/settings/advanced", label: "Advanced", icon: Wrench },
   { to: "/settings/danger", label: "Danger zone", icon: AlertTriangle },
 ];
 

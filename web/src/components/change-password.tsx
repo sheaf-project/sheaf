@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { changePassword } from "@/lib/auth";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,7 +57,7 @@ export function ChangePassword() {
         toast.success("Password changed.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Change failed");
+      setError(apiErrorMessage(err, "Change failed"));
     } finally {
       setLoading(false);
     }

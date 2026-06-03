@@ -216,9 +216,16 @@ async def cancel_pending_action(
     system = await _get_user_system(user, db)
     pending = await db.get(PendingAction, pending_id)
     if pending is None or pending.system_id != system.id:
-        raise HTTPException(status_code=404, detail="Pending action not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pending action not found",
+        )
     if pending.status != PendingActionStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Not pending")
+        # 409: already cancelled, completed, or otherwise no longer pending.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pending action is not pending.",
+        )
     pending.status = PendingActionStatus.CANCELLED
     pending.cancelled_at = datetime.now(UTC)
     pending.cancelled_by_user_id = user.id
@@ -241,9 +248,15 @@ async def cancel_pending_change(
     system = await _get_user_system(user, db)
     change = await db.get(SafetyChangeRequest, change_id)
     if change is None or change.system_id != system.id:
-        raise HTTPException(status_code=404, detail="Pending change not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pending change not found",
+        )
     if change.status != SafetyChangeStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Not pending")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pending change is not pending.",
+        )
     change.status = SafetyChangeStatus.CANCELLED
     change.cancelled_at = datetime.now(UTC)
     await db.commit()

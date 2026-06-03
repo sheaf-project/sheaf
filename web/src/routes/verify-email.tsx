@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams, Link } from "react-router";
 import { apiFetch } from "@/lib/api-client";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Check, X } from "lucide-react";
@@ -24,7 +25,7 @@ export function VerifyEmailPage() {
       .then(() => setState("success"))
       .catch((err) => {
         setState("error");
-        setError(err instanceof Error ? err.message : "Verification failed");
+        setError(apiErrorMessage(err, "Verification failed"));
       });
   }, [token]);
 
