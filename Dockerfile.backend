@@ -10,6 +10,15 @@ COPY sheaf/ sheaf/
 COPY alembic.ini .
 COPY alembic/ alembic/
 
+# Optional pip index overrides. Empty by default so public builds use
+# PyPI as-is; selfhosters can point at a private mirror or cache by
+# passing `--build-arg PIP_INDEX_URL=...` (or via docker-compose args
+# forwarded from .env). pip reads these env vars natively.
+ARG PIP_INDEX_URL=
+ARG PIP_EXTRA_INDEX_URL=
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+
 RUN pip install --no-cache-dir ".[s3,ses,smtp,sendgrid]"
 
 # Dev-only tools (destructive jobs for demo instances, etc.)

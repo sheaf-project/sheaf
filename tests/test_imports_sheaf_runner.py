@@ -536,8 +536,11 @@ def test_sheaf_runner_strips_cross_account_image_refs(auth_client: httpx.Client)
     assert "v1/files" not in borrower_bio
     assert "imgur.com" in borrower_bio
 
-    # Journal entry body lost the internal embed; image_keys is now empty.
+    # Journal entry body lost the internal embed. `image_keys` is an
+    # internal column used by the orphan sweeper, not exposed on
+    # JournalEntryRead — the body assertion above is the user-visible
+    # proof that the strip ran; the corresponding image_keys clear is
+    # verified by the strip-helper unit tests.
     journals = auth_client.get("/v1/journals").json()
     j = next(j for j in journals["items"] if j["title"] == "entry")
     assert "v1/files" not in (j["body"] or "")
-    assert j["image_keys"] == [], j

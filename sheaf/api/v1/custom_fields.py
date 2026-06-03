@@ -18,6 +18,8 @@ from sheaf.schemas.custom_field import (
     CustomFieldUpdate,
     CustomFieldValueRead,
     CustomFieldValueSet,
+    _validate_options_for_type,
+    _validate_value_for_field,
 )
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.custom_fields import (
@@ -142,6 +144,16 @@ async def update_field(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    if "options" in update_data:
+        try:
+            update_data["options"] = _validate_options_for_type(
+                field.field_type, update_data["options"]
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
     for key, value in update_data.items():
         setattr(field, key, value)
     await db.commit()
@@ -243,7 +255,10 @@ async def set_member_field_values(
     if member_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
 
-    # Validate all field IDs belong to this system
+    # Validate all field IDs belong to this system. Keep the field rows
+    # around so we can run per-type value validation below — we need
+    # field_type + options to know whether a submitted select value is
+    # in the defined choices set.
     field_ids = [item.field_id for item in body]
     field_result = await db.execute(
         select(CustomFieldDefinition).where(
@@ -251,12 +266,27 @@ async def set_member_field_values(
             CustomFieldDefinition.system_id == system.id,
         )
     )
-    valid_fields = {f.id for f in field_result.scalars().all()}
-    if len(valid_fields) != len(field_ids):
+    field_by_id = {f.id: f for f in field_result.scalars().all()}
+    if len(field_by_id) != len(field_ids):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="One or more field IDs are invalid",
         )
+
+    # Type-aware value validation. Only enforces the constraints that
+    # don't need decryption — for select/multiselect with a `choices`
+    # list, the submitted value must be one of them. Free-form
+    # select/multiselect (choices unset, mobile's current shape) is
+    # left alone.
+    for item in body:
+        defn = field_by_id[item.field_id]
+        try:
+            _validate_value_for_field(defn.field_type, defn.options, item.value)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Field '{defn.name}': {e}",
+            ) from e
 
     # Upsert values. Stored value is the encrypted JSON-serialised plaintext.
     for item in body:

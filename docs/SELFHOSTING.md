@@ -130,6 +130,17 @@ For local development without Docker, install the extras you need:
 pip install -e ".[dev,s3,smtp]"
 ```
 
+### Building behind a private PyPI mirror
+
+If you run a PyPI cache or mirror on your network (proxpi, devpi, Artifactory, etc.), the backend Dockerfile picks it up from two optional build args, both empty by default:
+
+```bash
+PIP_INDEX_URL=http://pypi.mirror.lan/index/
+PIP_EXTRA_INDEX_URL=
+```
+
+Drop one (or both) into a gitignored `.env` next to `docker-compose.yml` and re-run `docker compose build`. `PIP_INDEX_URL` replaces PyPI entirely (use this when the mirror itself is a transparent PyPI proxy); `PIP_EXTRA_INDEX_URL` is checked first with PyPI as fallback. Empty values pass through to pip's default behaviour, so leaving them unset means public-PyPI builds as before.
+
 ---
 
 ## Email
