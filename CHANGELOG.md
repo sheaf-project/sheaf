@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Select and multi-select custom field types on web.** The new poll dialog already accepted these types via the API (mobile apps ship pickers for both), but the web frontend only listed text/number/date/boolean and rendered every field value as a plain text input. The custom-fields settings card now offers all six types, lets you define a list of valid choices for select/multiselect at create time (or leave choices blank for freeform tagging — same behaviour the mobile apps default to), and per-choice editing on rename. Member values render with type-aware widgets: a number input for numeric, a date picker for dates, a checkbox for booleans, a dropdown for select, and a checkbox group for multi-select. When a field defines an explicit list of choices, the server now rejects submitted values that don't match — applies across all clients (web, iOS, Android).
+
 ### Fixed
 
 - **Sheaf-to-Sheaf import no longer attaches another account's images.** When a Sheaf JSON export was imported into a different account (e.g. cloning a member roster to a fresh account on the same instance), the importer copied hosted `avatar_url` values and bio image references verbatim. The new account ended up with `/v1/files/...` references pointing at the original account's storage — silently borrowing blobs it did not own, invisible to quota tracking, and at risk of breaking the moment the original account triggered orphan cleanup. The importer now strips any internal storage references (avatars, bio image embeds, journal image keys) during the JSON import path; external image URLs (Gravatar, Imgur, etc.) are preserved unchanged. Restoring images on a Sheaf-to-Sheaf migration now requires re-uploading them on the new account; the proper fix is the planned export-with-images zip format that ships blob bytes alongside the JSON.

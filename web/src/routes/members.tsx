@@ -51,7 +51,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { Member, MemberCreate, MemberUpdate, PrivacyLevel, DeleteConfirmation, CustomFieldValueSet } from "@/types/api";
+import { Checkbox } from "@/components/ui/checkbox";
+import type {
+  CustomFieldValueSet,
+  DeleteConfirmation,
+  FieldType,
+  Member,
+  MemberCreate,
+  MemberUpdate,
+  PrivacyLevel,
+} from "@/types/api";
 
 function MemberForm({
   initial,
@@ -264,52 +273,253 @@ function MemberForm({
   );
 }
 
+// Raw value the editor holds per field.
+//  - text/select       -> string
+//  - number            -> string (HTML inputs are stringly typed); coerced
+//                         to a number on save when non-empty
+//  - date              -> string ("YYYY-MM-DD" from DatePicker)
+//  - boolean           -> boolean
+//  - multiselect       -> string[]
+type FieldEditValue = string | boolean | string[];
+
+/** Strip the legacy {v: ...} envelope; everything else is passed through. */
+function unwrapValue(raw: unknown): unknown {
+  if (
+    raw != null &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    Object.keys(raw as object).length === 1 &&
+    "v" in (raw as object)
+  ) {
+    return (raw as { v: unknown }).v;
+  }
+  return raw;
+}
+
+/** Coerce a server-side stored value into the editor's per-type shape. */
+function valueForEditor(
+  field: { field_type: FieldType },
+  raw: unknown,
+): FieldEditValue {
+  const unwrapped = unwrapValue(raw);
+  switch (field.field_type) {
+    case "boolean":
+      if (typeof unwrapped === "boolean") return unwrapped;
+      if (typeof unwrapped === "string") return unwrapped === "true";
+      return false;
+    case "multiselect":
+      return Array.isArray(unwrapped)
+        ? unwrapped.filter((x): x is string => typeof x === "string")
+        : [];
+    case "number":
+    case "text":
+    case "date":
+    case "select":
+    default:
+      if (unwrapped == null) return "";
+      return String(unwrapped);
+  }
+}
+
+/** Is the editor's current value "empty" enough to skip from the payload? */
+function isEmptyValue(field_type: FieldType, value: FieldEditValue): boolean {
+  if (field_type === "boolean") return value === false;
+  if (field_type === "multiselect")
+    return Array.isArray(value) && value.length === 0;
+  return value === "" || value == null;
+}
+
+/** Coerce the editor's per-type shape into what gets sent on the wire.
+ *  Sends raw values (no `{v: ...}` envelope); the backend tolerates both
+ *  shapes via _unwrap_value in custom_field.py. */
+function valueForWire(field_type: FieldType, value: FieldEditValue): unknown {
+  if (field_type === "number") {
+    if (typeof value !== "string" || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return value;
+}
+
 function MemberFieldValues({ memberId }: { memberId: string }) {
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(memberId);
   const setValues = useSetMemberFieldValues();
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [overrides, setOverrides] = useState<Record<string, FieldEditValue>>({});
 
   const serverValues = useMemo(() => {
-    const map: Record<string, string> = {};
-    if (values) {
+    const map: Record<string, FieldEditValue> = {};
+    if (values && fields) {
+      const byId = new Map(fields.map((f) => [f.id, f]));
       for (const v of values) {
-        map[v.field_id] = typeof v.value === "object" && v.value !== null
-          ? ((v.value as Record<string, unknown>).v as string ?? "")
-          : String(v.value ?? "");
+        const field = byId.get(v.field_id);
+        if (field) map[v.field_id] = valueForEditor(field, v.value);
       }
     }
     return map;
-  }, [values]);
+  }, [values, fields]);
 
   const dirty = Object.keys(overrides).length > 0;
 
   if (!fields || fields.length === 0) return null;
 
+  function effectiveValue(fieldId: string, fallback: FieldEditValue): FieldEditValue {
+    return overrides[fieldId] ?? serverValues[fieldId] ?? fallback;
+  }
+
+  function updateField(fieldId: string, next: FieldEditValue) {
+    setOverrides((prev) => ({ ...prev, [fieldId]: next }));
+  }
+
   function handleSave() {
-    const merged = { ...serverValues, ...overrides };
-    const payload: CustomFieldValueSet[] = fields!
-      .filter((f) => merged[f.id] !== undefined && merged[f.id] !== "")
-      .map((f) => ({ field_id: f.id, value: { v: merged[f.id] } }));
-    setValues.mutate({ memberId, values: payload }, { onSuccess: () => setOverrides({}) });
+    const payload: CustomFieldValueSet[] = [];
+    for (const f of fields!) {
+      const has = f.id in overrides || f.id in serverValues;
+      if (!has) continue;
+      const fallback: FieldEditValue =
+        f.field_type === "boolean"
+          ? false
+          : f.field_type === "multiselect"
+          ? []
+          : "";
+      const val = effectiveValue(f.id, fallback);
+      if (isEmptyValue(f.field_type, val)) continue;
+      payload.push({ field_id: f.id, value: valueForWire(f.field_type, val) });
+    }
+    setValues.mutate(
+      { memberId, values: payload },
+      { onSuccess: () => setOverrides({}) },
+    );
   }
 
   return (
     <div className="space-y-3 border-t pt-3">
       <p className="text-sm font-medium text-muted-foreground">Custom fields</p>
-      {fields.map((f) => (
-        <div key={f.id} className="space-y-1">
-          <Label htmlFor={`custom-field-${f.id}`} className="text-xs">{f.name}</Label>
-          <Input
-            id={`custom-field-${f.id}`}
-            value={overrides[f.id] ?? serverValues[f.id] ?? ""}
-            onChange={(e) => {
-              setOverrides((prev) => ({ ...prev, [f.id]: e.target.value }));
-            }}
-            placeholder={f.field_type}
-          />
-        </div>
-      ))}
+      {fields.map((f) => {
+        const choices = (() => {
+          if (!f.options) return [];
+          const raw = (f.options as { choices?: unknown }).choices;
+          return Array.isArray(raw)
+            ? (raw.filter((c) => typeof c === "string") as string[])
+            : [];
+        })();
+        const id = `custom-field-${f.id}`;
+        return (
+          <div key={f.id} className="space-y-1">
+            <Label htmlFor={id} className="text-xs">
+              {f.name}
+            </Label>
+            {f.field_type === "boolean" ? (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={id}
+                  checked={effectiveValue(f.id, false) === true}
+                  onCheckedChange={(v) => updateField(f.id, v === true)}
+                />
+                <Label htmlFor={id} className="text-sm font-normal">
+                  Yes
+                </Label>
+              </div>
+            ) : f.field_type === "number" ? (
+              <Input
+                id={id}
+                type="number"
+                value={String(effectiveValue(f.id, ""))}
+                onChange={(e) => updateField(f.id, e.target.value)}
+              />
+            ) : f.field_type === "date" ? (
+              <DatePicker
+                value={String(effectiveValue(f.id, ""))}
+                onChange={(next) => updateField(f.id, next)}
+                placeholder="Pick a date"
+              />
+            ) : f.field_type === "select" ? (
+              choices.length > 0 ? (
+                <Select
+                  value={String(effectiveValue(f.id, ""))}
+                  onValueChange={(v) => updateField(f.id, v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {choices.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                // Freeform select (no choices defined): plain text input,
+                // matches mobile's current behaviour.
+                <Input
+                  id={id}
+                  value={String(effectiveValue(f.id, ""))}
+                  onChange={(e) => updateField(f.id, e.target.value)}
+                />
+              )
+            ) : f.field_type === "multiselect" ? (
+              choices.length > 0 ? (
+                <div className="space-y-1 rounded-md border p-2">
+                  {choices.map((c) => {
+                    const current = effectiveValue(f.id, []);
+                    const list = Array.isArray(current) ? current : [];
+                    const checked = list.includes(c);
+                    return (
+                      <div key={c} className="flex items-center gap-2">
+                        <Checkbox
+                          id={`${id}-${c}`}
+                          checked={checked}
+                          onCheckedChange={(v) => {
+                            const next = v === true
+                              ? Array.from(new Set([...list, c]))
+                              : list.filter((x) => x !== c);
+                            updateField(f.id, next);
+                          }}
+                        />
+                        <Label
+                          htmlFor={`${id}-${c}`}
+                          className="text-sm font-normal"
+                        >
+                          {c}
+                        </Label>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                // Freeform multiselect: comma-separated for now (mobile
+                // parity with the freeform select pattern).
+                <Input
+                  id={id}
+                  placeholder="Comma-separated tags"
+                  value={(() => {
+                    const current = effectiveValue(f.id, []);
+                    return Array.isArray(current) ? current.join(", ") : "";
+                  })()}
+                  onChange={(e) =>
+                    updateField(
+                      f.id,
+                      e.target.value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    )
+                  }
+                />
+              )
+            ) : (
+              // text (default)
+              <Input
+                id={id}
+                value={String(effectiveValue(f.id, ""))}
+                onChange={(e) => updateField(f.id, e.target.value)}
+              />
+            )}
+          </div>
+        );
+      })}
       {dirty && (
         <Button
           size="sm"
