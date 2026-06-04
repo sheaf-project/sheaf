@@ -24,6 +24,11 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 - **Sheaf-to-Sheaf import no longer attaches another account's images.** When a Sheaf JSON export was imported into a different account (e.g. cloning a member roster to a fresh account on the same instance), the importer copied hosted `avatar_url` values and bio image references verbatim. The new account ended up with `/v1/files/...` references pointing at the original account's storage — silently borrowing blobs it did not own, invisible to quota tracking, and at risk of breaking the moment the original account triggered orphan cleanup. The importer now strips any internal storage references (avatars, bio image embeds, journal image keys) during the JSON import path; external image URLs (Gravatar, Imgur, etc.) are preserved unchanged. Restoring images on a Sheaf-to-Sheaf migration now requires re-uploading them on the new account; the proper fix is the planned export-with-images zip format that ships blob bytes alongside the JSON.
 
+### Security
+
+- **Bumped `aiohttp` from 3.13.5 to 3.14.0** for an upstream security fix. See the [aiohttp 3.14.0 release notes](https://github.com/aio-libs/aiohttp/releases/tag/v3.14.0) for details.
+- **Bumped `react-router` from 7.13.1 to 7.15.0** to pick up upstream fixes. See the [react-router 7.15.0 release notes](https://github.com/remix-run/react-router/releases/tag/react-router%407.15.0) for details.
+
 ## [0.3.1] - 2026-06-02
 
 ### Added
