@@ -1,4 +1,5 @@
 import { AccountInfoCard } from "@/components/settings/account-info-card";
+import { AdminActivityCard } from "@/components/settings/admin-activity-card";
 import { ApiKeysCard } from "@/components/settings/api-keys-card";
 import { ActiveSessionsCard } from "@/components/settings/active-sessions-card";
 import { PrivacyCard } from "@/components/settings/privacy-card";
@@ -12,6 +13,7 @@ export function SettingsAccountPage() {
       <ApiKeysCard />
       <ActiveSessionsCard />
       <TrustedDevicesCard />
+      <AdminActivityCard />
     </>
   );
 }

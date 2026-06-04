@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Admin audit log.** Every state-changing admin action (user updates, approvals, rejections, member-limit changes — and the safety-reset / pending-bypass endpoints landing in the next PR) now writes a row to a new `admin_audit_events` table with the acting admin's identity, the target, before/after diffs for changed fields, and optional reason text. Two read surfaces: a paginated, filterable admin panel under Admin > Audit log, and a per-account "Admin activity on your account" card in Settings > Account so every user can see what admins have done to their account. Routine reads (list users, single-user detail, search) are deliberately not logged so the table stays signal-rich for abuse detection — logging every browse would let a malicious admin hide their data trawls in the noise. The log is append-only by design; there is no edit or delete endpoint.
+
 ## [0.3.2] - 2026-06-03
 
 ### Added

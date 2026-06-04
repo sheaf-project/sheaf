@@ -98,6 +98,54 @@ export function getPushoverUsage() {
   return apiFetch<PushoverUsage>("/v1/admin/pushover-usage");
 }
 
+export interface AdminAuditEvent {
+  id: string;
+  admin_user_id: string | null;
+  admin_email: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  target_user_id: string | null;
+  reason: string | null;
+  before_json: Record<string, unknown> | null;
+  after_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export function getAdminAuditEvents(opts: {
+  target_user_id?: string;
+  admin_user_id?: string;
+  action?: string;
+  page?: number;
+  limit?: number;
+} = {}) {
+  const params = new URLSearchParams();
+  if (opts.target_user_id) params.set("target_user_id", opts.target_user_id);
+  if (opts.admin_user_id) params.set("admin_user_id", opts.admin_user_id);
+  if (opts.action) params.set("action", opts.action);
+  params.set("page", String(opts.page ?? 1));
+  params.set("limit", String(opts.limit ?? 50));
+  return apiFetch<AdminAuditEvent[]>(`/v1/admin/audit-events?${params}`);
+}
+
+export interface UserAdminActivityEvent {
+  id: string;
+  admin_email: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  reason: string | null;
+  before_json: Record<string, unknown> | null;
+  after_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export function getMyAdminActivity(page = 1, limit = 50) {
+  return apiFetch<UserAdminActivityEvent[]>(
+    `/v1/auth/admin-activity?page=${page}&limit=${limit}`,
+  );
+}
+
 export function getPendingApprovals() {
   return apiFetch<PendingUser[]>("/v1/admin/approvals");
 }
