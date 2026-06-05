@@ -146,6 +146,65 @@ export function getMyAdminActivity(page = 1, limit = 50) {
   );
 }
 
+// --- Emergency-support admin actions ---
+
+export interface ResetSafetyResult {
+  reset: boolean;
+  changed_fields: string[];
+}
+
+export function adminResetSystemSafety(userId: string, reason: string) {
+  return apiFetch<ResetSafetyResult>(
+    `/v1/admin/users/${userId}/reset-safety`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+}
+
+export interface BypassPendingResult {
+  finalized_count: number;
+  by_type: Record<string, number>;
+}
+
+export function adminBypassPendingActions(userId: string, reason: string) {
+  return apiFetch<BypassPendingResult>(
+    `/v1/admin/users/${userId}/bypass-pending`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+}
+
+export interface AdminImportJobSummary {
+  id: string;
+  source: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  counts: Record<string, number>;
+  last_error: string | null;
+}
+
+export interface AdminImportJobDetail extends AdminImportJobSummary {
+  events: Array<{
+    level: string;
+    stage: string;
+    message: string;
+    record_ref: string | null;
+  }>;
+}
+
+export function listUserImportJobs(userId: string) {
+  return apiFetch<AdminImportJobSummary[]>(
+    `/v1/admin/users/${userId}/import-jobs`,
+  );
+}
+
+export function viewImportJobDetail(jobId: string, reason: string) {
+  return apiFetch<AdminImportJobDetail>(`/v1/admin/import-jobs/${jobId}`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export function getPendingApprovals() {
   return apiFetch<PendingUser[]>("/v1/admin/approvals");
 }

@@ -14,6 +14,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  adminBypassPendingActions,
+  adminResetSystemSafety,
   getAdminUsers,
   updateAdminUser,
   resetUserPassword,
@@ -36,6 +38,7 @@ function UserActions({ user }: { user: AdminUser }) {
   const qc = useQueryClient();
   const [confirming, setConfirming] = useState<string | null>(null);
   const [newEmail, setNewEmail] = useState("");
+  const [reason, setReason] = useState("");
   const [generatedPassword, setGeneratedPassword] = useState<string | null>(null);
 
   const resetPw = useMutation({
@@ -47,6 +50,34 @@ function UserActions({ user }: { user: AdminUser }) {
         `Password reset — ${data.sessions_revoked} session(s) revoked`,
       );
       setConfirming(null);
+    },
+  });
+
+  const resetSafety = useMutation({
+    mutationFn: () => adminResetSystemSafety(user.id, reason),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      toast.success(
+        data.changed_fields.length > 0
+          ? `Safety reset (${data.changed_fields.length} fields cleared)`
+          : "Safety already at default — no changes",
+      );
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
+  const bypassPending = useMutation({
+    mutationFn: () => adminBypassPendingActions(user.id, reason),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      toast.success(
+        data.finalized_count > 0
+          ? `Drained ${data.finalized_count} pending action(s)`
+          : "No pending actions queued",
+      );
+      setConfirming(null);
+      setReason("");
     },
   });
 
@@ -82,7 +113,9 @@ function UserActions({ user }: { user: AdminUser }) {
     resetPw.isPending ||
     emailChange.isPending ||
     disableTotp.isPending ||
-    verifyEmail.isPending;
+    verifyEmail.isPending ||
+    resetSafety.isPending ||
+    bypassPending.isPending;
 
   // The generated password is shown once for the admin to hand off. Don't
   // leave it sitting in the DOM indefinitely if the row stays expanded.
@@ -235,6 +268,92 @@ function UserActions({ user }: { user: AdminUser }) {
               Disable 2FA
             </Button>
           )
+        )}
+
+        {/* Reset System Safety (clear all safeguards going forward) */}
+        {confirming === "reset-safety" ? (
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-7 w-64 text-xs"
+              placeholder="Reason (e.g. support ticket #123)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-7 text-xs"
+              onClick={() => resetSafety.mutate()}
+              disabled={isPending || !reason.trim()}
+            >
+              Confirm
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => {
+                setConfirming(null);
+                setReason("");
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => setConfirming("reset-safety")}
+            title="Clear all System Safety toggles + zero grace period"
+          >
+            Reset safety
+          </Button>
+        )}
+
+        {/* Bypass pending (drain queued pending_actions now) */}
+        {confirming === "bypass-pending" ? (
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-7 w-64 text-xs"
+              placeholder="Reason (e.g. support ticket #123)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-7 text-xs"
+              onClick={() => bypassPending.mutate()}
+              disabled={isPending || !reason.trim()}
+            >
+              Confirm
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => {
+                setConfirming(null);
+                setReason("");
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => setConfirming("bypass-pending")}
+            title="Finalize all queued pending actions immediately"
+          >
+            Drain pending
+          </Button>
         )}
 
         {/* Verify email */}
