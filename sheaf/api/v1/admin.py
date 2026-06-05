@@ -13,10 +13,12 @@ from sheaf.config import settings
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.models.admin_audit_event import AdminAuditAction, AdminAuditTargetType
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import AccountStatus, User, UserTier
+from sheaf.services.admin_audit import log_admin_action
 from sheaf.services.file_cleanup import cleanup_orphaned_files
 from sheaf.services.front_retention import prune_free_tier_fronts
 
@@ -287,6 +289,17 @@ async def update_user(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # Snapshot only the fields the audit log cares about, before any
+    # mutation. The diff is computed at write time so unchanged keys
+    # don't pollute the row.
+    before_snapshot: dict[str, object] = {
+        "tier": str(target.tier.value),
+        "is_admin": target.is_admin,
+        "can_upload_images": target.can_upload_images,
+        "can_upload_animated_images": target.can_upload_animated_images,
+        "member_limit": target.member_limit,
+    }
+
     if body.tier is not None:
         target.tier = body.tier
     if body.is_admin is not None:
@@ -299,6 +312,30 @@ async def update_user(
         target.member_limit = None
     elif body.member_limit is not None:
         target.member_limit = body.member_limit
+
+    after_snapshot: dict[str, object] = {
+        "tier": str(target.tier.value),
+        "is_admin": target.is_admin,
+        "can_upload_images": target.can_upload_images,
+        "can_upload_animated_images": target.can_upload_animated_images,
+        "member_limit": target.member_limit,
+    }
+    changed = {
+        k for k in before_snapshot if before_snapshot[k] != after_snapshot[k]
+    }
+    diff_before = {k: before_snapshot[k] for k in changed}
+    diff_after = {k: after_snapshot[k] for k in changed}
+    if changed:
+        await log_admin_action(
+            db,
+            admin=admin,
+            action=AdminAuditAction.USER_UPDATE,
+            target_type=AdminAuditTargetType.USER,
+            target_id=target.id,
+            target_user_id=target.id,
+            before=diff_before,
+            after=diff_after,
+        )
 
     # Get member count and storage for response
     member_count = await db.scalar(
@@ -380,7 +417,7 @@ async def list_pending_approvals(
 @router.post("/users/{user_id}/approve")
 async def approve_user(
     user_id: uuid.UUID,
-    _admin: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Approve a pending user account."""
@@ -395,6 +432,16 @@ async def approve_user(
         )
 
     target.account_status = AccountStatus.ACTIVE
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_APPROVE,
+        target_type=AdminAuditTargetType.USER,
+        target_id=target.id,
+        target_user_id=target.id,
+        before={"account_status": "pending_approval"},
+        after={"account_status": "active"},
+    )
     await db.commit()
 
     # Send approval notification email if configured
@@ -417,7 +464,7 @@ async def approve_user(
 @router.post("/users/{user_id}/reject")
 async def reject_user(
     user_id: uuid.UUID,
-    _admin: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Reject a pending user account. Deletes the user and their system."""
@@ -430,6 +477,21 @@ async def reject_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"User is not pending approval (status: {target.account_status})",
         )
+
+    # Audit-log BEFORE the cascade delete clears the target user
+    # row out from under us. target_user_id is captured here; the
+    # row will SET NULL once the user is deleted, but the audit
+    # row remains attributable via admin_email + reason.
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_REJECT,
+        target_type=AdminAuditTargetType.USER,
+        target_id=target.id,
+        target_user_id=target.id,
+        before={"account_status": "pending_approval"},
+        after={"account_status": "deleted"},
+    )
 
     # Send rejection notification email if configured
     try:
