@@ -477,6 +477,32 @@ export function unsuspendUser(userId: string, reason: string) {
   });
 }
 
+// --- Ban / unban (PR 5; permanent companion to suspend) ---
+
+export interface BanResult {
+  banned: boolean;
+  sessions_revoked: number;
+}
+
+export function banUser(userId: string, reason: string) {
+  return apiFetch<BanResult>(`/v1/admin/users/${userId}/ban`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export interface UnbanResult {
+  unbanned: boolean;
+  reason?: string;
+}
+
+export function unbanUser(userId: string, reason: string) {
+  return apiFetch<UnbanResult>(`/v1/admin/users/${userId}/unban`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 // --- Dossier export (PR 4) ---
 
 export async function downloadDossier(
