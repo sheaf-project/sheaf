@@ -5,6 +5,7 @@ from sheaf.api.v1 import (
     admin,
     admin_audit,
     admin_emergency,
+    admin_small_actions,
     analytics,
     announcements,
     auth,
@@ -58,6 +59,10 @@ v1_router.include_router(admin_audit.router)
 # Admin emergency-support endpoints: reset-safety, bypass-pending,
 # import-log view. All require an explicit reason and are logged.
 v1_router.include_router(admin_emergency.router)
+# Admin small-actions batch: explain-account dossier, session
+# terminate, force-rotate API keys, bulk-approve. Mix of read +
+# mutation; each endpoint enforces its own admin gate.
+v1_router.include_router(admin_small_actions.router)
 # Account-level (Article 15 etc.) — session/JWT auth only, body-gated
 # step-up. Lives outside the scope-gated section since API key access
 # is refused inline by the endpoint.

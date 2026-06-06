@@ -45,6 +45,8 @@ class AdminAuditAction(enum.StrEnum):
     USER_SAFETY_RESET = "user_safety_reset"        # PR 2: drop safeguards forward
     USER_PENDING_BYPASS = "user_pending_bypass"    # PR 2: finalise all pending actions now
     IMPORT_LOG_VIEW = "import_log_view"            # PR 2: viewing an import job log
+    USER_SESSION_REVOKE = "user_session_revoke"    # PR 3: terminate a single session
+    USER_API_KEYS_ROTATE_ALL = "user_api_keys_rotate_all"  # PR 3: revoke every API key
 
 
 class AdminAuditTargetType(enum.StrEnum):

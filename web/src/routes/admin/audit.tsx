@@ -16,6 +16,8 @@ const ACTION_OPTIONS = [
   "user_member_limit_set",
   "user_safety_reset",
   "user_pending_bypass",
+  "user_session_revoke",
+  "user_api_keys_rotate_all",
   "import_log_view",
 ];
 

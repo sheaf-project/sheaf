@@ -16,7 +16,11 @@ import {
 import {
   adminBypassPendingActions,
   adminResetSystemSafety,
+  explainAccount,
+  forceRotateApiKeys,
   getAdminUsers,
+  listUserSessionsAdmin,
+  terminateUserSession,
   updateAdminUser,
   resetUserPassword,
   changeUserEmail,
@@ -24,6 +28,8 @@ import {
   verifyUserEmail,
   type AdminUser,
   type AdminUserPatch,
+  type AdminUserSession,
+  type ExplainAccountResponse,
 } from "@/lib/admin";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 
@@ -32,6 +38,195 @@ function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function SessionsSection({ userId }: { userId: string }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const { data: sessions } = useQuery<AdminUserSession[]>({
+    queryKey: ["admin", "sessions", userId],
+    queryFn: () => listUserSessionsAdmin(userId),
+  });
+
+  const terminate = useMutation({
+    mutationFn: ({ sid, why }: { sid: string; why: string }) =>
+      terminateUserSession(userId, sid, why),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "sessions", userId] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", userId] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      toast.success("Session revoked");
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
+  if (!sessions || sessions.length === 0) return null;
+
+  return (
+    <div>
+      <div className="mb-1 text-muted-foreground">Sessions:</div>
+      <ul className="space-y-1 font-mono">
+        {sessions.map((s) => (
+          <li key={s.id} className="flex items-start gap-2">
+            <span className="flex-1 truncate">
+              {s.nickname ? `${s.nickname} · ` : ""}
+              {s.user_agent ?? "(unknown UA)"} · {s.ip ?? "—"}
+              {s.created_at
+                ? ` · ${new Date(s.created_at).toLocaleString()}`
+                : ""}
+            </span>
+            {confirming === s.id ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  className="h-6 w-44 text-[10px]"
+                  placeholder="Reason"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-6 text-[10px]"
+                  disabled={!reason.trim() || terminate.isPending}
+                  onClick={() => terminate.mutate({ sid: s.id, why: reason })}
+                >
+                  Kill
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px]"
+                  onClick={() => {
+                    setConfirming(null);
+                    setReason("");
+                  }}
+                >
+                  X
+                </Button>
+              </div>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 text-[10px]"
+                onClick={() => setConfirming(s.id)}
+              >
+                Terminate
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ExplainPanel({ userId }: { userId: string }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading } = useQuery<ExplainAccountResponse>({
+    queryKey: ["admin", "explain", userId],
+    queryFn: () => explainAccount(userId),
+    enabled: open,
+    staleTime: 30_000,
+  });
+
+  return (
+    <div className="rounded border bg-muted/30">
+      <button
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="flex items-center gap-1">
+          {open ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronRight className="h-3 w-3" />
+          )}
+          Explain account
+        </span>
+        {open && data && (
+          <span className="text-muted-foreground">
+            {data.active_session_count} session(s) · {data.api_key_count} API key(s)
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="space-y-2 border-t px-3 py-2 text-xs">
+          {isLoading && (
+            <p className="text-muted-foreground">Loading...</p>
+          )}
+          {data && (
+            <>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono">
+                <div>
+                  <span className="text-muted-foreground">Tier:</span> {data.tier}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Status:</span>{" "}
+                  {data.account_status}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Email verified:</span>{" "}
+                  {String(data.email_verified)}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">TOTP:</span>{" "}
+                  {String(data.totp_enabled)}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Signup IP:</span>{" "}
+                  {data.signup_ip ?? "—"}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Last login:</span>{" "}
+                  {data.last_login_at
+                    ? new Date(data.last_login_at).toLocaleString()
+                    : "never"}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Sessions:</span>{" "}
+                  {data.active_session_count}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">API keys:</span>{" "}
+                  {data.api_key_count}
+                </div>
+              </div>
+              {data.system && (
+                <div className="font-mono">
+                  <span className="text-muted-foreground">System:</span>{" "}
+                  {data.system.name || "(unnamed)"} ·{" "}
+                  {data.system.member_count} members · auth=
+                  {data.system.delete_confirmation} · grace=
+                  {data.system.grace_period_days}d
+                </div>
+              )}
+              <SessionsSection userId={userId} />
+              {data.recent_admin_audit.length > 0 && (
+                <div>
+                  <div className="mb-1 text-muted-foreground">
+                    Recent admin activity:
+                  </div>
+                  <ul className="space-y-0.5 font-mono">
+                    {data.recent_admin_audit.slice(0, 5).map((row) => (
+                      <li key={row.id}>
+                        {new Date(row.created_at).toLocaleString()} ·{" "}
+                        {row.action}
+                        {row.reason ? ` — "${row.reason}"` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function UserActions({ user }: { user: AdminUser }) {
@@ -81,6 +276,21 @@ function UserActions({ user }: { user: AdminUser }) {
     },
   });
 
+  const rotateKeys = useMutation({
+    mutationFn: () => forceRotateApiKeys(user.id, reason),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", user.id] });
+      toast.success(
+        data.revoked_count > 0
+          ? `Revoked ${data.revoked_count} API key(s)`
+          : "No API keys to revoke",
+      );
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
   const emailChange = useMutation({
     mutationFn: () => changeUserEmail(user.id, newEmail),
     onSuccess: () => {
@@ -115,7 +325,8 @@ function UserActions({ user }: { user: AdminUser }) {
     disableTotp.isPending ||
     verifyEmail.isPending ||
     resetSafety.isPending ||
-    bypassPending.isPending;
+    bypassPending.isPending ||
+    rotateKeys.isPending;
 
   // The generated password is shown once for the admin to hand off. Don't
   // leave it sitting in the DOM indefinitely if the row stays expanded.
@@ -134,6 +345,8 @@ function UserActions({ user }: { user: AdminUser }) {
 
   return (
     <div className="space-y-3 py-2">
+      <ExplainPanel userId={user.id} />
+
       {/* Generated password display */}
       {generatedPassword && (
         <div className="flex items-center gap-2 rounded bg-muted p-2">
@@ -353,6 +566,49 @@ function UserActions({ user }: { user: AdminUser }) {
             title="Finalize all queued pending actions immediately"
           >
             Drain pending
+          </Button>
+        )}
+
+        {/* Force-rotate API keys */}
+        {confirming === "rotate-keys" ? (
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-7 w-64 text-xs"
+              placeholder="Reason (e.g. user reported key leak)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-7 text-xs"
+              onClick={() => rotateKeys.mutate()}
+              disabled={isPending || !reason.trim()}
+            >
+              Confirm
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => {
+                setConfirming(null);
+                setReason("");
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => setConfirming("rotate-keys")}
+            title="Revoke every API key on this account"
+          >
+            Rotate API keys
           </Button>
         )}
 
@@ -578,26 +834,39 @@ function UserRow({ user }: { user: AdminUser }) {
 
 export function AdminUsersPage() {
   const [search, setSearch] = useState("");
+  const [signupIp, setSignupIp] = useState("");
   const [page, setPage] = useState(1);
 
   const { data: users } = useQuery({
-    queryKey: ["admin", "users", search, page],
-    queryFn: () => getAdminUsers(search || undefined, page),
+    queryKey: ["admin", "users", search, signupIp, page],
+    queryFn: () =>
+      getAdminUsers(search || undefined, page, 50, signupIp || undefined),
   });
 
   return (
     <>
       <PageHeader title="Users" />
       <div className="max-w-5xl space-y-4">
-        <Input
-          placeholder="Search by email..."
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(1);
-          }}
-          className="max-w-xs"
-        />
+        <div className="flex flex-wrap gap-2">
+          <Input
+            placeholder="Search by email..."
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
+            className="max-w-xs"
+          />
+          <Input
+            placeholder="Filter by signup IP (exact)..."
+            value={signupIp}
+            onChange={(e) => {
+              setSignupIp(e.target.value);
+              setPage(1);
+            }}
+            className="max-w-xs font-mono text-xs"
+          />
+        </div>
         <Card>
           <CardContent className="p-0">
             <table className="w-full">
