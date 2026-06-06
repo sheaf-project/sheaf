@@ -178,6 +178,8 @@ class AdminUserRead(BaseModel):
     can_upload_animated_images: bool
     created_at: datetime
     last_login_at: datetime | None
+    suspended_until: datetime | None
+    suspended_reason: str | None
 
 
 class AdminUserUpdate(BaseModel):
@@ -281,6 +283,8 @@ async def list_users(
             can_upload_animated_images=user.can_upload_animated_images,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
+            suspended_until=user.suspended_until,
+            suspended_reason=user.suspended_reason,
         )
         for user, member_count, storage_used_bytes, email in page_rows
     ]
@@ -382,6 +386,8 @@ async def update_user(
         can_upload_animated_images=target.can_upload_animated_images,
         created_at=target.created_at,
         last_login_at=target.last_login_at,
+        suspended_until=target.suspended_until,
+        suspended_reason=target.suspended_reason,
     )
 
 

@@ -67,6 +67,20 @@ class User(UUIDMixin, TimestampMixin, Base):
         nullable=False,
         server_default="active",
     )
+
+    # Soft-ban end timestamp. NULL when status != SUSPENDED, or when
+    # suspended indefinitely (manual unsuspend required to lift). When
+    # set and `<= now`, the background unsuspend sweep restores the
+    # account to ACTIVE; the auth dep also treats past-expiry suspends
+    # as effectively ACTIVE so a user isn't locked out in the gap
+    # between expiry and the next sweep tick.
+    suspended_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Operator-supplied reason captured at suspend time. Surfaced to
+    # the user at next login attempt so they know why and when it
+    # lifts. Cleared on unsuspend.
+    suspended_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     email_verified: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )

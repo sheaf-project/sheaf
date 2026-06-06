@@ -16,11 +16,14 @@ import {
 import {
   adminBypassPendingActions,
   adminResetSystemSafety,
+  downloadDossier,
   explainAccount,
   forceRotateApiKeys,
   getAdminUsers,
   listUserSessionsAdmin,
+  suspendUser,
   terminateUserSession,
+  unsuspendUser,
   updateAdminUser,
   resetUserPassword,
   changeUserEmail,
@@ -234,6 +237,7 @@ function UserActions({ user }: { user: AdminUser }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [newEmail, setNewEmail] = useState("");
   const [reason, setReason] = useState("");
+  const [suspendDays, setSuspendDays] = useState("7");
   const [generatedPassword, setGeneratedPassword] = useState<string | null>(null);
 
   const resetPw = useMutation({
@@ -291,6 +295,52 @@ function UserActions({ user }: { user: AdminUser }) {
     },
   });
 
+  const suspend = useMutation({
+    mutationFn: () => {
+      const days = suspendDays.trim() === "" ? null : Number(suspendDays);
+      return suspendUser(user.id, reason, days);
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", user.id] });
+      toast.success(
+        data.suspended_until
+          ? `Suspended until ${new Date(data.suspended_until).toLocaleString()}`
+          : "Suspended indefinitely",
+      );
+      setConfirming(null);
+      setReason("");
+      setSuspendDays("7");
+    },
+  });
+
+  const unsuspend = useMutation({
+    mutationFn: () => unsuspendUser(user.id, reason),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", user.id] });
+      if (data.unsuspended) {
+        toast.success("Suspension lifted");
+      } else {
+        toast.info("User was not suspended");
+      }
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
+  const dossier = useMutation({
+    mutationFn: () => downloadDossier(user.id, reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      toast.success("Dossier downloaded");
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
   const emailChange = useMutation({
     mutationFn: () => changeUserEmail(user.id, newEmail),
     onSuccess: () => {
@@ -326,7 +376,12 @@ function UserActions({ user }: { user: AdminUser }) {
     verifyEmail.isPending ||
     resetSafety.isPending ||
     bypassPending.isPending ||
-    rotateKeys.isPending;
+    rotateKeys.isPending ||
+    suspend.isPending ||
+    unsuspend.isPending ||
+    dossier.isPending;
+
+  const isSuspended = user.account_status === "suspended";
 
   // The generated password is shown once for the admin to hand off. Don't
   // leave it sitting in the DOM indefinitely if the row stays expanded.
@@ -612,6 +667,152 @@ function UserActions({ user }: { user: AdminUser }) {
           </Button>
         )}
 
+        {/* Suspend / unsuspend. The two are mutually exclusive — show
+            unsuspend only when the user is currently suspended, and
+            hide suspend in that case to avoid double-action confusion. */}
+        {!isSuspended && !user.is_admin && (
+          confirming === "suspend" ? (
+            <div className="flex items-center gap-2">
+              <Input
+                className="h-7 w-44 text-xs"
+                placeholder="Reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <Input
+                className="h-7 w-16 text-xs"
+                placeholder="days"
+                value={suspendDays}
+                onChange={(e) => setSuspendDays(e.target.value)}
+                type="number"
+                min={1}
+                max={1825}
+                title="Empty = indefinite (manual unsuspend required)"
+              />
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 text-xs"
+                onClick={() => suspend.mutate()}
+                disabled={isPending || !reason.trim()}
+              >
+                Confirm
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setConfirming(null);
+                  setReason("");
+                  setSuspendDays("7");
+                }}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => setConfirming("suspend")}
+              title="Soft-ban this account (auto-restores at expiry; leave duration blank for indefinite)"
+            >
+              Suspend
+            </Button>
+          )
+        )}
+        {isSuspended && (
+          confirming === "unsuspend" ? (
+            <div className="flex items-center gap-2">
+              <Input
+                className="h-7 w-44 text-xs"
+                placeholder="Reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <Button
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => unsuspend.mutate()}
+                disabled={isPending || !reason.trim()}
+              >
+                Confirm
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setConfirming(null);
+                  setReason("");
+                }}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => setConfirming("unsuspend")}
+              title={
+                user.suspended_reason
+                  ? `Currently suspended: ${user.suspended_reason}`
+                  : "Lift suspension early"
+              }
+            >
+              Unsuspend
+            </Button>
+          )
+        )}
+
+        {/* Dossier export (GDPR Article 15 metadata bundle) */}
+        {confirming === "dossier" ? (
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-7 w-64 text-xs"
+              placeholder="Reason (e.g. DSAR request)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => dossier.mutate()}
+              disabled={isPending || !reason.trim()}
+            >
+              Download
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => {
+                setConfirming(null);
+                setReason("");
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => setConfirming("dossier")}
+            title="Download GDPR Article 15 metadata bundle"
+          >
+            Dossier
+          </Button>
+        )}
+
         {/* Verify email */}
         {!user.email_verified && (
           confirming === "verify-email" ? (
@@ -716,6 +917,30 @@ function UserRow({ user }: { user: AdminUser }) {
                 className="text-[10px] px-1 py-0 text-muted-foreground"
               >
                 Unverified
+              </Badge>
+            )}
+            {user.account_status === "suspended" && (
+              <Badge
+                variant="destructive"
+                className="text-[10px] px-1 py-0"
+                title={
+                  user.suspended_reason
+                    ? `Reason: ${user.suspended_reason}` +
+                      (user.suspended_until
+                        ? ` (until ${new Date(user.suspended_until).toLocaleString()})`
+                        : " (indefinite)")
+                    : "Suspended"
+                }
+              >
+                Suspended
+              </Badge>
+            )}
+            {user.account_status === "banned" && (
+              <Badge
+                variant="destructive"
+                className="text-[10px] px-1 py-0"
+              >
+                Banned
               </Badge>
             )}
           </div>

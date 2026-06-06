@@ -818,6 +818,30 @@ async def login(
             detail="Invalid email or password",
         )
 
+    # Suspended / banned accounts: refuse the login outright rather
+    # than minting a session the user can't use. Past-expiry suspends
+    # fall through; the background sweep will normalise the status,
+    # and the auth dep also treats them as effectively ACTIVE.
+    if user.account_status == AccountStatus.SUSPENDED:
+        until = user.suspended_until
+        if until is None or until > datetime.now(UTC):
+            parts = ["Account suspended"]
+            if user.suspended_reason:
+                parts.append(f"reason: {user.suspended_reason}")
+            if until is not None:
+                parts.append(f"until: {until.isoformat()}")
+            auth_logins_total.labels(outcome="account_suspended").inc()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="; ".join(parts),
+            )
+    if user.account_status == AccountStatus.BANNED:
+        auth_logins_total.labels(outcome="account_banned").inc()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account banned",
+        )
+
     # ---- login(): TOTP check + trusted-device handling ----
     # Enforce TOTP if enabled — unless the browser presents a valid
     # trusted-device cookie for this user.

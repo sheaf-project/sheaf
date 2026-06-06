@@ -23,6 +23,8 @@ export interface AdminUser {
   can_upload_animated_images: boolean;
   created_at: string;
   last_login_at: string | null;
+  suspended_until: string | null;
+  suspended_reason: string | null;
 }
 
 export interface PendingUser {
@@ -439,4 +441,78 @@ export function bulkApprove(userIds: string[]) {
     method: "POST",
     body: JSON.stringify({ user_ids: userIds }),
   });
+}
+
+// --- Suspend / unsuspend (PR 4) ---
+
+export interface SuspendResult {
+  suspended: boolean;
+  suspended_until: string | null;
+  sessions_revoked: number | null;
+}
+
+export function suspendUser(
+  userId: string,
+  reason: string,
+  durationDays: number | null,
+) {
+  return apiFetch<SuspendResult>(`/v1/admin/users/${userId}/suspend`, {
+    method: "POST",
+    body: JSON.stringify({
+      reason,
+      duration_days: durationDays,
+    }),
+  });
+}
+
+export interface UnsuspendResult {
+  unsuspended: boolean;
+  reason?: string;
+}
+
+export function unsuspendUser(userId: string, reason: string) {
+  return apiFetch<UnsuspendResult>(`/v1/admin/users/${userId}/unsuspend`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+// --- Dossier export (PR 4) ---
+
+export async function downloadDossier(
+  userId: string,
+  reason: string,
+): Promise<void> {
+  // apiFetch coerces JSON; for a file download we want the raw blob,
+  // so call fetch directly with the same credentials behaviour as the
+  // shared client.
+  const resp = await fetch(`/v1/admin/users/${userId}/dossier`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: string };
+      if (j.detail) detail = j.detail;
+    } catch {
+      // body wasn't JSON
+    }
+    throw new Error(detail);
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  // The server sets Content-Disposition; pull the filename out so the
+  // browser doesn't fall back to the URL path as the suggested name.
+  const cd = resp.headers.get("content-disposition") ?? "";
+  const match = cd.match(/filename="([^"]+)"/);
+  a.download = match ? match[1] : `sheaf-dossier-${userId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
