@@ -9,12 +9,22 @@ import {
   getPendingApprovals,
   approveUser,
   rejectUser,
+  bulkApprove,
   type PendingUser,
 } from "@/lib/admin";
 import { timeAgo } from "@/lib/utils";
 import { Check, X } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 
-function ApprovalRow({ user }: { user: PendingUser }) {
+function ApprovalRow({
+  user,
+  selected,
+  onToggleSelected,
+}: {
+  user: PendingUser;
+  selected: boolean;
+  onToggleSelected: (checked: boolean) => void;
+}) {
   const qc = useQueryClient();
   const [confirming, setConfirming] = useState<"approve" | "reject" | null>(null);
 
@@ -40,6 +50,13 @@ function ApprovalRow({ user }: { user: PendingUser }) {
 
   return (
     <tr className="border-b text-sm last:border-0">
+      <td className="py-3 pr-3 align-middle">
+        <Checkbox
+          checked={selected}
+          onCheckedChange={(c) => onToggleSelected(c === true)}
+          aria-label={`Select ${user.email}`}
+        />
+      </td>
       <td className="py-3 pr-4 font-mono text-xs">{user.email}</td>
       <td className="py-3 pr-4 text-xs text-muted-foreground">
         {user.signup_ip ?? "—"}
@@ -115,10 +132,36 @@ function ApprovalRow({ user }: { user: PendingUser }) {
 }
 
 export function AdminApprovalsPage() {
+  const qc = useQueryClient();
   const { data: users, isLoading } = useQuery({
     queryKey: ["admin", "approvals"],
     queryFn: getPendingApprovals,
     refetchInterval: 30000,
+  });
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const visibleIds = (users ?? []).map((u) => u.id);
+  const selectedVisibleCount = visibleIds.filter((id) => selected.has(id))
+    .length;
+  const allVisibleSelected =
+    visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+
+  const bulk = useMutation({
+    mutationFn: (ids: string[]) => bulkApprove(ids),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
+      qc.invalidateQueries({ queryKey: ["admin", "stats"] });
+      const skipped = data.results.length - data.approved_count;
+      if (skipped > 0) {
+        toast.success(
+          `Approved ${data.approved_count} (${skipped} skipped — see console)`,
+        );
+      } else {
+        toast.success(`Approved ${data.approved_count}`);
+      }
+      setSelected(new Set());
+    },
   });
 
   const count = users?.length ?? 0;
@@ -135,14 +178,43 @@ export function AdminApprovalsPage() {
           </Card>
         ) : (
           <>
-            <p className="text-sm text-muted-foreground">
-              {count} account{count !== 1 ? "s" : ""} waiting for approval
-            </p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                {count} account{count !== 1 ? "s" : ""} waiting for approval
+                {selectedVisibleCount > 0 ? ` • ${selectedVisibleCount} selected` : ""}
+              </p>
+              <Button
+                size="sm"
+                variant="default"
+                disabled={selectedVisibleCount === 0 || bulk.isPending}
+                onClick={() => bulk.mutate(Array.from(selected))}
+              >
+                <Check className="h-3 w-3 mr-1" />
+                Approve selected ({selectedVisibleCount})
+              </Button>
+            </div>
             <Card>
               <CardContent className="p-0">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b text-xs text-muted-foreground">
+                      <th className="py-2 pr-3 text-left font-medium w-8">
+                        <Checkbox
+                          checked={allVisibleSelected}
+                          onCheckedChange={(c) => {
+                            setSelected((prev) => {
+                              const next = new Set(prev);
+                              if (c === true) {
+                                visibleIds.forEach((id) => next.add(id));
+                              } else {
+                                visibleIds.forEach((id) => next.delete(id));
+                              }
+                              return next;
+                            });
+                          }}
+                          aria-label="Select all visible"
+                        />
+                      </th>
                       <th className="py-2 pr-4 text-left font-medium">Email</th>
                       <th className="py-2 pr-4 text-left font-medium">IP</th>
                       <th className="py-2 pr-4 text-left font-medium">Signed up</th>
@@ -151,7 +223,21 @@ export function AdminApprovalsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users?.map((u) => <ApprovalRow key={u.id} user={u} />)}
+                    {users?.map((u) => (
+                      <ApprovalRow
+                        key={u.id}
+                        user={u}
+                        selected={selected.has(u.id)}
+                        onToggleSelected={(checked) => {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (checked) next.add(u.id);
+                            else next.delete(u.id);
+                            return next;
+                          });
+                        }}
+                      />
+                    ))}
                   </tbody>
                 </table>
               </CardContent>

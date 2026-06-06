@@ -192,12 +192,19 @@ class AdminUserUpdate(BaseModel):
 @router.get("/users", response_model=list[AdminUserRead])
 async def list_users(
     search: str = "",
+    signup_ip: str = "",
     page: int = 1,
     limit: int = 50,
     _: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all users with member counts. Requires admin:read scope or is_admin."""
+    """List all users with member counts. Requires admin:read scope or is_admin.
+
+    `signup_ip` filters to users whose recorded signup IP matches exactly.
+    Useful for abuse triage when one IP shows up across multiple complaints.
+    Exact-match only — partial / CIDR matching is intentionally absent so
+    operators don't accidentally surface broad swaths of accounts that just
+    happened to be behind the same NAT."""
     member_count_sq = (
         select(System.user_id, func.count(Member.id).label("member_count"))
         .outerjoin(Member, Member.system_id == System.id)
@@ -224,6 +231,9 @@ async def list_users(
         .outerjoin(storage_sq, storage_sq.c.user_id == User.id)
         .order_by(User.created_at.desc())
     )
+
+    if signup_ip:
+        query = query.where(User.signup_ip == signup_ip)
 
     offset = max(0, (page - 1) * limit)
 

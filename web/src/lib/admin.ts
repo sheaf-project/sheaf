@@ -62,9 +62,15 @@ export function getAdminStats() {
   return apiFetch<AdminStats>("/v1/admin/stats");
 }
 
-export function getAdminUsers(search?: string, page = 1, limit = 50) {
+export function getAdminUsers(
+  search?: string,
+  page = 1,
+  limit = 50,
+  signupIp?: string,
+) {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (search) params.set("search", search);
+  if (signupIp) params.set("signup_ip", signupIp);
   return apiFetch<AdminUser[]>(`/v1/admin/users?${params}`);
 }
 
@@ -341,4 +347,96 @@ export function verifyUserEmail(userId: string) {
     `/v1/admin/users/${userId}/verify-email`,
     { method: "POST" },
   );
+}
+
+// --- Small actions (PR 3) ---
+
+export interface ExplainAccountSystem {
+  id: string;
+  name: string;
+  member_count: number;
+  delete_confirmation: string;
+  grace_period_days: number;
+}
+
+export interface ExplainAccountAuditRow {
+  id: string;
+  action: string;
+  target_type: string;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface ExplainAccountResponse {
+  user_id: string;
+  email: string;
+  tier: string;
+  is_admin: boolean;
+  account_status: string;
+  email_verified: boolean;
+  totp_enabled: boolean;
+  signup_ip: string | null;
+  created_at: string;
+  last_login_at: string | null;
+  active_session_count: number;
+  api_key_count: number;
+  system: ExplainAccountSystem | null;
+  recent_admin_audit: ExplainAccountAuditRow[];
+}
+
+export interface AdminUserSession {
+  id: string;
+  user_agent: string | null;
+  ip: string | null;
+  created_at: string | null;
+  last_seen_at: string | null;
+  nickname: string | null;
+}
+
+export function listUserSessionsAdmin(userId: string) {
+  return apiFetch<AdminUserSession[]>(
+    `/v1/admin/users/${userId}/sessions`,
+  );
+}
+
+export function explainAccount(userId: string) {
+  return apiFetch<ExplainAccountResponse>(
+    `/v1/admin/users/${userId}/explain`,
+  );
+}
+
+export function terminateUserSession(
+  userId: string,
+  sessionId: string,
+  reason: string,
+) {
+  return apiFetch<{ revoked: boolean }>(
+    `/v1/admin/users/${userId}/sessions/${sessionId}/terminate`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+}
+
+export function forceRotateApiKeys(userId: string, reason: string) {
+  return apiFetch<{ revoked_count: number }>(
+    `/v1/admin/users/${userId}/api-keys/rotate-all`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+}
+
+export interface BulkApproveResult {
+  user_id: string;
+  approved: boolean;
+  reason: string | null;
+}
+
+export interface BulkApproveResponse {
+  approved_count: number;
+  results: BulkApproveResult[];
+}
+
+export function bulkApprove(userIds: string[]) {
+  return apiFetch<BulkApproveResponse>("/v1/admin/approvals/bulk-approve", {
+    method: "POST",
+    body: JSON.stringify({ user_ids: userIds }),
+  });
 }
