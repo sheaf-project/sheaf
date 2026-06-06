@@ -50,6 +50,8 @@ class AdminAuditAction(enum.StrEnum):
     USER_SUSPEND = "user_suspend"                  # PR 4: soft-ban with or without expiry
     USER_UNSUSPEND = "user_unsuspend"              # PR 4: lift soft-ban (admin OR sweep)
     USER_DOSSIER_EXPORT = "user_dossier_export"    # PR 4: GDPR Article 15 metadata bundle
+    USER_BAN = "user_ban"                          # PR 5: permanent ban (BANNED state)
+    USER_UNBAN = "user_unban"                      # PR 5: lift permanent ban
 
 
 class AdminAuditTargetType(enum.StrEnum):

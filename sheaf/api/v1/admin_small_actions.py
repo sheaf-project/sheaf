@@ -47,6 +47,16 @@ PR 4 endpoints:
         delivery state, admin audit history, import/export jobs.
         Distinct from /v1/export (Article 20 portability). Reason
         required; logged.
+
+PR 5 endpoints:
+
+  - POST /admin/users/{id}/ban
+        Permanent ban. Sets account_status=BANNED + revokes all
+        sessions. No auto-restore (unlike suspend); /unban is the
+        only path back. Reason required; logged.
+
+  - POST /admin/users/{id}/unban
+        Lift a permanent ban. Returns the user to ACTIVE.
 """
 
 from __future__ import annotations
@@ -609,6 +619,125 @@ async def unsuspend_user(
     )
     await db.commit()
     return {"unsuspended": True}
+
+
+# ---------------------------------------------------------------------------
+# Ban / unban (permanent companion to suspend; no auto-restore)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/users/{user_id}/ban")
+async def ban_user(
+    user_id: uuid.UUID,
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently ban an account.
+
+    Sets `account_status=BANNED` and revokes all sessions atomically.
+    Differs from suspend in two ways: there is no auto-restore sweep,
+    and the auth detail string is just "Account banned" with no
+    reason / expiry surfaced to the user (the reason lives in the
+    audit row for operator reference). Lift via /unban; lifting is
+    deliberately a separate explicit endpoint rather than a state
+    that decays.
+
+    Admins are refused with 409 just like suspend, on the same
+    "operators shouldn't be able to lock each other out of the
+    instance via this surface" principle.
+    """
+    from sheaf.auth.sessions import delete_all_user_sessions
+
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    if target.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot ban an admin account",
+        )
+
+    before = {
+        "account_status": str(target.account_status),
+        "suspended_until": (
+            target.suspended_until.isoformat()
+            if target.suspended_until is not None
+            else None
+        ),
+        "suspended_reason": target.suspended_reason,
+    }
+    target.account_status = AccountStatus.BANNED
+    # Clearing the suspend-specific fields keeps the row clean if the
+    # operator escalates a soft-ban to permanent; otherwise stale
+    # `suspended_until` would mislead a later reader of the row.
+    target.suspended_until = None
+    target.suspended_reason = None
+
+    revoked = 0
+    try:
+        revoked = await delete_all_user_sessions(user_id)
+    except Exception:
+        # Same posture as apply_suspend: session revocation is
+        # best-effort, the auth gate still rejects on the next request
+        # regardless. Don't roll back the DB-side ban on a Redis blip.
+        revoked = -1
+    before["_sessions_revoked"] = revoked
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_BAN,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        before=before,
+        after={"account_status": "banned"},
+    )
+    await db.commit()
+    return {"banned": True, "sessions_revoked": revoked}
+
+
+@router.post("/users/{user_id}/unban")
+async def unban_user(
+    user_id: uuid.UUID,
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lift a permanent ban.
+
+    Returns the user to ACTIVE. No-op on accounts that aren't BANNED
+    (mirrors unsuspend's behaviour for the non-suspended case)."""
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if target.account_status != AccountStatus.BANNED:
+        return {"unbanned": False, "reason": "not_banned"}
+
+    before = {"account_status": str(target.account_status)}
+    target.account_status = AccountStatus.ACTIVE
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_UNBAN,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        before=before,
+        after={"account_status": "active"},
+    )
+    await db.commit()
+    return {"unbanned": True}
 
 
 # ---------------------------------------------------------------------------

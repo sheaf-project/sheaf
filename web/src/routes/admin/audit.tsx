@@ -20,6 +20,8 @@ const ACTION_OPTIONS = [
   "user_api_keys_rotate_all",
   "user_suspend",
   "user_unsuspend",
+  "user_ban",
+  "user_unban",
   "user_dossier_export",
   "import_log_view",
 ];

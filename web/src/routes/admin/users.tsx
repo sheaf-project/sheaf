@@ -16,6 +16,7 @@ import {
 import {
   adminBypassPendingActions,
   adminResetSystemSafety,
+  banUser,
   downloadDossier,
   explainAccount,
   forceRotateApiKeys,
@@ -23,6 +24,7 @@ import {
   listUserSessionsAdmin,
   suspendUser,
   terminateUserSession,
+  unbanUser,
   unsuspendUser,
   updateAdminUser,
   resetUserPassword,
@@ -341,6 +343,34 @@ function UserActions({ user }: { user: AdminUser }) {
     },
   });
 
+  const ban = useMutation({
+    mutationFn: () => banUser(user.id, reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", user.id] });
+      toast.success("Banned");
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
+  const unban = useMutation({
+    mutationFn: () => unbanUser(user.id, reason),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", user.id] });
+      if (data.unbanned) {
+        toast.success("Ban lifted");
+      } else {
+        toast.info("User was not banned");
+      }
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
   const emailChange = useMutation({
     mutationFn: () => changeUserEmail(user.id, newEmail),
     onSuccess: () => {
@@ -379,9 +409,12 @@ function UserActions({ user }: { user: AdminUser }) {
     rotateKeys.isPending ||
     suspend.isPending ||
     unsuspend.isPending ||
-    dossier.isPending;
+    dossier.isPending ||
+    ban.isPending ||
+    unban.isPending;
 
   const isSuspended = user.account_status === "suspended";
+  const isBanned = user.account_status === "banned";
 
   // The generated password is shown once for the admin to hand off. Don't
   // leave it sitting in the DOM indefinitely if the row stays expanded.
@@ -767,6 +800,93 @@ function UserActions({ user }: { user: AdminUser }) {
               }
             >
               Unsuspend
+            </Button>
+          )
+        )}
+
+        {/* Ban / unban. Permanent companion to suspend; no auto-restore. */}
+        {!isBanned && !isSuspended && !user.is_admin && (
+          confirming === "ban" ? (
+            <div className="flex items-center gap-2">
+              <Input
+                className="h-7 w-64 text-xs"
+                placeholder="Reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 text-xs"
+                onClick={() => ban.mutate()}
+                disabled={isPending || !reason.trim()}
+              >
+                Confirm
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setConfirming(null);
+                  setReason("");
+                }}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs text-destructive hover:text-destructive"
+              onClick={() => setConfirming("ban")}
+              title="Permanent ban (no auto-restore; /unban to lift)"
+            >
+              Ban
+            </Button>
+          )
+        )}
+        {isBanned && (
+          confirming === "unban" ? (
+            <div className="flex items-center gap-2">
+              <Input
+                className="h-7 w-44 text-xs"
+                placeholder="Reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <Button
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => unban.mutate()}
+                disabled={isPending || !reason.trim()}
+              >
+                Confirm
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setConfirming(null);
+                  setReason("");
+                }}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => setConfirming("unban")}
+              title="Lift permanent ban"
+            >
+              Unban
             </Button>
           )
         )}
