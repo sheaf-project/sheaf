@@ -457,6 +457,22 @@ async def _gc_revisions(db: AsyncSession) -> dict:
     return await gc_revisions(db)
 
 
+async def _unsuspend_expired(db: AsyncSession) -> dict:
+    """Lift soft-bans whose `suspended_until` has passed.
+
+    The auth dep already treats past-expiry suspends as effectively
+    ACTIVE, so users aren't wedged in the gap before this fires; the
+    sweep is the canonical state-cleaner. Writes a USER_UNSUSPEND
+    audit row per restored account with admin_user_id NULL so the
+    auto-restore is distinguishable from a manual unsuspend.
+    """
+    from sheaf.services.suspend import sweep_expired_suspensions
+
+    restored = await sweep_expired_suspensions(db)
+    await db.commit()
+    return {"items_processed": restored}
+
+
 # ---------------------------------------------------------------------------
 # SES event processing (bounces + complaints)
 # ---------------------------------------------------------------------------
@@ -898,6 +914,13 @@ def _register_all_jobs() -> None:
         description="Trim journal/bio revision history to per-user effective caps",
         func=_gc_revisions,
         interval_seconds=lambda: settings.journal_gc_interval_hours * 3600,
+    )
+
+    register_job(
+        name="unsuspend_expired",
+        description="Restore soft-banned accounts whose suspension window has elapsed",
+        func=_unsuspend_expired,
+        interval_seconds=lambda: settings.job_check_interval_minutes * 60,
     )
 
     register_job(

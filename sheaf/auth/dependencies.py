@@ -125,15 +125,32 @@ async def get_current_user(
             detail="User not found",
         )
 
-    # Check account status
-    if user.account_status in (AccountStatus.SUSPENDED, AccountStatus.BANNED):
-        _STATUS_MESSAGES = {
-            AccountStatus.SUSPENDED: "Account suspended",
-            AccountStatus.BANNED: "Account banned",
-        }
+    # Check account status. SUSPENDED carries an optional expiry +
+    # reason; we render those into the detail so the user knows what
+    # happened and when it lifts. Past-expiry suspends are treated as
+    # effectively ACTIVE: the background sweep will clear the state
+    # at its next tick, and we don't want to wedge a returning user
+    # in the gap between expiry and the next run.
+    if user.account_status == AccountStatus.SUSPENDED:
+        from datetime import UTC, datetime
+
+        until = user.suspended_until
+        if until is not None and until <= datetime.now(UTC):
+            pass  # fall through; treat as active
+        else:
+            parts = ["Account suspended"]
+            if user.suspended_reason:
+                parts.append(f"reason: {user.suspended_reason}")
+            if until is not None:
+                parts.append(f"until: {until.isoformat()}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="; ".join(parts),
+            )
+    if user.account_status == AccountStatus.BANNED:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=_STATUS_MESSAGES[user.account_status],
+            detail="Account banned",
         )
     if (
         user.account_status == AccountStatus.PENDING_APPROVAL

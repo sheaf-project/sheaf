@@ -47,6 +47,9 @@ class AdminAuditAction(enum.StrEnum):
     IMPORT_LOG_VIEW = "import_log_view"            # PR 2: viewing an import job log
     USER_SESSION_REVOKE = "user_session_revoke"    # PR 3: terminate a single session
     USER_API_KEYS_ROTATE_ALL = "user_api_keys_rotate_all"  # PR 3: revoke every API key
+    USER_SUSPEND = "user_suspend"                  # PR 4: soft-ban with or without expiry
+    USER_UNSUSPEND = "user_unsuspend"              # PR 4: lift soft-ban (admin OR sweep)
+    USER_DOSSIER_EXPORT = "user_dossier_export"    # PR 4: GDPR Article 15 metadata bundle
 
 
 class AdminAuditTargetType(enum.StrEnum):

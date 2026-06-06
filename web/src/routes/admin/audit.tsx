@@ -18,6 +18,9 @@ const ACTION_OPTIONS = [
   "user_pending_bypass",
   "user_session_revoke",
   "user_api_keys_rotate_all",
+  "user_suspend",
+  "user_unsuspend",
+  "user_dossier_export",
   "import_log_view",
 ];
 
