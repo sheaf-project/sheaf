@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import bindparam, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,7 +12,7 @@ from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.front import Front
 from sheaf.models.front_audit_event import FrontAuditEvent
-from sheaf.models.member import Member, front_members
+from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
@@ -122,44 +122,41 @@ async def _front_has_audit(db: AsyncSession, front_id: uuid.UUID) -> bool:
 _COALESCE_MAX_DEPTH = 500
 
 
-async def _coalesced_started_at(
-    db: AsyncSession,
-    *,
-    system_id: uuid.UUID,
-    member_id: uuid.UUID,
-    starting_at: datetime,
-) -> tuple[datetime, bool]:
-    """Walk back through contiguous front entries for a member.
-
-    A "contiguous chain" links Front rows where member M appears in
-    both, AND the previous front's ended_at exactly matches the next
-    front's started_at. Any gap (or member absence) breaks the chain.
-    Returns (earliest_started_at, capped) — `capped` is True if the
-    walk-back hit the depth limit (chain was longer than the cap and
-    the returned timestamp is a lower bound, not the true chain start).
+# Recursive CTE that walks every (seed_front, member) chain in
+# parallel. Replaces what was previously a per-(front, member) loop of
+# awaited single-row queries — fine for one open front with two
+# members on a brand-new system, ruinous for /current on a busy
+# system with coalesce_contiguous_fronts on. The CTE is bounded by
+# `_COALESCE_MAX_DEPTH` so a corrupted-data cycle can't run forever,
+# and we surface the cap-hit per member the same way the old code did.
+_COALESCED_SINCE_SQL = text(
     """
-    cursor = starting_at
-    seen: set[uuid.UUID] = set()
-    for _ in range(_COALESCE_MAX_DEPTH):
-        result = await db.execute(
-            select(Front)
-            .join(front_members, front_members.c.front_id == Front.id)
-            .where(
-                Front.system_id == system_id,
-                Front.ended_at == cursor,
-                front_members.c.member_id == member_id,
-            )
-            .limit(1)
-        )
-        prev = result.scalar_one_or_none()
-        if prev is None or prev.id in seen:
-            return cursor, False
-        seen.add(prev.id)
-        cursor = prev.started_at
-    # Loop finished without finding the chain start — there's at least
-    # one more entry beyond what we walked. Caller should display the
-    # timestamp as a lower bound (e.g. "> 8h ago").
-    return cursor, True
+    WITH RECURSIVE chain(seed_front_id, member_id, started_at, depth) AS (
+        SELECT f.id, fm.member_id, f.started_at, 0
+        FROM fronts f
+        JOIN front_members fm ON fm.front_id = f.id
+        WHERE f.id IN :seed_ids
+
+        UNION ALL
+
+        SELECT chain.seed_front_id, chain.member_id, prev.started_at,
+               chain.depth + 1
+        FROM chain
+        JOIN fronts prev
+            ON prev.system_id = :system_id
+            AND prev.ended_at = chain.started_at
+        JOIN front_members fm
+            ON fm.front_id = prev.id
+            AND fm.member_id = chain.member_id
+        WHERE chain.depth < :max_depth
+    )
+    SELECT seed_front_id, member_id,
+           MIN(started_at) AS earliest_started,
+           MAX(depth) AS deepest
+    FROM chain
+    GROUP BY seed_front_id, member_id
+    """
+).bindparams(bindparam("seed_ids", expanding=True))
 
 
 async def _build_coalesced_member_since(
@@ -172,23 +169,41 @@ async def _build_coalesced_member_since(
     Otherwise walks back per member to find the earliest chain start.
     """
     out: dict[uuid.UUID, tuple[dict[str, datetime], list[str]]] = {}
+    if not fronts:
+        return out
+
+    if not system.coalesce_contiguous_fronts:
+        for front in fronts:
+            per_member: dict[str, datetime] = {
+                str(m.id): front.started_at for m in front.members
+            }
+            out[front.id] = (per_member, [])
+        return out
+
+    # Pre-populate the output so fronts whose members don't appear in
+    # the CTE result (shouldn't happen, but defensive) still get an
+    # empty entry rather than a KeyError downstream.
     for front in fronts:
-        per_member: dict[str, datetime] = {}
-        capped: list[str] = []
-        for member in front.members:
-            if system.coalesce_contiguous_fronts:
-                ts, hit_cap = await _coalesced_started_at(
-                    db,
-                    system_id=system.id,
-                    member_id=member.id,
-                    starting_at=front.started_at,
-                )
-                per_member[str(member.id)] = ts
-                if hit_cap:
-                    capped.append(str(member.id))
-            else:
-                per_member[str(member.id)] = front.started_at
-        out[front.id] = (per_member, capped)
+        out[front.id] = ({}, [])
+
+    rows = await db.execute(
+        _COALESCED_SINCE_SQL,
+        {
+            "seed_ids": [f.id for f in fronts],
+            "system_id": system.id,
+            "max_depth": _COALESCE_MAX_DEPTH,
+        },
+    )
+
+    for seed_id, member_id, earliest, deepest in rows:
+        per_member, capped = out[seed_id]
+        per_member[str(member_id)] = earliest
+        # depth==max_depth means the recursive step ran the last
+        # allowed iteration and may not have found the true chain
+        # start. Same semantics as the prior per-walk cap flag.
+        if deepest is not None and deepest >= _COALESCE_MAX_DEPTH:
+            capped.append(str(member_id))
+
     return out
 
 
@@ -287,7 +302,7 @@ async def list_fronts(
 
     with_audit = await _load_audit_existence(db, [f.id for f in fronts])
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.FRONT_DELETE
+        db, system, PendingActionType.FRONT_DELETE
     )
     return [
         _front_to_read(
@@ -315,7 +330,7 @@ async def get_current_fronts(
     member_since_map = await _build_coalesced_member_since(db, system, fronts)
     with_audit = await _load_audit_existence(db, [f.id for f in fronts])
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.FRONT_DELETE
+        db, system, PendingActionType.FRONT_DELETE
     )
     return [
         _front_to_read(
@@ -549,7 +564,7 @@ async def update_front(
     await db.commit()
     await db.refresh(front, ["members"])
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.FRONT_DELETE
+        db, system, PendingActionType.FRONT_DELETE
     )
     return _front_to_read(
         front,

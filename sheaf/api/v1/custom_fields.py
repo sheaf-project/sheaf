@@ -68,7 +68,7 @@ async def list_fields(
     )
     fields = list(result.scalars().all())
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.FIELD_DELETE
+        db, system, PendingActionType.FIELD_DELETE
     )
     out: list[CustomFieldRead] = []
     for f in fields:
@@ -114,7 +114,7 @@ async def get_field(
     if field is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.FIELD_DELETE
+        db, system, PendingActionType.FIELD_DELETE
     )
     fr = CustomFieldRead.model_validate(field)
     fr.pending_delete_at = pending.get(field.id)

@@ -144,7 +144,7 @@ async def list_journals(
         else None
     )
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.JOURNAL_DELETE
+        db, system, PendingActionType.JOURNAL_DELETE
     )
     items: list[JournalEntryRead] = []
     for r in page:
@@ -201,7 +201,7 @@ async def get_entry(
         ContentRevisionTarget.JOURNAL_ENTRY, entry.id, db
     )
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.JOURNAL_DELETE
+        db, system, PendingActionType.JOURNAL_DELETE
     )
     payload = JournalEntryReadWithCount.model_validate(decrypt_entry_for_read(entry))
     payload.revision_count = count

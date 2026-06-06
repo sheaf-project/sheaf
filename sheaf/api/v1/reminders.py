@@ -263,7 +263,7 @@ async def list_reminders(
         .order_by(Reminder.created_at.desc())
     )
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.REMINDER_DELETE
+        db, system, PendingActionType.REMINDER_DELETE
     )
     return [
         _to_read(r, pending_delete_at=pending.get(r.id))
@@ -338,7 +338,7 @@ async def get_reminder(
     system = await _get_user_system(user, db)
     reminder = await _get_owned_reminder(reminder_id, system, db)
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.REMINDER_DELETE
+        db, system, PendingActionType.REMINDER_DELETE
     )
     return _to_read(reminder, pending_delete_at=pending.get(reminder.id))
 

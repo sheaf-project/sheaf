@@ -483,7 +483,7 @@ async def list_all_channels(
     )
     channels = list(result.scalars().all())
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.CHANNEL_DELETE
+        db, system, PendingActionType.CHANNEL_DELETE
     )
     return [
         _channel_to_read(c, pending_delete_at=pending.get(c.id))
@@ -673,7 +673,8 @@ async def enable_channel(
     # the channel goes DISABLED gets its own fresh attribution.
     channel.paused_by_sender = False
     await db.commit()
-    return _channel_to_read(await _load_owned_channel(db, user, channel.id))
+    await db.refresh(channel)
+    return _channel_to_read(channel)
 
 
 @router.post(
@@ -692,7 +693,8 @@ async def disable_channel(
     channel.destination_state = DestinationState.DISABLED.value
     channel.paused_by_sender = True
     await db.commit()
-    return _channel_to_read(await _load_owned_channel(db, user, channel.id))
+    await db.refresh(channel)
+    return _channel_to_read(channel)
 
 
 # ---------- duplicate / re-issue / test / preview --------------------------

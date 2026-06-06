@@ -625,15 +625,22 @@ async def delete_thread(
             },
         )
 
+    from sqlalchemy import delete as sql_delete
+
     from sheaf.services.journals import delete_revisions_for
     from sheaf.services.messages import collect_thread_ids
 
     thread_ids = await collect_thread_ids(db, msg.id)
-    for mid in thread_ids:
-        await delete_revisions_for("message", mid, db)
-        target = await db.get(Message, mid)
-        if target is not None:
-            await db.delete(target)
+    if thread_ids:
+        # Drop revisions one-by-one (each call does its own scoped
+        # query) then bulk-delete the messages themselves. The old
+        # per-id `get + delete` was N+1 round-trips for what's now
+        # a single DELETE ... WHERE id IN (...).
+        for mid in thread_ids:
+            await delete_revisions_for("message", mid, db)
+        await db.execute(
+            sql_delete(Message).where(Message.id.in_(thread_ids))
+        )
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
