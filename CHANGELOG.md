@@ -6,6 +6,15 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- **Image upload concurrency cap.** Pillow normalisation already ran in the thread pool so the event loop stayed responsive, but unbounded concurrent uploads could still pile up enough in-flight bitmap memory to OOM a small box. New `IMAGE_NORMALIZE_CONCURRENCY` setting (default 4) gates entry to the decode pass so peak memory across uploads is bounded. Excess uploads queue at the semaphore rather than failing.
+- **Export builder streams to disk instead of buffering in memory.** The async export job previously assembled the whole zip — JSON + every image blob — in a single in-memory `BytesIO` before uploading to storage, which could OOM the worker on accounts with many or large images. The builder now writes the zip through a tempfile (configurable via `EXPORT_BUILD_TMP_DIR`), streams each image blob in one at a time, and uploads with `boto3.upload_file` (which switches to multipart automatically on S3). Filesystem-backed exports rename the tempfile into place; S3 cleans up the tempfile after upload. Peak memory is bounded by per-image blob size (caps at the upload pipeline's `MAX_ANIMATED_DECODED_BYTES`, default 100 MB) rather than the whole export size.
+
+### Fixed
+
+- **Export-ready email links opened a 404.** The email pointed at `/settings/export?job=...` but the export UI lives under `/settings/data`. Link now lands on the right page and the data settings page scrolls the matching backup row into view with a brief highlight ring when arriving with a `?job=` param.
+
 ## [0.4.0] - 2026-06-06
 
 ### Added

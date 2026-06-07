@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { showApiErrorToast } from "@/lib/api-errors";
@@ -137,6 +138,11 @@ export function DataExportCard() {
   const qc = useQueryClient();
   const [syncing, setSyncing] = useState(false);
   const [mode, setMode] = useState<ExportMode | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightJobId = searchParams.get("job");
+  // Row refs so we can scroll the highlighted backup into view once
+  // the jobs list lands.
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const { data: jobs } = useQuery({
     queryKey: ["export-jobs"],
@@ -149,6 +155,27 @@ export function DataExportCard() {
       return inflight ? 5000 : false;
     },
   });
+
+  useEffect(() => {
+    if (!highlightJobId || !jobs) return;
+    const match = jobs.find((j: ExportJob) => j.id === highlightJobId);
+    if (!match) return;
+    const node = rowRefs.current[highlightJobId];
+    if (node) {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    // Clear the param so a refresh doesn't keep re-scrolling. We keep
+    // it for one render cycle so the highlight ring renders before we
+    // strip it.
+    const t = setTimeout(() => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("job");
+        return next;
+      }, { replace: true });
+    }, 5000);
+    return () => clearTimeout(t);
+  }, [highlightJobId, jobs, setSearchParams]);
 
   const createJob = useMutation({
     mutationFn: createExportJob,
@@ -284,7 +311,14 @@ export function DataExportCard() {
                 {jobs.map((j) => (
                   <div
                     key={j.id}
-                    className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+                    ref={(el) => {
+                      rowRefs.current[j.id] = el;
+                    }}
+                    className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors ${
+                      j.id === highlightJobId
+                        ? "ring-2 ring-primary border-primary"
+                        : ""
+                    }`}
                   >
                     <div className="flex flex-col">
                       <span className="text-xs text-muted-foreground">
