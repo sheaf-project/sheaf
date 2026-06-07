@@ -10,6 +10,16 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 - **Nine new web palettes (Android parity).** Asexual, Bi, Crimson, Goldenrod, Mint, Ocean, Pan, Plural, and Sepia join the existing Classic / Purple / OLED / Pride / Trans / Non-binary set. Colours and slot mappings are ported from the matching Android theme files so the two clients stay visually identifiable as "the same theme". Material You is Android-only and remains web-skipped. Existing user preferences are unaffected — the catalog only grows.
 
+### Changed
+
+- **Image upload concurrency cap.** Pillow normalisation already ran in the thread pool so the event loop stayed responsive, but unbounded concurrent uploads could still pile up enough in-flight bitmap memory to OOM a small box. New `IMAGE_NORMALIZE_CONCURRENCY` setting (default 4) gates entry to the decode pass so peak memory across uploads is bounded. Excess uploads queue at the semaphore rather than failing.
+- **Export builder streams to disk instead of buffering in memory.** The async export job previously assembled the whole zip — JSON + every image blob — in a single in-memory `BytesIO` before uploading to storage, which could OOM the worker on accounts with many or large images. The builder now writes the zip through a tempfile (configurable via `EXPORT_BUILD_TMP_DIR`), streams each image blob in one at a time, and uploads with `boto3.upload_file` (which switches to multipart automatically on S3). Filesystem-backed exports rename the tempfile into place; S3 cleans up the tempfile after upload. Peak memory is bounded by per-image blob size (caps at the upload pipeline's `MAX_ANIMATED_DECODED_BYTES`, default 100 MB) rather than the whole export size.
+
+### Fixed
+
+- **Export-ready email links opened a 404.** The email pointed at `/settings/export?job=...` but the export UI lives under `/settings/data`. Link now lands on the right page and the data settings page scrolls the matching backup row into view with a brief highlight ring when arriving with a `?job=` param.
+- **Filesystem export storage now honours `SHEAF_DATA_DIR`.** The export storage backend hardcoded `/app/data/exports` as the on-disk export root, ignoring the operator's configured `sheaf_data_dir`. That was a no-op for the standard Docker deployment (the WORKDIR + default data dir resolve to the same path) but broke non-Docker selfhosters with a custom data layout and made the path bypass operator backup conventions. Now resolves under `{SHEAF_DATA_DIR}/exports/...`.
+
 ## [0.4.0] - 2026-06-06
 
 ### Added

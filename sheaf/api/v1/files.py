@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 import uuid
@@ -42,6 +43,25 @@ logger = logging.getLogger("sheaf.files")
 router = APIRouter(prefix="/files", tags=["files"])
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
+# Lazy-initialised semaphore that bounds concurrent Pillow normalise
+# calls. Each in-flight call can hold up to `max_animated_decoded_bytes`
+# (default 100MB) of decoded bitmap in the threadpool worker, so
+# unbounded concurrency on a 2 vCPU / 8GB box can OOM. Excess uploads
+# block here until a slot frees up rather than failing, which combined
+# with the per-user rate limit on the endpoint keeps the wait bounded.
+# The settings value is read once on first use; restart to change.
+_normalize_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_normalize_semaphore() -> asyncio.Semaphore:
+    global _normalize_semaphore
+    if _normalize_semaphore is None:
+        _normalize_semaphore = asyncio.Semaphore(
+            max(1, settings.image_normalize_concurrency)
+        )
+    return _normalize_semaphore
 
 # Canonical file extension for each validated image type. Used to build the
 # stored key so the client-supplied filename can't smuggle an extension
@@ -159,17 +179,21 @@ async def upload_file(
     #
     # Pillow is pure-CPU and blocks the event loop. Animated WebP and big
     # PNG re-encodes can take hundreds of ms, which stalls every other
-    # request on the worker. Offload to the default thread pool.
+    # request on the worker. Offload to the default thread pool, and gate
+    # entry with the normalise semaphore so a burst of uploads can't
+    # blow the memory budget — each in-flight decode can hold up to
+    # `max_animated_decoded_bytes` of bitmap.
     try:
-        data, actual_mime, was_animated = await run_in_threadpool(
-            normalize_image,
-            data,
-            actual_mime,
-            allow_animation=animation_allowed(user, settings),
-            max_dim=settings.max_image_dimension,
-            max_frames=settings.max_animated_frames,
-            max_decoded_bytes=settings.max_animated_decoded_bytes,
-        )
+        async with _get_normalize_semaphore():
+            data, actual_mime, was_animated = await run_in_threadpool(
+                normalize_image,
+                data,
+                actual_mime,
+                allow_animation=animation_allowed(user, settings),
+                max_dim=settings.max_image_dimension,
+                max_frames=settings.max_animated_frames,
+                max_decoded_bytes=settings.max_animated_decoded_bytes,
+            )
     except ImageNormalizationError as e:
         logger.info("image normalization rejected upload: %s", e)
         raise HTTPException(

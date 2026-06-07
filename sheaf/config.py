@@ -138,6 +138,15 @@ class Settings(BaseSettings):
     # Decompression-bomb guard: reject before decoding when the declared
     # pixel-count * 4 bytes would exceed this. 100 MB default.
     max_animated_decoded_bytes: int = 100 * 1024 * 1024
+    # Concurrency cap on the Pillow normalisation pass. Each in-flight
+    # normalize_image call can hold up to `max_animated_decoded_bytes`
+    # of decoded bitmap in the threadpool worker, so unbounded
+    # concurrency on a small instance can OOM. 4 is a reasonable
+    # default for a 2 vCPU box; raise when the instance class grows
+    # and memory budget allows. Excess uploads queue at the semaphore
+    # rather than failing — paired with the per-user rate limit on
+    # the endpoint, total backlog stays bounded.
+    image_normalize_concurrency: int = 4
 
     # Image serving mode: "signed" (default) or "unsigned".
     # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.
@@ -459,6 +468,12 @@ class Settings(BaseSettings):
     export_cleanup_interval_seconds: int = 3600
     # How many jobs the build worker processes per tick.
     export_build_interval_seconds: int = 10
+    # Where the build worker drops its temp zip while assembling.
+    # Empty = use the system default (tempfile picks $TMPDIR or /tmp).
+    # Set this when running on small root volumes or when the system
+    # tempdir is on tmpfs — exports of users with many images can
+    # reach hundreds of MB on disk before they're uploaded out.
+    export_build_tmp_dir: str = ""
     # Per-user concurrency: refuse a new export request when one is still
     # pending/running. Stops users (or attackers with a hijacked session)
     # from queueing many large exports back-to-back.
