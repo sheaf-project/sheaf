@@ -6,9 +6,10 @@ S3 lifecycle expiry rule applied AND so they bypass any CDN fronting
 on the image bucket. CDN proxying decrypted personal data through TLS
 termination is exactly what we don't want.
 
-Filesystem mode: exports live at /app/data/exports/{user_id}/{job_id}.zip
-and are served by an authenticated streaming download endpoint. No
-bucket concerns; the cleanup worker handles pruning.
+Filesystem mode: exports live at {SHEAF_DATA_DIR}/exports/{user_id}/{job_id}.zip
+(defaults to ./data/exports) and are served by an authenticated
+streaming download endpoint. No bucket concerns; the cleanup worker
+handles pruning.
 """
 
 from __future__ import annotations
@@ -25,7 +26,16 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from sheaf.config import settings
 from sheaf.observability.metrics import observe_s3
 
-_FILESYSTEM_ROOT = Path("/app/data/exports")
+
+def _filesystem_root() -> Path:
+    """Exports live under the operator-configured data dir.
+
+    Resolved per-call rather than at import time so the test suite's
+    monkeypatching of `settings.sheaf_data_dir` lands correctly, and
+    so a runtime config override (e.g. an admin reload, future
+    feature) takes effect without a restart.
+    """
+    return settings.sheaf_data_dir / "exports"
 
 
 def _is_s3() -> bool:
@@ -84,7 +94,7 @@ def _key(user_id: uuid.UUID, job_id: uuid.UUID) -> str:
 
 
 def _filesystem_path(user_id: uuid.UUID, job_id: uuid.UUID) -> Path:
-    return _FILESYSTEM_ROOT / str(user_id) / f"{job_id}.zip"
+    return _filesystem_root() / str(user_id) / f"{job_id}.zip"
 
 
 async def _run(fn, *args, **kwargs):

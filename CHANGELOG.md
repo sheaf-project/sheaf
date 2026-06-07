@@ -14,6 +14,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 ### Fixed
 
 - **Export-ready email links opened a 404.** The email pointed at `/settings/export?job=...` but the export UI lives under `/settings/data`. Link now lands on the right page and the data settings page scrolls the matching backup row into view with a brief highlight ring when arriving with a `?job=` param.
+- **Filesystem export storage now honours `SHEAF_DATA_DIR`.** The export storage backend hardcoded `/app/data/exports` as the on-disk export root, ignoring the operator's configured `sheaf_data_dir`. That was a no-op for the standard Docker deployment (the WORKDIR + default data dir resolve to the same path) but broke non-Docker selfhosters with a custom data layout and made the path bypass operator backup conventions. Now resolves under `{SHEAF_DATA_DIR}/exports/...`.
 
 ## [0.4.0] - 2026-06-06
 
