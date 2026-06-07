@@ -55,7 +55,7 @@ async def list_groups(
     )
     groups = list(result.scalars().all())
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.GROUP_DELETE
+        db, system, PendingActionType.GROUP_DELETE
     )
     out: list[GroupRead] = []
     for g in groups:
@@ -97,7 +97,7 @@ async def get_group(
     system = await _get_user_system(user, db)
     group = await _get_own_group(group_id, system, db)
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.GROUP_DELETE
+        db, system, PendingActionType.GROUP_DELETE
     )
     gr = GroupRead.model_validate(group)
     gr.pending_delete_at = pending.get(group.id)

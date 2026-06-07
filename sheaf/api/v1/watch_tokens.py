@@ -111,7 +111,7 @@ async def list_watch_tokens(
     )
     tokens = list(result.scalars().all())
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.WATCH_TOKEN_REVOKE
+        db, system, PendingActionType.WATCH_TOKEN_REVOKE
     )
     return [
         await _watch_token_to_read(db, t, pending_delete_at=pending.get(t.id))

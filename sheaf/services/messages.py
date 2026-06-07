@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -169,6 +169,35 @@ async def mark_seen(
 # ---------------------------------------------------------------------------
 
 
+# Per-board aggregation: one COUNT + MAX + latest-body lookup per board
+# plus per-board unread count derived from the caller's read_state row
+# (LEFT JOIN-ed on the matching (board_kind, board_member_id)).
+# Replaces what was previously a full-table message scan into Python
+# dicts. Called 3x around front-start, so cutting it cold pays back
+# fast on systems with thousands of messages.
+_BOARD_AGG_SQL = text(
+    """
+    SELECT m.board_kind,
+           m.board_member_id,
+           COUNT(*)::int AS total_count,
+           MAX(m.created_at) AS last_at,
+           (array_agg(m.body ORDER BY m.created_at DESC))[1] AS last_body,
+           COUNT(*) FILTER (
+             WHERE rs.last_seen_at IS NOT NULL
+               AND m.created_at > rs.last_seen_at
+           )::int AS unread_count,
+           rs.last_seen_at IS NOT NULL AS has_read_state
+    FROM messages m
+    LEFT JOIN message_read_state rs
+      ON rs.member_id = :caller_member_id
+      AND rs.board_kind = m.board_kind
+      AND rs.board_member_id IS NOT DISTINCT FROM m.board_member_id
+    WHERE m.system_id = :system_id AND m.deleted_at IS NULL
+    GROUP BY m.board_kind, m.board_member_id, rs.last_seen_at
+    """
+)
+
+
 async def board_summaries(
     db: AsyncSession,
     *,
@@ -181,98 +210,101 @@ async def board_summaries(
     by most-recent-message. Members with zero messages still appear so
     the user can find them and post.
     """
-    # Pull all live messages for the system grouped by board.
-    rows_result = await db.execute(
-        select(Message)
-        .where(Message.system_id == system_id, Message.deleted_at.is_(None))
-        .order_by(Message.created_at.desc())
+    # One aggregation query for every non-empty board on the system.
+    # When `caller_member_id` is NULL the join no-ops and the unread
+    # / has_read_state columns come back as 0 / FALSE — fine for the
+    # unauthenticated / non-member callers we still want to serve.
+    agg_rows = await db.execute(
+        _BOARD_AGG_SQL,
+        {
+            "caller_member_id": caller_member_id,
+            "system_id": system_id,
+        },
     )
-    messages = list(rows_result.scalars().all())
-
-    # Index live messages by (board_kind, board_member_id).
-    grouped: dict[tuple[str, uuid.UUID | None], list[Message]] = {}
-    for m in messages:
-        key = (m.board_kind, m.board_member_id)
-        grouped.setdefault(key, []).append(m)
+    per_board: dict[
+        tuple[str, uuid.UUID | None],
+        tuple[int, datetime | None, bytes | None, int, bool],
+    ] = {}
+    for board_kind, board_member_id, total, last_at, last_body, unread, has_rs in agg_rows:
+        per_board[(board_kind, board_member_id)] = (
+            total, last_at, last_body, unread, has_rs,
+        )
 
     members_result = await db.execute(
         select(Member).where(Member.system_id == system_id)
     )
     members = list(members_result.scalars().all())
 
-    # Last-seen lookup for the caller member, batched in one query. We
-    # also lazy-create read_state rows on first ask: the first time a
-    # member loads a board summary, "now" becomes their baseline so
-    # historical messages don't all flash as unread. Subsequent calls
-    # see the persisted timestamp.
-    last_seen_by_board: dict[tuple[str, uuid.UUID | None], datetime] = {}
+    # Lazy-create read_state rows on first view so future calls have a
+    # baseline to count unread-since. The old code did this per-board
+    # inside the unread loop; here we batch by computing the missing
+    # set up front and creating only those rows. Empty boards still
+    # get a baseline so the next post to them is counted as unread.
     if caller_member_id is not None:
-        rs_result = await db.execute(
-            select(MessageReadState).where(
-                MessageReadState.member_id == caller_member_id,
-            )
+        all_keys: set[tuple[str, uuid.UUID | None]] = {
+            (BoardKind.SYSTEM.value, None),
+            *((BoardKind.MEMBER.value, m.id) for m in members),
+        }
+        seen_keys = {
+            key for key, (_t, _la, _lb, _u, has_rs) in per_board.items() if has_rs
+        }
+        # Also consider boards that exist as read_state rows but have
+        # no messages: the per_board aggregation only surfaces boards
+        # WITH messages, so we need a second tiny lookup for empty
+        # boards the caller has already seen.
+        empty_seen_rs = await db.execute(
+            select(
+                MessageReadState.board_kind, MessageReadState.board_member_id,
+            ).where(MessageReadState.member_id == caller_member_id)
         )
-        for rs in rs_result.scalars().all():
-            last_seen_by_board[(rs.board_kind, rs.board_member_id)] = (
-                rs.last_seen_at
-            )
+        for kind, mid in empty_seen_rs.all():
+            seen_keys.add((kind, mid))
 
-    async def _unread(key: tuple[str, uuid.UUID | None]) -> int:
-        if caller_member_id is None:
-            return 0
-        last_seen = last_seen_by_board.get(key)
-        if last_seen is None:
-            # First time this member sees this board — establish the
-            # baseline at "now" and report zero unread. Subsequent calls
-            # find the row.
-            state = await get_or_create_read_state(
+        missing = all_keys - seen_keys
+        for kind, mid in missing:
+            await get_or_create_read_state(
                 db,
                 member_id=caller_member_id,
+                board_kind=kind,
+                board_member_id=mid,
+            )
+
+    def _summary(
+        key: tuple[str, uuid.UUID | None],
+        member_name: str | None,
+    ) -> BoardSummary:
+        row = per_board.get(key)
+        if row is None:
+            return BoardSummary(
                 board_kind=key[0],
                 board_member_id=key[1],
+                member_name=member_name,
+                last_message_at=None,
+                last_message_preview=None,
+                message_count=0,
+                unread_count=0,
             )
-            last_seen_by_board[key] = state.last_seen_at
-            return 0
-        return sum(1 for m in grouped.get(key, []) if m.created_at > last_seen)
-
-    summaries: list[BoardSummary] = []
-
-    # System board first.
-    sys_key = (BoardKind.SYSTEM.value, None)
-    sys_msgs = grouped.get(sys_key, [])
-    summaries.append(
-        BoardSummary(
-            board_kind=BoardKind.SYSTEM.value,
-            board_member_id=None,
-            member_name=None,
-            last_message_at=sys_msgs[0].created_at if sys_msgs else None,
-            last_message_preview=(
-                preview_for(decrypt_body(sys_msgs[0].body)) if sys_msgs else None
-            ),
-            message_count=len(sys_msgs),
-            unread_count=await _unread(sys_key),
+        total, last_at, last_body, unread, has_rs = row
+        return BoardSummary(
+            board_kind=key[0],
+            board_member_id=key[1],
+            member_name=member_name,
+            last_message_at=last_at,
+            last_message_preview=preview_for(decrypt_body(last_body)) if last_body else None,
+            message_count=total,
+            # Caller has no read_state row yet → unread is 0 (baseline
+            # was just established above; subsequent posts will count).
+            unread_count=unread if has_rs else 0,
         )
-    )
 
-    # Members, sorted by their wall's most-recent-message (members with
-    # no messages slot to the end).
-    member_summaries: list[BoardSummary] = []
-    for member in members:
-        key = (BoardKind.MEMBER.value, member.id)
-        msgs = grouped.get(key, [])
-        member_summaries.append(
-            BoardSummary(
-                board_kind=BoardKind.MEMBER.value,
-                board_member_id=member.id,
-                member_name=display_name(member),
-                last_message_at=msgs[0].created_at if msgs else None,
-                last_message_preview=(
-                    preview_for(decrypt_body(msgs[0].body)) if msgs else None
-                ),
-                message_count=len(msgs),
-                unread_count=await _unread(key),
-            )
-        )
+    summaries: list[BoardSummary] = [
+        _summary((BoardKind.SYSTEM.value, None), None),
+    ]
+
+    member_summaries: list[BoardSummary] = [
+        _summary((BoardKind.MEMBER.value, member.id), display_name(member))
+        for member in members
+    ]
     member_summaries.sort(
         key=lambda s: (
             s.last_message_at is None,

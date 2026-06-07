@@ -77,11 +77,21 @@ services:
     image: minio/minio:latest
     profiles: ["s3"]
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      # Bind to loopback by default, same posture as db / redis. Set
+      # MINIO_BIND_HOST=0.0.0.0 to expose the API or console off-host
+      # (e.g. to reach the console from another LAN device). The
+      # localdev defaults assume nobody but the operator should
+      # touch these.
+      - "${MINIO_BIND_HOST:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - miniodata:/data
     environment:
+      # Default creds are intentionally the well-known MinIO defaults
+      # for one-shot localdev. Anything beyond localdev MUST override
+      # both S3_ACCESS_KEY and S3_SECRET_KEY in .env — selfhosters
+      # using this compose file as a template should treat the
+      # defaults the same way they treat the default DB password.
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
     command: server /data --console-address ":9001"
@@ -97,10 +107,16 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    # Create the bucket. No anonymous-download policy: the app uses
+    # signed URLs by default (`IMAGE_SERVING=signed`), and a public
+    # bucket on top of that is both redundant and contradicts the
+    # privacy posture for any deployment that flips images to private.
+    # Selfhosters who want unsigned public images should set
+    # `IMAGE_SERVING=unsigned` + `S3_PUBLIC_URL` and configure the
+    # anonymous policy explicitly themselves.
     entrypoint: >
       sh -c "mc alias set sheaf http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin} &&
-             mc mb --ignore-existing sheaf/$${S3_BUCKET:-sheaf-files} &&
-             mc anonymous set download sheaf/$${S3_BUCKET:-sheaf-files}"
+             mc mb --ignore-existing sheaf/$${S3_BUCKET:-sheaf-files}"
 
 volumes:
   pgdata:

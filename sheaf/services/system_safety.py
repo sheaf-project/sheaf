@@ -334,7 +334,7 @@ def has_pending_action_for_target(
 
 async def pending_finalize_after_by_target(
     db: AsyncSession,
-    system_id: uuid.UUID,
+    system_or_id: System | uuid.UUID,
     action_type: PendingActionType,
 ) -> dict[uuid.UUID, datetime]:
     """Map target_id -> finalize_after for every still-pending action of one
@@ -344,7 +344,22 @@ async def pending_finalize_after_by_target(
     in their Read responses (a `pending_delete_at` field driving the badge
     in the UI). Cancelled / completed / errored actions are excluded so a
     re-queue after cancel shows up correctly.
+
+    Optimisation: when callers pass the `System` object directly and its
+    safety grace period is 0, no new pending actions can be queued, so
+    we skip the query entirely. Old rows in the table (from when grace
+    was non-zero) get swept by the periodic finalize job and are
+    typically gone within minutes; the list endpoints temporarily not
+    flagging those stragglers is acceptable. Callers that only have an
+    id pay for the full query as before.
     """
+    if isinstance(system_or_id, System):
+        if system_or_id.safety_grace_period_days <= 0:
+            return {}
+        system_id = system_or_id.id
+    else:
+        system_id = system_or_id
+
     result = await db.execute(
         select(PendingAction.target_id, PendingAction.finalize_after)
         .where(

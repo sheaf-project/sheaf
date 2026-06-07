@@ -124,7 +124,7 @@ async def list_members(
         db, [m.id for m in members]
     )
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.MEMBER_DELETE
+        db, system, PendingActionType.MEMBER_DELETE
     )
     decoded = [
         decrypt_member_for_read(
@@ -270,7 +270,7 @@ async def top_fronters(
         db, [m.id for m in ordered]
     )
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.MEMBER_DELETE
+        db, system, PendingActionType.MEMBER_DELETE
     )
     return [
         decrypt_member_for_read(
@@ -291,7 +291,7 @@ async def get_member(
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.MEMBER_DELETE
+        db, system, PendingActionType.MEMBER_DELETE
     )
     return decrypt_member_for_read(
         member,

@@ -45,7 +45,7 @@ async def list_tags(
     )
     tags = list(result.scalars().all())
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.TAG_DELETE
+        db, system, PendingActionType.TAG_DELETE
     )
     out: list[TagRead] = []
     for t in tags:
@@ -88,7 +88,7 @@ async def get_tag(
     if tag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.TAG_DELETE
+        db, system, PendingActionType.TAG_DELETE
     )
     tr = TagRead.model_validate(tag)
     tr.pending_delete_at = pending.get(tag.id)

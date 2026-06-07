@@ -567,10 +567,61 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+_JWT_SECRET_DEFAULT = "changeme-in-production"
+
+
+def _maybe_auto_generate_jwt_secret() -> None:
+    """Auto-generate and persist a JWT signing secret if the operator left
+    the default in place.
+
+    Mirrors the encryption-key pattern: on first start, write a random
+    secret to the data dir with 0600 perms and use it. SaaS mode still
+    refuses to start with the default, but selfhost previously only
+    warned — that path now resolves to a real, persistent secret so the
+    next restart finds it instead of forging a new one (which would
+    invalidate every issued JWT).
+    """
+    if settings.jwt_secret_key != _JWT_SECRET_DEFAULT:
+        return  # operator set their own; nothing to do
+
+    key_path = settings.sheaf_data_dir / "jwt_secret"
+
+    if key_path.exists():
+        secret = key_path.read_text().strip()
+        if secret:
+            settings.jwt_secret_key = secret
+            return
+
+    import secrets as _secrets
+
+    settings.sheaf_data_dir.mkdir(parents=True, exist_ok=True)
+    secret = _secrets.token_urlsafe(48)
+    key_path.write_text(secret)
+    key_path.chmod(0o600)
+    settings.jwt_secret_key = secret
+
+    logger.warning("=" * 72)
+    logger.warning(
+        "AUTO-GENERATED JWT_SECRET_KEY — back this up alongside the "
+        "encryption key. Losing it invalidates every issued JWT but is "
+        "otherwise recoverable (users just have to log in again)."
+    )
+    logger.warning("Secret file: %s", key_path.resolve())
+    logger.warning(
+        "Set JWT_SECRET_KEY in .env to use your own value and suppress "
+        "this warning."
+    )
+    logger.warning("=" * 72)
+
+
 def _validate_settings() -> None:
     """Check for insecure defaults and warn loudly."""
+    # Resolve JWT secret first so the default-check below only fires
+    # when the operator explicitly set it back to the placeholder.
+    _maybe_auto_generate_jwt_secret()
+
     problems = []
-    if settings.jwt_secret_key == "changeme-in-production":
+    if settings.jwt_secret_key == _JWT_SECRET_DEFAULT:
         problems.append("JWT_SECRET_KEY is set to the default value")
     if "changeme" in settings.database_url:
         problems.append("DATABASE_URL contains default password")

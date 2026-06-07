@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,7 +20,7 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.poll import Poll, PollOption, PollVoteEvent
+from sheaf.models.poll import Poll, PollOption, PollVote, PollVoteEvent
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.observability.metrics import tier_label, tier_limit_hits_total
@@ -113,9 +113,23 @@ def _to_read(
     *,
     now: datetime | None = None,
     pending_delete_at: datetime | None = None,
+    total_votes_override: int | None = None,
 ) -> PollRead:
+    """Project a Poll to its API shape.
+
+    `total_votes_override` lets the list endpoint pass a pre-computed
+    count rather than touching `poll.votes` (which would force loading
+    every vote row even when results are hidden and the votes / tally
+    fields would be `None` anyway). When the override is provided we
+    treat that as a signal that `poll.votes` is NOT eager-loaded, so
+    the response omits per-vote detail and the per-option tally —
+    those live on the detail endpoint, which loads votes explicitly.
+    When omitted (detail path), falls back to the eager-loaded
+    `poll.votes` and computes tally + per-vote rows normally.
+    """
     now = now or datetime.now(UTC)
     visible = is_results_visible(poll, now=now)
+    list_mode = total_votes_override is not None
     options = [
         PollOptionRead(
             id=opt.id,
@@ -125,15 +139,15 @@ def _to_read(
         for opt in sorted(poll.options, key=lambda o: o.position)
     ]
     tally = (
-        [
+        None if list_mode or not visible
+        else [
             PollTallyEntry(option_id=opt_id, count=count)
             for opt_id, count in tally_for(poll)
         ]
-        if visible
-        else None
     )
     votes = (
-        [
+        None if list_mode or not visible
+        else [
             PollVoteRead(
                 voted_as_member_id=v.voted_as_member_id,
                 option_ids=list(v.option_ids),
@@ -142,9 +156,8 @@ def _to_read(
             )
             for v in poll.votes
         ]
-        if visible
-        else None
     )
+    total = total_votes_override if list_mode else len(poll.votes)
     return PollRead(
         id=poll.id,
         system_id=poll.system_id,
@@ -160,7 +173,7 @@ def _to_read(
         is_closed=poll.closes_at <= now,
         closed_since=poll.closes_at if poll.closes_at <= now else None,
         purges_at=purges_at(poll),
-        total_votes=len(poll.votes),
+        total_votes=total,
         tally=tally,
         votes=votes,
         created_at=poll.created_at,
@@ -178,22 +191,40 @@ async def list_polls(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
+    # Don't selectinload(Poll.votes) here: results are hidden for any
+    # poll whose results_visibility gates haven't fired, and even
+    # when visible the list view doesn't need per-vote rows (only the
+    # tally + total). A single COUNT-per-poll aggregation replaces
+    # what was previously every vote row loaded into Python.
     result = await db.execute(
         select(Poll)
-        .options(
-            selectinload(Poll.options),
-            selectinload(Poll.votes),
-        )
+        .options(selectinload(Poll.options))
         .where(Poll.system_id == system.id)
         .order_by(Poll.created_at.desc())
     )
     now = datetime.now(UTC)
     polls = list(result.scalars().all())
+
+    total_votes_by_poll: dict[uuid.UUID, int] = {}
+    if polls:
+        counts = await db.execute(
+            select(PollVote.poll_id, func.count(PollVote.id))
+            .where(PollVote.poll_id.in_([p.id for p in polls]))
+            .group_by(PollVote.poll_id)
+        )
+        total_votes_by_poll = {row[0]: row[1] for row in counts.all()}
+
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.POLL_DELETE
+        db, system, PendingActionType.POLL_DELETE
     )
     return [
-        _to_read(p, now=now, pending_delete_at=pending.get(p.id)) for p in polls
+        _to_read(
+            p,
+            now=now,
+            pending_delete_at=pending.get(p.id),
+            total_votes_override=total_votes_by_poll.get(p.id, 0),
+        )
+        for p in polls
     ]
 
 
@@ -294,7 +325,7 @@ async def get_poll(
     system = await _get_user_system(user, db)
     poll = await _get_owned_poll(poll_id, system, db)
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.POLL_DELETE
+        db, system, PendingActionType.POLL_DELETE
     )
     return _to_read(poll, pending_delete_at=pending.get(poll.id))
 

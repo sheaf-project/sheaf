@@ -6,7 +6,23 @@ server {
     ssl_certificate_key /etc/nginx/certs/key.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
-    client_max_body_size 10m;
+    # Match the app's max_request_body_size_mb (110MB) so imports +
+    # export downloads aren't truncated at the proxy before they
+    # reach FastAPI's middleware-level cap.
+    client_max_body_size 110m;
+
+    # Defence-in-depth headers. The app sets some of these itself
+    # via middleware, but rendering them at the proxy means a
+    # misconfigured backend still gets reasonable defaults and the
+    # browser-side guarantees don't depend on the upstream agreeing
+    # to send them.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # No CSP here: this template is dev-only, and the app emits a
+    # production-tuned CSP itself. Selfhosters running a hardened
+    # nginx in front should mirror the app's CSP at the proxy.
 
     location / {
         proxy_pass http://app:8000;

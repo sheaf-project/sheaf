@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from sheaf.api.v1.members import _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
@@ -155,8 +156,13 @@ async def upload_file(
     # static frame when the user is not eligible. After this point `data`,
     # `actual_mime`, and `file_size` describe the *stored* bytes, not the
     # uploaded bytes. The size limit above still applies to the raw upload.
+    #
+    # Pillow is pure-CPU and blocks the event loop. Animated WebP and big
+    # PNG re-encodes can take hundreds of ms, which stalls every other
+    # request on the worker. Offload to the default thread pool.
     try:
-        data, actual_mime, was_animated = normalize_image(
+        data, actual_mime, was_animated = await run_in_threadpool(
+            normalize_image,
             data,
             actual_mime,
             allow_animation=animation_allowed(user, settings),
@@ -292,7 +298,7 @@ async def list_files(
     # the caller's system once and key into the resulting map by file id.
     system = await _get_user_system(user, db)
     pending = await pending_finalize_after_by_target(
-        db, system.id, PendingActionType.IMAGE_DELETE
+        db, system, PendingActionType.IMAGE_DELETE
     )
     return [
         {
