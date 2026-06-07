@@ -24,7 +24,16 @@ export type PaletteId =
   | "oled"
   | "pride"
   | "trans"
-  | "nonbinary";
+  | "nonbinary"
+  | "asexual"
+  | "bi"
+  | "crimson"
+  | "goldenrod"
+  | "mint"
+  | "ocean"
+  | "pan"
+  | "plural"
+  | "sepia";
 
 export interface PaletteMeta {
   id: PaletteId;
@@ -85,6 +94,78 @@ export const PALETTES: PaletteMeta[] = [
     swatch: {
       light: ["#7B3FA4", "#FCF434", "#4A4A55"],
       dark: ["#9C59D1", "#FCF434", "#D8C8E8"],
+    },
+  },
+  {
+    id: "asexual",
+    displayName: "Asexual",
+    swatch: {
+      light: ["#5C005C", "#A4A4A4", "#7E6680"],
+      dark: ["#B233B2", "#A4A4A4", "#1A1A1A"],
+    },
+  },
+  {
+    id: "bi",
+    displayName: "Bi",
+    swatch: {
+      light: ["#A8025A", "#0038A8", "#9B4F96"],
+      dark: ["#EF4D8E", "#4A6FD4", "#C28BBE"],
+    },
+  },
+  {
+    id: "crimson",
+    displayName: "Crimson",
+    swatch: {
+      light: ["#DC2626", "#F43F5E", "#C2410C"],
+      dark: ["#F87171", "#FB7185", "#F97316"],
+    },
+  },
+  {
+    id: "goldenrod",
+    displayName: "Goldenrod",
+    swatch: {
+      light: ["#A16207", "#FACC15", "#1E40AF"],
+      dark: ["#FACC15", "#FDE047", "#60A5FA"],
+    },
+  },
+  {
+    id: "mint",
+    displayName: "Mint",
+    swatch: {
+      light: ["#059669", "#10B981", "#0D9488"],
+      dark: ["#34D399", "#6EE7B7", "#99F6E4"],
+    },
+  },
+  {
+    id: "ocean",
+    displayName: "Ocean",
+    swatch: {
+      light: ["#0284C7", "#0EA5E9", "#0891B2"],
+      dark: ["#38BDF8", "#7DD3FC", "#67E8F9"],
+    },
+  },
+  {
+    id: "pan",
+    displayName: "Pan",
+    swatch: {
+      light: ["#C8005F", "#1685C0", "#B59800"],
+      dark: ["#FF6BB0", "#5DCAFF", "#FFD800"],
+    },
+  },
+  {
+    id: "plural",
+    displayName: "Plural",
+    swatch: {
+      light: ["#543576", "#7674C2", "#89C8B0"],
+      dark: ["#7674C2", "#89C8B0", "#F4ECBC"],
+    },
+  },
+  {
+    id: "sepia",
+    displayName: "Sepia",
+    swatch: {
+      light: ["#D97706", "#F59E0B", "#C2410C"],
+      dark: ["#FBBF24", "#FCD34D", "#FB923C"],
     },
   },
 ];

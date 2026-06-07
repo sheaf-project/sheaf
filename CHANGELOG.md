@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Nine new web palettes (Android parity).** Asexual, Bi, Crimson, Goldenrod, Mint, Ocean, Pan, Plural, and Sepia join the existing Classic / Purple / OLED / Pride / Trans / Non-binary set. Colours and slot mappings are ported from the matching Android theme files so the two clients stay visually identifiable as "the same theme". Material You is Android-only and remains web-skipped. Existing user preferences are unaffected — the catalog only grows.
+
 ## [0.4.0] - 2026-06-06
 
 ### Added

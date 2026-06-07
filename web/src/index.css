@@ -402,6 +402,537 @@
   --sidebar-ring: #9C59D1;
 }
 
+/* --- Asexual --------------------------------------------------------------
+ * Ace-flag-inspired: purple as the only chromatic accent over a grey-and-
+ * monochrome chrome. The flag's black stripe drives the dark background;
+ * the white stripe drives the light surfaces. Grey takes the secondary slot
+ * so chips read as the flag grey rather than drifting toward blue. */
+:root[data-palette="asexual"] {
+  --background: #FFFFFF;
+  --foreground: #1A0E1A;
+  --card: #F5F5F5;
+  --card-foreground: #1A0E1A;
+  --popover: #F5F5F5;
+  --popover-foreground: #1A0E1A;
+  --primary: #5C005C;
+  --primary-foreground: #FFFFFF;
+  --secondary: #6E6E6E;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F0ECF0;
+  --muted-foreground: #6E6E6E;
+  --accent: #EDE0ED;
+  --accent-foreground: #5C005C;
+  --border: #C4A4C4;
+  --input: #C4A4C4;
+  --ring: #810081;
+  --sidebar: #FAF5FA;
+  --sidebar-foreground: #1A0E1A;
+  --sidebar-primary: #5C005C;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EDE0ED;
+  --sidebar-accent-foreground: #5C005C;
+  --sidebar-border: #C4A4C4;
+  --sidebar-ring: #810081;
+}
+.dark[data-palette="asexual"] {
+  --background: #1A1A1A;
+  --foreground: #E0DCE0;
+  --card: #242424;
+  --card-foreground: #E0DCE0;
+  --popover: #242424;
+  --popover-foreground: #E0DCE0;
+  --primary: #B233B2;
+  --primary-foreground: #2A002A;
+  --secondary: #A4A4A4;
+  --secondary-foreground: #1A1A1A;
+  --muted: #2E1F2E;
+  --muted-foreground: #B8B0B8;
+  --accent: #3A2A3A;
+  --accent-foreground: #E0DCE0;
+  --border: #555055;
+  --input: #555055;
+  --ring: #B233B2;
+  --sidebar: #242424;
+  --sidebar-foreground: #E0DCE0;
+  --sidebar-primary: #B233B2;
+  --sidebar-primary-foreground: #2A002A;
+  --sidebar-accent: #3A2A3A;
+  --sidebar-accent-foreground: #E0DCE0;
+  --sidebar-border: #555055;
+  --sidebar-ring: #B233B2;
+}
+
+/* --- Bi -------------------------------------------------------------------
+ * Bi-flag pink, purple, blue. Pink leads as primary, blue takes secondary;
+ * the middle "overlap" purple stripe lives in the accent slot. */
+:root[data-palette="bi"] {
+  --background: #FFF8FC;
+  --foreground: #1F0A18;
+  --card: #FFFFFF;
+  --card-foreground: #1F0A18;
+  --popover: #FFFFFF;
+  --popover-foreground: #1F0A18;
+  --primary: #A8025A;
+  --primary-foreground: #FFFFFF;
+  --secondary: #0038A8;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F5E1EE;
+  --muted-foreground: #6E3A50;
+  --accent: #EFE0F0;
+  --accent-foreground: #9B4F96;
+  --border: #E9C0D2;
+  --input: #E9C0D2;
+  --ring: #D60270;
+  --sidebar: #FFF0F8;
+  --sidebar-foreground: #1F0A18;
+  --sidebar-primary: #A8025A;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EFE0F0;
+  --sidebar-accent-foreground: #9B4F96;
+  --sidebar-border: #E9C0D2;
+  --sidebar-ring: #D60270;
+}
+.dark[data-palette="bi"] {
+  --background: #1A0F1A;
+  --foreground: #EAD6E0;
+  --card: #261426;
+  --card-foreground: #EAD6E0;
+  --popover: #261426;
+  --popover-foreground: #EAD6E0;
+  --primary: #EF4D8E;
+  --primary-foreground: #3D0418;
+  --secondary: #4A6FD4;
+  --secondary-foreground: #FFFFFF;
+  --muted: #3A1F30;
+  --muted-foreground: #C9A5B8;
+  --accent: #3A2A50;
+  --accent-foreground: #C28BBE;
+  --border: #503245;
+  --input: #503245;
+  --ring: #EF4D8E;
+  --sidebar: #261426;
+  --sidebar-foreground: #EAD6E0;
+  --sidebar-primary: #EF4D8E;
+  --sidebar-primary-foreground: #3D0418;
+  --sidebar-accent: #3A2A50;
+  --sidebar-accent-foreground: #C28BBE;
+  --sidebar-border: #503245;
+  --sidebar-ring: #EF4D8E;
+}
+
+/* --- Crimson --------------------------------------------------------------
+ * Warm, bold red. Distinct from the destructive-action red: primary lands
+ * deep enough to read as a deliberate brand red rather than an error
+ * affordance. Orange tertiary for warm complement. */
+:root[data-palette="crimson"] {
+  --background: #FEF8F8;
+  --foreground: #1F0F0F;
+  --card: #FFFFFF;
+  --card-foreground: #1F0F0F;
+  --popover: #FFFFFF;
+  --popover-foreground: #1F0F0F;
+  --primary: #DC2626;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F43F5E;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F5E8E8;
+  --muted-foreground: #6E3A3A;
+  --accent: #FFE4D0;
+  --accent-foreground: #C2410C;
+  --border: #FECACA;
+  --input: #FECACA;
+  --ring: #DC2626;
+  --sidebar: #FEF0F0;
+  --sidebar-foreground: #1F0F0F;
+  --sidebar-primary: #DC2626;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #FFE4D0;
+  --sidebar-accent-foreground: #C2410C;
+  --sidebar-border: #FECACA;
+  --sidebar-ring: #DC2626;
+}
+.dark[data-palette="crimson"] {
+  --background: #1A0F0F;
+  --foreground: #EAD6D6;
+  --card: #261515;
+  --card-foreground: #EAD6D6;
+  --popover: #261515;
+  --popover-foreground: #EAD6D6;
+  --primary: #F87171;
+  --primary-foreground: #7F1D1D;
+  --secondary: #FB7185;
+  --secondary-foreground: #4C0519;
+  --muted: #3A1F1F;
+  --muted-foreground: #C9A5A5;
+  --accent: #4A2418;
+  --accent-foreground: #F97316;
+  --border: #6E3838;
+  --input: #6E3838;
+  --ring: #F87171;
+  --sidebar: #261515;
+  --sidebar-foreground: #EAD6D6;
+  --sidebar-primary: #F87171;
+  --sidebar-primary-foreground: #7F1D1D;
+  --sidebar-accent: #4A2418;
+  --sidebar-accent-foreground: #F97316;
+  --sidebar-border: #6E3838;
+  --sidebar-ring: #F87171;
+}
+
+/* --- Goldenrod ------------------------------------------------------------
+ * Saturated highlighter yellow. Yellow-on-white fails contrast, so the
+ * primary lands at yellow-700 (text-on-white safe) and the vivid yellow
+ * lives in the accent slot. Blue tertiary keeps it from monochromatic. */
+:root[data-palette="goldenrod"] {
+  --background: #FFFEF0;
+  --foreground: #1F1812;
+  --card: #FFFFFF;
+  --card-foreground: #1F1812;
+  --popover: #FFFFFF;
+  --popover-foreground: #1F1812;
+  --primary: #A16207;
+  --primary-foreground: #FFFFFF;
+  --secondary: #D97706;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F5EFDE;
+  --muted-foreground: #6E5A2A;
+  --accent: #FEF08A;
+  --accent-foreground: #422006;
+  --border: #FEF08A;
+  --input: #FEF08A;
+  --ring: #FACC15;
+  --sidebar: #FFFCE8;
+  --sidebar-foreground: #1F1812;
+  --sidebar-primary: #A16207;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #FEF08A;
+  --sidebar-accent-foreground: #422006;
+  --sidebar-border: #FEF08A;
+  --sidebar-ring: #FACC15;
+}
+.dark[data-palette="goldenrod"] {
+  --background: #1F1A0A;
+  --foreground: #EAE0D0;
+  --card: #2A2410;
+  --card-foreground: #EAE0D0;
+  --popover: #2A2410;
+  --popover-foreground: #EAE0D0;
+  --primary: #FACC15;
+  --primary-foreground: #422006;
+  --secondary: #FDE047;
+  --secondary-foreground: #422006;
+  --muted: #3A2F1F;
+  --muted-foreground: #C9B879;
+  --accent: #1E3A8A;
+  --accent-foreground: #60A5FA;
+  --border: #6E5A20;
+  --input: #6E5A20;
+  --ring: #FACC15;
+  --sidebar: #2A2410;
+  --sidebar-foreground: #EAE0D0;
+  --sidebar-primary: #FACC15;
+  --sidebar-primary-foreground: #422006;
+  --sidebar-accent: #1E3A8A;
+  --sidebar-accent-foreground: #60A5FA;
+  --sidebar-border: #6E5A20;
+  --sidebar-ring: #FACC15;
+}
+
+/* --- Mint -----------------------------------------------------------------
+ * Emerald green. Reads "calm / focus" — softer than the default purple.
+ * Backgrounds carry a faint green tint so it doesn't look like a stock
+ * Material green. Tailwind emerald scale. */
+:root[data-palette="mint"] {
+  --background: #ECFDF5;
+  --foreground: #0F1F1A;
+  --card: #FFFFFF;
+  --card-foreground: #0F1F1A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0F1F1A;
+  --primary: #059669;
+  --primary-foreground: #FFFFFF;
+  --secondary: #10B981;
+  --secondary-foreground: #FFFFFF;
+  --muted: #EAF4EF;
+  --muted-foreground: #1F3A30;
+  --accent: #D1FAE5;
+  --accent-foreground: #065F46;
+  --border: #A7F3D0;
+  --input: #A7F3D0;
+  --ring: #10B981;
+  --sidebar: #F0FDF4;
+  --sidebar-foreground: #0F1F1A;
+  --sidebar-primary: #059669;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #D1FAE5;
+  --sidebar-accent-foreground: #065F46;
+  --sidebar-border: #A7F3D0;
+  --sidebar-ring: #10B981;
+}
+.dark[data-palette="mint"] {
+  --background: #071F18;
+  --foreground: #D6E8E0;
+  --card: #0C2A21;
+  --card-foreground: #D6E8E0;
+  --popover: #0C2A21;
+  --popover-foreground: #D6E8E0;
+  --primary: #34D399;
+  --primary-foreground: #064E3B;
+  --secondary: #6EE7B7;
+  --secondary-foreground: #022C22;
+  --muted: #1F3A30;
+  --muted-foreground: #A7D8C2;
+  --accent: #065F46;
+  --accent-foreground: #D1FAE5;
+  --border: #1F4E3D;
+  --input: #1F4E3D;
+  --ring: #34D399;
+  --sidebar: #0C2A21;
+  --sidebar-foreground: #D6E8E0;
+  --sidebar-primary: #34D399;
+  --sidebar-primary-foreground: #064E3B;
+  --sidebar-accent: #065F46;
+  --sidebar-accent-foreground: #D1FAE5;
+  --sidebar-border: #1F4E3D;
+  --sidebar-ring: #34D399;
+}
+
+/* --- Ocean ----------------------------------------------------------------
+ * Sky blue. Reads "professional / clean" and stays far from the purple
+ * default. Tailwind sky scale. Backgrounds carry a faint blue tint. */
+:root[data-palette="ocean"] {
+  --background: #F0F9FF;
+  --foreground: #0B1929;
+  --card: #FFFFFF;
+  --card-foreground: #0B1929;
+  --popover: #FFFFFF;
+  --popover-foreground: #0B1929;
+  --primary: #0284C7;
+  --primary-foreground: #FFFFFF;
+  --secondary: #0EA5E9;
+  --secondary-foreground: #FFFFFF;
+  --muted: #E8F2FA;
+  --muted-foreground: #1A3047;
+  --accent: #E0F2FE;
+  --accent-foreground: #075985;
+  --border: #BAE6FD;
+  --input: #BAE6FD;
+  --ring: #0EA5E9;
+  --sidebar: #F0F9FF;
+  --sidebar-foreground: #0B1929;
+  --sidebar-primary: #0284C7;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #E0F2FE;
+  --sidebar-accent-foreground: #075985;
+  --sidebar-border: #BAE6FD;
+  --sidebar-ring: #0EA5E9;
+}
+.dark[data-palette="ocean"] {
+  --background: #071525;
+  --foreground: #D3E4F4;
+  --card: #0E2238;
+  --card-foreground: #D3E4F4;
+  --popover: #0E2238;
+  --popover-foreground: #D3E4F4;
+  --primary: #38BDF8;
+  --primary-foreground: #0C4A6E;
+  --secondary: #7DD3FC;
+  --secondary-foreground: #082F49;
+  --muted: #1A3047;
+  --muted-foreground: #A7C7E0;
+  --accent: #075985;
+  --accent-foreground: #E0F2FE;
+  --border: #1F4A75;
+  --input: #1F4A75;
+  --ring: #38BDF8;
+  --sidebar: #0E2238;
+  --sidebar-foreground: #D3E4F4;
+  --sidebar-primary: #38BDF8;
+  --sidebar-primary-foreground: #0C4A6E;
+  --sidebar-accent: #075985;
+  --sidebar-accent-foreground: #E0F2FE;
+  --sidebar-border: #1F4A75;
+  --sidebar-ring: #38BDF8;
+}
+
+/* --- Pan ------------------------------------------------------------------
+ * Pan-flag pink + cyan + yellow. Yellow is contrast-hostile on white so
+ * pink leads primary and cyan takes secondary; yellow lives in the accent
+ * slot (light mode uses a deeper amber, dark mode lets flag yellow read). */
+:root[data-palette="pan"] {
+  --background: #FFFAFC;
+  --foreground: #1F0A18;
+  --card: #FFFFFF;
+  --card-foreground: #1F0A18;
+  --popover: #FFFFFF;
+  --popover-foreground: #1F0A18;
+  --primary: #C8005F;
+  --primary-foreground: #FFFFFF;
+  --secondary: #1685C0;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F5E8EF;
+  --muted-foreground: #6E3A50;
+  --accent: #FFF1A6;
+  --accent-foreground: #B59800;
+  --border: #E9C0D2;
+  --input: #E9C0D2;
+  --ring: #FF1B8D;
+  --sidebar: #FFF0F8;
+  --sidebar-foreground: #1F0A18;
+  --sidebar-primary: #C8005F;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #FFF1A6;
+  --sidebar-accent-foreground: #B59800;
+  --sidebar-border: #E9C0D2;
+  --sidebar-ring: #FF1B8D;
+}
+.dark[data-palette="pan"] {
+  --background: #1A0E16;
+  --foreground: #EAD8E0;
+  --card: #261424;
+  --card-foreground: #EAD8E0;
+  --popover: #261424;
+  --popover-foreground: #EAD8E0;
+  --primary: #FF6BB0;
+  --primary-foreground: #3D0418;
+  --secondary: #5DCAFF;
+  --secondary-foreground: #002F45;
+  --muted: #3A1F2E;
+  --muted-foreground: #C9A5B8;
+  --accent: #FFD800;
+  --accent-foreground: #2E2200;
+  --border: #503245;
+  --input: #503245;
+  --ring: #FF6BB0;
+  --sidebar: #261424;
+  --sidebar-foreground: #EAD8E0;
+  --sidebar-primary: #FF6BB0;
+  --sidebar-primary-foreground: #3D0418;
+  --sidebar-accent: #FFD800;
+  --sidebar-accent-foreground: #2E2200;
+  --sidebar-border: #503245;
+  --sidebar-ring: #FF6BB0;
+}
+
+/* --- Plural ---------------------------------------------------------------
+ * Plural-flag plum, purple, lavender, mint, cream. Deep flag purple leads
+ * in light mode; lavender leads in dark mode against a plum background.
+ * Mint takes secondary, cream/gold takes accent. This is the on-brand
+ * palette so contrast trade-offs favour flag colour recognisability. */
+:root[data-palette="plural"] {
+  --background: #FFFDF5;
+  --foreground: #2E0525;
+  --card: #FFFFFF;
+  --card-foreground: #1A0E1F;
+  --popover: #FFFFFF;
+  --popover-foreground: #1A0E1F;
+  --primary: #543576;
+  --primary-foreground: #FFFFFF;
+  --secondary: #4A8A73;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F1E8F0;
+  --muted-foreground: #2E1F3E;
+  --accent: #F4ECBC;
+  --accent-foreground: #5C4A18;
+  --border: #C5C2E0;
+  --input: #C5C2E0;
+  --ring: #7674C2;
+  --sidebar: #FAF5FA;
+  --sidebar-foreground: #2E0525;
+  --sidebar-primary: #543576;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F4ECBC;
+  --sidebar-accent-foreground: #5C4A18;
+  --sidebar-border: #C5C2E0;
+  --sidebar-ring: #7674C2;
+}
+.dark[data-palette="plural"] {
+  --background: #2E0525;
+  --foreground: #F0D8E0;
+  --card: #3A1234;
+  --card-foreground: #F0D8E0;
+  --popover: #3A1234;
+  --popover-foreground: #F0D8E0;
+  --primary: #7674C2;
+  --primary-foreground: #2E0525;
+  --secondary: #89C8B0;
+  --secondary-foreground: #0F3D2E;
+  --muted: #3A1F5A;
+  --muted-foreground: #E0C8D8;
+  --accent: #F4ECBC;
+  --accent-foreground: #2E0525;
+  --border: #6E4868;
+  --input: #6E4868;
+  --ring: #7674C2;
+  --sidebar: #3A1234;
+  --sidebar-foreground: #F0D8E0;
+  --sidebar-primary: #7674C2;
+  --sidebar-primary-foreground: #2E0525;
+  --sidebar-accent: #F4ECBC;
+  --sidebar-accent-foreground: #2E0525;
+  --sidebar-border: #6E4868;
+  --sidebar-ring: #7674C2;
+}
+
+/* --- Sepia ----------------------------------------------------------------
+ * Warm amber / sunset. Reads "soft / comforting" — fewer blue tones, easier
+ * on the eyes in dim environments. Dark backgrounds are warm-toned rather
+ * than cool-neutral. Tailwind amber + stone scales. */
+:root[data-palette="sepia"] {
+  --background: #FFFBEB;
+  --foreground: #2A1A07;
+  --card: #F5F5F4;
+  --card-foreground: #2A1A07;
+  --popover: #F5F5F4;
+  --popover-foreground: #2A1A07;
+  --primary: #D97706;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F59E0B;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F5EAD3;
+  --muted-foreground: #3D2A12;
+  --accent: #FED7AA;
+  --accent-foreground: #C2410C;
+  --border: #FDE68A;
+  --input: #FDE68A;
+  --ring: #F59E0B;
+  --sidebar: #FFFBEB;
+  --sidebar-foreground: #2A1A07;
+  --sidebar-primary: #D97706;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #FED7AA;
+  --sidebar-accent-foreground: #C2410C;
+  --sidebar-border: #FDE68A;
+  --sidebar-ring: #F59E0B;
+}
+.dark[data-palette="sepia"] {
+  --background: #0C0A09;
+  --foreground: #E7D6BE;
+  --card: #1C1917;
+  --card-foreground: #E7D6BE;
+  --popover: #1C1917;
+  --popover-foreground: #E7D6BE;
+  --primary: #FBBF24;
+  --primary-foreground: #78350F;
+  --secondary: #FCD34D;
+  --secondary-foreground: #451A03;
+  --muted: #292524;
+  --muted-foreground: #C9B879;
+  --accent: #92400E;
+  --accent-foreground: #FB923C;
+  --border: #7A4A20;
+  --input: #7A4A20;
+  --ring: #FBBF24;
+  --sidebar: #1C1917;
+  --sidebar-foreground: #E7D6BE;
+  --sidebar-primary: #FBBF24;
+  --sidebar-primary-foreground: #78350F;
+  --sidebar-accent: #92400E;
+  --sidebar-accent-foreground: #FB923C;
+  --sidebar-border: #7A4A20;
+  --sidebar-ring: #FBBF24;
+}
+
 @layer base {
   * {
     @apply border-border;
