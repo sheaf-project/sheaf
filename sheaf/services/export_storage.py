@@ -6,9 +6,10 @@ S3 lifecycle expiry rule applied AND so they bypass any CDN fronting
 on the image bucket. CDN proxying decrypted personal data through TLS
 termination is exactly what we don't want.
 
-Filesystem mode: exports live at /app/data/exports/{user_id}/{job_id}.zip
-and are served by an authenticated streaming download endpoint. No
-bucket concerns; the cleanup worker handles pruning.
+Filesystem mode: exports live at {SHEAF_DATA_DIR}/exports/{user_id}/{job_id}.zip
+(defaults to ./data/exports) and are served by an authenticated
+streaming download endpoint. No bucket concerns; the cleanup worker
+handles pruning.
 """
 
 from __future__ import annotations
@@ -25,7 +26,16 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from sheaf.config import settings
 from sheaf.observability.metrics import observe_s3
 
-_FILESYSTEM_ROOT = Path("/app/data/exports")
+
+def _filesystem_root() -> Path:
+    """Exports live under the operator-configured data dir.
+
+    Resolved per-call rather than at import time so the test suite's
+    monkeypatching of `settings.sheaf_data_dir` lands correctly, and
+    so a runtime config override (e.g. an admin reload, future
+    feature) takes effect without a restart.
+    """
+    return settings.sheaf_data_dir / "exports"
 
 
 def _is_s3() -> bool:
@@ -84,7 +94,7 @@ def _key(user_id: uuid.UUID, job_id: uuid.UUID) -> str:
 
 
 def _filesystem_path(user_id: uuid.UUID, job_id: uuid.UUID) -> Path:
-    return _FILESYSTEM_ROOT / str(user_id) / f"{job_id}.zip"
+    return _filesystem_root() / str(user_id) / f"{job_id}.zip"
 
 
 async def _run(fn, *args, **kwargs):
@@ -95,7 +105,12 @@ async def _run(fn, *args, **kwargs):
 async def put(user_id: uuid.UUID, job_id: uuid.UUID, data: bytes) -> str:
     """Persist a built export and return the file_location to store on
     the ExportJob row. Format is backend-specific: an S3 key for S3, an
-    absolute filesystem path otherwise."""
+    absolute filesystem path otherwise.
+
+    Retained for the small / image-less export path where holding the
+    bytes in RAM is fine. The big build path (`include_images=True`)
+    uses `put_path` instead so the zip never has to live in memory.
+    """
     if _is_s3():
         key = _key(user_id, job_id)
         client = _client(_endpoint())
@@ -119,6 +134,37 @@ async def put(user_id: uuid.UUID, job_id: uuid.UUID, data: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     await _run(path.write_bytes, data)
     return str(path)
+
+
+async def put_path(
+    user_id: uuid.UUID, job_id: uuid.UUID, source_path: str
+) -> str:
+    """Persist a built export from a filesystem path.
+
+    Avoids the bytes-in-RAM hop for big exports. On S3 we call
+    `upload_file` which transparently switches to multipart upload
+    once the file crosses ~8MB; on filesystem we rename the temp file
+    into place (same partition assumption — `tempfile` honours
+    `tmpdir` for cross-device safety).
+    """
+    if _is_s3():
+        key = _key(user_id, job_id)
+        client = _client(_endpoint())
+        await observe_s3(
+            "put",
+            _run(
+                client.upload_file,
+                source_path,
+                _bucket(),
+                key,
+                ExtraArgs={"ContentType": "application/zip"},
+            ),
+        )
+        return key
+    dest = _filesystem_path(user_id, job_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await _run(os.replace, source_path, str(dest))
+    return str(dest)
 
 
 async def delete(file_location: str) -> None:

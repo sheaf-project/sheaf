@@ -7,9 +7,11 @@ configured) sends a "your export is ready" notification.
 
 from __future__ import annotations
 
-import io
+import contextlib
 import json
 import logging
+import os
+import tempfile
 import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -87,7 +89,15 @@ async def _claim_one(db: AsyncSession) -> ExportJob | None:
 
 async def _build(job_id: uuid.UUID) -> None:
     """Build, upload, mark done. Failures land back as FAILED with the
-    error captured for the user to see."""
+    error captured for the user to see.
+
+    Streams the zip through a temp file on disk so peak memory stays
+    bounded by per-image blob size (~100MB cap) rather than total
+    export size. The tempfile lives in `settings.export_build_tmp_dir`
+    when set, otherwise the system default — selfhosters with a small
+    root volume should point this at the same disk the s3-export
+    bucket is fronted by, or a dedicated big volume.
+    """
     async with async_session_factory() as db:
         job = await db.get(ExportJob, job_id)
         if job is None:
@@ -98,42 +108,72 @@ async def _build(job_id: uuid.UUID) -> None:
             await _mark_failed(db, job, "user no longer exists")
             return
 
+        tmp_path: str | None = None
         try:
-            zip_bytes = await _assemble_zip(db, user, include_images=job.include_images)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Export build failed for job %s", job_id)
-            await _mark_failed(db, job, f"build failed: {exc}")
-            return
+            try:
+                tmp_path, size_bytes = await _assemble_zip_to_tempfile(
+                    db, user, include_images=job.include_images
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Export build failed for job %s", job_id)
+                await _mark_failed(db, job, f"build failed: {exc}")
+                return
 
-        try:
-            location = await export_storage.put(user.id, job.id, zip_bytes)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Export upload failed for job %s", job_id)
-            await _mark_failed(db, job, f"upload failed: {exc}")
-            return
+            try:
+                location = await export_storage.put_path(
+                    user.id, job.id, tmp_path
+                )
+                # put_path on the filesystem backend renames the tempfile
+                # into place — at that point there's no tempfile to clean.
+                # On S3 the tempfile is still ours to delete in `finally`.
+                if not _location_is_tempfile(location, tmp_path):
+                    tmp_path_to_clean = tmp_path
+                else:
+                    tmp_path_to_clean = None
+                    tmp_path = None
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Export upload failed for job %s", job_id)
+                await _mark_failed(db, job, f"upload failed: {exc}")
+                return
 
-        job.file_location = location
-        job.file_size_bytes = len(zip_bytes)
-        job.status = ExportJobStatus.DONE
-        job.completed_at = datetime.now(UTC)
-        job.expires_at = job.completed_at + timedelta(
-            hours=settings.export_job_ttl_hours
-        )
-        await db.commit()
-        exports_built_total.labels(outcome="done").inc()
-        export_size_bytes.observe(job.file_size_bytes)
-        logger.info(
-            "Export job %s completed (%d bytes, expires %s)",
-            job.id,
-            job.file_size_bytes,
-            job.expires_at.isoformat(),
-        )
+            job.file_location = location
+            job.file_size_bytes = size_bytes
+            job.status = ExportJobStatus.DONE
+            job.completed_at = datetime.now(UTC)
+            job.expires_at = job.completed_at + timedelta(
+                hours=settings.export_job_ttl_hours
+            )
+            await db.commit()
+            exports_built_total.labels(outcome="done").inc()
+            export_size_bytes.observe(job.file_size_bytes)
+            logger.info(
+                "Export job %s completed (%d bytes, expires %s)",
+                job.id,
+                job.file_size_bytes,
+                job.expires_at.isoformat(),
+            )
+            # Re-bind for the finally block now that ownership has
+            # transferred (or the tempfile has been renamed into place).
+            tmp_path = tmp_path_to_clean
+        finally:
+            if tmp_path is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(tmp_path)
 
     # Email notification — best-effort, don't fail the job on send error.
     try:
         await _send_completion_email(user_email=decrypt(user.email), job_id=job.id)
     except Exception:  # noqa: BLE001
         logger.exception("Export completion email failed for job %s", job_id)
+
+
+def _location_is_tempfile(location: str, tmp_path: str) -> bool:
+    """The filesystem backend's `put_path` renames the tempfile into the
+    final location — at that point there's nothing left to unlink. The
+    S3 backend leaves the tempfile alone after upload. Comparing
+    against the tmp_path tells us which case we're in.
+    """
+    return location == tmp_path
 
 
 async def _mark_failed(db: AsyncSession, job: ExportJob, reason: str) -> None:
@@ -144,15 +184,21 @@ async def _mark_failed(db: AsyncSession, job: ExportJob, reason: str) -> None:
     exports_built_total.labels(outcome="failed").inc()
 
 
-async def _assemble_zip(
+async def _assemble_zip_to_tempfile(
     db: AsyncSession, user: User, *, include_images: bool
-) -> bytes:
-    """Build the in-memory zip artefact.
+) -> tuple[str, int]:
+    """Build the zip artefact on disk and return (path, size_bytes).
 
     Layout:
         export.json   -- same shape as the sync /v1/export endpoint
         README.txt    -- explains the asymmetry around image re-import
         images/<key>  -- (when include_images) the binary blobs
+
+    Streams images through `zipfile.open(..., 'w')` so each blob lives
+    in RAM only while it's actively being written — never accumulates.
+    The JSON payload is built in-memory because the sync /v1/export
+    endpoint already returns the whole dict; refactoring that to
+    stream would be a much bigger change.
     """
     # Build the JSON payload by calling the same code path the sync
     # endpoint uses, so we don't drift between the two.
@@ -161,21 +207,35 @@ async def _assemble_zip(
     json_payload = await export_all(user=user, db=db)
     json_bytes = json.dumps(json_payload, indent=2, default=str).encode("utf-8")
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("export.json", json_bytes)
-        zf.writestr("README.txt", _README)
+    tmp_dir = settings.export_build_tmp_dir or None
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="sheaf-export-", dir=tmp_dir)
+    os.close(fd)  # zipfile reopens the path; we just needed exclusive creation
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("export.json", json_bytes)
+            zf.writestr("README.txt", _README)
 
-        if include_images:
-            await _add_images(zf, db, user)
-
-    return buf.getvalue()
+            if include_images:
+                await _add_images(zf, db, user)
+        size_bytes = os.path.getsize(tmp_path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_path)
+        raise
+    return tmp_path, size_bytes
 
 
 async def _add_images(
     zf: zipfile.ZipFile, db: AsyncSession, user: User
 ) -> None:
-    """Pack every UploadedFile owned by this user under images/."""
+    """Pack every UploadedFile owned by this user under images/.
+
+    Image blobs are fetched one at a time; each is written into the
+    zip via `zf.open(..., 'w').write(blob)` so it can be evicted as
+    soon as the next iteration begins. Per-image memory is bounded by
+    the largest single uploaded image (which the upload pipeline caps
+    at `max_animated_decoded_bytes`, default 100 MB).
+    """
     result = await db.execute(
         select(UploadedFile).where(UploadedFile.user_id == user.id)
     )
@@ -194,7 +254,11 @@ async def _add_images(
             continue
         # Use the stored key as the filename inside the zip; keys are
         # opaque UUIDs so they preserve cross-reference uniqueness.
-        zf.writestr(f"images/{f.key}", blob)
+        with zf.open(f"images/{f.key}", "w") as dest:
+            dest.write(blob)
+        # Drop the local reference immediately so the GC can reclaim
+        # before the next iteration's blob lands.
+        del blob
 
 
 async def _send_completion_email(*, user_email: str, job_id: uuid.UUID) -> None:
@@ -208,7 +272,12 @@ async def _send_completion_email(*, user_email: str, job_id: uuid.UUID) -> None:
     from sheaf.services.email import send_email  # late import
 
     base = settings.sheaf_base_url.rstrip("/") if settings.sheaf_base_url else ""
-    url = f"{base}/settings/export?job={job_id}"
+    # The export UI lives at /settings/data (DataExportCard) — the
+    # ?job= param scrolls the card into view and highlights the
+    # matching row. The historical /settings/export path was a
+    # placeholder that the data settings page never actually
+    # registered.
+    url = f"{base}/settings/data?job={job_id}"
     subject = "Your Sheaf data export is ready"
     body_text = (
         "Your Sheaf data export has finished building and is ready to "
