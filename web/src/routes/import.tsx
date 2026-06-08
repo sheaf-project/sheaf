@@ -27,13 +27,17 @@ import {
   previewImport as previewTB,
 } from "@/lib/tb-import";
 import {
+  type PluralspacePreviewSummary,
+  previewImport as previewPS,
+} from "@/lib/pluralspace-import";
+import {
   createApiImport,
   createFileImport,
   newIdempotencyKey,
 } from "@/lib/imports";
 import { Input } from "@/components/ui/input";
 
-type Source = "choose" | "sheaf" | "sp" | "pk" | "tb";
+type Source = "choose" | "sheaf" | "sp" | "pk" | "tb" | "ps";
 // "importing" shows a brief spinner while the enqueue POST is in
 // flight; on success the flow navigates to /imports/:id, which owns
 // the running/done UI. There's no "done" step here any more.
@@ -62,6 +66,9 @@ export function ImportPage() {
       )}
       {source === "tb" && (
         <TBImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "ps" && (
+        <PSImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -124,6 +131,23 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
             Discord). Tupperbox doesn't track fronting, so only your tuppers
             and groups come across. Proxy brackets and per-tupper tags are
             dropped since Sheaf doesn't proxy Discord messages.
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("ps")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from PluralSpace</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Upload a PluralSpace data export (zip). Brings across members,
+            custom fronts, member groups, custom fields, fronts, journal
+            entries, chat messages, polls, and avatars. Multi-channel chats
+            collapse onto the system board; PluralSpace's journal
+            visibility tiers don't have a Sheaf equivalent and are dropped.
           </p>
         </CardContent>
       </Card>
@@ -952,6 +976,231 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
                 label="Groups"
                 checked={groups}
                 onChange={setGroups}
+              />
+
+              <MemberSelector
+                members={preview.members}
+                totalCount={preview.member_count}
+                allMembers={allMembers}
+                setAllMembers={setAllMembers}
+                selectedMembers={selectedMembers}
+                toggleMember={toggleMember}
+              />
+
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PluralSpace import flow
+// ---------------------------------------------------------------------------
+
+function PSImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<PluralspacePreviewSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
+
+  const [allMembers, setAllMembers] = useState(true);
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+  const [systemProfile, setSystemProfile] = useState(true);
+  const [customFronts, setCustomFronts] = useState(true);
+  const [memberAvatars, setMemberAvatars] = useState(true);
+  const [rolesAsTags, setRolesAsTags] = useState(true);
+  const [groups, setGroups] = useState(true);
+  const [customFields, setCustomFields] = useState(true);
+  const [fronts, setFronts] = useState(true);
+  const [journalEntries, setJournalEntries] = useState(true);
+  const [chatMessages, setChatMessages] = useState(true);
+  const [polls, setPolls] = useState(true);
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewPS(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to parse export"));
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const job = await createFileImport({
+        source: "pluralspace_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          system_profile: systemProfile,
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          custom_fronts: customFronts,
+          member_avatars: memberAvatars,
+          roles_as_tags: rolesAsTags,
+          groups,
+          custom_fields: customFields,
+          fronts,
+          journal_entries: journalEntries,
+          chat_messages: chatMessages,
+          polls,
+        },
+      });
+      navigate(`/imports/${job.id}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Import failed"));
+      setStep("preview");
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload PluralSpace export</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Generate an export from your PluralSpace account settings
+              (Data export). Upload the resulting <code>.zip</code> here.
+            </p>
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={onBack}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              {preview.system_name && (
+                <div className="col-span-2">
+                  System: <strong>{preview.system_name}</strong>
+                </div>
+              )}
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>Custom fronts: <strong>{preview.custom_front_count}</strong></div>
+              <div>Groups: <strong>{preview.group_count}</strong></div>
+              <div>Custom fields: <strong>{preview.custom_field_count}</strong></div>
+              <div>Fronts: <strong>{preview.front_count}</strong></div>
+              <div>Journal entries: <strong>{preview.journal_entry_count}</strong></div>
+              <div>
+                Chat: <strong>{preview.chat_message_count}</strong> message
+                {preview.chat_message_count === 1 ? "" : "s"} across{" "}
+                <strong>{preview.chat_channel_count}</strong> channel
+                {preview.chat_channel_count === 1 ? "" : "s"}
+              </div>
+              <div>Polls: <strong>{preview.poll_count}</strong></div>
+              <div>Media files: <strong>{preview.media_file_count}</strong></div>
+              {preview.format_version && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  Export format version: {preview.format_version}
+                </div>
+              )}
+              {preview.thought_count > 0 && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  {preview.thought_count} thought entries will be skipped:
+                  Sheaf doesn't have a thoughts-feature equivalent.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="System profile (name, description, colour)"
+                checked={systemProfile}
+                onChange={setSystemProfile}
+              />
+              <Checkbox
+                label="Custom fronts (Asleep, Away, etc.)"
+                checked={customFronts}
+                onChange={setCustomFronts}
+              />
+              <Checkbox
+                label="Member avatars (re-uploaded from the export)"
+                checked={memberAvatars}
+                onChange={setMemberAvatars}
+              />
+              <Checkbox
+                label="Roles as tags"
+                checked={rolesAsTags}
+                onChange={setRolesAsTags}
+              />
+              <Checkbox
+                label="Member groups"
+                checked={groups}
+                onChange={setGroups}
+              />
+              <Checkbox
+                label="Custom fields"
+                checked={customFields}
+                onChange={setCustomFields}
+              />
+              <Checkbox
+                label="Front history"
+                checked={fronts}
+                onChange={setFronts}
+              />
+              <Checkbox
+                label="Journal entries"
+                checked={journalEntries}
+                onChange={setJournalEntries}
+              />
+              <Checkbox
+                label="Chat messages (collapsed to system board)"
+                checked={chatMessages}
+                onChange={setChatMessages}
+              />
+              <Checkbox
+                label="Polls"
+                checked={polls}
+                onChange={setPolls}
               />
 
               <MemberSelector
