@@ -31,13 +31,17 @@ import {
   previewImport as previewPS,
 } from "@/lib/pluralspace-import";
 import {
+  type PrismPreviewSummary,
+  previewImport as previewPrism,
+} from "@/lib/prism-import";
+import {
   createApiImport,
   createFileImport,
   newIdempotencyKey,
 } from "@/lib/imports";
 import { Input } from "@/components/ui/input";
 
-type Source = "choose" | "sheaf" | "sp" | "pk" | "tb" | "ps";
+type Source = "choose" | "sheaf" | "sp" | "pk" | "tb" | "ps" | "prism";
 // "importing" shows a brief spinner while the enqueue POST is in
 // flight; on success the flow navigates to /imports/:id, which owns
 // the running/done UI. There's no "done" step here any more.
@@ -69,6 +73,9 @@ export function ImportPage() {
       )}
       {source === "ps" && (
         <PSImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "prism" && (
+        <PrismImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -148,6 +155,24 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
             entries, chat messages, polls, and avatars. Multi-channel chats
             collapse onto the system board; PluralSpace's journal
             visibility tiers don't have a Sheaf equivalent and are dropped.
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("prism")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from Prism</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Upload an encrypted Prism (<code>.prism</code>) export file and
+            its decryption passphrase. Brings across headmates, fronting
+            history, member groups, custom fields, notes, polls, chat
+            messages, and member-board posts. Prism's sleep tracking, habits,
+            and reminders aren't surfaces Sheaf has yet and are dropped with
+            a warning event on the import detail page.
           </p>
         </CardContent>
       </Card>
@@ -999,6 +1024,7 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // PluralSpace import flow
 // ---------------------------------------------------------------------------
 
@@ -1201,6 +1227,282 @@ function PSImportFlow({ onBack }: { onBack: () => void }) {
                 label="Polls"
                 checked={polls}
                 onChange={setPolls}
+              />
+
+              <MemberSelector
+                members={preview.members}
+                totalCount={preview.member_count}
+                allMembers={allMembers}
+                setAllMembers={setAllMembers}
+                selectedMembers={selectedMembers}
+                toggleMember={toggleMember}
+              />
+
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+    </>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Prism import flow
+// ---------------------------------------------------------------------------
+
+function PrismImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [preview, setPreview] = useState<PrismPreviewSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [idemKey] = useState(newIdempotencyKey);
+
+  const [allMembers, setAllMembers] = useState(true);
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+  const [systemProfile, setSystemProfile] = useState(true);
+  const [memberAvatars, setMemberAvatars] = useState(true);
+  const [memberGroups, setMemberGroups] = useState(true);
+  const [customFields, setCustomFields] = useState(true);
+  const [frontSessions, setFrontSessions] = useState(true);
+  const [notes, setNotes] = useState(true);
+  const [polls, setPolls] = useState(true);
+  const [conversations, setConversations] = useState(true);
+  const [memberBoardPosts, setMemberBoardPosts] = useState(true);
+  const [mediaAttachments, setMediaAttachments] = useState(true);
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
+
+  function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+  }
+
+  async function handlePreview() {
+    if (!file) {
+      setError("Choose a .prism file first.");
+      return;
+    }
+    if (!passphrase) {
+      setError("Enter the decryption passphrase.");
+      return;
+    }
+    setPreviewing(true);
+    setError(null);
+    try {
+      const p = await previewPrism(file, passphrase);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to decrypt export"));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const job = await createFileImport({
+        source: "prism_file",
+        file,
+        idempotencyKey: idemKey,
+        credential: passphrase,
+        options: {
+          system_profile: systemProfile,
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          member_avatars: memberAvatars,
+          member_groups: memberGroups,
+          custom_fields: customFields,
+          front_sessions: frontSessions,
+          notes,
+          polls,
+          conversations,
+          member_board_posts: memberBoardPosts,
+          media_attachments: mediaAttachments,
+        },
+      });
+      // Clear the passphrase from memory once it's safely encrypted
+      // server-side. The import job row owns the encrypted form now.
+      setPassphrase("");
+      navigate(`/imports/${job.id}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Import failed"));
+      setStep("preview");
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload Prism export</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              In Prism, go to <em>Settings → Data → Export</em>, choose a
+              passphrase, and save the resulting <code>.prism</code> file.
+              Upload it here together with the same passphrase. The
+              passphrase is encrypted at rest on our side and wiped when the
+              import finishes.
+            </p>
+            <input
+              type="file"
+              accept=".prism"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <div className="space-y-1.5">
+              <Label htmlFor="prism-passphrase">Decryption passphrase</Label>
+              <Input
+                id="prism-passphrase"
+                type="password"
+                autoComplete="off"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={handlePreview} disabled={previewing || !file}>
+                {previewing && <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />}
+                Decrypt + preview
+              </Button>
+              <Button variant="outline" onClick={onBack} disabled={previewing}>
+                Back
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              {preview.system_name && (
+                <div className="col-span-2">
+                  System: <strong>{preview.system_name}</strong>
+                </div>
+              )}
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>Groups: <strong>{preview.group_count}</strong></div>
+              <div>Custom fields: <strong>{preview.custom_field_count}</strong></div>
+              <div>Front sessions: <strong>{preview.front_session_count}</strong></div>
+              <div>Notes: <strong>{preview.note_count}</strong></div>
+              <div>Polls: <strong>{preview.poll_count}</strong></div>
+              <div>
+                Chat: <strong>{preview.message_count}</strong> message
+                {preview.message_count === 1 ? "" : "s"} across{" "}
+                <strong>{preview.conversation_count}</strong> conversation
+                {preview.conversation_count === 1 ? "" : "s"}
+              </div>
+              <div>Board posts: <strong>{preview.member_board_post_count}</strong></div>
+              <div>
+                Media: <strong>{preview.media_attachment_count}</strong> attachment
+                {preview.media_attachment_count === 1 ? "" : "s"}
+              </div>
+              {preview.format_version && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  Export format version: {preview.format_version}
+                  {preview.app_name && ` · ${preview.app_name}`}
+                </div>
+              )}
+              {(preview.sleep_session_count > 0 ||
+                preview.habit_count > 0 ||
+                preview.reminder_count > 0) && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  Skipped on import: {preview.sleep_session_count} sleep
+                  session{preview.sleep_session_count === 1 ? "" : "s"},{" "}
+                  {preview.habit_count} habit{preview.habit_count === 1 ? "" : "s"}
+                  , {preview.reminder_count} reminder
+                  {preview.reminder_count === 1 ? "" : "s"} (no Sheaf surface
+                  for these yet).
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="System profile (name, description, colour)"
+                checked={systemProfile}
+                onChange={setSystemProfile}
+              />
+              <Checkbox
+                label="Member avatars (decoded from inline data)"
+                checked={memberAvatars}
+                onChange={setMemberAvatars}
+              />
+              <Checkbox
+                label="Member groups"
+                checked={memberGroups}
+                onChange={setMemberGroups}
+              />
+              <Checkbox
+                label="Custom fields"
+                checked={customFields}
+                onChange={setCustomFields}
+              />
+              <Checkbox
+                label="Front history (front sessions)"
+                checked={frontSessions}
+                onChange={setFrontSessions}
+              />
+              <Checkbox
+                label="Notes (as Sheaf journal entries)"
+                checked={notes}
+                onChange={setNotes}
+              />
+              <Checkbox
+                label="Polls"
+                checked={polls}
+                onChange={setPolls}
+              />
+              <Checkbox
+                label="Chat messages (collapsed to system board)"
+                checked={conversations}
+                onChange={setConversations}
+              />
+              <Checkbox
+                label="Member board posts"
+                checked={memberBoardPosts}
+                onChange={setMemberBoardPosts}
+              />
+              <Checkbox
+                label="Media attachments"
+                checked={mediaAttachments}
+                onChange={setMediaAttachments}
               />
 
               <MemberSelector

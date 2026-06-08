@@ -30,6 +30,7 @@ class ImportJobSource(enum.StrEnum):
     SIMPLYPLURAL_FILE = "simplyplural_file"
     SHEAF_FILE = "sheaf_file"
     PLURALSPACE_FILE = "pluralspace_file"
+    PRISM_FILE = "prism_file"
 
 
 class ImportJobStatus(enum.StrEnum):
