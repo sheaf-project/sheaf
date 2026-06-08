@@ -23,6 +23,7 @@ from sheaf.api.v1 import (
     notification_channels,
     notifications_public,
     pk_import,
+    pluralspace_import,
     polls,
     reminders,
     retention,
@@ -136,6 +137,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     tb_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    pluralspace_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 # Unified async-job import router. Replaces the per-source legacy

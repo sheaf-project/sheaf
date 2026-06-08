@@ -8,6 +8,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Added
 
+- **PluralSpace importer.** New source on the import picker that takes a PluralSpace data export zip (manifest + data + media) and brings across system profile, members, custom fronts, member groups, custom fields, fronts, journal entries, polls, and avatars. Member roles import as Sheaf tags, multi-channel chat history collapses onto the system board with channel-name prefixes, and open-ended polls get a one-year close window since Sheaf polls require one. Format mappings that don't have a clean Sheaf equivalent surface user-facing warning events on the import detail page rather than silently dropping data: journal `visibility_level` is dropped, multi-value custom fields collapse to newline-joined text, and `thoughts[]` is unsupported pending a Sheaf surface for it. Avatars run through the same normalize_image pipeline as regular uploads (EXIF strip, dim cap, animation gate, quota check) so the importer can't be used as an upload-policy bypass.
 - **Nine new web palettes (Android parity).** Asexual, Bi, Crimson, Goldenrod, Mint, Ocean, Pan, Plural, and Sepia join the existing Classic / Purple / OLED / Pride / Trans / Non-binary set. Colours and slot mappings are ported from the matching Android theme files so the two clients stay visually identifiable as "the same theme". Material You is Android-only and remains web-skipped. Existing user preferences are unaffected — the catalog only grows.
 
 ### Changed
