@@ -13,7 +13,8 @@ export type ImportJobSource =
   | "pluralkit_api"
   | "tupperbox_file"
   | "simplyplural_file"
-  | "sheaf_file";
+  | "sheaf_file"
+  | "pluralspace_file";
 
 export type ImportJobStatus =
   | "pending"
@@ -72,6 +73,7 @@ export const SOURCE_LABELS: Record<ImportJobSource, string> = {
   tupperbox_file: "Tupperbox",
   simplyplural_file: "SimplyPlural",
   sheaf_file: "Sheaf",
+  pluralspace_file: "PluralSpace",
 };
 
 const TERMINAL = new Set<ImportJobStatus>(["complete", "failed", "cancelled"]);
