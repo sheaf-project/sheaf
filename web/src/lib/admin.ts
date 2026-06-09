@@ -308,46 +308,54 @@ export function getJobLogs(jobName: string, limit = 20) {
   );
 }
 
-export function cancelUserDeletion(userId: string) {
+export function cancelUserDeletion(userId: string, reason: string) {
   return apiFetch<{ cancelled: boolean }>(
     `/v1/admin/users/${userId}/cancel-deletion`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({ reason }) },
   );
 }
 
 // Account recovery tools
 
-export function resetUserPassword(userId: string, newPassword?: string) {
+export function resetUserPassword(
+  userId: string,
+  reason: string,
+  newPassword?: string,
+) {
   return apiFetch<{ password: string; sessions_revoked: number }>(
     `/v1/admin/users/${userId}/reset-password`,
     {
       method: "POST",
-      body: JSON.stringify({ new_password: newPassword ?? null }),
+      body: JSON.stringify({ reason, new_password: newPassword ?? null }),
     },
   );
 }
 
-export function changeUserEmail(userId: string, newEmail: string) {
+export function changeUserEmail(
+  userId: string,
+  newEmail: string,
+  reason: string,
+) {
   return apiFetch<{ email: string }>(
     `/v1/admin/users/${userId}/change-email`,
     {
       method: "POST",
-      body: JSON.stringify({ new_email: newEmail }),
+      body: JSON.stringify({ new_email: newEmail, reason }),
     },
   );
 }
 
-export function disableUserTotp(userId: string) {
+export function disableUserTotp(userId: string, reason: string) {
   return apiFetch<{ disabled: boolean }>(
     `/v1/admin/users/${userId}/disable-totp`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({ reason }) },
   );
 }
 
-export function verifyUserEmail(userId: string) {
+export function verifyUserEmail(userId: string, reason: string) {
   return apiFetch<{ verified: boolean }>(
     `/v1/admin/users/${userId}/verify-email`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({ reason }) },
   );
 }
 

@@ -266,3 +266,70 @@ def test_admin_users_signup_ip_nonmatch_empty(
     )
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Session handles: the raw session token never crosses the API boundary
+
+
+def test_admin_session_list_exposes_handles_not_tokens(
+    admin_client: httpx.Client, client: httpx.Client,
+):
+    """The raw session id IS the sheaf_session cookie credential; the
+    admin list must return an opaque digest instead, or any admin (or
+    admin:read key holder) can lift a live token and impersonate the
+    user."""
+    import uuid as _uuid
+
+    email = f"handle-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = client.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert reg.status_code == 201
+    raw_sid = reg.cookies.get("sheaf_session")
+    assert raw_sid, "register should set the session cookie"
+    token = reg.json()["access_token"]
+    me = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+    ).json()
+
+    resp = admin_client.get(f"/v1/admin/users/{me['id']}/sessions")
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert raw_sid not in body, "raw session token leaked through admin list"
+    for row in resp.json():
+        # 32 hex chars: truncated sha256, visibly not a raw token.
+        assert len(row["id"]) == 32
+        int(row["id"], 16)
+
+
+def test_terminate_by_handle_kills_the_real_session(
+    admin_client: httpx.Client, client: httpx.Client,
+):
+    """Round-trip: the handle from the list resolves server-side to the
+    raw session and revokes it - the cookie stops working."""
+    import uuid as _uuid
+
+    email = f"handle-kill-{_uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = client.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    raw_sid = reg.cookies.get("sheaf_session")
+    token = reg.json()["access_token"]
+    me = client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+    ).json()
+
+    sessions = admin_client.get(f"/v1/admin/users/{me['id']}/sessions").json()
+    assert sessions
+    resp = admin_client.post(
+        f"/v1/admin/users/{me['id']}/sessions/{sessions[0]['id']}/terminate",
+        json={"reason": "handle round-trip test"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The cookie session is dead now.
+    check = client.get(
+        "/v1/auth/me", cookies={"sheaf_session": raw_sid}
+    )
+    assert check.status_code == 401, check.text

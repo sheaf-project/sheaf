@@ -243,14 +243,16 @@ function UserActions({ user }: { user: AdminUser }) {
   const [generatedPassword, setGeneratedPassword] = useState<string | null>(null);
 
   const resetPw = useMutation({
-    mutationFn: () => resetUserPassword(user.id),
+    mutationFn: () => resetUserPassword(user.id, reason),
     onSuccess: (data) => {
       setGeneratedPassword(data.password);
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
       toast.success(
         `Password reset — ${data.sessions_revoked} session(s) revoked`,
       );
       setConfirming(null);
+      setReason("");
     },
   });
 
@@ -372,30 +374,36 @@ function UserActions({ user }: { user: AdminUser }) {
   });
 
   const emailChange = useMutation({
-    mutationFn: () => changeUserEmail(user.id, newEmail),
+    mutationFn: () => changeUserEmail(user.id, newEmail, reason),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
       toast.success("Email changed");
       setNewEmail("");
       setConfirming(null);
+      setReason("");
     },
   });
 
   const disableTotp = useMutation({
-    mutationFn: () => disableUserTotp(user.id),
+    mutationFn: () => disableUserTotp(user.id, reason),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
       toast.success("TOTP disabled");
       setConfirming(null);
+      setReason("");
     },
   });
 
   const verifyEmail = useMutation({
-    mutationFn: () => verifyUserEmail(user.id),
+    mutationFn: () => verifyUserEmail(user.id, reason),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
       toast.success("Email verified");
       setConfirming(null);
+      setReason("");
     },
   });
 
@@ -461,12 +469,18 @@ function UserActions({ user }: { user: AdminUser }) {
             <span className="text-xs text-muted-foreground">
               Generate random password and revoke sessions?
             </span>
+            <Input
+              className="h-7 w-48 text-xs"
+              placeholder="Reason (required)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
             <Button
               size="sm"
               variant="destructive"
               className="h-7 text-xs"
               onClick={() => resetPw.mutate()}
-              disabled={isPending}
+              disabled={isPending || !reason.trim()}
             >
               Confirm
             </Button>
@@ -500,12 +514,18 @@ function UserActions({ user }: { user: AdminUser }) {
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
             />
+            <Input
+              className="h-7 w-48 text-xs"
+              placeholder="Reason (required)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
             <Button
               size="sm"
               variant="destructive"
               className="h-7 text-xs"
               onClick={() => emailChange.mutate()}
-              disabled={isPending || !newEmail}
+              disabled={isPending || !newEmail || !reason.trim()}
             >
               Confirm
             </Button>
@@ -540,12 +560,18 @@ function UserActions({ user }: { user: AdminUser }) {
               <span className="text-xs text-muted-foreground">
                 Disable 2FA?
               </span>
+              <Input
+                className="h-7 w-48 text-xs"
+                placeholder="Reason (required)"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
               <Button
                 size="sm"
                 variant="destructive"
                 className="h-7 text-xs"
                 onClick={() => disableTotp.mutate()}
-                disabled={isPending}
+                disabled={isPending || !reason.trim()}
               >
                 Confirm
               </Button>
@@ -940,11 +966,17 @@ function UserActions({ user }: { user: AdminUser }) {
               <span className="text-xs text-muted-foreground">
                 Mark email verified?
               </span>
+              <Input
+                className="h-7 w-48 text-xs"
+                placeholder="Reason (required)"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
               <Button
                 size="sm"
                 className="h-7 text-xs"
                 onClick={() => verifyEmail.mutate()}
-                disabled={isPending}
+                disabled={isPending || !reason.trim()}
               >
                 Confirm
               </Button>

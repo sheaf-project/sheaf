@@ -52,6 +52,14 @@ class AdminAuditAction(enum.StrEnum):
     USER_DOSSIER_EXPORT = "user_dossier_export"    # PR 4: GDPR Article 15 metadata bundle
     USER_BAN = "user_ban"                          # PR 5: permanent ban (BANNED state)
     USER_UNBAN = "user_unban"                      # PR 5: lift permanent ban
+    USER_PASSWORD_RESET = "user_password_reset"    # recovery cluster
+    USER_EMAIL_CHANGE = "user_email_change"        # recovery cluster
+    USER_TOTP_DISABLE = "user_totp_disable"        # recovery cluster
+    USER_EMAIL_VERIFY = "user_email_verify"        # recovery cluster
+    USER_DELETION_CANCEL = "user_deletion_cancel"  # recovery cluster
+    INVITE_CREATE = "invite_create"
+    INVITE_DELETE = "invite_delete"
+    JOB_TRIGGER = "job_trigger"                    # manual job / maintenance runs
 
 
 class AdminAuditTargetType(enum.StrEnum):
@@ -61,6 +69,8 @@ class AdminAuditTargetType(enum.StrEnum):
     SYSTEM = "system"
     PENDING_ACTION = "pending_action"
     IMPORT_JOB = "import_job"
+    INVITE = "invite"
+    JOB = "job"
 
 
 class AdminAuditEvent(UUIDMixin, Base):
