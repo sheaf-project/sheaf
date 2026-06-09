@@ -74,6 +74,54 @@ def test_sheaf_runner_roundtrip_from_export(auth_client: httpx.Client):
     assert final["counts"]["members_imported"] >= 1, final["counts"]
 
 
+def test_sheaf_runner_roundtrips_notify_prefs_and_coalesce(auth_client: httpx.Client):
+    """Per-member notify_on_front_* prefs and the system coalesce preference
+    survive a re-import. The notify_on_front_member_ids cross-reference is
+    remapped to the new member id, not left pointing at the stale export id."""
+    export = {
+        "version": "2",
+        "system": {"name": "Notify System", "coalesce_contiguous_fronts": False},
+        "members": [
+            {
+                "id": "m1",
+                "name": "NotifyAda",
+                "notify_on_front_global": True,
+                "notify_on_front_self": False,
+                "notify_on_front_member_ids": ["m2"],
+            },
+            {
+                "id": "m2",
+                "name": "NotifyBea",
+                "notify_on_front_global": False,
+                "notify_on_front_self": True,
+                "notify_on_front_member_ids": [],
+            },
+        ],
+        "fronts": [],
+        "groups": [],
+        "tags": [],
+        "custom_fields": [],
+    }
+    job = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    dump = auth_client.get("/v1/export").json()
+    # System coalesce preference came back across (default is True; we set
+    # False, so a survived round-trip is unambiguous).
+    assert dump["system"]["coalesce_contiguous_fronts"] is False
+
+    by_name = {m["name"]: m for m in dump["members"]}
+    ada, bea = by_name["NotifyAda"], by_name["NotifyBea"]
+    assert ada["notify_on_front_global"] is True
+    assert ada["notify_on_front_self"] is False
+    assert bea["notify_on_front_self"] is True
+    # The cross-reference was remapped to Bea's NEW id, not the stale "m2".
+    assert ada["notify_on_front_member_ids"] == [bea["id"]]
+    assert "m2" not in ada["notify_on_front_member_ids"]
+
+
 # A fuller export touching every section the importer now round-trips, with
 # the cross-references (revisions -> bio/journal, votes -> options, rules ->
 # group/member, reminder -> channel) the importer has to remap.

@@ -255,6 +255,10 @@ async def run_import(
                 system.replace_fronts_default = bool(
                     sys_data["replace_fronts_default"]
                 )
+            if "coalesce_contiguous_fronts" in sys_data:
+                system.coalesce_contiguous_fronts = bool(
+                    sys_data["coalesce_contiguous_fronts"]
+                )
             df = _date_format(sys_data.get("date_format"))
             if df is not None:
                 system.date_format = df
@@ -346,12 +350,33 @@ async def run_import(
             is_custom_front=bool(m_data.get("is_custom_front", False)),
             privacy=_privacy(m_data.get("privacy")),
             quick_switch_pin=_coerce_pin(m_data.get("quick_switch_pin")),
+            notify_on_front_global=bool(
+                m_data.get("notify_on_front_global", False)
+            ),
+            notify_on_front_self=bool(m_data.get("notify_on_front_self", False)),
+            # notify_on_front_member_ids points at other members by id; remapped
+            # in the second pass below once every member row exists.
         )
         db.add(member)
         old_id_to_member[old_id] = member
         result.members_imported += 1
 
     await db.flush()
+
+    # Second pass: notify_on_front_member_ids references other members by their
+    # export id, which only fully resolve once every member exists. Remap old
+    # ids to the new member ids, dropping any member that didn't import. Members
+    # with no such preference settle to the model default ([]).
+    for m_data in export_members:
+        member = old_id_to_member.get(m_data.get("id", ""))
+        if member is None:
+            continue
+        member.notify_on_front_member_ids = [
+            str(o.id)
+            for o in _resolve_ids(
+                m_data.get("notify_on_front_member_ids"), old_id_to_member
+            )
+        ]
 
     # --- Tags ---
     old_tag_to_tag: dict[str, Tag] = {}
