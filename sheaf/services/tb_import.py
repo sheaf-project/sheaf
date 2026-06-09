@@ -100,23 +100,39 @@ async def run_import(
     await enforce_import_member_cap(db, system, len(tuppers))
 
     id_to_member: dict[str, Member] = {}
+    tuppers_no_name = 0
+    tuppers_no_id = 0
     for tupper in tuppers:
         member = _build_member(tupper, system.id)
         if member is None:
+            tuppers_no_name += 1
             continue
         db.add(member)
         tid = _tupper_id(tupper)
-        if tid is not None:
+        if tid is None:
+            tuppers_no_id += 1
+        else:
             id_to_member[tid] = member
         result.members_imported += 1
 
     await db.flush()
 
     if options.groups:
-        result.groups_imported = await _import_groups(
+        result.groups_imported, group_warnings = await _import_groups(
             _list(data, "groups"), tuppers, system.id, id_to_member, db
         )
+        warnings.extend(group_warnings)
 
+    if tuppers_no_name:
+        warnings.append(
+            f"Skipped {tuppers_no_name} tupper rows with no name (malformed "
+            "export row)."
+        )
+    if tuppers_no_id:
+        warnings.append(
+            f"Imported {tuppers_no_id} tuppers with no id; they came across "
+            "as members but couldn't be wired into any group."
+        )
     result.warnings = warnings
     # See pk_import.run_import for the full rationale: `get_db`'s
     # auto-commit runs after the response is sent, which races a
@@ -166,22 +182,30 @@ async def _import_groups(
     system_id: uuid.UUID,
     id_to_member: dict[str, Member],
     db: AsyncSession,
-) -> int:
+) -> tuple[int, list[str]]:
     """Create Sheaf Groups and wire member associations.
 
     Tupperbox doesn't list members on its group objects; the relationship
     is the other way round (each tupper has a `group_id`). We invert that
     mapping here, restricted to tuppers the user actually selected.
+
+    Returns `(imported_count, warnings)` so the runner can fold per-section
+    warnings into the import-detail event log.
     """
     imported = 0
+    warnings: list[str] = []
+    groups_no_name = 0
+    groups_no_id = 0
     sheaf_group_by_tbid: dict[str, Group] = {}
 
     for tb_g in tb_groups:
         name = _clean_str(tb_g.get("name"))
         if not name:
+            groups_no_name += 1
             continue
         gid = tb_g.get("id")
         if gid is None:
+            groups_no_id += 1
             continue
         group = Group(
             id=uuid.uuid4(),
@@ -193,18 +217,28 @@ async def _import_groups(
         sheaf_group_by_tbid[str(gid)] = group
         imported += 1
 
+    if groups_no_name:
+        warnings.append(
+            f"Skipped {groups_no_name} group rows with no name."
+        )
+    if groups_no_id:
+        warnings.append(
+            f"Skipped {groups_no_id} group rows with no id."
+        )
     if not sheaf_group_by_tbid:
-        return 0
+        return imported, warnings
 
     await db.flush()
 
     # Build the group → [members] map from each tupper's group_id field.
+    members_with_unknown_group = 0
     for tupper in selected_tuppers:
         gid = tupper.get("group_id")
         if gid is None:
             continue
         group = sheaf_group_by_tbid.get(str(gid))
         if group is None:
+            members_with_unknown_group += 1
             continue
         tid = _tupper_id(tupper)
         if tid is None:
@@ -215,6 +249,12 @@ async def _import_groups(
         await db.execute(
             group_members.insert().values(group_id=group.id, member_id=member.id)
         )
+    if members_with_unknown_group:
+        warnings.append(
+            f"Dropped {members_with_unknown_group} group references on "
+            "tuppers that pointed at a group not present in the export."
+        )
+    return imported, warnings
 
     return imported
 

@@ -213,17 +213,24 @@ async def run_import(
 
         await db.flush()
 
-        # Now import field values from member info maps
+        # Now import field values from member info maps. Index sp_members
+        # by _id once to avoid O(n*m) lookups on systems with thousands
+        # of members.
+        sp_member_by_id = {m.get("_id"): m for m in sp_members if m.get("_id")}
+        unknown_field_refs = 0
         for sp_id, member in sp_id_to_member.items():
-            sp_m = next((m for m in sp_members if m.get("_id") == sp_id), None)
+            sp_m = sp_member_by_id.get(sp_id)
             if not sp_m:
                 continue
             info = sp_m.get("info", {})
             if not isinstance(info, dict):
                 continue
             for field_sp_id, raw_value in info.items():
+                if raw_value is None:
+                    continue
                 field_def = sp_field_id_to_def.get(field_sp_id)
-                if not field_def or raw_value is None:
+                if not field_def:
+                    unknown_field_refs += 1
                     continue
                 cfv = CustomFieldValue(
                     id=uuid.uuid4(),
@@ -232,6 +239,12 @@ async def run_import(
                     value=encrypt_field_value({"v": str(raw_value)}),
                 )
                 db.add(cfv)
+        if unknown_field_refs:
+            warnings.append(
+                f"Dropped {unknown_field_refs} custom-field values whose "
+                "field definition wasn't in the export (probably deleted "
+                "in SimplyPlural after the values were set)."
+            )
 
     # --- Groups ---
     if options.groups:
@@ -255,6 +268,8 @@ async def run_import(
         await db.flush()
 
         # Second pass: wire parent links and member associations
+        unknown_group_members = 0
+        unresolvable_parents = 0
         for sp_g in sp_groups:
             sp_gid = sp_g.get("_id", "")
             group = sp_gid_to_group.get(sp_gid)
@@ -263,34 +278,56 @@ async def run_import(
 
             # Parent
             sp_parent = sp_g.get("parent")
-            if sp_parent and sp_parent != "root" and sp_parent in sp_gid_to_group:
-                group.parent_id = sp_gid_to_group[sp_parent].id
+            if sp_parent and sp_parent != "root":
+                parent_group = sp_gid_to_group.get(sp_parent)
+                if parent_group is not None:
+                    group.parent_id = parent_group.id
+                else:
+                    unresolvable_parents += 1
 
             # Members
             for sp_mid in sp_g.get("members", []):
                 member = all_sp_to_member.get(sp_mid)
-                if member:
-                    await db.execute(
-                        group_members.insert().values(
-                            group_id=group.id, member_id=member.id
-                        )
+                if member is None:
+                    unknown_group_members += 1
+                    continue
+                await db.execute(
+                    group_members.insert().values(
+                        group_id=group.id, member_id=member.id
                     )
+                )
+        if unknown_group_members:
+            warnings.append(
+                f"Dropped {unknown_group_members} group-membership references "
+                "whose member wasn't selected for import."
+            )
+        if unresolvable_parents:
+            warnings.append(
+                f"Dropped {unresolvable_parents} group parent links that "
+                "pointed at a group not present in the export."
+            )
 
     # --- Front history ---
     if options.front_history:
+        fronts_missing_member = 0
+        fronts_missing_member_ref = 0
         for sp_f in _get_collection(data, "frontHistory"):
             sp_member_id = sp_f.get("member")
             if not sp_member_id:
+                fronts_missing_member_ref += 1
                 continue
 
             member = all_sp_to_member.get(sp_member_id)
             if not member:
                 # Front references a member/custom front that wasn't imported
+                fronts_missing_member += 1
                 continue
 
             started = _ms_to_datetime(sp_f.get("startTime"))
             if not started:
-                warnings.append(f"Skipped front with no startTime: {sp_f.get('_id', '?')}")
+                warnings.append(
+                    f"Skipped front with no startTime: {sp_f.get('_id', '?')}"
+                )
                 continue
 
             ended = _ms_to_datetime(sp_f.get("endTime"))
@@ -313,6 +350,16 @@ async def run_import(
                 )
             )
             result.fronts_imported += 1
+        if fronts_missing_member:
+            warnings.append(
+                f"Skipped {fronts_missing_member} front-history rows that "
+                "referenced a member not selected for import."
+            )
+        if fronts_missing_member_ref:
+            warnings.append(
+                f"Skipped {fronts_missing_member_ref} front-history rows "
+                "with no member id (malformed export row)."
+            )
 
     # --- Notes (skipped until journal feature) ---
     if options.notes:

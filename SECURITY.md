@@ -6,7 +6,7 @@ Sheaf handles deeply personal identity data — GDPR Article 9 special category 
 
 **Do not open a public issue for security vulnerabilities.**
 
-Please report vulnerabilities by emailing **sheaf-security@lupine.systems**, or by opening a private security advisory on GitHub.
+Please report vulnerabilities by emailing **security@sheaf.sh**, or by opening a private security advisory on GitHub.
 
 Include:
 - Description of the vulnerability
@@ -15,6 +15,15 @@ Include:
 - Suggested fix, if you have one
 
 We will acknowledge your report within 48 hours and aim to provide a fix timeline within a week.
+
+### Encrypting your report
+
+If you'd like to encrypt your report, use our PGP key:
+
+- **Fingerprint:** `90AC C2BB 6C88 6DD8 EBD0  11B9 BBB8 ABBC 92D6 A17C`
+- **Key:** [`SECURITY-PGP-KEY.asc`](SECURITY-PGP-KEY.asc) in this repo
+
+The same key is referenced from the `Encryption` field of any Sheaf instance's `/.well-known/security.txt`. It is published in this repo rather than on a public keyserver, so fetch it from here (or the raw URL in security.txt) rather than a keyserver lookup. Encryption is optional — an unencrypted report to the address above is fine.
 
 ## Scope
 
