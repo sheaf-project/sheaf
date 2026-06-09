@@ -165,6 +165,37 @@ async def list_user_sessions(user_id: uuid.UUID) -> list[dict]:
     return sessions
 
 
+def session_handle(session_id: str) -> str:
+    """Opaque, deterministic handle for a session id.
+
+    The raw session id IS the `sheaf_session` cookie credential, so
+    returning it from any list/read surface (user session list, admin
+    session list, dossier) hands out a replayable token. Every read
+    surface exposes this digest instead; mutation endpoints accept the
+    digest and resolve it back through the owning user's session set.
+    Truncated sha256 keeps the handle stable across requests without a
+    second storage mapping, and 128 bits is far beyond collision reach
+    for a per-user session count.
+    """
+    import hashlib
+
+    return hashlib.sha256(session_id.encode()).hexdigest()[:32]
+
+
+async def resolve_session_handle(user_id: uuid.UUID, handle: str) -> str | None:
+    """Return the raw session id matching `handle`, scoped to one user.
+
+    Resolution walks the user's own session set, so a handle can only
+    ever resolve against sessions that already belong to that user -
+    there is no global handle->token lookup to confuse targets through.
+    """
+    for row in await list_user_sessions(user_id):
+        sid = row.get("id", "")
+        if sid and session_handle(sid) == handle:
+            return sid
+    return None
+
+
 async def delete_session(session_id: str) -> None:
     """Delete a session and any child sessions linked to it.
 

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.api.v1.admin_small_actions import AdminReasonBody
 from sheaf.auth.dependencies import get_admin_user, get_admin_write_user, get_current_user
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.sessions import check_admin_step_up, set_admin_step_up
@@ -562,17 +563,25 @@ async def reject_user(
 
 @router.post("/retention/run")
 async def run_retention(
-    _: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger front history retention pruning. Admin only."""
     count = await prune_free_tier_fronts(db)
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.JOB_TRIGGER,
+        target_type=AdminAuditTargetType.JOB,
+        after={"job": "retention/run", "pruned": count},
+    )
+    await db.commit()
     return {"pruned": count}
 
 
 @router.post("/cleanup/run")
 async def run_cleanup(
-    _: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Clean up orphaned files for all users. Admin only."""
@@ -585,6 +594,19 @@ async def run_cleanup(
         stats = await cleanup_orphaned_files(db, uid)
         total_orphaned += stats["orphaned"]
         total_freed += stats["freed_bytes"]
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.JOB_TRIGGER,
+        target_type=AdminAuditTargetType.JOB,
+        after={
+            "job": "cleanup/run",
+            "orphaned": total_orphaned,
+            "freed_bytes": total_freed,
+        },
+    )
+    await db.commit()
 
     return {
         "users_checked": len(user_ids),
@@ -631,7 +653,19 @@ async def set_member_limit(
     target = result.scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    old_limit = target.member_limit
     target.member_limit = body.member_limit
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_MEMBER_LIMIT_SET,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        before={"member_limit": old_limit},
+        after={"member_limit": body.member_limit},
+    )
     await db.commit()
     return {"user_id": str(user_id), "member_limit": target.member_limit}
 
@@ -707,6 +741,24 @@ async def create_invite(
         expires_at=body.expires_at,
     )
     db.add(invite)
+    await db.flush()
+
+    # Audit the creation; the code itself is a registration credential
+    # and stays out of the log.
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.INVITE_CREATE,
+        target_type=AdminAuditTargetType.INVITE,
+        target_id=invite.id,
+        after={
+            "max_uses": invite.max_uses,
+            "note": invite.note,
+            "expires_at": (
+                invite.expires_at.isoformat() if invite.expires_at else None
+            ),
+        },
+    )
     await db.commit()
     await db.refresh(invite)
 
@@ -745,7 +797,21 @@ async def delete_invite(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Invite code not found"
         )
+    snapshot = {
+        "note": invite.note,
+        "max_uses": invite.max_uses,
+        "use_count": invite.use_count,
+    }
     await db.delete(invite)
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.INVITE_DELETE,
+        target_type=AdminAuditTargetType.INVITE,
+        target_id=invite_id,
+        before=snapshot,
+    )
     await db.commit()
     return {"deleted": True}
 
@@ -813,7 +879,7 @@ async def list_jobs(
 @router.post("/jobs/{job_name}/run")
 async def trigger_job(
     job_name: str,
-    _: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger a scheduled job. Requires admin:write."""
@@ -827,6 +893,13 @@ async def trigger_job(
         )
 
     run = await run_job(job_name, db)
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.JOB_TRIGGER,
+        target_type=AdminAuditTargetType.JOB,
+        after={"job": job_name, "status": run.status},
+    )
     await db.commit()
 
     duration_ms = None
@@ -885,24 +958,42 @@ async def get_job_logs(
 # ---------------------------------------------------------------------------
 
 
-class AdminResetPasswordRequest(BaseModel):
+class AdminResetPasswordRequest(AdminReasonBody):
     new_password: str | None = None  # If omitted, generate a random password
 
 
-class AdminChangeEmailRequest(BaseModel):
+class AdminChangeEmailRequest(AdminReasonBody):
     new_email: str
+
+
+def _refuse_admin_target(target: User) -> None:
+    """Refuse account-recovery mutations against admin accounts.
+
+    Chaining change-email + reset-password is full account takeover; an
+    admin being able to silently capture another admin's account is the
+    exact escalation the audit log can't compensate for. Recovering a
+    genuinely locked-out admin is a deliberate out-of-band operation
+    (DB access), not an API call.
+    """
+    if target.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Recovery actions cannot target admin accounts",
+        )
 
 
 @router.post("/users/{user_id}/reset-password")
 async def admin_reset_password(
     user_id: uuid.UUID,
     body: AdminResetPasswordRequest,
-    _admin: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reset a user's password. Returns the new password once. Requires admin:write.
+    """Reset a user's password. Returns the new password once. Requires
+    admin:write, a reason, and a non-admin target.
 
-    Revokes all the user's sessions to force re-login.
+    Revokes all the user's sessions to force re-login. Writes an audit
+    row; the new password is never logged anywhere.
     """
     import secrets
 
@@ -913,12 +1004,24 @@ async def admin_reset_password(
     target = result.scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    _refuse_admin_target(target)
 
     new_password = body.new_password or secrets.token_urlsafe(16)
     target.password_hash = await hash_password(new_password)
     # Clear any pending password reset tokens
     target.password_reset_token = None
     target.password_reset_sent_at = None
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_PASSWORD_RESET,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        after={"password_was_custom": body.new_password is not None},
+    )
     await db.commit()
 
     # Revoke all sessions so the user must log in with the new password
@@ -934,13 +1037,16 @@ async def admin_reset_password(
 async def admin_change_email(
     user_id: uuid.UUID,
     body: AdminChangeEmailRequest,
-    _admin: User = Depends(get_admin_write_user),
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Change a user's email address. Requires admin:write.
+    """Change a user's email address. Requires admin:write, a reason,
+    and a non-admin target.
 
     Updates the encrypted email and blind index. Marks email as verified
-    (admin-initiated change is trusted). Checks for conflicts.
+    (admin-initiated change is trusted). Checks for conflicts. Writes an
+    audit row carrying the new address (the user sees this row on their
+    own account activity page, which is the point).
     """
     from sheaf.crypto import blind_index, encrypt
 
@@ -948,6 +1054,7 @@ async def admin_change_email(
     target = result.scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    _refuse_admin_target(target)
 
     # Normalize before indexing — mirrors self-service /change-email so the
     # same address in different casings produces a single blind index.
@@ -969,6 +1076,17 @@ async def admin_change_email(
     # Clear any pending verification tokens
     target.email_verification_token = None
     target.email_verification_sent_at = None
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_EMAIL_CHANGE,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        after={"new_email": normalized_email},
+    )
     await db.commit()
 
     return {"email": normalized_email}
@@ -977,10 +1095,12 @@ async def admin_change_email(
 @router.post("/users/{user_id}/disable-totp")
 async def admin_disable_totp(
     user_id: uuid.UUID,
-    _admin: User = Depends(get_admin_write_user),
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Disable TOTP 2FA on a user's account. Requires admin:write.
+    """Disable TOTP 2FA on a user's account. Requires admin:write, a
+    reason, and a non-admin target.
 
     Clears the TOTP secret and recovery codes. The user can re-enrol later.
     """
@@ -988,6 +1108,7 @@ async def admin_disable_totp(
     target = result.scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    _refuse_admin_target(target)
 
     if not target.totp_enabled:
         raise HTTPException(
@@ -998,6 +1119,18 @@ async def admin_disable_totp(
     target.totp_enabled = False
     target.totp_secret = None
     target.recovery_codes = None
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_TOTP_DISABLE,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        before={"totp_enabled": True},
+        after={"totp_enabled": False},
+    )
     await db.commit()
 
     return {"disabled": True}
@@ -1006,10 +1139,14 @@ async def admin_disable_totp(
 @router.post("/users/{user_id}/verify-email")
 async def admin_verify_email(
     user_id: uuid.UUID,
-    _admin: User = Depends(get_admin_write_user),
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Force-verify a user's email address. Requires admin:write."""
+    """Force-verify a user's email address. Requires admin:write and a
+    reason. Admin targets are allowed - this grants nothing that could
+    capture an account, it only clears a verification gate.
+    """
     result = await db.execute(select(User).where(User.id == user_id))
     target = result.scalar_one_or_none()
     if target is None:
@@ -1024,6 +1161,18 @@ async def admin_verify_email(
     target.email_verified = True
     target.email_verification_token = None
     target.email_verification_sent_at = None
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_EMAIL_VERIFY,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        before={"email_verified": False},
+        after={"email_verified": True},
+    )
     await db.commit()
 
     return {"verified": True}
@@ -1037,10 +1186,14 @@ async def admin_verify_email(
 @router.post("/users/{user_id}/cancel-deletion")
 async def admin_cancel_deletion(
     user_id: uuid.UUID,
-    _admin: User = Depends(get_admin_write_user),
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Cancel a user's pending account deletion. Requires admin:write."""
+    """Cancel a user's pending account deletion. Requires admin:write
+    and a reason. Admin targets are allowed - restoring a colleague's
+    account state grants no access to it.
+    """
     result = await db.execute(select(User).where(User.id == user_id))
     target = result.scalar_one_or_none()
     if target is None:
@@ -1051,9 +1204,26 @@ async def admin_cancel_deletion(
             detail="User does not have a pending deletion",
         )
 
+    requested_at = (
+        target.deletion_requested_at.isoformat()
+        if target.deletion_requested_at
+        else None
+    )
     target.account_status = AccountStatus.ACTIVE
     target.deletion_requested_at = None
     target.deletion_reminders_sent = None
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.USER_DELETION_CANCEL,
+        target_type=AdminAuditTargetType.USER,
+        target_id=user_id,
+        target_user_id=user_id,
+        reason=body.reason,
+        before={"deletion_requested_at": requested_at},
+        after={"account_status": "active"},
+    )
     await db.commit()
 
     return {"cancelled": True}

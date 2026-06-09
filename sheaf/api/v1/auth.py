@@ -36,7 +36,9 @@ from sheaf.auth.sessions import (
     list_user_sessions,
     register_refresh_jti,
     rename_session,
+    resolve_session_handle,
     revoke_refresh_jti,
+    session_handle,
 )
 from sheaf.auth.totp import (
     generate_recovery_codes,
@@ -1025,67 +1027,80 @@ class SessionRename(BaseModel):
 async def get_sessions(
     request: Request,
     user: User = Depends(get_current_user),
-    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
 ):
-    """List all active sessions for the current user."""
+    """List all active sessions for the current user.
+
+    `id` is an opaque handle, not the raw session token - the raw value
+    is the `sheaf_session` cookie credential, and listing it here let
+    any caller lift a sibling session's cookie and replay it. The
+    rename/revoke endpoints below address sessions by this handle.
+
+    is_current uses the request-state session id, which is populated
+    for cookie auth and session-bound JWTs alike, so mobile clients get
+    a correct marker too.
+    """
+    current_sid = getattr(request.state, "session_id", None)
     sessions = await list_user_sessions(user.id)
     return [
         {
-            "id": s["id"],
+            "id": session_handle(s["id"]),
             "nickname": s.get("nickname") or None,
             "client_name": s.get("client_name", "Unknown"),
             "created_at": s.get("created_at"),
             "created_ip": s.get("created_ip") or None,
             "last_active_at": s.get("last_active_at"),
             "last_active_ip": s.get("last_active_ip") or None,
-            "is_current": s["id"] == session_id,
+            "is_current": s["id"] == current_sid,
         }
         for s in sessions
     ]
 
 
-@router.patch("/sessions/{target_session_id}")
+@router.patch("/sessions/{target_session_handle}")
 async def update_session(
-    target_session_id: str,
+    target_session_handle: str,
     body: SessionRename,
     user: User = Depends(get_current_user),
 ):
-    """Rename a session. Only the owning user can rename their sessions."""
-    from sheaf.auth.sessions import get_session_info
+    """Rename a session, addressed by its opaque handle from /sessions.
 
-    info = await get_session_info(target_session_id)
-    if info is None or info.get("user_id") != str(user.id):
+    Handle resolution walks the caller's own session set, so ownership
+    is enforced by construction.
+    """
+    sid = await resolve_session_handle(user.id, target_session_handle)
+    if sid is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
-    await rename_session(target_session_id, body.nickname)
+    await rename_session(sid, body.nickname)
     return {"ok": True}
 
 
 @router.delete(
-    "/sessions/{target_session_id}", status_code=status.HTTP_204_NO_CONTENT,
+    "/sessions/{target_session_handle}", status_code=status.HTTP_204_NO_CONTENT,
 )
 async def revoke_session(
-    target_session_id: str,
+    request: Request,
+    target_session_handle: str,
     user: User = Depends(get_current_user),
-    session_id: str | None = Cookie(default=None, alias="sheaf_session"),
 ):
-    """Revoke a specific session. Cannot revoke the current session (use /logout)."""
-    if target_session_id == session_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot revoke current session. Use /logout instead.",
-        )
-    from sheaf.auth.sessions import get_session_info
+    """Revoke a session, addressed by its opaque handle from /sessions.
 
-    info = await get_session_info(target_session_id)
-    if info is None or info.get("user_id") != str(user.id):
+    Cannot revoke the current session (use /logout).
+    """
+    sid = await resolve_session_handle(user.id, target_session_handle)
+    if sid is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
-    await delete_session(target_session_id)
+    if sid == getattr(request.state, "session_id", None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot revoke current session. Use /logout instead.",
+        )
+    await delete_session(sid)
 
 
 @router.post("/sessions/revoke-others")
@@ -1155,7 +1170,11 @@ async def create_secondary_session(
     return SecondarySessionResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        session_id=child_sid,
+        # Opaque handle, matching what /sessions lists. The raw child
+        # sid is a cookie-grade credential; the companion device only
+        # needs the tokens, and the handle is what display/management
+        # calls (rename, revoke) address.
+        session_id=session_handle(child_sid),
     )
 
 

@@ -167,7 +167,10 @@ def test_admin_cancel_deletion(admin_client: httpx.Client, auth_client: httpx.Cl
     )
 
     # Admin cancels it
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/cancel-deletion")
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/cancel-deletion",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 200
     assert resp.json()["cancelled"] is True
 
@@ -178,13 +181,17 @@ def test_admin_cancel_deletion(admin_client: httpx.Client, auth_client: httpx.Cl
 
 def test_admin_cancel_deletion_not_pending(admin_client: httpx.Client, auth_client: httpx.Client):
     user_id = auth_client.get("/v1/auth/me").json()["id"]
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/cancel-deletion")
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/cancel-deletion",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 400
 
 
 def test_admin_cancel_deletion_requires_admin(auth_client: httpx.Client):
     resp = auth_client.post(
-        "/v1/admin/users/00000000-0000-0000-0000-000000000000/cancel-deletion"
+        "/v1/admin/users/00000000-0000-0000-0000-000000000000/cancel-deletion",
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 403
 

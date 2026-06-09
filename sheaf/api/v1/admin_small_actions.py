@@ -73,8 +73,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_admin_user, get_admin_write_user
 from sheaf.auth.sessions import (
     delete_session,
-    get_session_info,
     list_user_sessions,
+    resolve_session_handle,
+    session_handle,
 )
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
@@ -264,9 +265,13 @@ async def list_user_sessions_endpoint(
             detail="User not found",
         )
     raw = await list_user_sessions(user_id)
+    # Opaque handles, not raw ids: the raw session id is the
+    # sheaf_session cookie credential, and returning it here let an
+    # admin (or an admin:read API key) lift a live token and silently
+    # impersonate the user. The terminate endpoint accepts the handle.
     return [
         _SessionRow(
-            id=row.get("id", ""),
+            id=session_handle(row.get("id", "")),
             user_agent=row.get("user_agent"),
             ip=row.get("ip"),
             created_at=row.get("created_at"),
@@ -302,6 +307,10 @@ async def terminate_user_session(
     transitively through the auth dependency chain — FastAPI raises if
     the same name appears as both a path param and a `Cookie(...)` in
     the dep tree.
+
+    Addressed by the opaque handle the session list returns; the raw
+    token never crosses the API boundary in either direction, and the
+    audit row stores the handle for the same reason.
     """
     target = await db.get(User, user_id)
     if target is None:
@@ -310,21 +319,24 @@ async def terminate_user_session(
             detail="User not found",
         )
 
-    info = await get_session_info(target_session_id)
-    if info is None or info.get("user_id") != str(user_id):
+    from sheaf.auth.sessions import get_session_info
+
+    sid = await resolve_session_handle(user_id, target_session_id)
+    if sid is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
+    info = await get_session_info(sid) or {}
 
     snapshot = {
-        "session_id": target_session_id,
+        "session_handle": target_session_id,
         "user_agent": info.get("user_agent"),
         "ip": info.get("ip"),
         "created_at": info.get("created_at"),
     }
 
-    await delete_session(target_session_id)
+    await delete_session(sid)
 
     await log_admin_action(
         db,
@@ -335,7 +347,7 @@ async def terminate_user_session(
         target_user_id=user_id,
         reason=body.reason,
         before=snapshot,
-        after={"session_id": target_session_id, "revoked": True},
+        after={"session_handle": target_session_id, "revoked": True},
     )
     await db.commit()
     return {"revoked": True}
@@ -878,9 +890,10 @@ async def export_user_dossier(
     ]
 
     sessions = await list_user_sessions(user_id)
+    # Handles, not raw ids — the dossier must not be a token exfil path.
     session_block = [
         {
-            "id": s.get("id"),
+            "id": session_handle(s.get("id", "")),
             "user_agent": s.get("user_agent"),
             "ip": s.get("ip"),
             "created_at": s.get("created_at"),

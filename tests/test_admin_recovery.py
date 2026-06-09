@@ -38,7 +38,7 @@ def _create_target_user(client: httpx.Client) -> tuple[str, str, str]:
 def test_reset_password_requires_admin(auth_client: httpx.Client):
     resp = auth_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/reset-password",
-        json={},
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 403
 
@@ -54,6 +54,7 @@ def test_change_email_requires_admin(auth_client: httpx.Client):
 def test_disable_totp_requires_admin(auth_client: httpx.Client):
     resp = auth_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/disable-totp",
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 403
 
@@ -61,6 +62,7 @@ def test_disable_totp_requires_admin(auth_client: httpx.Client):
 def test_verify_email_requires_admin(auth_client: httpx.Client):
     resp = auth_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/verify-email",
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 403
 
@@ -73,7 +75,10 @@ def test_verify_email_requires_admin(auth_client: httpx.Client):
 def test_reset_password_generates_random(admin_client: httpx.Client, client: httpx.Client):
     user_id, email, _old_pw = _create_target_user(client)
 
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/reset-password", json={})
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/reset-password",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert "password" in data
@@ -91,7 +96,7 @@ def test_reset_password_custom(admin_client: httpx.Client, client: httpx.Client)
 
     resp = admin_client.post(
         f"/v1/admin/users/{user_id}/reset-password",
-        json={"new_password": new_pw},
+        json={"new_password": new_pw, "reason": "support ticket"},
     )
     assert resp.status_code == 200
     assert resp.json()["password"] == new_pw
@@ -104,7 +109,10 @@ def test_reset_password_custom(admin_client: httpx.Client, client: httpx.Client)
 def test_reset_password_old_password_invalid(admin_client: httpx.Client, client: httpx.Client):
     user_id, email, old_pw = _create_target_user(client)
 
-    admin_client.post(f"/v1/admin/users/{user_id}/reset-password", json={})
+    admin_client.post(
+        f"/v1/admin/users/{user_id}/reset-password",
+        json={"reason": "support ticket"},
+    )
 
     # Old password no longer works
     login = client.post("/v1/auth/login", json={"email": email, "password": old_pw})
@@ -114,7 +122,7 @@ def test_reset_password_old_password_invalid(admin_client: httpx.Client, client:
 def test_reset_password_nonexistent_user(admin_client: httpx.Client):
     resp = admin_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/reset-password",
-        json={},
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 404
 
@@ -130,7 +138,7 @@ def test_change_email(admin_client: httpx.Client, client: httpx.Client):
 
     resp = admin_client.post(
         f"/v1/admin/users/{user_id}/change-email",
-        json={"new_email": new_email},
+        json={"new_email": new_email, "reason": "support ticket"},
     )
     assert resp.status_code == 200
     assert resp.json()["email"] == new_email
@@ -146,7 +154,7 @@ def test_change_email_old_email_invalid(admin_client: httpx.Client, client: http
 
     admin_client.post(
         f"/v1/admin/users/{user_id}/change-email",
-        json={"new_email": new_email},
+        json={"new_email": new_email, "reason": "support ticket"},
     )
 
     # Old email no longer works
@@ -161,7 +169,7 @@ def test_change_email_conflict(admin_client: httpx.Client, client: httpx.Client)
 
     resp = admin_client.post(
         f"/v1/admin/users/{user_id_a}/change-email",
-        json={"new_email": email_b},
+        json={"new_email": email_b, "reason": "support ticket"},
     )
     assert resp.status_code == 409
 
@@ -173,7 +181,7 @@ def test_change_email_marks_verified(admin_client: httpx.Client, client: httpx.C
 
     admin_client.post(
         f"/v1/admin/users/{user_id}/change-email",
-        json={"new_email": new_email},
+        json={"new_email": new_email, "reason": "support ticket"},
     )
 
     # Check via admin user list that user shows as not needing verification
@@ -185,7 +193,7 @@ def test_change_email_marks_verified(admin_client: httpx.Client, client: httpx.C
 def test_change_email_nonexistent_user(admin_client: httpx.Client):
     resp = admin_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/change-email",
-        json={"new_email": "nope@sheaf.dev"},
+        json={"new_email": "nope@sheaf.dev", "reason": "support ticket"},
     )
     assert resp.status_code == 404
 
@@ -223,7 +231,10 @@ def test_disable_totp(admin_client: httpx.Client, client: httpx.Client):
     target_client.close()
 
     # Admin disables TOTP
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/disable-totp")
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/disable-totp",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 200
     assert resp.json()["disabled"] is True
 
@@ -237,13 +248,17 @@ def test_disable_totp_not_enabled(admin_client: httpx.Client, client: httpx.Clie
     """Disabling TOTP on a user without it returns 400."""
     user_id, _email, _pw = _create_target_user(client)
 
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/disable-totp")
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/disable-totp",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 400
 
 
 def test_disable_totp_nonexistent_user(admin_client: httpx.Client):
     resp = admin_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/disable-totp",
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 404
 
@@ -266,7 +281,10 @@ def test_verify_email(admin_client: httpx.Client, client: httpx.Client):
         # endpoint meaningfully — it would return 400
         return
 
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/verify-email")
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/verify-email",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 200
     assert resp.json()["verified"] is True
 
@@ -284,16 +302,20 @@ def test_verify_email_already_verified(admin_client: httpx.Client, client: httpx
     # Use change-email to ensure verified=True
     admin_client.post(
         f"/v1/admin/users/{user_id}/change-email",
-        json={"new_email": new_email},
+        json={"new_email": new_email, "reason": "support ticket"},
     )
 
-    resp = admin_client.post(f"/v1/admin/users/{user_id}/verify-email")
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/verify-email",
+        json={"reason": "support ticket"},
+    )
     assert resp.status_code == 400
 
 
 def test_verify_email_nonexistent_user(admin_client: httpx.Client):
     resp = admin_client.post(
         "/v1/admin/users/00000000-0000-0000-0000-000000000000/verify-email",
+        json={"reason": "support ticket"},
     )
     assert resp.status_code == 404
 
@@ -315,12 +337,21 @@ def test_recovery_endpoints_require_admin_write_scope(
     ).json()["key"]
 
     with _key_client(key) as kc:
-        assert kc.post(f"/v1/admin/users/{user_id}/reset-password", json={}).status_code == 403
+        assert kc.post(
+            f"/v1/admin/users/{user_id}/reset-password",
+            json={"reason": "support ticket"},
+        ).status_code == 403
         assert kc.post(
             f"/v1/admin/users/{user_id}/change-email", json={"new_email": "x@sheaf.dev"},
         ).status_code == 403
-        assert kc.post(f"/v1/admin/users/{user_id}/disable-totp").status_code == 403
-        assert kc.post(f"/v1/admin/users/{user_id}/verify-email").status_code == 403
+        assert kc.post(
+            f"/v1/admin/users/{user_id}/disable-totp",
+            json={"reason": "support ticket"},
+        ).status_code == 403
+        assert kc.post(
+            f"/v1/admin/users/{user_id}/verify-email",
+            json={"reason": "support ticket"},
+        ).status_code == 403
 
 
 def test_recovery_endpoints_work_with_admin_write_key(
@@ -335,6 +366,116 @@ def test_recovery_endpoints_work_with_admin_write_key(
     ).json()["key"]
 
     with _key_client(key) as kc:
-        resp = kc.post(f"/v1/admin/users/{user_id}/reset-password", json={})
+        resp = kc.post(
+            f"/v1/admin/users/{user_id}/reset-password",
+            json={"reason": "support ticket"},
+        )
         assert resp.status_code == 200
         assert "password" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Hardening: admin targets refused, reasons required, audit rows written
+
+
+def _make_second_admin(client: httpx.Client) -> str:
+    """Register a fresh user and promote them to admin via the DB."""
+    from tests.conftest import _promote_to_admin
+
+    email = f"target-admin-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert resp.status_code == 201
+    token = resp.json()["access_token"]
+    me = client.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    _promote_to_admin(email)
+    return me.json()["id"]
+
+
+def test_credential_recovery_refuses_admin_targets(
+    admin_client: httpx.Client, client: httpx.Client,
+):
+    """Chaining change-email + reset-password is full account takeover,
+    so the credential-touching recovery endpoints refuse admin targets."""
+    other_admin_id = _make_second_admin(client)
+
+    r = admin_client.post(
+        f"/v1/admin/users/{other_admin_id}/reset-password",
+        json={"reason": "should be refused"},
+    )
+    assert r.status_code == 409, r.text
+
+    r = admin_client.post(
+        f"/v1/admin/users/{other_admin_id}/change-email",
+        json={"new_email": "takeover@sheaf.dev", "reason": "should be refused"},
+    )
+    assert r.status_code == 409, r.text
+
+    r = admin_client.post(
+        f"/v1/admin/users/{other_admin_id}/disable-totp",
+        json={"reason": "should be refused"},
+    )
+    assert r.status_code == 409, r.text
+
+
+def test_recovery_actions_require_reason(
+    admin_client: httpx.Client, client: httpx.Client,
+):
+    user_id, _email, _pw = _create_target_user(client)
+    assert (
+        admin_client.post(
+            f"/v1/admin/users/{user_id}/reset-password", json={}
+        ).status_code
+        == 422
+    )
+    assert (
+        admin_client.post(
+            f"/v1/admin/users/{user_id}/disable-totp", json={}
+        ).status_code
+        == 422
+    )
+    assert (
+        admin_client.post(
+            f"/v1/admin/users/{user_id}/verify-email", json={"reason": ""}
+        ).status_code
+        == 422
+    )
+
+
+def test_reset_password_writes_audit_row_without_password(
+    admin_client: httpx.Client, client: httpx.Client,
+):
+    user_id, _email, _pw = _create_target_user(client)
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/reset-password",
+        json={"reason": "locked out, ticket 42"},
+    )
+    assert resp.status_code == 200, resp.text
+    new_password = resp.json()["password"]
+
+    events = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={user_id}&action=user_password_reset"
+    ).json()
+    assert any(e["reason"] == "locked out, ticket 42" for e in events), events
+    # The one-time password must never reach the audit trail.
+    import json as _json
+
+    assert new_password not in _json.dumps(events)
+
+
+def test_change_email_writes_audit_row(
+    admin_client: httpx.Client, client: httpx.Client,
+):
+    user_id, _email, _pw = _create_target_user(client)
+    new_email = f"audited-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = admin_client.post(
+        f"/v1/admin/users/{user_id}/change-email",
+        json={"new_email": new_email, "reason": "typo fix, ticket 43"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    events = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={user_id}&action=user_email_change"
+    ).json()
+    assert any(e["reason"] == "typo fix, ticket 43" for e in events), events
