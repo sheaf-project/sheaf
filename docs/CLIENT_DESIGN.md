@@ -225,6 +225,8 @@ Sessions track metadata: IP address, user agent, timestamps, client name.
 - `DELETE /v1/auth/sessions/{id}` — revoke a session (cannot revoke current)
 - `POST /v1/auth/sessions/revoke-others` — revoke all except current
 
+Session `id` values are opaque handles, not the raw session token - round-trip them from the list endpoint; do not derive or store anything else. `is_current` works for both cookie and session-bound JWT auth.
+
 Revoking a session immediately invalidates all JWT tokens bound to it.
 
 ### X-Sheaf-Client Header
@@ -271,7 +273,7 @@ Use this for preferences that should sync across devices running the same client
 | POST | `/auth/logout` | Logout (clears session) |
 | POST | `/auth/refresh` | Refresh access token |
 | GET | `/auth/me` | Current user profile |
-| POST | `/auth/totp/setup` | Start TOTP setup (returns QR/secret) |
+| POST | `/auth/totp/setup` | Start TOTP setup (requires `{"password": ...}`; returns QR/secret) |
 | POST | `/auth/totp/verify` | Verify code to enable TOTP |
 | POST | `/auth/totp/disable` | Disable TOTP (requires password + code) |
 | POST | `/auth/totp/regenerate-recovery-codes` | New recovery codes (requires TOTP code) |
