@@ -237,6 +237,9 @@ async def export_all(
                 "privacy": m.privacy.value,
                 "note": decrypt(m.note) if m.note else None,
                 "quick_switch_pin": m.quick_switch_pin,
+                "notify_on_front_global": m.notify_on_front_global,
+                "notify_on_front_self": m.notify_on_front_self,
+                "notify_on_front_member_ids": m.notify_on_front_member_ids,
                 "created_at": m.created_at.isoformat(),
             }
             for (m, name, description) in members_with_plaintext
@@ -332,6 +335,7 @@ def _system_dict(system: System) -> dict:
         "privacy": system.privacy.value,
         # User-set system preferences. Re-import should restore these.
         "replace_fronts_default": system.replace_fronts_default,
+        "coalesce_contiguous_fronts": system.coalesce_contiguous_fronts,
         "date_format": system.date_format.value,
         "delete_confirmation": system.delete_confirmation.value,
         # System Safety: per-category toggles + grace period + auto-pin.
