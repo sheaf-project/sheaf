@@ -44,11 +44,20 @@ def is_internal_image_ref(value: str | None) -> bool:
 
 
 def strip_internal_avatar_url(value: str | None) -> str | None:
-    """Null out `value` if it's a hosted reference; pass external URLs through.
+    """Null out `value` if it's a hosted reference; gate external URLs.
 
     Used on `Member.avatar_url` and `System.avatar_url` at import time.
+    Externals that survive the internal-ref check still go through the
+    shared importer policy gate (http(s)-only scheme allowlist plus the
+    ALLOW_EXTERNAL_IMAGES instance setting) so a re-import can't smuggle
+    in a URL the regular profile-write path would refuse, and a policy
+    change between export and import is honoured.
     """
-    return None if is_internal_image_ref(value) else value
+    if is_internal_image_ref(value):
+        return None
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    return sanitize_external_avatar_url(value)
 
 
 def strip_internal_image_refs_md(text: str | None) -> str | None:

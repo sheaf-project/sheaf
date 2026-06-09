@@ -210,11 +210,17 @@ def decrypt_envelope(blob: bytes, passphrase: str) -> DecryptedEnvelope:
         ) from exc
 
     try:
-        json_obj = json.loads(json_plaintext.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        json_text = json_plaintext.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise ImportPayloadError(
             f"decrypted JSON is not valid UTF-8 JSON: {exc}"
         ) from exc
+    # Element-capped parse (same guard the JSON-file importers use): the
+    # ciphertext length cap bounds bytes, not graph density. Raises
+    # ImportPayloadError itself on bad JSON or a graph over the cap.
+    from sheaf.services.import_parsing import safe_json_loads
+
+    json_obj = safe_json_loads(json_text)
     if not isinstance(json_obj, dict):
         raise ImportPayloadError(
             "decrypted JSON must be an object at the top level"

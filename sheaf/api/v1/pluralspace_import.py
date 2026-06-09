@@ -13,16 +13,19 @@ import zipfile
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.user import User
 from sheaf.services.import_parsing import ImportPayloadError
-from sheaf.services.pluralspace_import import parse_export, preview
+from sheaf.services.pluralspace_import import parse_export_async, preview
 
 router = APIRouter(prefix="/import", tags=["import"])
 
 MAX_IMPORT_SIZE = 100 * 1024 * 1024
 
 
-@router.post("/pluralspace/preview")
+# Per-user rate limit: a worst-case preview decompresses and parses
+# up to 256MB of JSON, so this must not be free to spam.
+@router.post("/pluralspace/preview", dependencies=[rate_limit(10, 60, "user")])
 async def preview_pluralspace_import(
     file: UploadFile,
     _user: User = Depends(get_current_user),
@@ -41,7 +44,7 @@ async def preview_pluralspace_import(
         )
 
     try:
-        parsed = parse_export(data)
+        parsed = await parse_export_async(data)
     except ImportPayloadError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

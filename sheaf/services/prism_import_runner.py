@@ -24,7 +24,7 @@ from sheaf.services.import_runner import (
     update_counts,
 )
 from sheaf.services.import_storage import get_payload
-from sheaf.services.prism_import import parse_envelope_bytes, run_import
+from sheaf.services.prism_import import parse_envelope_bytes_async, run_import
 
 logger = logging.getLogger("sheaf.imports.prism")
 
@@ -64,7 +64,7 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
         message=f"decrypted {len(blob)} byte PRISM1 envelope",
     )
 
-    parsed = parse_envelope_bytes(blob, passphrase)
+    parsed = await parse_envelope_bytes_async(blob, passphrase)
     options = parse_options(job.payload_metadata, PrismImportOptions)
     system = await load_user_system(db, job.user_id)
     user = await db.get(User, job.user_id)

@@ -39,6 +39,30 @@ class ImportPayloadError(ValueError):
     it short and specific (no stack traces, no library names)."""
 
 
+def sanitize_external_avatar_url(url: Any) -> str | None:
+    """Policy gate for avatar URLs carried in third-party exports.
+
+    Importers can only ever produce *external* references (the source
+    app's CDN), so anything kept must be plain http(s) - a crafted
+    export carrying a javascript:/data: URL must not land in a profile
+    field - and externals are dropped entirely when the instance
+    forbids hotlinking (ALLOW_EXTERNAL_IMAGES=false), the same policy
+    the regular profile-write path enforces via normalize_avatar_url.
+
+    Every importer routes source avatar URLs through here so the rules
+    can't drift between formats.
+    """
+    from sheaf.config import settings
+
+    if not url or not isinstance(url, str):
+        return None
+    if not url.startswith(("http://", "https://")):
+        return None
+    if not settings.allow_external_images:
+        return None
+    return url[:500]
+
+
 def safe_json_loads(
     data: bytes | str,
     *,

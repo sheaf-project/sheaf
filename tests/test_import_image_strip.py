@@ -15,7 +15,6 @@ from sheaf.services.import_image_strip import (
     strip_internal_image_refs_md_to_none,
 )
 
-
 # ---------------------------------------------------------------------------
 # is_internal_image_ref
 # ---------------------------------------------------------------------------
@@ -148,3 +147,51 @@ def test_strip_keys_drops_internal_keys():
 def test_strip_keys_handles_empty_and_none():
     assert strip_internal_image_keys(None) == []
     assert strip_internal_image_keys([]) == []
+
+
+# ---------------------------------------------------------------------------
+# sanitize_external_avatar_url (shared importer policy gate)
+
+
+def test_sanitize_keeps_plain_https():
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    url = "https://cdn.example.com/avatar.png"
+    assert sanitize_external_avatar_url(url) == url
+
+
+def test_sanitize_rejects_non_http_schemes():
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    for bad in (
+        "javascript:alert(1)",
+        "data:image/png;base64,AAAA",
+        "ftp://example.com/a.png",
+        "file:///etc/passwd",
+        "//example.com/a.png",
+    ):
+        assert sanitize_external_avatar_url(bad) is None, bad
+
+
+def test_sanitize_rejects_non_strings_and_empty():
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    assert sanitize_external_avatar_url(None) is None
+    assert sanitize_external_avatar_url("") is None
+    assert sanitize_external_avatar_url(123) is None
+    assert sanitize_external_avatar_url(["https://example.com/a.png"]) is None
+
+
+def test_sanitize_truncates_to_column_length():
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    url = "https://example.com/" + "a" * 600
+    out = sanitize_external_avatar_url(url)
+    assert out is not None and len(out) == 500
+
+
+def test_strip_avatar_drops_weird_scheme_externals():
+    """strip_internal_avatar_url routes surviving externals through the
+    shared policy gate, so a re-import can't smuggle in a scheme the
+    profile-write path would refuse."""
+    assert strip_internal_avatar_url("javascript:alert(1)") is None
