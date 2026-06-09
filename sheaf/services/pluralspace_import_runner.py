@@ -22,7 +22,7 @@ from sheaf.services.import_runner import (
     update_counts,
 )
 from sheaf.services.import_storage import get_payload
-from sheaf.services.pluralspace_import import parse_export, run_import
+from sheaf.services.pluralspace_import import parse_export_async, run_import
 
 logger = logging.getLogger("sheaf.imports.pluralspace")
 
@@ -47,7 +47,7 @@ async def handle_pluralspace_file(job: ImportJob, db: AsyncSession) -> None:
         message=f"parsed {len(blob)} bytes of export zip",
     )
 
-    parsed = parse_export(blob)
+    parsed = await parse_export_async(blob)
     options = parse_options(job.payload_metadata, PluralspaceImportOptions)
     system = await load_user_system(db, job.user_id)
     user = await db.get(User, job.user_id)

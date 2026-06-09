@@ -13,6 +13,7 @@ from sheaf.services.pk_import import (
     _normalize_birthday,
     _normalize_color,
     _parse_iso,
+    build_member,
     preview,
 )
 
@@ -125,3 +126,19 @@ def test_preview_count_override_respects_paged_api_preview():
     data = {"switches": [{"timestamp": "2025-01-01T10:00:00Z", "members": []}]}
     summary = preview(data, switch_count_override=42)
     assert summary.switch_count == 42
+
+
+def test_build_member_drops_non_http_avatar_scheme():
+    """A crafted PK export carrying a javascript: avatar URL must not
+    land in the member row; plain https survives."""
+    import uuid as _uuid
+
+    sys_id = _uuid.uuid4()
+    bad = build_member({"name": "X", "avatar_url": "javascript:alert(1)"}, sys_id)
+    assert bad is not None and bad.avatar_url is None
+
+    good = build_member(
+        {"name": "Y", "avatar_url": "https://cdn.example.com/a.png"}, sys_id
+    )
+    assert good is not None
+    assert good.avatar_url == "https://cdn.example.com/a.png"

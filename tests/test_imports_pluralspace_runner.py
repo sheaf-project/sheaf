@@ -15,8 +15,10 @@ locking in:
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import os
 import uuid
 import zipfile
 
@@ -415,4 +417,90 @@ def test_runner_fails_when_data_json_missing(auth_client: httpx.Client):
     assert final["status"] == "failed", final
     assert any(
         "data.json" in e["message"] for e in final["events"]
+    ), final["events"]
+
+
+# --- Hardening: member cap, decompression bomb, avatar URL policy ----------
+
+
+def _set_member_limit(client: httpx.Client, limit: int) -> None:
+    """Set a per-user member-limit override directly in the DB.
+
+    The override wins over the tier default regardless of SHEAF_MODE,
+    which lets the cap path run under the selfhosted test config.
+    """
+    email = client.get("/v1/auth/me").json()["email"]
+
+    async def _run() -> None:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.crypto import blind_index
+        from sheaf.models.user import User
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with session() as db:
+                result = await db.execute(
+                    select(User).where(User.email_hash == blind_index(email))
+                )
+                user = result.scalar_one()
+                user.member_limit = limit
+                await db.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_member_cap_fails_job_before_writing(auth_client: httpx.Client):
+    """A 2-member export against a 1-member cap fails cleanly and
+    imports nothing."""
+    _set_member_limit(auth_client, 1)
+    job = _post_file(auth_client, _build_zip(_sample_data()))
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "failed", final
+    assert any("limited to" in e["message"] for e in final["events"]), final["events"]
+    members = auth_client.get("/v1/members").json()
+    assert members == [], members
+
+
+def test_preview_rejects_decompression_bomb(auth_client: httpx.Client):
+    """data.json whose declared decompressed size is over the cap is
+    refused before parsing. 260MB of spaces compresses to well under
+    the 100MB upload limit, so only the decompressed-size guard can
+    catch it."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"format_version": "1.1"}))
+        zf.writestr("data.json", b" " * (260 * 1024 * 1024))
+    resp = auth_client.post(
+        "/v1/import/pluralspace/preview",
+        files={"file": ("export.zip", buf.getvalue(), "application/zip")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "decompresses" in resp.json()["detail"]
+
+
+def test_external_avatar_with_bad_scheme_is_dropped(auth_client: httpx.Client):
+    """A crafted export carrying a javascript: avatar URL must not land
+    in the profile field; the skip surfaces as a warning event."""
+    data = _sample_data()
+    data["members"][0]["avatar_path"] = "javascript:alert(1)"
+    job = _post_file(auth_client, _build_zip(data))
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    members = auth_client.get("/v1/members").json()
+    alpha = next(m for m in members if m["name"] == "Alpha")
+    assert alpha["avatar_url"] is None, alpha
+    assert any(
+        "external avatar" in e["message"].lower() for e in final["events"]
     ), final["events"]

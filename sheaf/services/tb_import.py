@@ -43,6 +43,7 @@ from sheaf.schemas.tb_import import (
     TBPreviewMember,
     TBPreviewSummary,
 )
+from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import.tb")
@@ -166,7 +167,7 @@ def _build_member(tupper: dict, system_id: uuid.UUID) -> Member | None:
         display_name=_truncate(_clean_str(tupper.get("nick")), 100),
         description=encrypt(plaintext_description) if plaintext_description else None,
         pronouns=None,  # Tupperbox doesn't model pronouns.
-        avatar_url=_truncate(_clean_str(tupper.get("avatar_url")), 500),
+        avatar_url=sanitize_external_avatar_url(_clean_str(tupper.get("avatar_url"))),
         color=None,  # Tupperbox doesn't model member colour.
         birthday=_normalize_birthday(tupper.get("birthday")),
         privacy=PrivacyLevel.PRIVATE,

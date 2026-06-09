@@ -42,6 +42,7 @@ from sheaf.schemas.pk_import import (
     PKPreviewMember,
     PKPreviewSummary,
 )
+from sheaf.services.import_parsing import sanitize_external_avatar_url
 
 logger = logging.getLogger("sheaf.import.pk")
 
@@ -129,9 +130,11 @@ def apply_system_profile(data: dict, system: System) -> None:
     color = _normalize_color(data.get("color"))
     if color and not system.color:
         system.color = color
-    avatar = _clean_str(data.get("avatar_url"))
+    # PK avatars are external CDN URLs; the sanitizer enforces the
+    # http(s)-only scheme allowlist and the instance external-image policy.
+    avatar = sanitize_external_avatar_url(_clean_str(data.get("avatar_url")))
     if avatar and not system.avatar_url:
-        system.avatar_url = avatar[:500]
+        system.avatar_url = avatar
 
 
 # --- Members -----------------------------------------------------------------
@@ -159,7 +162,7 @@ def build_member(pk_m: dict, system_id: uuid.UUID) -> Member | None:
         display_name=_truncate(_clean_str(pk_m.get("display_name")), 100),
         description=encrypt(plaintext_description) if plaintext_description else None,
         pronouns=_truncate(_clean_str(pk_m.get("pronouns")), 100),
-        avatar_url=_truncate(_clean_str(pk_m.get("avatar_url")), 500),
+        avatar_url=sanitize_external_avatar_url(_clean_str(pk_m.get("avatar_url"))),
         color=_normalize_color(pk_m.get("color")),
         birthday=_normalize_birthday(pk_m.get("birthday")),
         pluralkit_id=_truncate(pk_hid, _PKID_MAX_LEN),

@@ -6,9 +6,13 @@ URLs (bio embeds + avatar URLs) is disabled.
 """
 import base64
 import io
+import json
+import uuid
 
 import httpx
 import pytest
+
+from tests._import_runner_helpers import drive_import_runner, wait_for_terminal
 
 pytestmark = pytest.mark.external_images_disabled
 
@@ -83,3 +87,24 @@ def test_csp_blocks_https_images(auth_client: httpx.Client):
     assert "img-src" in csp
     img_directive = next(d for d in csp.split(";") if "img-src" in d)
     assert "https:" not in img_directive
+
+
+def test_imported_external_avatar_urls_are_dropped(auth_client: httpx.Client):
+    """Importers honour the instance external-image policy: a PK export
+    carrying an external avatar URL imports the member without it."""
+    payload = json.dumps(
+        {"members": [{"name": "PolTest", "avatar_url": "https://example.com/a.png"}]}
+    ).encode()
+    resp = auth_client.post(
+        "/v1/imports/file",
+        files={"file": ("pk.json", payload, "application/json")},
+        data={"source": "pluralkit_file", "idempotency_key": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 202, resp.text
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, resp.json()["id"])
+
+    assert final["status"] == "complete", final
+    members = auth_client.get("/v1/members").json()
+    target = next(m for m in members if m["name"] == "PolTest")
+    assert target["avatar_url"] is None, target

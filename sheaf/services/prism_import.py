@@ -60,6 +60,7 @@ decisions:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import uuid
@@ -104,7 +105,11 @@ from sheaf.schemas.prism_import import (
     PrismPreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
-from sheaf.services.import_parsing import ImportPayloadError
+from sheaf.services.import_parsing import (
+    ImportPayloadError,
+    sanitize_external_avatar_url,
+)
+from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.prism_crypto import (
     DecryptedEnvelope,
     decrypt_envelope,
@@ -162,6 +167,29 @@ class ParsedPrism:
 def parse_envelope_bytes(blob: bytes, passphrase: str) -> ParsedPrism:
     """Decrypt the PRISM1 envelope and wrap it for use by preview / import."""
     return ParsedPrism(envelope=decrypt_envelope(blob, passphrase))
+
+
+# Envelope decryption runs scrypt with parameters taken from the
+# untrusted header. prism_crypto caps them (N<=2^17, r<=16, so roughly
+# 256MiB and a few hundred ms of CPU per call), but that is still far
+# too heavy for the event loop - and the parameters are attacker-
+# chosen, so a handful of crafted uploads would otherwise freeze every
+# request the worker is serving. Decryptions run in a worker thread,
+# a couple at a time so concurrent calls cannot stack the scrypt
+# allocations either.
+_decrypt_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_decrypt_semaphore() -> asyncio.Semaphore:
+    global _decrypt_semaphore
+    if _decrypt_semaphore is None:
+        _decrypt_semaphore = asyncio.Semaphore(2)
+    return _decrypt_semaphore
+
+
+async def parse_envelope_bytes_async(blob: bytes, passphrase: str) -> ParsedPrism:
+    async with _get_decrypt_semaphore():
+        return await asyncio.to_thread(parse_envelope_bytes, blob, passphrase)
 
 
 # --- Preview ---------------------------------------------------------------
@@ -270,9 +298,12 @@ async def run_import(
         _apply_system_profile(data, system)
 
     selected = set(member_ids) if member_ids is not None else None
-    ps_id_to_handle: dict[str, _MemberHandle] = {}
-    headmates = _list(data.get("headmates"))
-    for m in headmates:
+
+    # Pre-filter to the rows that will actually become Member records so
+    # the tier member-cap check counts exactly what the loop below would
+    # write. Hard-fails (clean job error) before anything is written.
+    eligible: list[dict] = []
+    for m in _list(data.get("headmates")):
         if not isinstance(m, dict):
             continue
         ps_id = _clean_str(m.get("id"))
@@ -281,6 +312,12 @@ async def run_import(
             continue
         if selected is not None and ps_id not in selected:
             continue
+        eligible.append(m)
+    await enforce_import_member_cap(db, system, len(eligible))
+
+    ps_id_to_handle: dict[str, _MemberHandle] = {}
+    for m in eligible:
+        ps_id = _clean_str(m.get("id"))
         plaintext_name = (_clean_str(m.get("name")) or "unnamed")[:100]
         plaintext_description = _clean_str(m.get("notes"))
         custom_color = _normalize_color(m.get("customColorHex")) if m.get(
@@ -326,6 +363,7 @@ async def run_import(
     _ = roles_as_tags
 
     if member_avatars:
+        external_avatars_skipped = 0
         for ps_id, handle in ps_id_to_handle.items():
             src = handle.source
             inline_b64 = _clean_str(src.get("profilePhotoData"))
@@ -338,10 +376,21 @@ async def run_import(
                     result.avatars_imported += 1
                     continue
             cached_url = _clean_str(src.get("pkAvatarCachedUrl"))
-            if cached_url and (
-                cached_url.startswith("http://") or cached_url.startswith("https://")
-            ):
-                handle.member.avatar_url = cached_url[:500]
+            if cached_url:
+                # Fallback external reference (Prism's cached PluralKit
+                # avatar URL); kept only when the scheme is plain http(s)
+                # and the instance allows external images.
+                safe_url = sanitize_external_avatar_url(cached_url)
+                if safe_url:
+                    handle.member.avatar_url = safe_url
+                else:
+                    external_avatars_skipped += 1
+        if external_avatars_skipped:
+            result.warnings.append(
+                f"Skipped {external_avatars_skipped} external avatar "
+                "link(s): external images are not allowed on this server, "
+                "or the link was not a plain http(s) URL."
+            )
 
     if member_groups:
         result.groups_imported += await _import_groups(

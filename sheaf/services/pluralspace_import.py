@@ -52,6 +52,7 @@ export can't overrun a tight-tier user.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -100,7 +101,12 @@ from sheaf.schemas.pluralspace_import import (
     PluralspacePreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
-from sheaf.services.import_parsing import ImportPayloadError
+from sheaf.services.import_parsing import (
+    ImportPayloadError,
+    safe_json_loads,
+    sanitize_external_avatar_url,
+)
+from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.storage import get_storage
 
 logger = logging.getLogger("sheaf.imports.pluralspace")
@@ -154,10 +160,23 @@ class _ParsedExport:
         if path not in self.media_paths:
             return None
         try:
+            if self.zf.getinfo(path).file_size > _MAX_MEDIA_DECOMPRESSED:
+                return None
             with self.zf.open(path) as fh:
                 return fh.read()
         except KeyError:
             return None
+
+
+# Decompressed-size caps. DEFLATE reaches roughly 1000:1, so a 100MB
+# upload could otherwise expand to ~100GB in memory when read. The JSON
+# cap matches the Prism importer's plaintext-JSON cap; the media cap
+# matches the upload size cap. Python's zipfile additionally refuses a
+# stream that overruns its declared size, so the declared sizes checked
+# here are what reads actually enforce.
+_MAX_JSON_DECOMPRESSED = 256 * 1024 * 1024
+_MAX_MANIFEST_DECOMPRESSED = 4 * 1024 * 1024
+_MAX_MEDIA_DECOMPRESSED = 100 * 1024 * 1024
 
 
 def parse_export(blob: bytes) -> _ParsedExport:
@@ -177,15 +196,28 @@ def parse_export(blob: bytes) -> _ParsedExport:
             "PluralSpace export must contain manifest.json and data.json"
         )
 
+    for name, cap in (
+        ("manifest.json", _MAX_MANIFEST_DECOMPRESSED),
+        ("data.json", _MAX_JSON_DECOMPRESSED),
+    ):
+        if zf.getinfo(name).file_size > cap:
+            raise ImportPayloadError(
+                f"{name} decompresses to more than "
+                f"{cap // (1024 * 1024)}MB; refusing to parse"
+            )
+
     try:
         manifest_raw = zf.read("manifest.json")
         data_raw = zf.read("data.json")
     except KeyError as exc:
         raise ImportPayloadError(f"could not read entry: {exc}") from exc
 
+    # safe_json_loads caps the parsed element count (same guard the
+    # JSON-file importers use) so a small-but-dense payload can't DoS
+    # the walk even inside the decompressed-size cap.
     try:
-        manifest = json.loads(manifest_raw)
-        data = json.loads(data_raw)
+        manifest = safe_json_loads(manifest_raw)
+        data = safe_json_loads(data_raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ImportPayloadError(f"invalid JSON inside export: {exc}") from exc
 
@@ -196,6 +228,26 @@ def parse_export(blob: bytes) -> _ParsedExport:
 
     media_paths = {n for n in names if n.startswith("media/") and not n.endswith("/")}
     return _ParsedExport(manifest=manifest, data=data, zf=zf, media_paths=media_paths)
+
+
+# A worst-case parse decompresses and JSON-loads up to
+# _MAX_JSON_DECOMPRESSED bytes in one go: seconds of CPU and a large
+# allocation, far too heavy for the event loop (the import runner loop
+# shares it with live request handling). Parses run in a worker thread,
+# a couple at a time so concurrent imports can't stack the allocations.
+_parse_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_parse_semaphore() -> asyncio.Semaphore:
+    global _parse_semaphore
+    if _parse_semaphore is None:
+        _parse_semaphore = asyncio.Semaphore(2)
+    return _parse_semaphore
+
+
+async def parse_export_async(blob: bytes) -> _ParsedExport:
+    async with _get_parse_semaphore():
+        return await asyncio.to_thread(parse_export, blob)
 
 
 # --- Preview ---------------------------------------------------------------
@@ -299,9 +351,10 @@ async def run_import(
     selected = set(member_ids) if member_ids is not None else None
     members_in = _list(data.get("members"))
 
-    ps_id_to_member: dict[str, Member] = {}
-    member_name_to_member: dict[str, Member] = {}
-
+    # Pre-filter to the rows that will actually become Member records so
+    # the tier member-cap check counts exactly what the loop below would
+    # write. Hard-fails (clean job error) before anything is written.
+    eligible: list[dict] = []
     for m_data in members_in:
         if not isinstance(m_data, dict):
             continue
@@ -311,9 +364,17 @@ async def run_import(
             continue
         if selected is not None and ps_id not in selected:
             continue
-        is_cf = bool(m_data.get("is_custom_front"))
-        if is_cf and not custom_fronts:
+        if bool(m_data.get("is_custom_front")) and not custom_fronts:
             continue
+        eligible.append(m_data)
+    await enforce_import_member_cap(db, system, len(eligible))
+
+    ps_id_to_member: dict[str, Member] = {}
+    member_name_to_member: dict[str, Member] = {}
+
+    for m_data in eligible:
+        ps_id = _clean_str(m_data.get("id"))
+        is_cf = bool(m_data.get("is_custom_front"))
 
         plaintext_name = (_clean_str(m_data.get("name")) or "unnamed")[:100]
         plaintext_description = _clean_str(m_data.get("description"))
@@ -347,6 +408,7 @@ async def run_import(
 
     # --- Avatars ----
     if member_avatars:
+        external_avatars_skipped = 0
         for m_data in members_in:
             if not isinstance(m_data, dict):
                 continue
@@ -365,13 +427,22 @@ async def run_import(
                 if stored_key:
                     member.avatar_url = stored_key[:500]
                     result.avatars_imported += 1
-            elif url_path and (
-                url_path.startswith("http://") or url_path.startswith("https://")
-            ):
+            elif url_path:
                 # PluralSpace can also carry external avatar URLs in
-                # `avatar_path`; pass those through unchanged rather
-                # than re-hosting.
-                member.avatar_url = url_path[:500]
+                # `avatar_path`; pass those through (rather than
+                # re-hosting) when the scheme is plain http(s) and the
+                # instance allows external images.
+                safe_url = sanitize_external_avatar_url(url_path)
+                if safe_url:
+                    member.avatar_url = safe_url
+                else:
+                    external_avatars_skipped += 1
+        if external_avatars_skipped:
+            result.warnings.append(
+                f"Skipped {external_avatars_skipped} external avatar "
+                "link(s): external images are not allowed on this server, "
+                "or the link was not a plain http(s) URL."
+            )
 
     # --- Roles -> tags ----
     if roles_as_tags:
@@ -1093,6 +1164,16 @@ async def _persist_avatar_from_zip(
         )
         return None
 
+    try:
+        declared = parsed.zf.getinfo(media_path).file_size
+    except KeyError:
+        declared = None
+    if declared is not None and declared > _MAX_MEDIA_DECOMPRESSED:
+        warnings.append(
+            f"Avatar file {media_path!r} skipped: bigger than the "
+            f"{_MAX_MEDIA_DECOMPRESSED // (1024 * 1024)}MB media limit."
+        )
+        return None
     raw = parsed.read_media(media_path)
     if raw is None:
         warnings.append(f"Avatar file {media_path!r} was missing from the export.")

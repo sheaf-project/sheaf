@@ -571,3 +571,40 @@ def test_runner_passphrase_wiped_after_finalize(auth_client: httpx.Client):
 def _quiet_unused_pytest_warnings():
     """Silence pytest's unused-fixture warnings on this module."""
     yield
+
+
+# --- Hardening: member cap, external avatar URL policy ----------------------
+
+
+def test_member_cap_fails_job_before_writing(auth_client: httpx.Client):
+    from tests.test_imports_pluralspace_runner import _set_member_limit
+
+    _set_member_limit(auth_client, 1)
+    payload, _media = _make_export(headmate_count=2)
+    envelope = synthesize_envelope(payload, _PASSPHRASE)
+    job = _post_file(auth_client, envelope)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "failed", final
+    assert any("limited to" in e["message"] for e in final["events"]), final["events"]
+    members = auth_client.get("/v1/members").json()
+    assert members == [], members
+
+
+def test_external_avatar_with_bad_scheme_is_dropped(auth_client: httpx.Client):
+    """pkAvatarCachedUrl with a non-http(s) scheme must not land in the
+    profile field; the skip surfaces as a warning event."""
+    payload, _media = _make_export(headmate_count=1)
+    payload["headmates"][0]["pkAvatarCachedUrl"] = "javascript:alert(1)"
+    envelope = synthesize_envelope(payload, _PASSPHRASE)
+    job = _post_file(auth_client, envelope)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    members = auth_client.get("/v1/members").json()
+    assert members and members[0]["avatar_url"] is None, members
+    assert any(
+        "external avatar" in e["message"].lower() for e in final["events"]
+    ), final["events"]

@@ -32,6 +32,7 @@ from sheaf.schemas.sp_import import (
     SPPreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import")
@@ -148,7 +149,7 @@ async def run_import(
                 else None
             ),
             pronouns=_truncate(sp_m.get("pronouns"), 100),
-            avatar_url=_truncate(sp_m.get("avatarUrl"), 500),
+            avatar_url=sanitize_external_avatar_url(sp_m.get("avatarUrl")),
             color=_normalize_color(sp_m.get("color")),
             privacy=_map_privacy(sp_m.get("private", True)),
         )
@@ -178,7 +179,7 @@ async def run_import(
                     else None
                 ),
                 color=_normalize_color(sp_cf.get("color")),
-                avatar_url=_truncate(sp_cf.get("avatarUrl"), 500),
+                avatar_url=sanitize_external_avatar_url(sp_cf.get("avatarUrl")),
                 privacy=_map_privacy(sp_cf.get("private", True)),
                 is_custom_front=True,
             )
