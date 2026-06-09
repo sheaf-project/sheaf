@@ -16,7 +16,13 @@ def test_well_known_security_txt(client: httpx.Client):
     # Recommended extras we've committed to.
     assert "Preferred-Languages: en" in body
     assert "Policy:" in body
-    assert "Encryption:" in body
+    # Encryption points at the in-repo ASCII-armored key, not a
+    # keyserver (the team key is deliberately kept off keyservers).
+    assert (
+        "Encryption: https://raw.githubusercontent.com/sheaf-project/sheaf/main/SECURITY-PGP-KEY.asc"
+        in body
+    )
+    assert "keyserver" not in body
 
 
 def test_security_txt_legacy_path_also_served(client: httpx.Client):
