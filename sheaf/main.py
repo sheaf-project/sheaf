@@ -242,9 +242,19 @@ async def health():
 def _security_txt_body() -> str:
     expires = (datetime.now(UTC) + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
-        "Contact: mailto:sheaf-security@lupine.systems",
+        # Two channels, mirroring SECURITY.md: email first, then the
+        # GitHub private security advisory form. RFC 9116 reads multiple
+        # Contact fields in listed preference order.
+        "Contact: mailto:security@sheaf.sh",
+        "Contact: https://github.com/sheaf-project/sheaf/security/advisories/new",
         f"Expires: {expires}",
-        "Encryption: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x0315B7582C0B170DE1C1AC48722EB40ADED799AE",
+        # The team key is published in-repo rather than on a public
+        # keyserver — keyserver entries are append-only and can't be
+        # rotated or removed. The raw URL serves the ASCII-armored
+        # block; SECURITY.md carries the same fingerprint for the
+        # human-readable path.
+        # Fingerprint: 90AC C2BB 6C88 6DD8 EBD0  11B9 BBB8 ABBC 92D6 A17C
+        "Encryption: https://raw.githubusercontent.com/sheaf-project/sheaf/main/SECURITY-PGP-KEY.asc",
         "Preferred-Languages: en",
         "Policy: https://github.com/sheaf-project/sheaf/blob/main/SECURITY.md",
     ]
