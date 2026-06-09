@@ -205,6 +205,7 @@ async def delete_tag(
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     result = await db.execute(
         select(Tag).where(Tag.id == tag_id, Tag.system_id == system.id)

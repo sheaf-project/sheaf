@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.auth.dependencies import get_current_user, get_current_user_optional, require_scope
+from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
-from sheaf.auth.totp import verify_code
+from sheaf.auth.totp import verify_code_once
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
-from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
+from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.user import User
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
 
@@ -81,7 +82,12 @@ async def update_delete_confirmation(
     db: AsyncSession = Depends(get_db),
 ):
     """Update delete confirmation level. Requires password (+ TOTP if enabled)."""
+    # Brute-forceable credentials are verified here, so the attempt feeds
+    # the unified lockout the same way login does.
+    ensure_not_locked(user)
+
     if not await verify_password(body.password, user.password_hash):
+        await record_login_failure(db, user)
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(
@@ -96,7 +102,8 @@ async def update_delete_confirmation(
                 detail="TOTP code required",
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code):
+        if not await verify_code_once(user.id, secret, body.totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",
@@ -120,15 +127,24 @@ async def update_delete_confirmation(
 async def get_system(
     system_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User | None = Depends(get_current_user_optional),
+    user: User = Depends(get_current_user),
 ):
+    """Fetch a system by id. Owner-only.
+
+    This endpoint used to honour `privacy=public` by returning the full
+    owner view of any public system to any authenticated caller — which
+    leaked the decrypted private `note` and the `delete_confirmation`
+    tier cross-tenant. Nothing consumes a public read path today (the
+    web client only uses /systems/me and there is no discovery surface),
+    so cross-tenant reads are closed entirely until public profiles ship
+    as a designed feature with a dedicated, fail-closed public schema.
+    The `privacy` field itself is kept and remains user-settable; it just
+    grants nothing yet.
+    """
     result = await db.execute(select(System).where(System.id == system_id))
     system = result.scalar_one_or_none()
-    if system is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
-
-    # Privacy check — only return if public (friends/auth checks come later)
-    if system.privacy != PrivacyLevel.PUBLIC and (user is None or system.user_id != user.id):
+    # Same 404 for "doesn't exist" and "not yours" — no existence oracle.
+    if system is None or system.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
 
     return _system_to_read(system)

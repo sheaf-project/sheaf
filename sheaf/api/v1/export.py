@@ -22,8 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
-from sheaf.auth.totp import verify_code
+from sheaf.auth.totp import verify_code_once
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
@@ -622,7 +623,12 @@ async def create_export_job(
             ),
         )
 
+    # Step-up verifies brute-forceable credentials, so it consults and
+    # feeds the unified lockout the same way login does.
+    ensure_not_locked(user)
+
     if not await verify_password(body.password, user.password_hash):
+        await record_login_failure(db, user)
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(
@@ -636,7 +642,8 @@ async def create_export_job(
                 detail="TOTP code required",
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code):
+        if not await verify_code_once(user.id, secret, body.totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",

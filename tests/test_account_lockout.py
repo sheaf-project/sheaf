@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pyotp
 
+from tests._totp_helpers import clear_totp_replay
+
 
 def _login(client: httpx.Client, email: str, password: str) -> int:
     return client.post(
@@ -71,11 +73,16 @@ def _register(client: httpx.Client, password: str = "testpassword123") -> str:
 
 
 def _enrol_totp(client: httpx.Client) -> pyotp.TOTP:
-    setup = client.post("/v1/auth/totp/setup")
+    setup = client.post(
+        "/v1/auth/totp/setup", json={"password": "testpassword123"}
+    )
     assert setup.status_code == 200, setup.text
     totp = pyotp.TOTP(setup.json()["secret"])
     verify = client.post("/v1/auth/totp/verify", json={"code": totp.now()})
     assert verify.status_code == 204, verify.text
+    # Codes are single-use server-side; clear the consumed marker so the
+    # test can keep using this timestep's code without waiting 30s.
+    clear_totp_replay()
     return totp
 
 

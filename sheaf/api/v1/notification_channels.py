@@ -617,6 +617,7 @@ async def delete_channel(
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.CHANNEL_DELETE):

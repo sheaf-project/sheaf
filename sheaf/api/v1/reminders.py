@@ -431,6 +431,7 @@ async def delete_reminder(
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.REMINDER_DELETE):

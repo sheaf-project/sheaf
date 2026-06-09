@@ -169,6 +169,7 @@ async def delete_group(
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     group = await _get_own_group(group_id, system, db)
 

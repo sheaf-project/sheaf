@@ -84,8 +84,13 @@ export interface TOTPSetupResponse {
   recovery_codes: string[];
 }
 
-export function totpSetup() {
-  return apiFetch<TOTPSetupResponse>("/v1/auth/totp/setup", { method: "POST" });
+export function totpSetup(password: string) {
+  // Enabling 2FA is password-gated server-side so a stolen session can't
+  // enrol an attacker-controlled factor.
+  return apiFetch<TOTPSetupResponse>("/v1/auth/totp/setup", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
 }
 
 export function totpVerify(code: string) {

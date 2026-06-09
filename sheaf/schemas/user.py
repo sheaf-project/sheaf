@@ -96,6 +96,14 @@ class UserUpdate(BaseModel):
     disable_cdn_during_ddos: bool | None = None
 
 
+class TOTPSetupRequest(BaseModel):
+    # Enabling a second factor is gated on the password so a stolen
+    # session can't enrol an attacker-controlled TOTP secret and lock the
+    # real owner out of their own change-password/change-email/disable
+    # flows — the same re-auth standard disabling the factor already has.
+    password: str
+
+
 class TOTPSetupResponse(BaseModel):
     secret: str
     provisioning_uri: str

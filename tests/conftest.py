@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import uuid
 from collections.abc import Generator
 
@@ -118,14 +119,20 @@ def _complete_step_up(c: httpx.Client) -> None:
 
     elif level == "totp":
         # Enrol TOTP on the account first
-        setup_resp = c.post("/v1/auth/totp/setup")
+        setup_resp = c.post(
+            "/v1/auth/totp/setup", json={"password": "testpassword123"}
+        )
         assert setup_resp.status_code == 200
         secret = setup_resp.json()["secret"]
         totp = pyotp.TOTP(secret)
         verify_resp = c.post("/v1/auth/totp/verify", json={"code": totp.now()})
         assert verify_resp.status_code == 204, verify_resp.text
-        # Now complete step-up
-        resp = c.post("/v1/admin/auth", json={"totp_code": totp.now()})
+        # Now complete step-up. Codes are single-use server-side (replay
+        # guard) and verify consumed now(), so use the next timestep's
+        # code — the server accepts ±1 step of drift.
+        resp = c.post(
+            "/v1/admin/auth", json={"totp_code": totp.at(time.time() + 30)}
+        )
         assert resp.status_code == 200, resp.text
 
 

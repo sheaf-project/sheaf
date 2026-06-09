@@ -7,6 +7,7 @@ accordingly.
 """
 
 import os
+import time
 
 import httpx
 import pyotp
@@ -113,7 +114,7 @@ def test_totp_step_up_without_totp_enrolled_blocked(raw_admin_client: httpx.Clie
 @pytest.mark.admin_auth_totp
 def test_totp_step_up_wrong_code_rejected(raw_admin_client: httpx.Client):
     # Enrol TOTP first
-    setup = raw_admin_client.post("/v1/auth/totp/setup").json()
+    setup = raw_admin_client.post("/v1/auth/totp/setup", json={"password": "testpassword123"}).json()
     secret = setup["secret"]
     totp = pyotp.TOTP(secret)
     raw_admin_client.post("/v1/auth/totp/verify", json={"code": totp.now()})
@@ -125,7 +126,7 @@ def test_totp_step_up_wrong_code_rejected(raw_admin_client: httpx.Client):
 
 @pytest.mark.admin_auth_totp
 def test_totp_step_up_missing_code_rejected(raw_admin_client: httpx.Client):
-    setup = raw_admin_client.post("/v1/auth/totp/setup").json()
+    setup = raw_admin_client.post("/v1/auth/totp/setup", json={"password": "testpassword123"}).json()
     secret = setup["secret"]
     totp = pyotp.TOTP(secret)
     raw_admin_client.post("/v1/auth/totp/verify", json={"code": totp.now()})
@@ -140,12 +141,17 @@ def test_totp_step_up_grants_access(raw_admin_client: httpx.Client):
     assert raw_admin_client.get("/v1/admin/stats").status_code == 403
 
     # Enrol TOTP and complete step-up
-    setup = raw_admin_client.post("/v1/auth/totp/setup").json()
+    setup = raw_admin_client.post("/v1/auth/totp/setup", json={"password": "testpassword123"}).json()
     secret = setup["secret"]
     totp = pyotp.TOTP(secret)
     raw_admin_client.post("/v1/auth/totp/verify", json={"code": totp.now()})
 
-    resp = raw_admin_client.post("/v1/admin/auth", json={"totp_code": totp.now()})
+    # Codes are single-use server-side (replay guard); the enrol step
+    # consumed now(), so step up with the next timestep's code (the
+    # server accepts ±1 step of drift).
+    resp = raw_admin_client.post(
+        "/v1/admin/auth", json={"totp_code": totp.at(time.time() + 30)}
+    )
     assert resp.status_code == 200
     assert resp.json()["verified"] is True
 

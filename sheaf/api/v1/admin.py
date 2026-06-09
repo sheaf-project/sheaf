@@ -8,7 +8,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_admin_user, get_admin_write_user, get_current_user
+from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.sessions import check_admin_step_up, set_admin_step_up
+from sheaf.auth.totp import verify_code_once
 from sheaf.config import settings
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
@@ -51,7 +53,9 @@ async def get_admin_auth_status(
     if auth_method == "api_key" or level == "none":
         verified = True
     else:
-        verified = await check_admin_step_up(user.id)
+        verified = await check_admin_step_up(
+            user.id, getattr(request.state, "session_id", None)
+        )
 
     return {
         "level": level,
@@ -63,13 +67,30 @@ async def get_admin_auth_status(
 @router.post("/auth", dependencies=[rate_limit(5, 60, "user")])
 async def verify_admin_step_up(
     body: AdminStepUpVerify,
+    request: Request,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Complete admin step-up authentication for this user (any auth method)."""
+    """Complete admin step-up authentication for the calling session."""
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
+    # Step-up is granted per-session, so it needs a session to bind to.
+    # API-key auth is exempt from step-up entirely and never lands here.
+    session_id = getattr(request.state, "session_id", None)
+    if session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Step-up requires a session-bound credential",
+        )
+
     level = settings.admin_auth_level
+
+    # Step-up verifies brute-forceable credentials, so it feeds the same
+    # unified lockout state as login/TOTP — otherwise a hijacked admin
+    # session could brute the password here without ever tripping it.
+    if level in ("password", "totp"):
+        ensure_not_locked(user)
 
     if level == "password":
         if not body.password:
@@ -78,6 +99,7 @@ async def verify_admin_step_up(
             )
         from sheaf.auth.passwords import verify_password
         if not await verify_password(body.password, user.password_hash):
+            await record_login_failure(db, user)
             # 403: caller is already authenticated; this step-up gate
             # denies the action. 401 would falsely trigger the frontend's
             # silent-refresh-and-retry path.
@@ -95,14 +117,14 @@ async def verify_admin_step_up(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="TOTP code required"
             )
-        from sheaf.auth import totp
         totp_secret = decrypt_field(user.totp_secret, "totp_secret")
-        if not totp.verify_code(totp_secret, body.totp_code):
+        if not await verify_code_once(user.id, totp_secret, body.totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Invalid TOTP code"
             )
 
-    await set_admin_step_up(user.id)
+    await set_admin_step_up(user.id, session_id)
     return {"verified": True}
 
 

@@ -177,6 +177,7 @@ async def delete_field(
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     result = await db.execute(
         select(CustomFieldDefinition).where(

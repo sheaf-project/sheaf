@@ -198,6 +198,7 @@ async def revoke_watch_token(
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     # Already revoked -> idempotent 204 regardless of safety state. Skipping
