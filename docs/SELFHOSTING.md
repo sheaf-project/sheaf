@@ -720,6 +720,33 @@ If empty (default), `X-Forwarded-For` is never read — the direct connecting IP
 
 Entries accept either a literal IP (`127.0.0.1`, `::1`) or a CIDR range (`172.16.0.0/12`). Invalid entries fail fast at startup rather than silently disabling XFF.
 
+How the header is read: proxies append the peer they saw to whatever the client sent, so the left side of the chain is client-controlled. Sheaf walks `X-Forwarded-For` right to left and uses the first entry that is not itself listed in `TRUSTED_PROXIES` - the first hop the client could not have forged. Two consequences for multi-hop setups:
+
+- List every proxy tier in `TRUSTED_PROXIES` (your edge LB and your local nginx, for example). An intermediate hop that is not listed will be treated as the client.
+- A malformed entry in the chain, or a chain consisting only of trusted proxies, falls back to the direct connecting IP.
+
+### Cross-origin request protection (CSRF)
+
+Mutating requests that carry a Sheaf auth cookie and a browser `Origin` header must originate from the host the request was sent to (or `SHEAF_BASE_URL`). Requests without an `Origin` header (curl, scripts, the mobile apps) and pure bearer-token requests are never checked, so API consumers are unaffected.
+
+Single-origin deployments (the normal case) need no configuration. If you legitimately serve the app from more than one origin, list the extras:
+
+```env
+# Comma-separated. Scheme optional; the host[:port] is what is compared.
+CSRF_TRUSTED_ORIGINS=https://alt.example.net
+```
+
+---
+
+## Performance tuning
+
+Two work classes run in bounded worker-thread pools so a burst cannot stall request handling or exhaust memory. The defaults suit a 2 vCPU / 4GB box; raise them on bigger hardware if logins or image-heavy imports queue up:
+
+```env
+PASSWORD_HASH_CONCURRENCY=4    # concurrent Argon2 hashes (~64MB RAM each)
+IMAGE_NORMALIZE_CONCURRENCY=4  # concurrent image decodes (up to ~100MB each)
+```
+
 ---
 
 ## Metrics
@@ -741,8 +768,11 @@ ALLOW_EXTERNAL_IMAGES=false
 When disabled:
 - External `![image](https://…)` embeds are stripped from bios/descriptions on save.
 - External avatar URLs are dropped to null on save.
+- Importers drop external avatar links carried in other apps' exports (with a warning on the import report), so an import can't bypass the policy.
 - The frontend hides the "External URL" option in the image picker and the link-icon button in the avatar picker.
 - A CSP `img-src` directive blocks the browser from loading any non-hosted image as defense in depth.
+
+Regardless of this setting, avatar URLs accepted from imports must be plain `http(s)` - other schemes are dropped.
 
 The toggle does not retroactively scrub existing content — it only governs new writes. CSP blocks old references at render time.
 
@@ -788,6 +818,7 @@ Tuning knobs (all optional):
 MAX_IMAGE_DIMENSION=4096         # longest edge in px; larger gets downscaled
 MAX_ANIMATED_FRAMES=100          # cap for GIF / animated WebP
 MAX_ANIMATED_DECODED_BYTES=104857600  # 100 MB decompression-bomb cap
+IMAGE_NORMALIZE_CONCURRENCY=4    # concurrent decodes (bounds peak memory)
 ```
 
 ### Animated avatars
@@ -888,6 +919,14 @@ sheaf.example.com {
         root * /path/to/web/dist
         try_files {path} /index.html
         file_server
+        # Sheaf only sets security headers on its own /v1/* responses;
+        # the SPA document is served by Caddy and needs them here.
+        header {
+            X-Frame-Options "DENY"
+            X-Content-Type-Options "nosniff"
+            Referrer-Policy "no-referrer"
+            Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+        }
     }
 }
 ```
@@ -919,6 +958,10 @@ server {
     # domain. Once browsers receive this, they won't fall back to HTTP.
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
+    # nginx defaults to a 1MB body cap, which 413s imports and uploads.
+    # 110m fits the 100MB import limit plus multipart overhead.
+    client_max_body_size 110m;
+
     # API
     location /v1/ {
         proxy_pass http://localhost:8000;
@@ -928,15 +971,26 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Frontend SPA
+    # Frontend SPA. Sheaf only sets security headers on its own /v1/*
+    # responses; the SPA document is served by nginx and needs them here.
     location / {
         root /path/to/web/dist;
         try_files $uri /index.html;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
     }
 }
 ```
 
-Sheaf sets the other security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own responses, so you don't need to add them at the proxy. The `Strict-Transport-Security` line above ensures the header is also present on static-asset responses served directly by nginx.
+Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
+
+Two notes on the SPA CSP:
+- `script-src` needs `'unsafe-inline'` because `index.html` carries a small inline script that applies the saved theme before first paint. A stricter hash-based policy would break on every release that touches that script.
+- If you set `ALLOW_EXTERNAL_IMAGES=false`, you can tighten `img-src` to `'self' data: blob:` to match the API's own CSP.
+
+If you serve the SPA from a different host than the API, set `CSRF_TRUSTED_ORIGINS` (see the CSRF section) or cookie-authenticated requests from the app will be rejected.
 
 ### Development
 

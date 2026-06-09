@@ -295,6 +295,13 @@ class Settings(BaseSettings):
             if entry.strip()
         ]
 
+    # Extra origins allowed to make cookie-authenticated mutations,
+    # comma-separated (e.g. "https://app.example.net"). Same-host requests
+    # and SHEAF_BASE_URL are always allowed; this is the escape hatch for
+    # multi-origin deployments. Scheme is ignored; the host[:port] is what
+    # gets compared.
+    csrf_trusted_origins: str = ""
+
     # Legal links for the footer (optional). Empty = hide.
     terms_url: str = ""
     privacy_url: str = ""
