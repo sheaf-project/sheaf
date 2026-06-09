@@ -13,21 +13,24 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-type Step = "idle" | "qr" | "recovery" | "done";
+type Step = "idle" | "password" | "qr" | "recovery" | "done";
 
 export function TOTPSetup() {
   const { user, refreshUser } = useAuth();
   const [step, setStep] = useState<Step>("idle");
   const [setup, setSetup] = useState<TOTPSetupResponse | null>(null);
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleBeginSetup() {
+  async function handleBeginSetup(e: FormEvent) {
+    e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const data = await totpSetup();
+      const data = await totpSetup(password);
+      setPassword("");
       setSetup(data);
       setStep("qr");
     } catch (err) {
@@ -75,11 +78,45 @@ export function TOTPSetup() {
         <p className="text-sm text-muted-foreground">
           Add an extra layer of security with a TOTP authenticator app.
         </p>
-        <Button onClick={handleBeginSetup} disabled={loading}>
-          {loading ? "Setting up..." : "Enable 2FA"}
+        <Button onClick={() => { setError(""); setStep("password"); }}>
+          Enable 2FA
         </Button>
         {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
+    );
+  }
+
+  if (step === "password") {
+    return (
+      <form onSubmit={handleBeginSetup} className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Confirm your password to begin setting up 2FA.
+        </p>
+        <div className="space-y-1">
+          <Label htmlFor="totp-setup-password" className="text-sm">Password</Label>
+          <Input
+            id="totp-setup-password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoFocus
+          />
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <div className="flex gap-2">
+          <Button type="submit" disabled={loading || !password}>
+            {loading ? "Setting up..." : "Continue"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => { setStep("idle"); setError(""); setPassword(""); }}
+          >
+            Cancel
+          </Button>
+        </div>
+      </form>
     );
   }
 

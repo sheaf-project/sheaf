@@ -172,11 +172,12 @@ async def delete_field(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     result = await db.execute(
         select(CustomFieldDefinition).where(

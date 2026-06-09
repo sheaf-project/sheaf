@@ -385,11 +385,12 @@ async def delete_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.IMAGE_DELETE):

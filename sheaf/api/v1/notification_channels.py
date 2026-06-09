@@ -612,11 +612,12 @@ async def delete_channel(
 ) -> Response:
     channel = await _load_owned_channel(db, user, channel_id)
     system = await _system_for_user(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.CHANNEL_DELETE):

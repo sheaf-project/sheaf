@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     # rather than failing — paired with the per-user rate limit on
     # the endpoint, total backlog stays bounded.
     image_normalize_concurrency: int = 4
+    # Concurrency cap on Argon2 password hashing/verification. Each
+    # in-flight hash holds ~64MiB at default params, so this bounds both
+    # CPU and memory under a login burst; excess callers queue at the
+    # semaphore (see sheaf/auth/passwords.py) rather than failing.
+    password_hash_concurrency: int = 4
 
     # Image serving mode: "signed" (default) or "unsigned".
     # "signed": HMAC-signed serve URLs with expiry — prevents hotlinking.
@@ -568,8 +573,10 @@ class Settings(BaseSettings):
             "index the login endpoint uses to find users by email. Losing "
             "it means no one will be able to log in."
         )
+        # Log only the path, never the value — log output routinely ends
+        # up in journald, container logs, and log shippers, none of which
+        # should hold the key material. Same posture as the JWT autogen.
         logger.warning("Key file: %s", key_path.resolve())
-        logger.warning("Key value: %s", key.decode())
         logger.warning(
             "Set SHEAF_ENCRYPTION_KEY in .env to use your own key "
             "and suppress this warning."

@@ -200,11 +200,12 @@ async def delete_tag(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     result = await db.execute(
         select(Tag).where(Tag.id == tag_id, Tag.system_id == system.id)

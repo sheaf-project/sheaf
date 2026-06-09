@@ -193,11 +193,12 @@ async def revoke_watch_token(
     relationship has gone bad."""
     token = await _load_owned_token(db, user, token_id)
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     # Already revoked -> idempotent 204 regardless of safety state. Skipping

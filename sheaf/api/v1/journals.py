@@ -254,11 +254,12 @@ async def delete_entry(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     entry = await _get_own_entry(entry_id, system.id, db)
 
@@ -413,7 +414,7 @@ async def unpin_journal_revision(
         )
 
     if is_safeguarded(system, PendingActionType.REVISION_UNPIN):
-        verify_destructive_auth(user, system, body.password, body.totp_code)
+        await verify_destructive_auth(user, system, body.password, body.totp_code, db)
         title, _ = entry_plaintext(entry)
         target_label = f"Pinned revision: {title or 'Untitled entry'}"
         pending = await queue_pending_action(

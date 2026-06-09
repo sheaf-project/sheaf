@@ -231,9 +231,12 @@ def require_scope(scope: str) -> Callable:
 async def _check_admin_step_up(request: Request, user: User) -> None:
     """Raise 403 if admin step-up auth is required but not completed.
 
-    Step-up is tracked per user in Redis, so it applies regardless of auth
-    method (session cookie, JWT, or anything else). Only API key auth is
-    exempt — scoped API keys are already explicit programmatic credentials.
+    Step-up is tracked per (user, session) in Redis — completing it in
+    one session does not unlock any other live session on the account,
+    so a stolen token can't piggyback on the real admin's step-up.
+    Session cookies and session-bound JWTs both carry a session id; only
+    API key auth is exempt — scoped API keys are already explicit
+    programmatic credentials.
     """
     from sheaf.config import settings
 
@@ -241,7 +244,8 @@ async def _check_admin_step_up(request: Request, user: User) -> None:
         return
     if getattr(request.state, "auth_method", None) == "api_key":
         return
-    if not await check_admin_step_up(user.id):
+    session_id = getattr(request.state, "session_id", None)
+    if not await check_admin_step_up(user.id, session_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="admin_step_up_required",

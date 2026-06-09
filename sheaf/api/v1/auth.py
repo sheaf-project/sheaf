@@ -29,6 +29,7 @@ from sheaf.auth.sessions import (
     cache_refresh_rotation,
     consume_refresh_jti,
     create_session,
+    delete_all_user_sessions,
     delete_other_sessions,
     delete_session,
     get_cached_refresh_rotation,
@@ -41,7 +42,7 @@ from sheaf.auth.totp import (
     generate_recovery_codes,
     generate_secret,
     get_provisioning_uri,
-    verify_code,
+    verify_code_once,
 )
 from sheaf.auth.trusted_devices import (
     TRUSTED_DEVICE_COOKIE,
@@ -72,6 +73,7 @@ from sheaf.schemas.user import (
     SecondarySessionResponse,
     TokenRefresh,
     TokenResponse,
+    TOTPSetupRequest,
     TOTPSetupResponse,
     TOTPVerify,
     UserLogin,
@@ -341,7 +343,7 @@ async def register(
     user = User(
         email=encrypt(body.email),
         email_hash=email_hash,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         account_status=account_status,
         email_verified=email_verified,
         signup_ip=client_ip(request),
@@ -599,10 +601,22 @@ async def reset_password(
                 detail="Reset token has expired. Please request a new one.",
             )
 
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await hash_password(body.new_password)
     user.password_reset_token = None
     user.password_reset_sent_at = None
+    # Reset is the canonical "I've been compromised" recovery flow, so it
+    # revokes everything a compromiser could be holding, same as
+    # change-password — previously it revoked nothing, leaving an
+    # attacker's live session untouched by the victim's recovery. There
+    # is no calling session to spare here (the flow is unauthenticated),
+    # so ALL sessions die; refresh tokens bound to them fail at /refresh
+    # when the session lookup misses. Proving mailbox control also clears
+    # the failed-attempt lockout, matching change-password.
+    user.failed_login_count = 0
+    user.locked_until = None
+    await revoke_all_trusted_devices(db, user.id)
     await db.commit()
+    await delete_all_user_sessions(user.id)
     auth_password_reset_total.labels(stage="completed").inc()
     return {"reset": True}
 
@@ -640,7 +654,12 @@ async def change_password(
             detail="New password must differ from the current password",
         )
 
-    if not verify_password(body.current_password, user.password_hash):
+    # Step-up credentials are brute-forceable, so this gate consults and
+    # feeds the same unified lockout as login.
+    ensure_not_locked(user)
+
+    if not await verify_password(body.current_password, user.password_hash):
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
@@ -654,15 +673,15 @@ async def change_password(
                 headers={"X-Sheaf-2FA": "required"},
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
-            db, user, body.totp_code,
-        ):
+        totp_ok = await verify_code_once(user.id, secret, body.totp_code)
+        if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid TOTP code",
             )
 
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await hash_password(body.new_password)
     user.failed_login_count = 0
     user.locked_until = None
     # Kill any live password-reset token — changing the password is proof
@@ -714,7 +733,12 @@ async def change_email(
             detail="New email must differ from the current email",
         )
 
-    if not verify_password(body.current_password, user.password_hash):
+    # Step-up credentials are brute-forceable, so this gate consults and
+    # feeds the same unified lockout as login.
+    ensure_not_locked(user)
+
+    if not await verify_password(body.current_password, user.password_hash):
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
@@ -728,9 +752,9 @@ async def change_email(
                 headers={"X-Sheaf-2FA": "required"},
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
-            db, user, body.totp_code,
-        ):
+        totp_ok = await verify_code_once(user.id, secret, body.totp_code)
+        if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid TOTP code",
@@ -807,7 +831,7 @@ async def login(
             auth_logins_total.labels(outcome="locked").inc()
             raise
 
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None or not await verify_password(body.password, user.password_hash):
         if user is not None:
             await record_login_failure(db, user)
             auth_logins_total.labels(outcome="password_incorrect").inc()
@@ -862,7 +886,11 @@ async def login(
                     headers={"X-Sheaf-2FA": "required"},
                 )
             secret = decrypt(user.totp_secret)
-            if not verify_code(secret, body.totp_code):
+            # verify_code_once consumes the code (anti-replay) — a code
+            # seen by a shoulder-surfer or proxy can't be reused at any
+            # TOTP gate inside its validity window. Recovery codes are
+            # single-use via their own conditional UPDATE.
+            if not await verify_code_once(user.id, secret, body.totp_code):
                 if await _check_recovery_code(db, user, body.totp_code):
                     recovery_code_used = True
                 else:
@@ -875,7 +903,7 @@ async def login(
 
     # Rehash if argon2 params have been upgraded
     if needs_rehash(user.password_hash):
-        user.password_hash = hash_password(body.password)
+        user.password_hash = await hash_password(body.password)
 
     # Successful login clears any accumulated failure state.
     user.failed_login_count = 0
@@ -1440,16 +1468,34 @@ async def update_me(
 @router.post(
     "/totp/setup",
     response_model=TOTPSetupResponse,
-    dependencies=[rate_limit(5, 60, "user")],
+    dependencies=[rate_limit(5, 60, "user", fail_closed=True)],
 )
 async def totp_setup(
+    body: TOTPSetupRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Begin TOTP enrolment. Requires the account password.
+
+    Without the password gate, a session-only attacker could enrol an
+    attacker-controlled secret + recovery codes and turn a stolen session
+    into durable account capture (change-password / change-email / disable
+    would then demand a code only the attacker has). Enabling a factor is
+    held to the same re-auth standard as disabling one.
+    """
     if user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA is already enabled",
+        )
+
+    ensure_not_locked(user)
+
+    if not await verify_password(body.password, user.password_hash):
+        await record_login_failure(db, user)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid password",
         )
 
     secret = generate_secret()
@@ -1486,7 +1532,7 @@ async def totp_verify(
         )
 
     secret = decrypt(user.totp_secret)
-    if not verify_code(secret, body.code):
+    if not await verify_code_once(user.id, secret, body.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
@@ -1515,7 +1561,7 @@ async def totp_disable(
 
     ensure_not_locked(user)
 
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1529,10 +1575,9 @@ async def totp_disable(
         )
 
     secret = decrypt(user.totp_secret)
-    if not verify_code(secret, body.totp_code) and not await _check_recovery_code(
-        db, user, body.totp_code
-    ):
-        await record_login_failure(db, user)
+    totp_ok = await verify_code_once(user.id, secret, body.totp_code)
+    if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+        await record_login_failure(db, user, reason="totp_failures")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
@@ -1585,8 +1630,8 @@ async def regenerate_recovery_codes(
     ensure_not_locked(user)
 
     secret = decrypt(user.totp_secret)
-    if not verify_code(secret, body.code):
-        await record_login_failure(db, user)
+    if not await verify_code_once(user.id, secret, body.code):
+        await record_login_failure(db, user, reason="totp_failures")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid TOTP code",
@@ -1733,8 +1778,12 @@ async def request_account_deletion(
             detail="Account is already scheduled for deletion",
         )
 
-    # Verify password
-    if not verify_password(body.password, user.password_hash):
+    # Verify password. Step-up credentials feed the unified lockout,
+    # same as login.
+    ensure_not_locked(user)
+
+    if not await verify_password(body.password, user.password_hash):
+        await record_login_failure(db, user)
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(
@@ -1751,9 +1800,9 @@ async def request_account_deletion(
                 headers={"X-Sheaf-2FA": "required"},
             )
         totp_secret = decrypt(user.totp_secret)
-        if not verify_code(
-            totp_secret, body.totp_code
-        ) and not await _check_recovery_code(db, user, body.totp_code):
+        totp_ok = await verify_code_once(user.id, totp_secret, body.totp_code)
+        if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid TOTP code",

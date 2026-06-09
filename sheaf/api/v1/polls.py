@@ -349,11 +349,12 @@ async def delete_poll(
     """
     system = await _get_user_system(user, db)
     poll = await _get_owned_poll(poll_id, system, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.POLL_DELETE):

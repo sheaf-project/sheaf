@@ -308,20 +308,39 @@ async def revoke_refresh_jti(jti: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Admin step-up auth (per-user, auth-method-agnostic)
+# Admin step-up auth (per-session)
 # ---------------------------------------------------------------------------
+#
+# Keyed on (user, session) rather than just the user: a per-user flag
+# meant that the moment the real admin completed step-up anywhere, every
+# other live session on the account — including a stolen one — silently
+# inherited admin authority for the whole TTL window. Each session now
+# passes the gate itself. Access tokens are session-bound (`sid` claim)
+# and cookie auth IS the session, so a session id is always available on
+# authenticated admin requests; API-key auth is exempt upstream.
+#
+# The session id is hashed into the key because it is the raw cookie
+# credential — Redis key listings (SCAN, monitoring tools) must not
+# become another place the token can be read back from.
 
-def _step_up_key(user_id: uuid.UUID) -> str:
-    return f"sheaf:admin_step_up:{user_id}"
+def _step_up_key(user_id: uuid.UUID, session_id: str) -> str:
+    import hashlib
+
+    sid_hash = hashlib.sha256(session_id.encode()).hexdigest()[:32]
+    return f"sheaf:admin_step_up:{user_id}:{sid_hash}"
 
 
-async def set_admin_step_up(user_id: uuid.UUID, ttl: int = 7200) -> None:
-    """Mark a user as having completed admin step-up auth. TTL default: 2 hours."""
+async def set_admin_step_up(
+    user_id: uuid.UUID, session_id: str, ttl: int = 7200
+) -> None:
+    """Mark a session as having completed admin step-up auth. TTL default: 2 hours."""
     r = await get_redis()
-    await r.setex(_step_up_key(user_id), ttl, "1")
+    await r.setex(_step_up_key(user_id, session_id), ttl, "1")
 
 
-async def check_admin_step_up(user_id: uuid.UUID) -> bool:
-    """Return True if the user has a valid admin step-up token."""
+async def check_admin_step_up(user_id: uuid.UUID, session_id: str | None) -> bool:
+    """Return True if this session has a valid admin step-up token."""
+    if session_id is None:
+        return False
     r = await get_redis()
-    return await r.exists(_step_up_key(user_id)) == 1
+    return await r.exists(_step_up_key(user_id, session_id)) == 1

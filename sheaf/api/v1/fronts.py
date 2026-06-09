@@ -632,11 +632,12 @@ async def delete_front(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
     result = await db.execute(
         select(Front).where(Front.id == front_id, Front.system_id == system.id)

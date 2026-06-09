@@ -208,7 +208,9 @@ def test_disable_totp(admin_client: httpx.Client, client: httpx.Client):
     )
 
     # Set up TOTP
-    setup_resp = target_client.post("/v1/auth/totp/setup")
+    setup_resp = target_client.post(
+        "/v1/auth/totp/setup", json={"password": "testpassword123"}
+    )
     assert setup_resp.status_code == 200
     totp_secret = setup_resp.json()["secret"]
 

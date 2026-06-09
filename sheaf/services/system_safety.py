@@ -18,8 +18,9 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
-from sheaf.auth.totp import verify_code
+from sheaf.auth.totp import verify_code_once
 from sheaf.crypto import decrypt
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.custom_field import CustomFieldDefinition
@@ -119,17 +120,22 @@ _TIER_STRENGTH: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 
-def verify_destructive_auth(
+async def verify_destructive_auth(
     user: User,
     system: System,
     password: str | None,
     totp_code: str | None,
+    db: AsyncSession,
 ) -> None:
     """Raise HTTPException if the required re-auth for destructive actions isn't satisfied.
 
     Mirrors the existing member-delete pattern. Called at the top of every
     safeguarded destructive endpoint and again before finalizing safety-setting
     loosening changes.
+
+    Failed attempts feed the unified lockout (`sheaf.auth.lockout`) so a
+    hijacked session can't brute the password or the 6-digit TOTP space
+    here without tripping the same counter that login does.
     """
     level = system.delete_confirmation
     needs_password = level in (DeleteConfirmation.PASSWORD, DeleteConfirmation.BOTH)
@@ -144,13 +150,19 @@ def verify_destructive_auth(
         needs_password = True
         needs_totp = False
 
+    # Only consult the lockout when a brute-forceable credential is about
+    # to be verified — tier NONE checks nothing, so nothing to protect.
+    if needs_password or needs_totp:
+        ensure_not_locked(user)
+
     if needs_password:
         if not password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Password required",
             )
-        if not verify_password(password, user.password_hash):
+        if not await verify_password(password, user.password_hash):
+            await record_login_failure(db, user)
             # 403 (not 401) — the caller IS authenticated; the step-up
             # password gate denied this specific destructive action. 401
             # would trip the frontend's silent-refresh-and-retry path,
@@ -169,7 +181,8 @@ def verify_destructive_auth(
                 detail="TOTP code required",
             )
         secret = decrypt(user.totp_secret)
-        if not verify_code(secret, totp_code):
+        if not await verify_code_once(user.id, secret, totp_code):
+            await record_login_failure(db, user, reason="totp_failures")
             # Same reasoning as the wrong-password branch: 403, not 401.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

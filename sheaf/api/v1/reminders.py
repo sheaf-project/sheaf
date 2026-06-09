@@ -426,11 +426,12 @@ async def delete_reminder(
     """
     system = await _get_user_system(user, db)
     reminder = await _get_owned_reminder(reminder_id, system, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.REMINDER_DELETE):

@@ -5,6 +5,8 @@ import httpx
 import pyotp
 import pytest
 
+from tests._totp_helpers import clear_totp_replay
+
 
 def test_register(client: httpx.Client):
     email = f"reg-{uuid.uuid4().hex[:8]}@sheaf.dev"
@@ -717,12 +719,16 @@ def test_change_password_with_totp(client: httpx.Client):
     token = _register_and_login(client, email, "oldpassword123")
     client.headers["Authorization"] = f"Bearer {token}"
 
-    setup = client.post("/v1/auth/totp/setup")
+    setup = client.post(
+        "/v1/auth/totp/setup", json={"password": "oldpassword123"}
+    )
     assert setup.status_code == 200, setup.text
     secret = setup.json()["secret"]
     totp = pyotp.TOTP(secret)
     verify = client.post("/v1/auth/totp/verify", json={"code": totp.now()})
     assert verify.status_code == 204, verify.text
+    # Codes are single-use server-side; free up this timestep's code.
+    clear_totp_replay()
 
     # Missing TOTP -> 401 with X-Sheaf-2FA header.
     resp = client.post(
@@ -827,10 +833,12 @@ def test_change_email_with_totp(client: httpx.Client):
     token = _register_and_login(client, email, "testpassword123")
     client.headers["Authorization"] = f"Bearer {token}"
 
-    setup = client.post("/v1/auth/totp/setup")
+    setup = client.post("/v1/auth/totp/setup", json={"password": "testpassword123"})
     secret = setup.json()["secret"]
     totp = pyotp.TOTP(secret)
     client.post("/v1/auth/totp/verify", json={"code": totp.now()})
+    # Codes are single-use server-side; free up this timestep's code.
+    clear_totp_replay()
 
     # Missing TOTP -> 401 with X-Sheaf-2FA header.
     resp = client.post(
@@ -853,12 +861,15 @@ def test_change_email_with_totp(client: httpx.Client):
 
 
 def _enrol_totp(client: httpx.Client) -> "pyotp.TOTP":
-    setup = client.post("/v1/auth/totp/setup")
+    setup = client.post("/v1/auth/totp/setup", json={"password": "testpassword123"})
     assert setup.status_code == 200, setup.text
     secret = setup.json()["secret"]
     totp = pyotp.TOTP(secret)
     verify = client.post("/v1/auth/totp/verify", json={"code": totp.now()})
     assert verify.status_code == 204, verify.text
+    # Codes are single-use server-side; clear the consumed marker so the
+    # test can keep using this timestep's code without waiting 30s.
+    clear_totp_replay()
     return totp
 
 
@@ -966,7 +977,9 @@ def test_change_password_revokes_trusted_devices(client: httpx.Client):
     cookie = r.cookies.get("sheaf_trusted_device")
     assert cookie
 
-    # Change password.
+    # Change password. (Login consumed this timestep's code — single-use
+    # server-side — so free it up first.)
+    clear_totp_replay()
     r = client.post(
         "/v1/auth/change-password",
         json={
@@ -1003,7 +1016,9 @@ def test_totp_disable_revokes_trusted_devices(client: httpx.Client):
     cookie = r.cookies.get("sheaf_trusted_device")
     assert cookie
 
-    # Disable TOTP.
+    # Disable TOTP. (Login consumed this timestep's code — single-use
+    # server-side — so free it up first.)
+    clear_totp_replay()
     r = client.post(
         "/v1/auth/totp/disable",
         json={"email": email, "password": password, "totp_code": totp.now()},
@@ -1012,7 +1027,7 @@ def test_totp_disable_revokes_trusted_devices(client: httpx.Client):
 
     # Re-enable TOTP — old cookie must not work even though we're back to
     # TOTP-enabled.
-    r = client.post("/v1/auth/totp/setup")
+    r = client.post("/v1/auth/totp/setup", json={"password": "testpassword123"})
     new_totp = pyotp.TOTP(r.json()["secret"])
     r = client.post("/v1/auth/totp/verify", json={"code": new_totp.now()})
     assert r.status_code == 204, r.text

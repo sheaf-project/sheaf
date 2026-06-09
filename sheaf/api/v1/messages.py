@@ -546,11 +546,12 @@ async def delete_message(
     """
     system = await _get_user_system(user, db)
     msg = await _get_owned_message(message_id, system, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.MESSAGE_DELETE):
@@ -599,11 +600,12 @@ async def delete_thread(
     System Safety v2 can gate the two with different auth tiers."""
     system = await _get_user_system(user, db)
     msg = await _get_owned_message(message_id, system, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
         body.totp_code if body else None,
+        db,
     )
 
     if is_safeguarded(system, PendingActionType.MESSAGE_THREAD_DELETE):
@@ -764,7 +766,7 @@ async def unpin_message_revision(
         )
 
     if is_safeguarded(system, PendingActionType.REVISION_UNPIN):
-        verify_destructive_auth(user, system, body.password, body.totp_code)
+        await verify_destructive_auth(user, system, body.password, body.totp_code, db)
         target_label = f"Pinned message revision: {_summarise_message(msg)}"
         pending = await queue_pending_action(
             db=db,
