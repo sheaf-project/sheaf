@@ -3,13 +3,13 @@
 Both took the wrap-pattern path (Phase 5): defensive parse + hard-
 failure surfacing + counts + warning-events, with the per-record walk
 still inside the existing run_import. These tests verify the runner
-plumbing + the failure paths, not per-record error attribution (which
-those importers don't have yet — see the deferred deep-instrumentation
-task).
+plumbing + the failure paths plus the per-record skip warnings the
+walks emit when they encounter malformed or dangling references.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import uuid
 
@@ -30,14 +30,26 @@ def _post_file(
     source: str,
     payload: bytes,
     idem_key: str | None = None,
+    options: dict | None = None,
 ) -> dict:
+    form: dict[str, str] = {
+        "source": source,
+        "idempotency_key": idem_key or str(uuid.uuid4()),
+    }
+    if options is not None:
+        form["options"] = json.dumps(options)
     resp = client.post(
         "/v1/imports/file",
         files={"file": ("import.json", payload, "application/json")},
-        data={"source": source, "idempotency_key": idem_key or str(uuid.uuid4())},
+        data=form,
     )
     assert resp.status_code == 202, resp.text
     return resp.json()
+
+
+def _warnings(events: list[dict]) -> list[str]:
+    """Pull warning-level event messages out of an import job's event log."""
+    return [e["message"] for e in events if e["level"] == "warning"]
 
 
 # --- Tupperbox -------------------------------------------------------------
@@ -122,3 +134,190 @@ def test_simplyplural_runner_summary_event(auth_client: httpx.Client):
     ]
     assert summary, final["events"]
     assert "members" in summary[-1]["message"]
+
+
+# --- Per-record skip warnings ----------------------------------------------
+#
+# These pin down the categories of skip the SP / TB walks now emit so a
+# user reading the import detail page sees what didn't come across,
+# instead of having to compare counts to the source export by hand.
+
+
+def _sp_payload(**extras) -> bytes:
+    """Build a minimal SP payload with the same base shape as the fixture."""
+    base = {
+        "version": 2,
+        "users": [],
+        "members": [
+            {"_id": "spm1", "name": "Alpha", "private": False},
+            {"_id": "spm2", "name": "Beta", "private": False},
+        ],
+        "frontStatuses": [],
+        "frontHistory": [],
+        "groups": [],
+        "customFields": [],
+        "notes": [],
+    }
+    base.update(extras)
+    return json.dumps(base).encode()
+
+
+def test_sp_warns_when_field_value_references_unknown_field(
+    auth_client: httpx.Client,
+):
+    payload = _sp_payload(
+        customFields=[{"_id": "spf1", "name": "Likes", "type": 0}],
+        members=[
+            {
+                "_id": "spm1",
+                "name": "Alpha",
+                "private": False,
+                "info": {"spf-deleted": "stale", "spf1": "lasers"},
+            },
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert any(
+        "custom-field values" in w and "field definition wasn't" in w
+        for w in _warnings(final["events"])
+    ), final["events"]
+
+
+def test_sp_warns_when_front_history_member_missing(auth_client: httpx.Client):
+    payload = _sp_payload(
+        frontHistory=[
+            {
+                "_id": "fh1",
+                "member": "spm-deleted",
+                "startTime": 1_700_000_000_000,
+            },
+            {
+                "_id": "fh2",
+                "member": None,
+                "startTime": 1_700_000_000_000,
+            },
+        ],
+    )
+    # `front_history` defaults off; opt in so the walk fires.
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"front_history": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    warnings = _warnings(final["events"])
+    assert any(
+        "front-history rows" in w and "not selected for import" in w
+        for w in warnings
+    ), warnings
+    assert any(
+        "no member id" in w for w in warnings
+    ), warnings
+
+
+def test_sp_warns_when_group_members_or_parent_missing(auth_client: httpx.Client):
+    payload = _sp_payload(
+        groups=[
+            {
+                "_id": "spg-root",
+                "name": "Root",
+                "members": ["spm1", "spm-deleted"],
+                "parent": "root",
+            },
+            {
+                "_id": "spg-orphan",
+                "name": "Orphan",
+                "members": [],
+                "parent": "spg-vanished",
+            },
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    warnings = _warnings(final["events"])
+    assert any(
+        "group-membership references" in w for w in warnings
+    ), warnings
+    assert any(
+        "group parent links" in w for w in warnings
+    ), warnings
+
+
+def _tb_payload(*, groups=None, tuppers=None) -> bytes:
+    return json.dumps({
+        "groups": groups or [],
+        "tuppers": tuppers or [],
+    }).encode()
+
+
+def test_tb_warns_when_tupper_has_no_name(auth_client: httpx.Client):
+    payload = _tb_payload(
+        tuppers=[
+            {"id": 1, "name": "Real", "group_id": None},
+            {"id": 2, "name": "", "group_id": None},
+            {"id": 3, "group_id": None},
+        ],
+    )
+    job = _post_file(auth_client, source="tupperbox_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    warnings = _warnings(final["events"])
+    assert any(
+        "tupper rows with no name" in w for w in warnings
+    ), warnings
+
+
+def test_tb_warns_when_group_missing_name_or_id(auth_client: httpx.Client):
+    payload = _tb_payload(
+        groups=[
+            {"id": 10, "name": "Real"},
+            {"id": 11, "name": ""},
+            {"name": "No id"},
+        ],
+        tuppers=[{"id": 1, "name": "Alpha", "group_id": 10}],
+    )
+    job = _post_file(auth_client, source="tupperbox_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    warnings = _warnings(final["events"])
+    assert any(
+        "group rows with no name" in w for w in warnings
+    ), warnings
+    assert any(
+        "group rows with no id" in w for w in warnings
+    ), warnings
+
+
+def test_tb_warns_when_tupper_group_id_unknown(auth_client: httpx.Client):
+    payload = _tb_payload(
+        groups=[{"id": 10, "name": "Known"}],
+        tuppers=[
+            {"id": 1, "name": "Alpha", "group_id": 10},
+            {"id": 2, "name": "Beta", "group_id": 999},
+        ],
+    )
+    job = _post_file(auth_client, source="tupperbox_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert any(
+        "group references on tuppers" in w
+        and "not present in the export" in w
+        for w in _warnings(final["events"])
+    ), final["events"]
