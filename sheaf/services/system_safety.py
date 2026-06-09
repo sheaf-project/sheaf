@@ -119,7 +119,7 @@ _TIER_STRENGTH: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 
-def verify_destructive_auth(
+async def verify_destructive_auth(
     user: User,
     system: System,
     password: str | None,
@@ -150,7 +150,7 @@ def verify_destructive_auth(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Password required",
             )
-        if not verify_password(password, user.password_hash):
+        if not await verify_password(password, user.password_hash):
             # 403 (not 401) — the caller IS authenticated; the step-up
             # password gate denied this specific destructive action. 401
             # would trip the frontend's silent-refresh-and-retry path,

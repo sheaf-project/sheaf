@@ -77,7 +77,7 @@ async def verify_admin_step_up(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password required"
             )
         from sheaf.auth.passwords import verify_password
-        if not verify_password(body.password, user.password_hash):
+        if not await verify_password(body.password, user.password_hash):
             # 403: caller is already authenticated; this step-up gate
             # denies the action. 401 would falsely trigger the frontend's
             # silent-refresh-and-retry path.
@@ -893,7 +893,7 @@ async def admin_reset_password(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     new_password = body.new_password or secrets.token_urlsafe(16)
-    target.password_hash = hash_password(new_password)
+    target.password_hash = await hash_password(new_password)
     # Clear any pending password reset tokens
     target.password_reset_token = None
     target.password_reset_sent_at = None

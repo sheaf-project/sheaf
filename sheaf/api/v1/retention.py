@@ -108,7 +108,7 @@ async def update_retention(
     split = split_safety_changes(system, proposed)
 
     if split.deferred:
-        verify_destructive_auth(user, system, body.password, body.totp_code)
+        await verify_destructive_auth(user, system, body.password, body.totp_code)
 
     # Apply tightening immediately.
     for field, value in split.applied.items():

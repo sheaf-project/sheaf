@@ -362,7 +362,7 @@ async def delete_member(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     system = await _get_user_system(user, db)
-    verify_destructive_auth(
+    await verify_destructive_auth(
         user,
         system,
         body.password if body else None,
@@ -591,7 +591,7 @@ async def unpin_bio_revision(
         )
 
     if is_safeguarded(system, PendingActionType.REVISION_UNPIN):
-        verify_destructive_auth(user, system, body.password, body.totp_code)
+        await verify_destructive_auth(user, system, body.password, body.totp_code)
         member_name, _ = member_plaintext(member)
         target_label = f"Pinned bio revision: {member_name or 'Unnamed member'}"
         pending = await queue_pending_action(

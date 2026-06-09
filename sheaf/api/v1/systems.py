@@ -81,7 +81,7 @@ async def update_delete_confirmation(
     db: AsyncSession = Depends(get_db),
 ):
     """Update delete confirmation level. Requires password (+ TOTP if enabled)."""
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(

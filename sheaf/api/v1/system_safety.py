@@ -159,7 +159,7 @@ async def update_system_safety(
     # Re-auth gate applies to any loosening change. For tightening-only changes
     # we skip re-auth — there's no attack surface in strengthening protection.
     if split.deferred:
-        verify_destructive_auth(user, system, body.password, body.totp_code)
+        await verify_destructive_auth(user, system, body.password, body.totp_code)
 
     # Apply tightening immediately.
     for field, value in split.applied.items():

@@ -622,7 +622,7 @@ async def create_export_job(
             ),
         )
 
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(

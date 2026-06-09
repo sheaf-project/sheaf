@@ -94,7 +94,7 @@ async def get_account_data(
     # gates the highest-value read.
     ensure_not_locked(user)
 
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         await record_login_failure(db, user)

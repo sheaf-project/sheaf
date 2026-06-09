@@ -341,7 +341,7 @@ async def register(
     user = User(
         email=encrypt(body.email),
         email_hash=email_hash,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         account_status=account_status,
         email_verified=email_verified,
         signup_ip=client_ip(request),
@@ -599,7 +599,7 @@ async def reset_password(
                 detail="Reset token has expired. Please request a new one.",
             )
 
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await hash_password(body.new_password)
     user.password_reset_token = None
     user.password_reset_sent_at = None
     await db.commit()
@@ -640,7 +640,7 @@ async def change_password(
             detail="New password must differ from the current password",
         )
 
-    if not verify_password(body.current_password, user.password_hash):
+    if not await verify_password(body.current_password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
@@ -662,7 +662,7 @@ async def change_password(
                 detail="Invalid TOTP code",
             )
 
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await hash_password(body.new_password)
     user.failed_login_count = 0
     user.locked_until = None
     # Kill any live password-reset token — changing the password is proof
@@ -714,7 +714,7 @@ async def change_email(
             detail="New email must differ from the current email",
         )
 
-    if not verify_password(body.current_password, user.password_hash):
+    if not await verify_password(body.current_password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
@@ -807,7 +807,7 @@ async def login(
             auth_logins_total.labels(outcome="locked").inc()
             raise
 
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None or not await verify_password(body.password, user.password_hash):
         if user is not None:
             await record_login_failure(db, user)
             auth_logins_total.labels(outcome="password_incorrect").inc()
@@ -875,7 +875,7 @@ async def login(
 
     # Rehash if argon2 params have been upgraded
     if needs_rehash(user.password_hash):
-        user.password_hash = hash_password(body.password)
+        user.password_hash = await hash_password(body.password)
 
     # Successful login clears any accumulated failure state.
     user.failed_login_count = 0
@@ -1515,7 +1515,7 @@ async def totp_disable(
 
     ensure_not_locked(user)
 
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1734,7 +1734,7 @@ async def request_account_deletion(
         )
 
     # Verify password
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(
