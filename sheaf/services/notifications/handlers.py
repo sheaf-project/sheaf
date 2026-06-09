@@ -8,6 +8,7 @@ Each handler returns a `DeliveryResult` describing the outcome:
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -30,6 +31,7 @@ from sheaf.services.notifications.payload import RenderedMessage
 from sheaf.services.notifications.safe_http import (
     SsrfRejected,
     assert_url_safe,
+    resolve_pinned,
     safe_client,
 )
 
@@ -120,16 +122,29 @@ async def _deliver_web_push(
     if "endpoint" not in sub or "keys" not in sub:
         return permanent("missing push subscription endpoint/keys")
 
+    # The endpoint is client-supplied (whatever the browser's push service
+    # handed it), so it gets the same SSRF gate as webhook URLs. pywebpush
+    # manages its own connection, so this is validate-only rather than
+    # pinned - acceptable for the narrow window, and the endpoint must be
+    # https for the gate to pass anything a push service would issue.
+    try:
+        assert_url_safe(str(sub["endpoint"]))
+    except SsrfRejected as exc:
+        return permanent(f"SSRF rejection: {exc}")
+
     payload = json.dumps({"title": message.title, "body": message.body})
 
     try:
-        # pywebpush is sync; offload to threadpool would be ideal but for v1
-        # the call is short and we run a small dispatcher concurrency anyway.
-        webpush(
+        # pywebpush is sync (requests under the hood): run it in a worker
+        # thread with an explicit timeout so a slow push service can stall
+        # neither the event loop nor the dispatcher slot indefinitely.
+        await asyncio.to_thread(
+            webpush,
             subscription_info=sub,
             data=payload,
             vapid_private_key=settings.vapid_private_key,
             vapid_claims={"sub": settings.vapid_subject or "mailto:admin@example.com"},
+            timeout=10,
         )
         return SUCCESS
     except WebPushException as exc:
@@ -205,7 +220,7 @@ async def _deliver_webhook(
         return permanent(f"unknown webhook format {fmt!r}")
 
     try:
-        assert_url_safe(url)
+        pinned = await resolve_pinned(url)
     except SsrfRejected as exc:
         return permanent(f"SSRF rejection: {exc}")
 
@@ -235,7 +250,12 @@ async def _deliver_webhook(
 
     async with safe_client() as client:
         try:
-            resp = await client.post(url, content=body, headers=headers)
+            resp = await client.post(
+                pinned.url,
+                content=body,
+                headers={**headers, **pinned.headers},
+                extensions=pinned.extensions,
+            )
         except httpx.TimeoutException:
             return transient("webhook timeout")
         except httpx.RequestError as exc:
@@ -266,7 +286,7 @@ async def _deliver_ntfy(
 
     url = f"{server.rstrip('/')}/{topic}"
     try:
-        assert_url_safe(url)
+        pinned = await resolve_pinned(url)
     except SsrfRejected as exc:
         return permanent(f"SSRF rejection: {exc}")
 
@@ -280,7 +300,12 @@ async def _deliver_ntfy(
 
     async with safe_client() as client:
         try:
-            resp = await client.post(url, content=message.body, headers=headers)
+            resp = await client.post(
+                pinned.url,
+                content=message.body,
+                headers={**headers, **pinned.headers},
+                extensions=pinned.extensions,
+            )
         except httpx.TimeoutException:
             return transient("ntfy timeout")
         except httpx.RequestError as exc:

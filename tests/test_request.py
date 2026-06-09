@@ -139,10 +139,52 @@ def test_ipv6_cidr_match_honours_xff():
     assert _run_client_ip("fd00::/8", "fd12:3456::1", "9.9.9.9") == "9.9.9.9"
 
 
-def test_xff_with_multiple_hops_returns_first():
-    # First entry is the original client; subsequent entries are proxies.
+def test_xff_spoofed_leftmost_entry_is_ignored():
+    """Proxies APPEND the peer they saw, so the leftmost entries are
+    client-supplied. A client sending its own XFF must not be able to
+    choose its rate-limit identity."""
     assert (
-        _run_client_ip("127.0.0.1", "127.0.0.1", "9.9.9.9, 10.0.0.1, 10.0.0.2")
+        _run_client_ip("127.0.0.1", "127.0.0.1", "1.2.3.4, 9.9.9.9")
+        == "9.9.9.9"
+    )
+
+
+def test_xff_multi_hop_walks_past_trusted_proxies():
+    """With a chain of trusted proxies, the rightmost entry that is NOT a
+    trusted proxy is the first unforgeable hop."""
+    assert (
+        _run_client_ip(
+            "127.0.0.1,10.0.0.0/8",
+            "127.0.0.1",
+            "9.9.9.9, 10.0.0.1, 10.0.0.2",
+        )
+        == "9.9.9.9"
+    )
+
+
+def test_xff_all_trusted_chain_falls_back_to_direct():
+    # Proxy-to-proxy traffic with no external client in the chain.
+    assert (
+        _run_client_ip(
+            "127.0.0.1,10.0.0.0/8", "127.0.0.1", "10.0.0.1, 10.0.0.2"
+        )
+        == "127.0.0.1"
+    )
+
+
+def test_xff_garbage_rightmost_falls_back_to_direct():
+    # A malformed entry means everything left of it is untrustworthy.
+    assert (
+        _run_client_ip("127.0.0.1", "127.0.0.1", "9.9.9.9, not-an-ip")
+        == "127.0.0.1"
+    )
+
+
+def test_xff_garbage_left_of_result_is_irrelevant():
+    # The walk stops at the rightmost untrusted entry before reaching the
+    # garbage the client planted further left.
+    assert (
+        _run_client_ip("127.0.0.1", "127.0.0.1", "garbage, 9.9.9.9")
         == "9.9.9.9"
     )
 

@@ -12,6 +12,7 @@ from sheaf import __version__
 from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
+from sheaf.middleware.origin_check import OriginCheckMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
 from sheaf.observability import (
     MetricsMiddleware,
@@ -215,6 +216,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# Innermost (added first = closest to the routes): CSRF Origin check on
+# cookie-authenticated mutations. Runs after the rate limiter so CSRF
+# probes still consume rate-limit budget.
+app.add_middleware(OriginCheckMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
