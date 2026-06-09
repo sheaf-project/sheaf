@@ -14,7 +14,8 @@ export type ImportJobSource =
   | "tupperbox_file"
   | "simplyplural_file"
   | "sheaf_file"
-  | "pluralspace_file";
+  | "pluralspace_file"
+  | "prism_file";
 
 export type ImportJobStatus =
   | "pending"
@@ -74,6 +75,7 @@ export const SOURCE_LABELS: Record<ImportJobSource, string> = {
   simplyplural_file: "SimplyPlural",
   sheaf_file: "Sheaf",
   pluralspace_file: "PluralSpace",
+  prism_file: "Prism",
 };
 
 const TERMINAL = new Set<ImportJobStatus>(["complete", "failed", "cancelled"]);
@@ -93,6 +95,10 @@ export async function createFileImport(params: {
   file: File;
   idempotencyKey: string;
   options?: Record<string, unknown>;
+  /** Per-source secret. Currently only used by Prism (PRISM1
+   * envelope passphrase). Encrypted at rest by the server until the
+   * runner finalises the job. */
+  credential?: string;
 }): Promise<ImportJob> {
   const form = new FormData();
   form.append("file", params.file);
@@ -100,6 +106,9 @@ export async function createFileImport(params: {
   form.append("idempotency_key", params.idempotencyKey);
   if (params.options !== undefined) {
     form.append("options", JSON.stringify(params.options));
+  }
+  if (params.credential !== undefined && params.credential !== "") {
+    form.append("credential", params.credential);
   }
   return apiFetch<ImportJob>("/v1/imports/file", {
     method: "POST",

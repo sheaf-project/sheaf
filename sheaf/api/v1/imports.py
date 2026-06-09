@@ -129,6 +129,7 @@ async def create_file_import(
     source: Annotated[str, Form()],
     idempotency_key: Annotated[uuid.UUID, Form()],
     options: Annotated[str | None, Form()] = None,
+    credential: Annotated[str | None, Form()] = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ImportJobRead:
@@ -140,6 +141,12 @@ async def create_file_import(
     runner picks the job up on its next tick and walks the payload.
 
     `options` is a JSON-encoded form field — source-specific shape.
+
+    `credential` is an optional per-source secret (currently only used
+    by Prism's PRISM1 envelope passphrase). When set, it is encrypted
+    at rest in `payload_metadata.encrypted_credential` using
+    SHEAF_ENCRYPTION_KEY and wiped by the runner at terminal state,
+    mirroring the PluralKit API token flow.
     """
     options_dict: dict | None = None
     if options is not None and options.strip():
@@ -198,6 +205,14 @@ async def create_file_import(
     # operators inspecting the bucket.
     await put_payload(storage_key, data, content_type="application/json")
 
+    metadata: dict | None = None
+    if body.options is not None or credential:
+        metadata = {}
+        if body.options is not None:
+            metadata["options"] = body.options
+        if credential:
+            metadata["encrypted_credential"] = encrypt(credential)
+
     job = ImportJob(
         id=job_id,
         user_id=user.id,
@@ -205,7 +220,7 @@ async def create_file_import(
         status=ImportJobStatus.PENDING.value,
         idempotency_key=str(body.idempotency_key),
         payload_storage_key=storage_key,
-        payload_metadata={"options": body.options} if body.options is not None else None,
+        payload_metadata=metadata,
         counts={},
         events=[],
     )
