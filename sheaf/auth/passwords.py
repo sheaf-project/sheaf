@@ -49,9 +49,29 @@ async def verify_password(plain: str, hashed: str) -> bool:
         return await asyncio.to_thread(_verify_sync, plain, hashed)
 
 
+# A real Argon2 hash to verify against when there is no user to verify.
+# Computed once at import so the login "user not found" branch can spend
+# the same CPU a real wrong-password verify would, closing the timing
+# oracle that let account existence be probed by response latency. The
+# value behind it is irrelevant; only the work matters.
+_DUMMY_HASH = _ph.hash("sheaf-login-timing-equaliser")
+
+
+async def dummy_verify() -> None:
+    """Spend one verify's worth of Argon2 CPU and discard the result.
+
+    Call on the unknown-user login branch so its latency matches the
+    real-user wrong-password branch. Goes through the same semaphore and
+    threadpool as a real verify so the cost and contention behaviour
+    line up.
+    """
+    async with _get_hash_semaphore():
+        await asyncio.to_thread(_verify_sync, "x", _DUMMY_HASH)
+
+
 def needs_rehash(hashed: str) -> bool:
     """Check if a hash needs rehashing due to parameter changes.
 
-    Pure string parsing — cheap enough to stay synchronous.
+    Pure string parsing - cheap enough to stay synchronous.
     """
     return _ph.check_needs_rehash(hashed)

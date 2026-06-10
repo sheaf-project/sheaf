@@ -8,6 +8,7 @@ from sheaf.observability.metrics import (
     email_send_duration_seconds,
     emails_sent_total,
 )
+from sheaf.redact import redact_email
 
 logger = logging.getLogger("sheaf.email")
 
@@ -30,7 +31,10 @@ class NoneBackend(EmailBackend):
     """No-op backend. Logs a warning when email would have been sent."""
 
     async def send(self, to: str, subject: str, body_html: str, body_text: str) -> None:
-        logger.warning("Email not sent (EMAIL_BACKEND=none): to=%s subject=%s", to, subject)
+        logger.warning(
+            "Email not sent (EMAIL_BACKEND=none): to=%s subject=%s",
+            redact_email(to), subject,
+        )
 
 
 def get_email_backend() -> EmailBackend:
@@ -104,7 +108,10 @@ async def send_email(
     provider = _settings.email_backend or "none"
 
     if not force and await _is_blocked_recipient(to):
-        logger.info("Skipping send to %s (blocked by delivery status): %s", to, subject)
+        logger.info(
+            "Skipping send to %s (blocked by delivery status): %s",
+            redact_email(to), subject,
+        )
         emails_sent_total.labels(
             kind=kind, provider=provider, outcome="blocked_recipient",
         ).inc()

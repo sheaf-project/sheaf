@@ -24,7 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unverified
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
-from sheaf.auth.passwords import hash_password, needs_rehash, verify_password
+from sheaf.auth.passwords import (
+    dummy_verify,
+    hash_password,
+    needs_rehash,
+    verify_password,
+)
 from sheaf.auth.sessions import (
     cache_refresh_rotation,
     consume_refresh_jti,
@@ -549,10 +554,15 @@ async def request_password_reset(
             _deliver_password_reset_email, body.email, token, client_ip(request)
         )
     else:
-        # Symmetric work on the no-match branch so CPU cost matches the
-        # real path; the SMTP send is already off the request thread.
+        # Symmetric work on the no-match branch so timing matches the
+        # real path: the token gen + hash equalise CPU, and a commit
+        # equalises the DB round-trip the real branch pays for its
+        # UPDATE (the initial SELECT already opened a transaction, so
+        # this is a real COMMIT to Postgres, not a no-op). The SMTP send
+        # is already off the request thread.
         token = secrets.token_urlsafe(32)
         hash_mail_token(token)
+        await db.commit()
 
     # Counted regardless of whether an email actually went out — the rate
     # at which reset is requested is the signal, not the email count
@@ -838,6 +848,10 @@ async def login(
             await record_login_failure(db, user)
             auth_logins_total.labels(outcome="password_incorrect").inc()
         else:
+            # Spend an equivalent Argon2 verify so an unknown email can't
+            # be distinguished from a wrong password by response latency.
+            # `or` short-circuits, so verify_password never ran here.
+            await dummy_verify()
             auth_logins_total.labels(outcome="user_not_found").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
