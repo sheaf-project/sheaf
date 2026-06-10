@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Build provenance for local compose builds.** `GET /v1/version` reports the commit/tag/build-time the backend was built from; CI-built ghcr images already set these, but a local `docker compose build` left them null because the compose `args` didn't forward them. The app service now accepts `GIT_COMMIT` / `GIT_TAG` / `BUILD_TIME` from the host environment (documented in SELFHOSTING.md), so a compose build can identify itself too. Unset values stay null, same as before.
+
 ## [0.5.1] - 2026-06-10
 
 ### Added
