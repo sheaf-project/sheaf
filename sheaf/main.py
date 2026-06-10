@@ -74,7 +74,12 @@ async def _promote_admin_emails() -> None:
                     user.account_status = AccountStatus.ACTIVE
                     changed = True
                 if changed:
-                    logger.info("Promoted %s to admin (verified, active)", email)
+                    from sheaf.redact import redact_email
+
+                    logger.info(
+                        "Promoted %s to admin (verified, active)",
+                        redact_email(email),
+                    )
         await db.commit()
 
 
