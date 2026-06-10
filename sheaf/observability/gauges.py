@@ -28,6 +28,7 @@ from sheaf.observability.metrics import (
     cf_shield_active,
     db_pool_connections,
     imports_in_progress,
+    imports_oldest_pending_seconds,
     members_custom_front,
     members_total,
     notifications_outbox_depth,
@@ -188,6 +189,21 @@ async def _refresh_imports_in_progress(db: AsyncSession) -> None:
         )
     )
     imports_in_progress.set(int(n or 0))
+
+    # Oldest still-pending import: age in seconds. The runner is
+    # NOTIFY-driven, so anything beyond a few seconds means it isn't
+    # draining. created_at is enqueue time, and the row stays pending
+    # until a worker claims it, so this is the time-to-pickup.
+    oldest = await db.scalar(
+        select(func.min(ImportJob.created_at)).where(
+            ImportJob.status == ImportJobStatus.PENDING.value
+        )
+    )
+    if oldest is None:
+        imports_oldest_pending_seconds.set(0)
+    else:
+        age = (datetime.now(UTC) - oldest).total_seconds()
+        imports_oldest_pending_seconds.set(max(age, 0))
 
 
 async def _refresh_subscriptions(db: AsyncSession) -> None:

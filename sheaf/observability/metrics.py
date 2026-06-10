@@ -351,6 +351,27 @@ job_consecutive_failures = _G(
 )
 
 # ---------------------------------------------------------------------------
+# Leader election (background-loop coordination)
+# ---------------------------------------------------------------------------
+
+leader_is_leader = _G(
+    "sheaf_leader_is_leader",
+    "1 on the process currently holding background-loop leadership, else 0. "
+    "multiprocess_mode=livesum so sum() across live worker processes is the "
+    "leader count - alert on sum(sheaf_leader_is_leader) != 1 to catch a "
+    "wedged election (0 leaders, background work stalled) or, impossibly, a "
+    "split brain (2+). Only meaningful with LEADER_ELECTION enabled; with it "
+    "off every process runs the loops and this metric is not published.",
+    multiprocess_mode="livesum",
+)
+leader_transitions_total = _C(
+    "sheaf_leader_transitions_total",
+    "Background-loop leadership acquisitions. A steady climb (high "
+    "rate(sheaf_leader_transitions_total[15m])) signals leadership flapping, "
+    "usually an unstable DB connection dropping and reacquiring the lock.",
+)
+
+# ---------------------------------------------------------------------------
 # Imports / exports
 # ---------------------------------------------------------------------------
 
@@ -367,6 +388,14 @@ imports_completed_total = _C(
 imports_in_progress = _G(
     "sheaf_imports_in_progress",
     "Imports currently pending or running.",
+)
+imports_oldest_pending_seconds = _G(
+    "sheaf_imports_oldest_pending_seconds",
+    "Age of the oldest still-pending import, in seconds (0 when none are "
+    "pending). The import runner is NOTIFY-driven, so a value that climbs "
+    "past a few seconds means the runner isn't draining - the leader is "
+    "wedged or the listener is disconnected. Mirrors "
+    "notifications_outbox_oldest_pending_seconds.",
 )
 exports_built_total = _C(
     "sheaf_exports_built_total",

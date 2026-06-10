@@ -65,6 +65,15 @@ async def leader_loop(
     consistent.
     """
     from sheaf.database import engine
+    from sheaf.observability.metrics import (
+        leader_is_leader,
+        leader_transitions_total,
+    )
+
+    # Publish a baseline immediately so every process exposes the gauge
+    # (standbys at 0). With multiprocess_mode=livesum, sum() across live
+    # processes is then the leader count from the first scrape onward.
+    leader_is_leader.set(0)
 
     while True:
         try:
@@ -78,8 +87,10 @@ async def leader_loop(
                 if not got:
                     # Someone else leads. The held connection goes back to
                     # the pool while we wait out the retry interval.
-                    pass
+                    leader_is_leader.set(0)
                 else:
+                    leader_transitions_total.inc()
+                    leader_is_leader.set(1)
                     logger.info(
                         "Leadership acquired; starting %d background loops",
                         len(loops),
@@ -98,6 +109,7 @@ async def leader_loop(
                             # dead session.
                             await conn.execute(text("SELECT 1"))
                     finally:
+                        leader_is_leader.set(0)
                         logger.info("Standing down; stopping background loops")
                         for t in tasks:
                             t.cancel()
@@ -112,8 +124,15 @@ async def leader_loop(
                         with contextlib.suppress(Exception):
                             await conn.invalidate()
         except asyncio.CancelledError:
+            # Shutdown: stop counting this process toward the leader sum.
+            with contextlib.suppress(Exception):
+                leader_is_leader.set(0)
             raise
         except Exception:
+            # Lost the lock connection mid-lease: we are no longer leader
+            # until the next acquisition, so reflect that before retrying.
+            with contextlib.suppress(Exception):
+                leader_is_leader.set(0)
             logger.exception(
                 "Leader election connection error; retrying in %ss",
                 _RETRY_SECONDS,

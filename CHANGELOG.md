@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Leader-election and import-backlog observability metrics.** New `sheaf_leader_is_leader` gauge (1 on the leader process, 0 on standbys; multiprocess_mode=livesum, so `sum(sheaf_leader_is_leader) != 1` alerts on a wedged election with zero leaders or, impossibly, a split brain - a gap previously only caught indirectly via the notification-backlog alert and so invisible during quiet periods), `sheaf_leader_transitions_total` counter for leadership-flap detection, and `sheaf_imports_oldest_pending_seconds` gauge mirroring the notifications outbox-age signal now that the import runner is NOTIFY-driven. The leader gauge is only published when `LEADER_ELECTION` is enabled. (The per-job freshness, run-count, and duration metrics the same pass would have wanted already existed: `sheaf_job_last_success_timestamp`, `sheaf_job_runs_total`, `sheaf_job_run_duration_seconds`.)
+
 ## [0.5.0] - 2026-06-09
 
 ### Added

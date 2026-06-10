@@ -209,3 +209,26 @@ def test_webhook_signature_failures_total_prewarmed():
             body, "sheaf_webhook_signature_failures_total", {"endpoint": endpoint},
         )
         assert val is not None, f"missing prewarmed series for endpoint={endpoint}"
+
+
+# ---------------------------------------------------------------------------
+# Leader election
+# ---------------------------------------------------------------------------
+
+def test_leader_is_leader_gauge_is_one():
+    """The test stack is a single process with leader election on, so it
+    holds leadership: sheaf_leader_is_leader must be present and 1.
+
+    In prod, the alert is sum(sheaf_leader_is_leader) != 1; this is the
+    single-node analogue."""
+    body = _scrape()
+    val = _series_value(body, "sheaf_leader_is_leader")
+    assert val is not None, "sheaf_leader_is_leader missing from scrape"
+    assert val == 1.0, f"expected sole leader to report 1, got {val}"
+
+
+def test_leader_transitions_total_present():
+    body = _scrape()
+    val = _series_value(body, "sheaf_leader_transitions_total")
+    # At least one acquisition happened at startup.
+    assert val is not None and val >= 1.0, val
