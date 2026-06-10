@@ -109,48 +109,50 @@ async def lifespan(app: FastAPI):
 
     from sheaf.services.import_runner import import_runner_loop
     from sheaf.services.jobs import job_runner_loop
+    from sheaf.services.leader import leader_loop
     from sheaf.services.notifications.dispatcher import dispatcher_loop
 
-    jobs_task = asyncio.create_task(job_runner_loop())
-    dispatcher_task = asyncio.create_task(dispatcher_loop())
-    # Imports get their own fast loop, not the slow jobs.py registry —
-    # the registry only wakes every job_check_interval_minutes, far too
-    # slow for an import a user is actively waiting on. The test stack
-    # disables the loop so import tests can drive the runner manually
-    # without a live loop racing them.
-    import_task = (
-        asyncio.create_task(import_runner_loop())
-        if settings.import_runner_enabled
-        else None
-    )
+    # The background loops: the periodic job registry, the notification
+    # dispatcher, and the import runner. Imports get their own fast loop,
+    # not the slow jobs.py registry — the registry wakes far too slowly
+    # for an import a user is actively waiting on. The test stack
+    # disables the import loop so import tests can drive the runner
+    # manually without a live loop racing them.
+    loop_factories = [
+        ("jobs", job_runner_loop),
+        ("dispatcher", dispatcher_loop),
+    ]
+    if settings.import_runner_enabled:
+        loop_factories.append(("imports", import_runner_loop))
+
+    # With leader election (default), every replica runs this task but
+    # only the advisory-lock holder actually starts the loops; the rest
+    # stand by and take over within seconds if the leader dies. With it
+    # disabled, the loops run unconditionally in this process (the old
+    # single-instance behaviour).
+    if settings.leader_election_enabled:
+        background_tasks = [asyncio.create_task(leader_loop(loop_factories))]
+    else:
+        background_tasks = [
+            asyncio.create_task(factory(), name=name)
+            for name, factory in loop_factories
+        ]
 
     # Fast-gauges loop: redis_up / db_pool / outbox_depth refreshed every
     # ~10s so up/down detection isn't bounded by the job-runner cadence.
     # The full DB+Redis sweep stays on the jobs.py registry (slow path).
-    fast_gauges_task = (
-        asyncio.create_task(_fast_gauges_loop())
-        if settings.metrics_enabled
-        else None
-    )
+    # Deliberately NOT leader-gated: it only reads, and every replica
+    # should report its own pool/redis view.
+    if settings.metrics_enabled:
+        background_tasks.append(asyncio.create_task(_fast_gauges_loop()))
 
     yield
 
-    jobs_task.cancel()
-    dispatcher_task.cancel()
-    if import_task is not None:
-        import_task.cancel()
-    if fast_gauges_task is not None:
-        fast_gauges_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await jobs_task
-    with contextlib.suppress(asyncio.CancelledError):
-        await dispatcher_task
-    if fast_gauges_task is not None:
+    for task in background_tasks:
+        task.cancel()
+    for task in background_tasks:
         with contextlib.suppress(asyncio.CancelledError):
-            await fast_gauges_task
-    if import_task is not None:
-        with contextlib.suppress(asyncio.CancelledError):
-            await import_task
+            await task
     logger.info("Sheaf shutting down")
 
 

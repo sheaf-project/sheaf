@@ -121,13 +121,26 @@ async def _claim_batch(
     db: AsyncSession, *, worker_id: str
 ) -> list[NotificationOutboxRow]:
     now = datetime.now(UTC)
-    # Use FOR UPDATE SKIP LOCKED to claim rows without blocking other workers.
+    # Claims are leases, not tombstones. A worker that died between
+    # claiming and delivering (crash, deploy, OOM) used to strand its
+    # batch forever: the re-claim filter demanded claimed_at IS NULL and
+    # the retention sweep only deletes delivered rows, so every unclean
+    # restart silently dropped up to a batch of notifications. Rows whose
+    # claim is older than the lease are presumed orphaned and re-claimed.
+    # Lease-based (rather than reset-on-startup) so it stays correct with
+    # multiple replicas: another process's live claim is never touched.
+    lease_cutoff = now - timedelta(
+        minutes=settings.notifications_claim_lease_minutes
+    )
     stmt = (
         select(NotificationOutboxRow)
         .where(
             NotificationOutboxRow.delivered_at.is_(None),
             NotificationOutboxRow.deliver_after <= now,
-            NotificationOutboxRow.claimed_at.is_(None),
+            (
+                NotificationOutboxRow.claimed_at.is_(None)
+                | (NotificationOutboxRow.claimed_at < lease_cutoff)
+            ),
         )
         .order_by(NotificationOutboxRow.deliver_after)
         .limit(_BATCH_SIZE)

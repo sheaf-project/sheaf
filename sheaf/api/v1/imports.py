@@ -22,7 +22,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -88,6 +88,11 @@ async def _commit_new_job(
     """
     db.add(job)
     try:
+        # Wake the import runner the moment this lands instead of waiting
+        # out its poll interval. NOTIFY is transactional: it fires on
+        # commit and evaporates with a rollback, so the idempotency-race
+        # loser below never pings anyone.
+        await db.execute(text("NOTIFY sheaf_import_enqueued"))
         await db.commit()
     except IntegrityError:
         await db.rollback()

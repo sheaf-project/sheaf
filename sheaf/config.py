@@ -353,6 +353,18 @@ class Settings(BaseSettings):
     # retry. Generous — a large PluralKit API import paginating switch
     # history legitimately runs tens of seconds, never minutes.
     import_stale_running_minutes: int = 15
+    # Export builds that crash or get deployed over leave the job RUNNING
+    # forever; rows older than this are reset to pending (or failed after
+    # repeated stalls). Generous: a huge image-laden export can be slow.
+    export_stale_running_minutes: int = 30
+    # Outbox rows claimed by a dispatcher that died before delivering are
+    # eligible for re-claim after this lease. Deliveries finish in seconds;
+    # the lease only has to be comfortably above worst-case delivery time.
+    notifications_claim_lease_minutes: int = 15
+    # Exactly one replica runs the background loops, elected via a
+    # Postgres advisory lock. Disable to restore run-everywhere behaviour
+    # (single-instance deploys never notice either way).
+    leader_election_enabled: bool = True
     activation_code_ttl_days: int = 7
     # VAPID keys for web push. Generate with `vapid --gen` (py-vapid) or any
     # WebPush helper. Empty = web_push destination type is rejected.

@@ -127,16 +127,46 @@ async def run_job(job_name: str, db: AsyncSession) -> JobRun:
 _consecutive_failures: dict[str, int] = {}
 
 
-async def _get_last_success(job_name: str, db: AsyncSession) -> datetime | None:
-    """Get the most recent successful run time for a job."""
+async def _get_last_run_started(job_name: str, db: AsyncSession) -> datetime | None:
+    """Most recent run start for a job, regardless of outcome.
+
+    Scheduling keys off the last *attempt*, not the last success: with
+    the wake cadence now following the fastest registered interval, a
+    permanently-failing job scheduled off last-success would re-fire on
+    every wake (potentially every 60s) instead of at its declared
+    interval. Failures still surface through metrics and the admin job
+    log; they don't earn a faster retry.
+    """
     result = await db.execute(
         select(JobRun.started_at)
-        .where(JobRun.job_name == job_name, JobRun.status == "success")
+        .where(JobRun.job_name == job_name)
         .order_by(JobRun.started_at.desc())
         .limit(1)
     )
     row = result.scalar_one_or_none()
     return row
+
+
+def _compute_wake_seconds() -> int:
+    """How long the runner sleeps between registry passes.
+
+    The old fixed sleep of `job_check_interval_minutes` (15m default)
+    silently floored every job's cadence: tick_repeated_reminders
+    declares 60s but fired up to 14 minutes late, and queued export
+    builds cleared one per 15 minutes. The runner now wakes as often as
+    the fastest enabled job wants, clamped to [15s, the configured
+    check interval]. Per-job elapsed checks still decide what actually
+    runs, so slow jobs aren't affected by the faster wake.
+    """
+    ceiling = max(settings.job_check_interval_minutes * 60, 15)
+    intervals = [
+        job.interval_seconds()
+        for job in _REGISTRY.values()
+        if job.enabled() and job.interval_seconds() > 0
+    ]
+    if not intervals:
+        return ceiling
+    return max(15, min(min(intervals), ceiling))
 
 
 async def job_runner_loop() -> None:
@@ -146,15 +176,14 @@ async def job_runner_loop() -> None:
     # Ensure all jobs are registered
     _register_all_jobs()
 
-    interval = settings.job_check_interval_minutes * 60
     logger.info(
-        "Job runner started — checking every %dm, %d jobs registered",
-        settings.job_check_interval_minutes,
+        "Job runner started — waking every %ds, %d jobs registered",
+        _compute_wake_seconds(),
         len(_REGISTRY),
     )
 
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(_compute_wake_seconds())
 
         for name, job in _REGISTRY.items():
             if not job.enabled():
@@ -172,11 +201,11 @@ async def job_runner_loop() -> None:
 
             try:
                 async with async_session_factory() as db:
-                    last_success = await _get_last_success(name, db)
+                    last_started = await _get_last_run_started(name, db)
 
                     # Run if never run before, or if enough time has elapsed
-                    if last_success is not None:
-                        elapsed = (datetime.now(UTC) - last_success).total_seconds()
+                    if last_started is not None:
+                        elapsed = (datetime.now(UTC) - last_started).total_seconds()
                         if elapsed < job_interval:
                             continue
 
@@ -855,6 +884,72 @@ async def _recover_stale_imports(db: AsyncSession) -> dict:
     }
 
 
+# A build that has crashed the worker this many times is parked as
+# failed rather than reset again, mirroring the import runner's cap.
+_EXPORT_MAX_ATTEMPTS = 3
+
+
+async def _recover_stale_exports(db: AsyncSession) -> dict:
+    """Reset ExportJob rows stuck in RUNNING after a crash or deploy.
+
+    The builder claims PENDING -> RUNNING and commits before the long
+    build; a worker killed mid-build leaves the row RUNNING forever.
+    Because create_export_job refuses new jobs while one is PENDING or
+    RUNNING, the affected user was permanently wedged behind a 409 that
+    only manual SQL could clear - every deploy that landed mid-build
+    wedged someone.
+
+    The claim committed but the build's writes didn't, so resetting to
+    PENDING is a clean retry. failed_attempts caps the retries so a
+    poisoned export can't crash-loop the worker forever.
+    """
+    from sheaf.models.export_job import ExportJob, ExportJobStatus
+
+    cutoff = datetime.now(UTC) - timedelta(
+        minutes=settings.export_stale_running_minutes
+    )
+    result = await db.execute(
+        select(ExportJob)
+        .where(
+            ExportJob.status == ExportJobStatus.RUNNING,
+            ExportJob.started_at.is_not(None),
+            ExportJob.started_at < cutoff,
+        )
+        .with_for_update(skip_locked=True)
+    )
+    stale = list(result.scalars().all())
+    if not stale:
+        return {"items_processed": 0}
+
+    reset = 0
+    parked = 0
+    for job in stale:
+        job.failed_attempts += 1
+        if job.failed_attempts >= _EXPORT_MAX_ATTEMPTS:
+            job.status = ExportJobStatus.FAILED
+            job.completed_at = datetime.now(UTC)
+            job.error = (
+                "export build did not finish; gave up after "
+                f"{job.failed_attempts} stalled attempts"
+            )
+            parked += 1
+        else:
+            job.status = ExportJobStatus.PENDING
+            job.started_at = None
+            reset += 1
+        logger.warning(
+            "recovered stale export_job %s (attempt %d) -> %s",
+            job.id,
+            job.failed_attempts,
+            job.status,
+        )
+    await db.commit()
+    return {
+        "items_processed": len(stale),
+        "details": f"{reset} reset to pending, {parked} parked failed",
+    }
+
+
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -998,6 +1093,13 @@ def _register_all_jobs() -> None:
         description="Delete terminal notification_outbox rows past retention",
         func=_cleanup_notification_outbox,
         interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="recover_stale_exports",
+        description="Reset ExportJob rows stuck running after a worker crash",
+        func=_recover_stale_exports,
+        interval_seconds=lambda: settings.export_stale_running_minutes * 60,
     )
 
     register_job(
