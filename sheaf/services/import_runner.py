@@ -15,6 +15,7 @@ per-record errors land in events with level=error.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
@@ -311,15 +312,59 @@ async def run_import_tick(db: AsyncSession) -> dict:
     return {"items_processed": 1, "details": f"complete: {job.id}"}
 
 
+async def _listen_for_enqueues(wake: asyncio.Event) -> None:
+    """Hold a LISTEN connection and set `wake` on every enqueue NOTIFY.
+
+    The enqueue endpoint sends `NOTIFY sheaf_import_enqueued` inside the
+    same transaction that inserts the job, so the runner reacts the
+    moment the row is visible instead of waiting out its poll interval.
+    This is an accelerator, not a correctness mechanism: the runner's
+    timed poll stays as the safety net, so a dropped notification or a
+    listener reconnect window can delay a job by at most one poll
+    interval, never lose it.
+    """
+    from sqlalchemy import text
+
+    from sheaf.database import engine
+
+    while True:
+        try:
+            async with engine.connect() as conn:
+                raw = await conn.get_raw_connection()
+                driver = raw.driver_connection  # asyncpg connection
+                await driver.add_listener(
+                    "sheaf_import_enqueued", lambda *_: wake.set()
+                )
+                logger.info("Import runner listening for enqueue NOTIFYs")
+                # No remove_listener teardown: the listener dies with the
+                # connection when this context exits, and that is the only
+                # way out of the inner loop.
+                while True:
+                    # Liveness probe: raises when the connection has died,
+                    # dropping us to the reconnect path.
+                    await asyncio.sleep(60)
+                    await conn.execute(text("SELECT 1"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Import enqueue listener lost its connection; reconnecting",
+                exc_info=True,
+            )
+            await asyncio.sleep(5)
+
+
 async def import_runner_loop(stop_event: asyncio.Event | None = None) -> None:
     """Dedicated import-runner loop, run as its own asyncio task in the
     FastAPI lifespan — NOT registered in the jobs.py periodic registry.
 
-    The jobs.py registry only wakes every `job_check_interval_minutes`
-    (15m default), which is fine for hourly/daily housekeeping but far
-    too slow for an import the user is actively waiting on. This loop
-    mirrors the notification dispatcher: a tight interval, its own
-    session per tick.
+    The jobs.py registry wakes far too slowly for an import the user is
+    actively waiting on. This loop mirrors the notification dispatcher:
+    its own session per tick — but instead of pure polling it sleeps on
+    an event the LISTEN connection sets whenever an import is enqueued,
+    with the poll interval as the timeout. Enqueued imports start within
+    milliseconds; the poll remains the safety net for anything a NOTIFY
+    could miss (listener reconnecting, jobs reset by the stale sweep).
 
     Each pass drains the queue — keep claiming until empty — so a
     backlog of N pending jobs clears in one pass rather than taking
@@ -330,24 +375,35 @@ async def import_runner_loop(stop_event: asyncio.Event | None = None) -> None:
     from sheaf.database import async_session_factory
 
     interval = max(1, settings.import_runner_interval_seconds)
-    logger.info("Import runner started (interval=%ds)", interval)
-    while True:
-        if stop_event is not None and stop_event.is_set():
-            return
-        try:
-            while True:
-                async with async_session_factory() as db:
-                    result = await run_import_tick(db)
-                if result.get("items_processed", 0) == 0:
-                    break
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Import runner tick failed")
-        try:
-            await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            raise
+    wake = asyncio.Event()
+    listener = asyncio.create_task(
+        _listen_for_enqueues(wake), name="import-enqueue-listener"
+    )
+    logger.info("Import runner started (poll fallback=%ds)", interval)
+    try:
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return
+            try:
+                while True:
+                    async with async_session_factory() as db:
+                        result = await run_import_tick(db)
+                    if result.get("items_processed", 0) == 0:
+                        break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Import runner tick failed")
+            try:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wake.wait(), timeout=interval)
+                wake.clear()
+            except asyncio.CancelledError:
+                raise
+    finally:
+        listener.cancel()
+        with contextlib.suppress(Exception):
+            await listener
 
 
 # Public re-export so the importer modules don't reach into the

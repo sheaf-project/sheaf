@@ -336,7 +336,14 @@ A single front change — even if many members move at once — produces **one n
 
 ### Multi-instance deploys
 
-The dispatcher currently runs in every app process and uses Postgres `SELECT FOR UPDATE SKIP LOCKED` to claim outbox rows safely across workers. Multi-replica deploys are not yet officially supported — leader election is on the post-launch roadmap.
+Background work (the job runner, the notification dispatcher, and the import runner) is coordinated by leader election: every replica competes for a Postgres advisory lock, exactly one wins and runs the loops, and the rest stand by. If the leader dies or loses its database connection, a standby takes over within a few seconds. Single-instance deploys are unaffected — the lone process simply always wins.
+
+Underneath the election, work items are still claimed per-row (`SELECT FOR UPDATE SKIP LOCKED` plus lease-based reclaim of claims orphaned by a crashed worker), so even a brief leadership overlap during failover cannot double-deliver.
+
+```env
+# Escape hatch: run the loops in every process (the old behaviour).
+LEADER_ELECTION=false
+```
 
 ---
 
