@@ -36,13 +36,12 @@ def init_registry() -> CollectorRegistry:
     if multiproc_dir:
         path = Path(multiproc_dir)
         path.mkdir(parents=True, exist_ok=True)
-        # Wipe stale files from previous container lives so resurrected
-        # counter values don't bleed across deploys.
-        for f in path.glob("*.db"):
-            try:
-                f.unlink()
-            except OSError as exc:
-                logger.warning("could not remove stale metrics file %s: %s", f, exc)
+        # NOTE: no stale-file wipe here, deliberately. init_registry()
+        # runs per PROCESS, and the mmap dir is shared by every worker:
+        # a respawning worker calling this used to wipe all the other
+        # workers' accumulated values. The once-per-container wipe is
+        # the entrypoint's job (rm -f "$PROMETHEUS_MULTIPROC_DIR"/*.db
+        # before the server starts, while there is exactly one process).
         registry = CollectorRegistry()
         MultiProcessCollector(registry)
         logger.info("metrics registry: multiproc mode at %s", multiproc_dir)
@@ -59,3 +58,29 @@ def get_registry() -> CollectorRegistry:
     if _registry is None:
         return init_registry()
     return _registry
+
+
+def get_metric_registry() -> CollectorRegistry | None:
+    """Registry that metric OBJECTS should bind to at definition time.
+
+    Deliberately different from get_registry() (the registry the
+    /metrics endpoint serves):
+
+    * Single-process mode: the in-process registry. Object registration
+      IS the export path; both functions return the same registry.
+
+    * Multiprocess mode: None (unregistered). Metric values still reach
+      the mmap files - prometheus_client routes writes there whenever
+      PROMETHEUS_MULTIPROC_DIR is set, registered or not - and the
+      MultiProcessCollector in the scrape registry aggregates them
+      across all worker processes. Registering the objects into the
+      scrape registry as well makes generate_latest() emit every family
+      TWICE: once from the live object (this process's view, typically
+      0 for gauges another worker maintains) and once from the
+      collector (the real cross-process aggregate). Scrapers keep
+      whichever sample they parse first, so dashboards randomly show
+      zeros depending on collector ordering.
+    """
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        return None
+    return get_registry()

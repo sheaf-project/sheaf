@@ -33,7 +33,7 @@ from sheaf.observability.buckets import (
     HTTP_LATENCY_BUCKETS,
     RATE_DISTRIBUTION_BUCKETS,
 )
-from sheaf.observability.registry import get_registry
+from sheaf.observability.registry import get_metric_registry
 
 # ---------------------------------------------------------------------------
 # Label-value type aliases
@@ -113,11 +113,15 @@ StatusClass = Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
 
 
 # ---------------------------------------------------------------------------
-# Wrappers binding every metric to the shared registry
+# Wrappers binding every metric to the metric-object registry. NOTE:
+# get_metric_registry(), not get_registry() - in multiprocess mode the
+# objects must stay OUT of the scraped registry or every family is
+# exported twice (live-object zeros + the real multiproc aggregate).
+# See registry.get_metric_registry for the full story.
 # ---------------------------------------------------------------------------
 
 def _C(name: str, doc: str, labels: list[str] | None = None) -> Counter:
-    return Counter(name, doc, labels or [], registry=get_registry())
+    return Counter(name, doc, labels or [], registry=get_metric_registry())
 
 
 def _H(
@@ -125,7 +129,7 @@ def _H(
     buckets: tuple = HTTP_LATENCY_BUCKETS,
 ) -> Histogram:
     return Histogram(
-        name, doc, labels or [], buckets=buckets, registry=get_registry()
+        name, doc, labels or [], buckets=buckets, registry=get_metric_registry()
     )
 
 
@@ -140,7 +144,7 @@ def _G(
     # background worker.
     return Gauge(
         name, doc, labels or [],
-        registry=get_registry(),
+        registry=get_metric_registry(),
         multiprocess_mode=multiprocess_mode,
     )
 

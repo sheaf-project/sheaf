@@ -19,8 +19,10 @@ Three deployment shapes, controlled by `metrics_bind`:
 from __future__ import annotations
 
 import asyncio
+import errno
 import hmac
 import logging
+import socket
 import threading
 
 from fastapi import FastAPI, Request
@@ -78,6 +80,12 @@ def setup_metrics_endpoint(app: FastAPI, settings: Settings) -> None:
         return
 
     if settings.metrics_bind == "separate":
+        # Multi-worker deployments (WEB_CONCURRENCY > 1): every worker
+        # runs this lifespan and races to bind the metrics port. Losing
+        # is fine - the multiprocess collector reads ALL workers' mmap
+        # files, so any single worker serving the port exports complete
+        # data. Without this tolerance the losing worker dies on
+        # EADDRINUSE and the supervisor respawns it in a loop.
         if settings.metrics_auth == "token":
             _start_token_listener(
                 settings.metrics_bind_host,
@@ -87,11 +95,21 @@ def setup_metrics_endpoint(app: FastAPI, settings: Settings) -> None:
             )
         else:
             global _separate_server
-            _separate_server = start_http_server(
-                port=settings.metrics_bind_port,
-                addr=settings.metrics_bind_host,
-                registry=registry,
-            )
+            try:
+                _separate_server = start_http_server(
+                    port=settings.metrics_bind_port,
+                    addr=settings.metrics_bind_host,
+                    registry=registry,
+                )
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                logger.info(
+                    "metrics port %s:%d already served by another worker; skipping",
+                    settings.metrics_bind_host,
+                    settings.metrics_bind_port,
+                )
+                return
             logger.info(
                 "metrics listener (no auth) on %s:%d",
                 settings.metrics_bind_host,
@@ -116,6 +134,24 @@ def _start_token_listener(host: str, port: int, token: str, registry) -> None:
 
     app = Starlette(routes=[Route("/metrics", metrics)])
 
+    # Bind here, in the caller, so a lost bind race surfaces as a clean
+    # skip instead of an async crash inside the listener thread (which
+    # would kill the whole worker on multi-worker deployments - see the
+    # comment at the call site).
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError as exc:
+        sock.close()
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        logger.info(
+            "metrics port %s:%d already served by another worker; skipping",
+            host, port,
+        )
+        return
+
     def _run() -> None:
         import uvicorn
 
@@ -125,7 +161,7 @@ def _start_token_listener(host: str, port: int, token: str, registry) -> None:
         server = uvicorn.Server(config)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(server.serve())
+        loop.run_until_complete(server.serve(sockets=[sock]))
 
     t = threading.Thread(target=_run, name="metrics-listener", daemon=True)
     t.start()
