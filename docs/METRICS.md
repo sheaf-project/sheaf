@@ -19,7 +19,7 @@ This document covers:
 ## 1. Enabling and binding
 
 Six environment variables control the endpoint. The defaults expose
-metrics on `127.0.0.1:8090` with no auth — safe for a single-node
+metrics on `127.0.0.1:8090` with no auth - safe for a single-node
 deployment scraped via SSH tunnel or a private network, NOT safe to
 forward through your edge.
 
@@ -42,7 +42,7 @@ METRICS_GAUGE_REFRESH_SECONDS=60     # DB-sourced gauges refresh interval
 | Internal network | `BIND=separate`, `HOST=10.x.x.x`, `AUTH=none` | Multi-node deploy with a private network. Scrape from a Prometheus instance inside the network. Cloud SG / firewall is the perimeter. |
 | Token-gated | `BIND=separate` or `main`, `AUTH=token`, `TOKEN=<bearer>` | Anywhere the endpoint is reachable from anything you don't already trust. |
 
-The `main` bind ALWAYS forces token auth regardless of `METRICS_AUTH` —
+The `main` bind ALWAYS forces token auth regardless of `METRICS_AUTH` -
 sharing a listener with the public API surface makes "forgot to set
 auth" a foot-gun, so we just rule it out.
 
@@ -50,7 +50,7 @@ auth" a foot-gun, so we just rule it out.
 will warn loudly at startup. Loopback (`127.0.0.1`, `::1`) and RFC1918
 private ranges (`10/8`, `172.16/12`, `192.168/16`, etc.) are silent;
 anything else (including `0.0.0.0` and hostnames) prints a warning so
-you confirm the perimeter is doing the work — a containerised deploy
+you confirm the perimeter is doing the work - a containerised deploy
 that binds `0.0.0.0` inside the container but only publishes the host
 port on `127.0.0.1` is fine, but the app can't tell that on its own.
 
@@ -120,13 +120,13 @@ deliberately not a label).
 | `sheaf_auth_logins_total` | counter | `outcome` ∈ {success, user_not_found, password_incorrect, locked, totp_required, totp_invalid, recovery_code_used, trusted_device_bypass, captcha_failed, email_unverified, email_revalidation_required} |
 | `sheaf_auth_password_reset_total` | counter | `stage` ∈ {requested, completed, expired, abandoned} |
 | `sheaf_auth_email_verification_total` | counter | `outcome` ∈ {sent, completed, expired, resend_blocked} |
-| `sheaf_auth_recovery_codes_used_total` | counter | — |
+| `sheaf_auth_recovery_codes_used_total` | counter | - |
 | `sheaf_auth_sessions_invalidated_total` | counter | `reason` ∈ {logout, expiry, mass_invalidation, password_change, cf_shield, admin} |
 | `sheaf_auth_lockout_events_total` | counter | `reason` ∈ {login_failures, totp_failures} |
-| `sheaf_auth_lockouts_active` | gauge | — |
-| `sheaf_auth_trusted_devices_active` | gauge | — |
-| `sheaf_auth_sessions_active` | gauge | — |
-| `sheaf_auth_totp_enabled` | gauge | — |
+| `sheaf_auth_lockouts_active` | gauge | - |
+| `sheaf_auth_trusted_devices_active` | gauge | - |
+| `sheaf_auth_sessions_active` | gauge | - |
+| `sheaf_auth_totp_enabled` | gauge | - |
 
 Useful alerts: a sustained `password_incorrect` rate per hour (credential
 stuffing), `lockout_events_total` rate (active attack), `lockouts_active`
@@ -140,10 +140,10 @@ high-water mark (failure-mode tracking).
 | `sheaf_rate_limit_active_blocks` | gauge | `bucket` |
 | `sheaf_captcha_challenges_total` | counter | `outcome` ∈ {issued, solved, failed} |
 | `sheaf_webhook_signature_failures_total` | counter | `endpoint` ∈ {sendgrid, cf_shield, notification_dispatch} |
-| `sheaf_requests_per_ip_per_minute` | histogram | — |
-| `sheaf_requests_per_account_per_minute` | histogram | — |
+| `sheaf_requests_per_ip_per_minute` | histogram | - |
+| `sheaf_requests_per_account_per_minute` | histogram | - |
 
-`bucket` is derived from the request route — values include `login`,
+`bucket` is derived from the request route - values include `login`,
 `register`, `password_reset`, `totp`, `email_verification`,
 `account_delete`, `account_change`, `account_data`, `upload`, `export`,
 `redeem`, `webhook`, `admin`, `global`, `other`. New endpoints land
@@ -163,8 +163,8 @@ percentiles means abuse.
 | `sheaf_notifications_dispatched_total` | counter | `channel_type`, `outcome` ∈ {success, transient_failure, permanent_failure, filtered, revoked, dropped} |
 | `sheaf_notifications_dispatch_duration_seconds` | histogram | `channel_type` |
 | `sheaf_notifications_dispatch_lag_seconds` | histogram | `channel_type` |
-| `sheaf_notifications_outbox_depth` | gauge | — |
-| `sheaf_notifications_outbox_oldest_pending_seconds` | gauge | — |
+| `sheaf_notifications_outbox_depth` | gauge | - |
+| `sheaf_notifications_outbox_oldest_pending_seconds` | gauge | - |
 | `sheaf_notifications_subscriptions_active` | gauge | `channel_type` |
 
 `channel_type` ∈ {web_push, mobile_push, webhook, ntfy, pushover, discord, email}.
@@ -202,7 +202,38 @@ deletion_reminder, deletion_confirmed, announcement, other}.
 | `sheaf_job_consecutive_failures` | gauge | `job` |
 
 `job` is the name registered via `register_job()`. Alert on
-`time() - last_success_timestamp > N` for stuck-job detection.
+`time() - last_success_timestamp > N` for stuck-job detection. (The
+timestamp gauge predates the `_seconds` naming convention; it is a unix
+timestamp in seconds despite the missing suffix.)
+
+### Leader election
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_leader_is_leader` | gauge (livesum) | none |
+| `sheaf_leader_transitions_total` | counter | none |
+
+`sheaf_leader_is_leader` is 1 on the process holding background-loop
+leadership and 0 on standbys; `multiprocess_mode=livesum` means
+`sum(sheaf_leader_is_leader)` across live workers is the leader count.
+The invariant alert is the point of this metric:
+
+```
+sum(sheaf_leader_is_leader) != 1   for 10m
+```
+
+0 means the election is wedged and all background work (job runner,
+dispatcher, import runner) is stalled, which a quiet period would
+otherwise hide since the notification-backlog alert only fires when
+there's traffic to back up. 2+ is a split brain that shouldn't be
+possible by construction; the metric proves the invariant rather than
+assuming it. Only published when `LEADER_ELECTION` is enabled; with it
+off, every process runs the loops and this metric is absent, so the
+`!= 1` alert does not apply.
+
+`sheaf_leader_transitions_total` increments on each acquisition; a high
+`rate(sheaf_leader_transitions_total[15m])` is leadership flapping,
+usually an unstable DB connection.
 
 ### Imports / exports
 
@@ -210,12 +241,19 @@ deletion_reminder, deletion_confirmed, announcement, other}.
 |---|---|---|
 | `sheaf_imports_started_total` | counter | `source` |
 | `sheaf_imports_completed_total` | counter | `source`, `outcome` ∈ {complete, failed, cancelled} |
-| `sheaf_imports_in_progress` | gauge | — |
+| `sheaf_imports_in_progress` | gauge | - |
+| `sheaf_imports_oldest_pending_seconds` | gauge | none |
 | `sheaf_exports_built_total` | counter | `outcome` ∈ {done, failed, expired} |
-| `sheaf_export_size_bytes` | histogram | — |
+| `sheaf_export_size_bytes` | histogram | - |
 
 `source` ∈ {pluralkit_file, pluralkit_api, tupperbox_file,
-simplyplural_file, sheaf_file}.
+simplyplural_file, sheaf_file, pluralspace_file, prism_file,
+ampersand_file}.
+
+`sheaf_imports_oldest_pending_seconds` is the age of the oldest
+unclaimed import. The runner is NOTIFY-driven, so a value climbing past
+a few seconds means it isn't draining (wedged leader or a disconnected
+LISTEN). Mirrors `sheaf_notifications_outbox_oldest_pending_seconds`.
 
 ### System Safety
 
@@ -234,8 +272,8 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_cf_shield_engagements_total` | counter | `direction` ∈ {activated, deactivated} |
-| `sheaf_cf_shield_session_revocations_total` | counter | — |
-| `sheaf_cf_shield_active` | gauge | — |
+| `sheaf_cf_shield_session_revocations_total` | counter | - |
+| `sheaf_cf_shield_active` | gauge | - |
 
 `sheaf_cf_shield_active` is 1 when the backend believes shield mode is
 currently engaged, else 0. Use it to alert on "shield-mode active for
@@ -246,8 +284,8 @@ currently engaged, else 0. Use it to alert on "shield-mode active for
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_decrypt_failures_total` | counter | `field` |
-| `sheaf_users_total` | gauge | — |
-| `sheaf_users_pending_delete` | gauge | — |
+| `sheaf_users_total` | gauge | - |
+| `sheaf_users_pending_delete` | gauge | - |
 | `sheaf_tier_limit_hits_total` | counter | `limit`, `tier` |
 
 `limit` ∈ {members, storage, polls_concurrent, pushover_user,
@@ -256,7 +294,7 @@ pushover_global}.
 `tier` ∈ {free, plus, self_hosted, unknown}.
 
 Tracks where users bump into per-tier caps. Useful for pricing and
-limit-adjustment decisions — a sustained `members{tier="free"}` rate
+limit-adjustment decisions - a sustained `members{tier="free"}` rate
 suggests the free cap needs revisiting.
 
 `field` ∈ {email, totp_secret, recovery_codes, channel_config, other}.
@@ -268,9 +306,9 @@ detect non-zero from the first scrape.
 
 | Metric | Type | Labels |
 |---|---|---|
-| `sheaf_systems_total` | gauge | — |
-| `sheaf_members_total` | gauge | — |
-| `sheaf_members_custom_front` | gauge | — |
+| `sheaf_systems_total` | gauge | - |
+| `sheaf_members_total` | gauge | - |
+| `sheaf_members_custom_front` | gauge | - |
 
 ### Infra
 
@@ -278,11 +316,11 @@ detect non-zero from the first scrape.
 |---|---|---|
 | `sheaf_db_pool_connections` | gauge | `state` ∈ {checked_in, checked_out} |
 | `sheaf_db_query_duration_seconds` | histogram | `operation` ∈ {select, insert, update, delete, ddl, other} |
-| `sheaf_redis_up` | gauge | — |
+| `sheaf_redis_up` | gauge | - |
 | `sheaf_s3_operations_total` | counter | `op`, `outcome` ∈ {success, error} |
 | `sheaf_s3_operation_duration_seconds` | histogram | `op` |
 
-`db_query_duration_seconds` complements the HTTP RED histogram — handler
+`db_query_duration_seconds` complements the HTTP RED histogram - handler
 latency is the user-facing number, but a query-time spike vs handler-
 time spike tells you where to look.
 
@@ -302,7 +340,7 @@ than the slower DB-counts refresh.
 |---|---|---|
 | `sheaf_build_info` | gauge (always 1) | `version`, `sheaf_mode`, `git_commit` |
 
-Standard pattern — value is meaningless, labels carry the dimensions.
+Standard pattern - value is meaningless, labels carry the dimensions.
 Use it in Grafana for "running version" by joining against this metric.
 
 ---
@@ -350,7 +388,7 @@ The metrics module is multi-worker-ready anyway, controlled by the
 
 If you bump uvicorn or gunicorn workers up later, the only thing to be
 aware of is that gauges need a `multiprocess_mode` declared. The
-`_G(...)` helper in `metrics.py` does this — `livesum` is the default
+`_G(...)` helper in `metrics.py` does this - `livesum` is the default
 for "count of things right now" gauges, `max` for high-water marks,
 `mostrecent` for the build-info gauge. Adding a new gauge without
 picking a mode is a clear code-review item.
@@ -440,6 +478,6 @@ histogram_quantile(0.99,
   below by `job_check_interval_minutes * 60`. Refresh-second values
   below that are effectively rounded up to the next loop tick.
 - The per-IP / per-account rate histograms bail out cleanly if the
-  Redis SCAN exceeds 50k keys per refresh — on deployments at that
+  Redis SCAN exceeds 50k keys per refresh - on deployments at that
   scale, switch to redis-exporter for per-IP visibility instead of
   trying to stream everything through this single sample pass.

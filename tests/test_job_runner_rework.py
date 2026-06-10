@@ -368,6 +368,126 @@ def test_fresh_running_export_is_left_alone(
 
 
 # ---------------------------------------------------------------------------
+# Leader + import observability metrics
+
+
+def _sample(name: str) -> float | None:
+    from sheaf.observability.registry import get_registry
+
+    return get_registry().get_sample_value(name)
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("PROMETHEUS_MULTIPROC_DIR")),
+    reason="gauge read needs the single-process registry",
+)
+def test_leader_is_leader_gauge_and_transitions():
+    """Acquiring leadership flips sheaf_leader_is_leader to 1 and bumps the
+    transitions counter; standing down returns it to 0."""
+    from unittest.mock import patch
+
+    import sheaf.database as database_module
+    from sheaf.services.leader import leader_loop
+
+    async def run() -> None:
+        engine = _test_engine()
+        started = asyncio.Event()
+
+        async def dummy() -> None:
+            started.set()
+            while True:
+                await asyncio.sleep(3600)
+
+        try:
+            with patch.object(database_module, "engine", engine):
+                before = _sample("sheaf_leader_transitions_total") or 0.0
+                task = asyncio.create_task(
+                    leader_loop([("dummy", dummy)], lock_key=_TEST_LOCK_KEY)
+                )
+                await asyncio.wait_for(started.wait(), timeout=5)
+
+                # Leadership held.
+                assert _sample("sheaf_leader_is_leader") == 1.0
+                assert (
+                    _sample("sheaf_leader_transitions_total") or 0.0
+                ) == before + 1
+
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+                # Stood down.
+                assert _sample("sheaf_leader_is_leader") == 0.0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_imports_oldest_pending_gauge_reflects_backlog(auth_client: httpx.Client):
+    """A pending import the runner hasn't claimed shows up as a non-zero
+    oldest-pending age once the gauge refresher runs; an empty queue reads
+    0."""
+    import os as _os
+
+    if _os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        pytest.skip("gauge read needs the single-process registry")
+
+    me = auth_client.get("/v1/auth/me").json()
+
+    async def run() -> float | None:
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.models.import_job import (
+            ImportJob,
+            ImportJobSource,
+            ImportJobStatus,
+        )
+        from sheaf.observability.gauges import _refresh_imports_in_progress
+
+        engine = _test_engine()
+        session_factory = sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        job_id = uuid.uuid4()
+        try:
+            async with session_factory() as db:
+                db.add(
+                    ImportJob(
+                        id=job_id,
+                        user_id=uuid.UUID(me["id"]),
+                        source=ImportJobSource.PLURALKIT_FILE.value,
+                        status=ImportJobStatus.PENDING.value,
+                        idempotency_key=str(uuid.uuid4()),
+                        payload_storage_key=f"imports/{job_id}.json",
+                        payload_metadata=None,
+                        counts={},
+                        events=[],
+                        created_at=datetime.now(UTC) - timedelta(seconds=120),
+                    )
+                )
+                await db.commit()
+
+            async with session_factory() as db:
+                await _refresh_imports_in_progress(db)
+            age = _sample("sheaf_imports_oldest_pending_seconds")
+
+            # Cleanup so we don't leave a perpetual pending row behind.
+            async with session_factory() as db:
+                row = await db.get(ImportJob, job_id)
+                if row is not None:
+                    await db.delete(row)
+                    await db.commit()
+            return age
+        finally:
+            await engine.dispose()
+
+    age = asyncio.run(run())
+    assert age is not None and age >= 100, age
+
+
+# ---------------------------------------------------------------------------
 # Import-enqueue NOTIFY listener
 
 
