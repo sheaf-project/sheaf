@@ -826,7 +826,10 @@ MAX_IMAGE_DIMENSION=4096         # longest edge in px; larger gets downscaled
 MAX_ANIMATED_FRAMES=100          # cap for GIF / animated WebP
 MAX_ANIMATED_DECODED_BYTES=104857600  # 100 MB decompression-bomb cap
 IMAGE_NORMALIZE_CONCURRENCY=4    # concurrent decodes (bounds peak memory)
+MAX_IMPORT_RESTORED_IMAGES=20000 # per-import image-restore cap (archive import)
 ```
+
+The last knob bounds how many images one export-with-images archive import will restore. The storage quota already bounds the restored bytes; this bounds the number of normalization passes a single job can demand, so a crafted zip full of tiny images can't monopolise the import runner. An import that hits the cap completes with a warning and strips the remaining image references. Raise it if your system genuinely has more images than the default.
 
 ### Animated avatars
 

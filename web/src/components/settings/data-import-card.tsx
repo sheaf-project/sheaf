@@ -12,7 +12,8 @@ export function DataImportCard() {
         <p className="text-sm text-muted-foreground mb-3">
           Supported sources: SimplyPlural (export file), PluralKit (export file
           or live API via your <code>pk;token</code>), Tupperbox (export file),
-          Sheaf (export file).
+          Sheaf (export file), Octocon and compatible forks (via PK export), Prism
+          (export file), PluralSpace (export file).
         </p>
         <Link to="/import">
           <Button variant="outline">Import data</Button>

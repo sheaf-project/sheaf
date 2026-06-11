@@ -42,11 +42,12 @@ Contents:
 - images/ -- the binary blobs referenced by member avatars, journal
   embeds, and content-revision history.
 
-Important: importing this zip into another Sheaf instance brings the
-text content (members, journals, etc.) but does NOT auto-restore image
-attachments. The image bytes are present here for your records, but
-re-uploading them via the new instance's UI is a manual step. Image
-references will be empty until you do.
+Importing this whole zip via Settings -> Import restores both the text
+content AND the images: avatars and embedded images are re-uploaded to
+the new instance and references re-pointed automatically (subject to
+the importing account's storage quota and the instance's upload
+policy). Importing just export.json brings the text content only, with
+image references removed.
 """
 
 

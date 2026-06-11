@@ -93,8 +93,8 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Import from a Sheaf data export (JSON). Use this to restore a backup
-            or migrate between Sheaf instances.
+            Import from a Sheaf data export (JSON or ZIP). Use this to restore
+            a backup or migrate between Sheaf instances.
           </p>
         </CardContent>
       </Card>
@@ -208,6 +208,8 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
   const [importPolls, setImportPolls] = useState(true);
   const [importNotifications, setImportNotifications] = useState(true);
   const [importReminders, setImportReminders] = useState(true);
+  // Only meaningful for the export-with-images zip (preview.archive).
+  const [restoreImages, setRestoreImages] = useState(true);
 
   const importIncoming = allMembers
     ? (preview?.member_count ?? 0)
@@ -232,8 +234,9 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
     setStep("importing");
     setError(null);
     try {
+      const isArchive = preview?.archive ?? false;
       const job = await createFileImport({
-        source: "sheaf_file",
+        source: isArchive ? "sheaf_archive" : "sheaf_file",
         file,
         idempotencyKey: idemKey,
         options: {
@@ -251,6 +254,8 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
           // Reminders need a channel; without notifications there's nothing
           // for them to attach to.
           reminders: importReminders && importNotifications,
+          // The images toggle only exists on the archive options schema.
+          ...(isArchive ? { images: restoreImages } : {}),
         },
       });
       navigate(`/imports/${job.id}`);
@@ -280,11 +285,13 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Upload a JSON file from Sheaf&apos;s data export.
+              Upload a JSON file from Sheaf&apos;s data export, or the full
+              export-with-images zip (the zip restores avatars and embedded
+              images too).
             </p>
             <input
               type="file"
-              accept=".json,application/json"
+              accept=".json,.zip,application/json,application/zip"
               onChange={handleFileSelect}
               className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
             />
@@ -385,6 +392,20 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
                   </p>
                 )}
               </div>
+              {preview.archive && (
+                <div>
+                  <Checkbox
+                    label={`Restore images (${preview.image_count.toLocaleString()} bundled)`}
+                    checked={restoreImages}
+                    onChange={setRestoreImages}
+                  />
+                  <p className="ml-6 text-xs text-muted-foreground">
+                    Avatars and embedded images are re-uploaded to this
+                    account (they count toward your storage quota). Unticked,
+                    image references are removed like a plain JSON import.
+                  </p>
+                </div>
+              )}
 
               <ConflictStrategyField
                 value={conflictStrategy}

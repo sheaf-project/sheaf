@@ -147,6 +147,15 @@ class Settings(BaseSettings):
     # rather than failing — paired with the per-user rate limit on
     # the endpoint, total backlog stays bounded.
     image_normalize_concurrency: int = 4
+    # Per-import cap on images restored from an export-with-images
+    # archive. The storage quota bounds restored BYTES but not how many
+    # normalize_image passes one job can demand: a zip stuffed with
+    # thousands of tiny PNGs would otherwise buy hours of Pillow CPU on
+    # the import lane for pennies of quota. Far above any realistic
+    # export; an import that hits it surfaces a warning and strips the
+    # remaining references rather than failing. Selfhosters with very
+    # large systems can raise it.
+    max_import_restored_images: int = 20_000
     # Concurrency cap on Argon2 password hashing/verification. Each
     # in-flight hash holds ~64MiB at default params, so this bounds both
     # CPU and memory under a login burst; excess callers queue at the

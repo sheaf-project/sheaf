@@ -14,6 +14,7 @@ export type ImportJobSource =
   | "tupperbox_file"
   | "simplyplural_file"
   | "sheaf_file"
+  | "sheaf_archive"
   | "pluralspace_file"
   | "prism_file";
 
@@ -74,6 +75,7 @@ export const SOURCE_LABELS: Record<ImportJobSource, string> = {
   tupperbox_file: "Tupperbox",
   simplyplural_file: "SimplyPlural",
   sheaf_file: "Sheaf",
+  sheaf_archive: "Sheaf (with images)",
   pluralspace_file: "PluralSpace",
   prism_file: "Prism",
 };

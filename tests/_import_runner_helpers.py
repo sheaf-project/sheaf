@@ -50,6 +50,45 @@ asyncio.run(main())
     )
 
 
+def set_member_limit(client: httpx.Client, limit: int) -> None:
+    """Set a per-user member-limit override directly in the DB.
+
+    The override wins over the tier default regardless of SHEAF_MODE,
+    which lets cap-path tests run under the selfhosted test config.
+    Requires SHEAF_TEST_DB_URL pointing at the test stack's published
+    Postgres port when run from the host.
+    """
+    import asyncio
+    import os
+
+    email = client.get("/v1/auth/me").json()["email"]
+
+    async def _run() -> None:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.crypto import blind_index
+        from sheaf.models.user import User
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with session() as db:
+                result = await db.execute(
+                    select(User).where(User.email_hash == blind_index(email))
+                )
+                user = result.scalar_one()
+                user.member_limit = limit
+                await db.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
 def wait_for_terminal(
     client: httpx.Client, job_id: str, *, timeout_s: float = 10.0
 ) -> dict:

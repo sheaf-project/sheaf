@@ -37,3 +37,14 @@ class SheafImportOptions(BaseModel):
     # Watch tokens + their channels + filter rules. Reminders reference a
     # channel, so importing reminders without notifications drops them.
     notifications: bool = True
+
+
+class SheafArchiveImportOptions(SheafImportOptions):
+    """Options for the export-with-images zip import.
+
+    Everything the plain JSON import takes, plus the image-restore
+    toggle: with `images=False` the archive behaves exactly like a
+    plain JSON import (internal image references stripped).
+    """
+
+    images: bool = True
