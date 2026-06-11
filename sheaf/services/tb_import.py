@@ -43,7 +43,14 @@ from sheaf.schemas.tb_import import (
     TBPreviewMember,
     TBPreviewSummary,
 )
+from sheaf.services.import_content_dedup import (
+    ContentMatchIndex,
+    PairGuard,
+    load_group_index,
+    load_group_member_guard,
+)
 from sheaf.services.import_dedup import (
+    ImportConflictStrategy,
     candidate_key,
     count_new_members,
     load_member_match_index,
@@ -145,8 +152,15 @@ async def run_import(
     await db.flush()
 
     if options.groups:
-        result.groups_imported, group_warnings = await _import_groups(
-            _list(data, "groups"), tuppers, system.id, id_to_member, db
+        result.groups_imported, result.groups_skipped, group_warnings = (
+            await _import_groups(
+                _list(data, "groups"),
+                tuppers,
+                system.id,
+                id_to_member,
+                db,
+                conflict_strategy=options.conflict_strategy,
+            )
         )
         warnings.extend(group_warnings)
 
@@ -209,20 +223,28 @@ async def _import_groups(
     system_id: uuid.UUID,
     id_to_member: dict[str, Member],
     db: AsyncSession,
-) -> tuple[int, list[str]]:
+    *,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.CREATE,
+) -> tuple[int, int, list[str]]:
     """Create Sheaf Groups and wire member associations.
 
     Tupperbox doesn't list members on its group objects; the relationship
     is the other way round (each tupper has a `group_id`). We invert that
     mapping here, restricted to tuppers the user actually selected.
 
-    Returns `(imported_count, warnings)` so the runner can fold per-section
-    warnings into the import-detail event log.
+    Under skip/update a same-named existing group is reused instead of
+    duplicated. Returns `(imported, skipped, warnings)` so the runner
+    can fold per-section warnings into the import-detail event log.
     """
     imported = 0
+    skipped = 0
     warnings: list[str] = []
     groups_no_name = 0
     groups_no_id = 0
+    dedupe = conflict_strategy != ImportConflictStrategy.CREATE
+    group_index = (
+        await load_group_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
     sheaf_group_by_tbid: dict[str, Group] = {}
 
     for tb_g in tb_groups:
@@ -234,13 +256,20 @@ async def _import_groups(
         if gid is None:
             groups_no_id += 1
             continue
+        name = name[:100]
+        existing = group_index.get(name) if dedupe else None
+        if existing is not None:
+            sheaf_group_by_tbid[str(gid)] = existing
+            skipped += 1
+            continue
         group = Group(
             id=uuid.uuid4(),
             system_id=system_id,
-            name=name[:100],
+            name=name,
             description=_clean_str(tb_g.get("description")),
         )
         db.add(group)
+        group_index.register(name, group)
         sheaf_group_by_tbid[str(gid)] = group
         imported += 1
 
@@ -253,11 +282,16 @@ async def _import_groups(
             f"Skipped {groups_no_id} group rows with no id."
         )
     if not sheaf_group_by_tbid:
-        return imported, warnings
+        return imported, skipped, warnings
 
     await db.flush()
 
     # Build the group → [members] map from each tupper's group_id field.
+    # The pair guard covers a reused group + skipped member and duplicate
+    # pairs within the file.
+    pair_guard = (
+        await load_group_member_guard(db, system_id) if dedupe else PairGuard()
+    )
     members_with_unknown_group = 0
     for tupper in selected_tuppers:
         gid = tupper.get("group_id")
@@ -273,6 +307,8 @@ async def _import_groups(
         member = id_to_member.get(tid)
         if member is None:
             continue
+        if not pair_guard.add((group.id, member.id)):
+            continue
         await db.execute(
             group_members.insert().values(group_id=group.id, member_id=member.id)
         )
@@ -281,9 +317,7 @@ async def _import_groups(
             f"Dropped {members_with_unknown_group} group references on "
             "tuppers that pointed at a group not present in the export."
         )
-    return imported, warnings
-
-    return imported
+    return imported, skipped, warnings
 
 
 # --- Helpers -----------------------------------------------------------------

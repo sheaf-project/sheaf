@@ -42,6 +42,15 @@ from sheaf.schemas.pk_import import (
     PKPreviewMember,
     PKPreviewSummary,
 )
+from sheaf.services.import_content_dedup import (
+    ContentMatchIndex,
+    PairGuard,
+    front_key,
+    load_front_index,
+    load_group_index,
+    load_group_member_guard,
+)
+from sheaf.services.import_dedup import ImportConflictStrategy
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 
 logger = logging.getLogger("sheaf.import.pk")
@@ -178,36 +187,59 @@ async def import_groups(
     system_id: uuid.UUID,
     hid_to_member: dict[str, Member],
     db: AsyncSession,
-) -> int:
+    *,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.CREATE,
+) -> tuple[int, int]:
     """Create Sheaf Groups from PK groups and wire member associations.
 
     PK groups don't nest, so there's no parent linking pass. The members
     list inside each PK group is HIDs; we look them up in hid_to_member
     and silently drop any that the user deselected during preview.
+
+    Under skip/update, a same-named existing group is reused instead of
+    duplicated (membership still merges onto it - see
+    import_content_dedup). Returns (imported, skipped).
     """
     imported = 0
+    skipped = 0
+    dedupe = conflict_strategy != ImportConflictStrategy.CREATE
+    group_index = (
+        await load_group_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
     sheaf_groups: list[tuple[dict, Group]] = []
 
     for pk_g in pk_groups:
         name = _clean_str(pk_g.get("name"))
         if not name:
             continue
+        name = name[:100]
+        existing = group_index.get(name) if dedupe else None
+        if existing is not None:
+            sheaf_groups.append((pk_g, existing))
+            skipped += 1
+            continue
         group = Group(
             id=uuid.uuid4(),
             system_id=system_id,
-            name=name[:100],
+            name=name,
             description=_clean_str(pk_g.get("description")),
             color=_normalize_color(pk_g.get("color")),
         )
         db.add(group)
+        group_index.register(name, group)
         sheaf_groups.append((pk_g, group))
         imported += 1
 
     if not sheaf_groups:
-        return 0
+        return 0, skipped
 
     await db.flush()
 
+    # The pair guard covers a reused group + skipped member (association
+    # already in the DB) and duplicate pairs within the file.
+    pair_guard = (
+        await load_group_member_guard(db, system_id) if dedupe else PairGuard()
+    )
     for pk_g, group in sheaf_groups:
         # PK exposes group membership in two shapes depending on endpoint:
         # - The export file inlines `members` as a list of member HIDs.
@@ -222,11 +254,13 @@ async def import_groups(
             member = hid_to_member.get(hid)
             if not member:
                 continue
+            if not pair_guard.add((group.id, member.id)):
+                continue
             await db.execute(
                 group_members.insert().values(group_id=group.id, member_id=member.id)
             )
 
-    return imported
+    return imported, skipped
 
 
 # --- Switches → fronts -------------------------------------------------------
@@ -237,20 +271,24 @@ async def import_switches(
     system_id: uuid.UUID,
     hid_to_member: dict[str, Member],
     db: AsyncSession,
-) -> tuple[int, list[str]]:
+    *,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.CREATE,
+) -> tuple[int, int, list[str]]:
     """Convert PK switch events into Sheaf Front intervals.
 
-    Walking oldest-to-newest, each switch:
-      - ends the previous open Front at this timestamp,
-      - opens a new Front with the resolved member set, unless the switch
-        is empty (= nobody fronting), in which case the gap is preserved.
+    Walking oldest-to-newest, each switch opens a Front with the
+    resolved member set that the next switch closes; empty switches
+    (= nobody fronting) preserve the gap. Under skip/update an interval
+    that already exists - same start, end, and member set - is skipped,
+    so re-importing the same switch history doesn't double it.
 
-    Returns `(fronts_imported, warnings)`. The most common warning is
-    "this switch references a member that wasn't imported", typically
-    because the user deselected that member at preview time.
+    Returns `(fronts_imported, fronts_skipped, warnings)`. The most
+    common warning is "this switch references a member that wasn't
+    imported", typically because the user deselected that member at
+    preview time.
     """
     if not pk_switches:
-        return 0, []
+        return 0, 0, []
 
     parsed: list[tuple[datetime, list[str]]] = []
     skipped_no_ts = 0
@@ -273,14 +311,19 @@ async def import_switches(
         )
 
     imported = 0
-    open_front: Front | None = None
+    skipped = 0
     missing_hids: set[str] = set()
+    dedupe = conflict_strategy != ImportConflictStrategy.CREATE
+    front_index = (
+        await load_front_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
 
-    for ts, hids in parsed:
-        if open_front is not None:
-            open_front.ended_at = ts
-            open_front = None
-
+    # Each switch opens an interval that the NEXT switch closes (any
+    # switch, including an empty "nobody fronting" one); the final
+    # switch's interval stays open. Intervals are deterministic from the
+    # sorted list, so a re-import reproduces the same
+    # (started, ended, members) keys and dedups exactly.
+    for i, (ts, hids) in enumerate(parsed):
         if not hids:
             continue
 
@@ -296,11 +339,19 @@ async def import_switches(
             # All referenced members were filtered out; treat as "nobody fronting".
             continue
 
+        ended_at = parsed[i + 1][0] if i + 1 < len(parsed) else None
+        if dedupe:
+            fkey = front_key(ts, ended_at, {m.id for m in members})
+            if front_index.get(fkey) is not None:
+                skipped += 1
+                continue
+            front_index.register(fkey)
+
         front = Front(
             id=uuid.uuid4(),
             system_id=system_id,
             started_at=ts,
-            ended_at=None,
+            ended_at=ended_at,
         )
         db.add(front)
         await db.flush()
@@ -308,7 +359,6 @@ async def import_switches(
             await db.execute(
                 front_members.insert().values(front_id=front.id, member_id=member.id)
             )
-        open_front = front
         imported += 1
 
     if missing_hids:
@@ -317,7 +367,7 @@ async def import_switches(
             "that pointed to members not selected for import."
         )
 
-    return imported, warnings
+    return imported, skipped, warnings
 
 
 # --- Helpers -----------------------------------------------------------------

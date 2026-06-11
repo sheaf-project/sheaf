@@ -97,6 +97,16 @@ from sheaf.schemas.pluralspace_import import (
     PluralspacePreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_content_dedup import (
+    ContentMatchIndex,
+    CountedIndex,
+    front_key,
+    load_field_value_guard,
+    load_front_index,
+    load_journal_index,
+    load_message_count_index,
+    load_poll_index,
+)
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
     candidate_key,
@@ -480,46 +490,63 @@ async def run_import(
             result.warnings,
         )
 
+    # Content dedup is active under skip/update; CREATE keeps the old
+    # append-everything behaviour (tags / groups / field definitions
+    # have always reused same-named rows regardless).
+    content_dedupe = conflict_strategy != ImportConflictStrategy.CREATE
+
     # --- Fronts ----
     if fronts:
-        result.fronts_imported += await _import_fronts(
+        f_imported, f_skipped = await _import_fronts(
             _list(data.get("fronts")),
             ps_id_to_member,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.fronts_imported += f_imported
+        result.fronts_skipped += f_skipped
 
     # --- Journal entries ----
     if journal_entries:
-        result.journals_imported += await _import_journals(
+        j_imported, j_skipped = await _import_journals(
             _list(data.get("journal_entries")),
             ps_id_to_member,
             system,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.journals_imported += j_imported
+        result.journals_skipped += j_skipped
 
     # --- Chat channels -> board messages ----
     if chat_messages:
-        result.messages_imported += await _import_chat(
+        m_imported, m_skipped = await _import_chat(
             _list(data.get("chat_channels")),
             member_name_to_member,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.messages_imported += m_imported
+        result.messages_skipped += m_skipped
 
     # --- Polls ----
     if polls:
-        result.polls_imported += await _import_polls(
+        p_imported, p_skipped = await _import_polls(
             _list(data.get("polls")),
             ps_id_to_member,
             member_name_to_member,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.polls_imported += p_imported
+        result.polls_skipped += p_skipped
 
     # --- Thoughts (unsupported) ----
     thought_count = len(_list(data.get("thoughts")))
@@ -823,11 +850,14 @@ async def _import_custom_fields(
             if len(values) > 1 and fname.lower() in multi_field_names:
                 flat_collapsed = True
 
-    seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    # The (field, member) guard is pre-seeded with the system's existing
+    # pairs: a reused definition plus a deduped (skipped) member would
+    # otherwise trip the UNIQUE(field_id, member_id) constraint - a hard
+    # error on every re-import that carries custom field values.
+    value_guard = await load_field_value_guard(db, system_id)
     for (field_id, member_id), values in pairs.items():
-        if (field_id, member_id) in seen:
+        if not value_guard.add((field_id, member_id)):
             continue
-        seen.add((field_id, member_id))
         joined = "\n".join(values)
         cfv = CustomFieldValue(
             id=uuid.uuid4(),
@@ -852,14 +882,22 @@ async def _import_fronts(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Convert PluralSpace fronts to Sheaf Front rows.
 
     Each PluralSpace row -> one Sheaf Front with one member. The
     `comment` field maps to `custom_status` (encrypted). Front types
-    other than "front" are kept as-is via a warning event.
+    other than "front" are kept as-is via a warning event. Under
+    dedupe, an interval that already exists (same start, end, member)
+    is skipped. Returns (imported, skipped).
     """
     imported = 0
+    skipped = 0
+    front_index = (
+        await load_front_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
     unknown_types: set[str] = set()
     missing_members = 0
     for f_data in fronts_in:
@@ -877,6 +915,12 @@ async def _import_fronts(
         if member is None:
             missing_members += 1
             continue
+        if dedupe:
+            fkey = front_key(started_at, ended_at, {member.id})
+            if front_index.get(fkey) is not None:
+                skipped += 1
+                continue
+            front_index.register(fkey)
         ftype = _clean_str(f_data.get("type"))
         if ftype and ftype != "front":
             unknown_types.add(ftype)
@@ -906,7 +950,7 @@ async def _import_fronts(
             f"fronts (saw: {', '.join(sorted(unknown_types))}). PluralSpace's "
             "type taxonomy doesn't fully map to Sheaf today."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_journals(
@@ -915,15 +959,22 @@ async def _import_journals(
     system: System,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Map PluralSpace journal entries to Sheaf JournalEntry rows.
 
     Multi-member entries land on the system board (no member_id) with
     `author_member_names` populated for surface attribution. Single
     member -> per-member entry. `visibility_level` is dropped because
-    Sheaf has no visibility tier.
+    Sheaf has no visibility tier. Under dedupe, an entry matching an
+    existing (member, created_at) is skipped. Returns (imported, skipped).
     """
     imported = 0
+    skipped = 0
+    journal_index = (
+        await load_journal_index(db, system.id) if dedupe else ContentMatchIndex()
+    )
     dropped_visibility = 0
     for j_data in entries_in:
         if not isinstance(j_data, dict):
@@ -957,6 +1008,14 @@ async def _import_journals(
                 if name:
                     author_names.append(name)
 
+        created = _parse_iso(j_data.get("created_at"))
+        if dedupe and created is not None:
+            jkey = (per_member_id, created)
+            if journal_index.get(jkey) is not None:
+                skipped += 1
+                continue
+            journal_index.register(jkey)
+
         entry = JournalEntry(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -969,7 +1028,6 @@ async def _import_journals(
             author_member_names=author_names,
             image_keys=[],
         )
-        created = _parse_iso(j_data.get("created_at"))
         if created:
             entry.created_at = created
         updated = _parse_iso(j_data.get("updated_at"))
@@ -983,7 +1041,7 @@ async def _import_journals(
             f"Dropped visibility_level on {dropped_visibility} journal entries: "
             "Sheaf journals don't have visibility tiers."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_chat(
@@ -992,18 +1050,29 @@ async def _import_chat(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Collapse PluralSpace chat channels to Sheaf board messages.
 
     Every channel's messages land on the system board. When more than
     one channel is present, each message body is prefixed with
-    `[<channel name>]` so the origin is preserved.
+    `[<channel name>]` so the origin is preserved. Under dedupe, a
+    message matching an existing (system board, created_at) is skipped.
+    Returns (imported, skipped).
     """
     channels_in = [c for c in channels_in if isinstance(c, dict)]
     if not channels_in:
-        return 0
+        return 0, 0
+    # Counted occurrences, not a key set: PluralSpace timestamps are
+    # second-precision, so two distinct messages in the same second are
+    # normal chat traffic and must both import on the first pass.
+    message_index = (
+        await load_message_count_index(db, system_id) if dedupe else CountedIndex()
+    )
     multi_channel = len(channels_in) > 1
     imported = 0
+    skipped = 0
     if multi_channel:
         warnings.append(
             f"PluralSpace exported {len(channels_in)} chat channels. Sheaf "
@@ -1015,6 +1084,14 @@ async def _import_chat(
         channel_name = _clean_str(channel.get("name")) or "channel"
         for msg in _list(channel.get("messages")):
             if not isinstance(msg, dict):
+                continue
+            created = _parse_iso(msg.get("created_at"))
+            if (
+                dedupe
+                and created is not None
+                and message_index.should_skip((None, created))
+            ):
+                skipped += 1
                 continue
             body = _clean_str(msg.get("content")) or ""
             if multi_channel:
@@ -1031,7 +1108,6 @@ async def _import_chat(
                 author_member_id=author.id if author else None,
                 body=encrypt(body),
             )
-            created = _parse_iso(msg.get("created_at"))
             if created:
                 message.created_at = created
             db.add(message)
@@ -1041,7 +1117,7 @@ async def _import_chat(
             f"{missing_authors} chat messages referenced an author member that "
             "wasn't imported; those messages were attributed to nobody."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_polls(
@@ -1051,7 +1127,9 @@ async def _import_polls(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Create Sheaf Polls from PluralSpace polls.
 
     PluralSpace polls store votes as `options[].votes[]`; Sheaf stores
@@ -1059,9 +1137,15 @@ async def _import_polls(
     PluralSpace structure to build the Sheaf rows.
 
     Open-ended polls (`closes_at: null`) get a one-year-from-creation
-    close time because Sheaf requires it.
+    close time because Sheaf requires it. Under dedupe, a poll matching
+    an existing created_at is skipped wholesale (options + votes belong
+    to the poll row). Returns (imported, skipped).
     """
     imported = 0
+    skipped = 0
+    poll_index = (
+        await load_poll_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
     open_ended_count = 0
     missing_voter_count = 0
     for p_data in polls_in:
@@ -1071,6 +1155,11 @@ async def _import_polls(
         description = _clean_str(p_data.get("description"))
         allow_multi = bool(p_data.get("allows_multiple_votes"))
         created_at = _parse_iso(p_data.get("created_at"))
+        if dedupe and created_at is not None:
+            if poll_index.get(created_at) is not None:
+                skipped += 1
+                continue
+            poll_index.register(created_at)
         closes_at = _parse_iso(p_data.get("closes_at"))
         if closes_at is None:
             base = created_at or datetime.now(UTC)
@@ -1145,7 +1234,7 @@ async def _import_polls(
 
     # Suppress unused variable warning until vote-event support arrives.
     _ = ps_id_to_member
-    return imported
+    return imported, skipped
 
 
 # --- Avatar persistence ---------------------------------------------------

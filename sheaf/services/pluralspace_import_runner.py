@@ -84,9 +84,13 @@ async def handle_pluralspace_file(job: ImportJob, db: AsyncSession) -> None:
         groups_imported=result.groups_imported,
         custom_fields_imported=result.custom_fields_imported,
         fronts_imported=result.fronts_imported,
+        fronts_skipped=result.fronts_skipped,
         journals_imported=result.journals_imported,
+        journals_skipped=result.journals_skipped,
         messages_imported=result.messages_imported,
+        messages_skipped=result.messages_skipped,
         polls_imported=result.polls_imported,
+        polls_skipped=result.polls_skipped,
     )
     for warning in result.warnings:
         append_event(job, level="warning", stage="import", message=warning)

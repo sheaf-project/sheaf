@@ -321,3 +321,78 @@ def test_tb_warns_when_tupper_group_id_unknown(auth_client: httpx.Client):
         and "not present in the export" in w
         for w in _warnings(final["events"])
     ), final["events"]
+
+
+# --- Re-import idempotence (content dedup) -----------------------------------
+
+
+def test_tb_reimport_skips_groups(auth_client: httpx.Client):
+    payload = _tb_payload(
+        tuppers=[{"id": 1, "name": "TbIdem", "group_id": 9}],
+        groups=[{"id": 9, "name": "Tb Group"}],
+    )
+    first = _post_file(auth_client, source="tupperbox_file", payload=payload)
+    drive_import_runner()
+    assert wait_for_terminal(auth_client, first["id"])["status"] == "complete"
+
+    second = _post_file(auth_client, source="tupperbox_file", payload=payload)
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, second["id"])
+    assert f2["status"] == "complete", f2
+    assert f2["counts"].get("groups_imported", 0) == 0, f2["counts"]
+    assert f2["counts"].get("groups_skipped", 0) == 1, f2["counts"]
+    assert f2["counts"].get("members_skipped", 0) == 1, f2["counts"]
+
+
+def test_sp_reimport_is_idempotent_and_does_not_crash(auth_client: httpx.Client):
+    """Re-import with custom-field VALUES used to violate the
+    UNIQUE(field_id, member_id) constraint (reused definition + skipped
+    member); now it skips cleanly across every section."""
+    payload = _sp_payload(
+        members=[
+            {
+                "_id": "spm1",
+                "name": "SpIdemA",
+                "private": False,
+                "info": {"spf1": "tea"},
+            },
+            {"_id": "spm2", "name": "SpIdemB", "private": False},
+        ],
+        customFields=[{"_id": "spf1", "name": "Sp Likes", "type": 0}],
+        groups=[
+            {"_id": "spg1", "name": "Sp Group", "members": ["spm1", "spm2"]}
+        ],
+        frontHistory=[
+            {
+                "_id": "spfh1",
+                "member": "spm1",
+                "startTime": 1748736000000,
+                "endTime": 1748739600000,
+                "live": False,
+            }
+        ],
+    )
+    # front_history defaults off; the idempotence claim needs it on.
+    sp_options = {"front_history": True}
+    first = _post_file(
+        auth_client, source="simplyplural_file", payload=payload, options=sp_options
+    )
+    drive_import_runner()
+    f1 = wait_for_terminal(auth_client, first["id"])
+    assert f1["status"] == "complete", f1
+    assert f1["counts"].get("custom_fields_imported", 0) == 1, f1["counts"]
+    assert f1["counts"].get("fronts_imported", 0) == 1, f1["counts"]
+
+    second = _post_file(
+        auth_client, source="simplyplural_file", payload=payload, options=sp_options
+    )
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, second["id"])
+    # The headline assertion: complete, not failed on the value
+    # constraint.
+    assert f2["status"] == "complete", f2
+    assert f2["counts"].get("members_skipped", 0) == 2, f2["counts"]
+    assert f2["counts"].get("groups_skipped", 0) == 1, f2["counts"]
+    assert f2["counts"].get("fronts_skipped", 0) == 1, f2["counts"]
+    assert f2["counts"].get("custom_fields_skipped", 0) == 1, f2["counts"]
+    assert f2["counts"].get("fronts_imported", 0) == 0, f2["counts"]

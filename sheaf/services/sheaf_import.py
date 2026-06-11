@@ -16,21 +16,21 @@ ones for cross-references inside the file. References to user accounts
 historical audit actors are dropped, since the original account UUIDs
 are meaningless on the target instance.
 
-Re-import deduplicates members against the target system (see
+Re-import is idempotent. Members dedupe against the target roster (see
 `import_dedup`): the chosen conflict strategy decides whether a member
-that already exists is skipped (default) or updated, so restoring a
-backup into a populated system doesn't double the roster. Custom field
-*definitions* are likewise deduped by (name, type). Everything else a
-member owns (fronts, journals, messages, polls, reminders) is still
-added rather than merged, so re-importing those sections over existing
-data appends duplicates - dedup is member-scoped only.
+that already exists is skipped (default) or updated. Everything else
+dedupes by exact match (see `import_content_dedup`): tags and groups by
+name, fronts by interval + member set, journals / revisions / messages /
+polls / reminders / notification config by their preserved source
+timestamps. Restoring a backup into a populated system therefore adds
+only what is genuinely new; `conflict_strategy=create` restores the old
+append-everything behaviour.
 """
 
 import logging
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
@@ -67,6 +67,27 @@ from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.watch_token import WatchToken
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_content_dedup import (
+    ContentMatchIndex,
+    CountedIndex,
+    PairGuard,
+    front_key,
+    load_channel_index,
+    load_field_def_index,
+    load_field_value_guard,
+    load_front_index,
+    load_group_index,
+    load_group_member_guard,
+    load_journal_index,
+    load_member_tag_guard,
+    load_message_count_index,
+    load_message_index,
+    load_poll_index,
+    load_reminder_index,
+    load_revision_index,
+    load_tag_index,
+    load_watch_token_index,
+)
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
     candidate_key,
@@ -162,15 +183,25 @@ class SheafImportResult:
         self.members_skipped: int = 0
         self.members_updated: int = 0
         self.fronts_imported: int = 0
+        self.fronts_skipped: int = 0
         self.groups_imported: int = 0
+        self.groups_skipped: int = 0
         self.tags_imported: int = 0
+        self.tags_skipped: int = 0
         self.custom_fields_imported: int = 0
+        self.custom_fields_skipped: int = 0
         self.journals_imported: int = 0
+        self.journals_skipped: int = 0
         self.revisions_imported: int = 0
+        self.revisions_skipped: int = 0
         self.messages_imported: int = 0
+        self.messages_skipped: int = 0
         self.polls_imported: int = 0
+        self.polls_skipped: int = 0
         self.reminders_imported: int = 0
+        self.reminders_skipped: int = 0
         self.channels_imported: int = 0
+        self.channels_skipped: int = 0
         self.warnings: list[str] = []
 
 
@@ -286,6 +317,14 @@ async def run_import(
 
     def _resolve_image_keys(keys: list[str] | None) -> list[str]:
         return rewrite_internal_image_keys(keys, _ikm, _used)
+
+    # Content dedup (see import_content_dedup): under skip AND update,
+    # non-member rows that exactly match an existing row are skipped -
+    # an in-place "update" of an exact-match content row is meaningless
+    # since the match key IS the row's identity. CREATE keeps the old
+    # append-everything behaviour. Each section loads its index lazily
+    # below so disabled sections cost nothing.
+    dedupe = conflict_strategy != ImportConflictStrategy.CREATE
     # Old-export-id -> new-object maps, hoisted to function scope so later
     # sections can resolve cross-references regardless of which earlier
     # sections the user opted into.
@@ -495,21 +534,39 @@ async def run_import(
     # --- Tags ---
     old_tag_to_tag: dict[str, Tag] = {}
     if tags:
+        tag_index = (
+            await load_tag_index(db, system.id) if dedupe else ContentMatchIndex()
+        )
         for t_data in data.get("tags", []):
             old_tid = t_data.get("id", "")
+            name = (t_data.get("name") or "unnamed")[:50]
+            existing_tag = tag_index.get(name) if dedupe else None
+            if existing_tag is not None:
+                # Same-named tag already in the system: reuse it so the
+                # member associations below land on the existing row.
+                old_tag_to_tag[old_tid] = existing_tag
+                result.tags_skipped += 1
+                continue
             tag = Tag(
                 id=uuid.uuid4(),
                 system_id=system.id,
-                name=(t_data.get("name") or "unnamed")[:50],
+                name=name,
                 color=_trunc(t_data.get("color"), 7),
             )
             db.add(tag)
+            tag_index.register(name, tag)
             old_tag_to_tag[old_tid] = tag
             result.tags_imported += 1
 
         await db.flush()
 
-        # Wire tag-member associations
+        # Wire tag-member associations. The pair guard covers both a
+        # reused tag + skipped member (pair already in the DB) and a
+        # duplicate pair within the file itself - either would violate
+        # the association's composite primary key.
+        member_tag_guard = (
+            await load_member_tag_guard(db, system.id) if dedupe else PairGuard()
+        )
         for t_data in data.get("tags", []):
             old_tid = t_data.get("id", "")
             tag = old_tag_to_tag.get(old_tid)
@@ -517,7 +574,7 @@ async def run_import(
                 continue
             for old_mid in t_data.get("member_ids", []):
                 member = old_id_to_member.get(old_mid)
-                if member:
+                if member and member_tag_guard.add((tag.id, member.id)):
                     await db.execute(
                         member_tags.insert().values(tag_id=tag.id, member_id=member.id)
                     )
@@ -525,28 +582,18 @@ async def run_import(
     # --- Custom fields ---
     old_field_to_def: dict[str, CustomFieldDefinition] = {}
     if custom_fields:
-        # Re-import is additive, but duplicating field *definitions* just
-        # litters the field list with a second "Pronouns" etc. Dedupe by
-        # (name, type) against what the system already has, and within the
-        # file itself, reusing the existing definition rather than minting a
-        # twin. Members aren't deduped, so their values still attach to the
-        # fresh member rows under the shared definition. The system's own
-        # config (privacy/order/options) on a reused field is left untouched.
-        existing_fields = await db.execute(
-            select(CustomFieldDefinition).where(
-                CustomFieldDefinition.system_id == system.id
-            )
-        )
-        field_by_key: dict[tuple[str, str], CustomFieldDefinition] = {
-            (fd.name, fd.field_type.value): fd
-            for fd in existing_fields.scalars().all()
-        }
+        # Field *definitions* dedupe by (name, type) unconditionally
+        # (long-standing behaviour, independent of conflict_strategy):
+        # duplicating them just litters the field list with a second
+        # "Pronouns" etc. The system's own config (privacy/order/options)
+        # on a reused field is left untouched.
+        field_index = await load_field_def_index(db, system.id)
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
             name = (fd_data.get("name") or "field")[:100]
             ftype = _field_type(fd_data.get("field_type"))
             key = (name, ftype.value)
-            field_def = field_by_key.get(key)
+            field_def = field_index.get(key)
             if field_def is None:
                 field_def = CustomFieldDefinition(
                     id=uuid.uuid4(),
@@ -558,32 +605,19 @@ async def run_import(
                     privacy=_privacy(fd_data.get("privacy")),
                 )
                 db.add(field_def)
-                field_by_key[key] = field_def
+                field_index.register(key, field_def)
                 result.custom_fields_imported += 1
+            else:
+                result.custom_fields_skipped += 1
             old_field_to_def[old_fid] = field_def
 
         await db.flush()
 
-        # Import field values. A reused definition can be referenced by more
-        # than one export field (a file with duplicate defs, or deduped
-        # members), so guard (field, member) uniqueness ourselves to avoid
-        # tripping the UNIQUE(field_id, member_id) constraint mid-import.
-        seen_values: set[tuple[uuid.UUID, uuid.UUID]] = set()
-        # Pre-seed the guard with values already in the system: a re-import
-        # that reused an existing definition AND matched an existing
-        # (deduped) member would otherwise try to insert a second value for
-        # the same pair. Skip-if-present keeps re-import idempotent for
-        # field values (dedup is member-scoped; values ride along).
-        field_def_ids = {fd.id for fd in old_field_to_def.values()}
-        if field_def_ids:
-            existing_values = await db.execute(
-                select(CustomFieldValue.field_id, CustomFieldValue.member_id).where(
-                    CustomFieldValue.field_id.in_(field_def_ids)
-                )
-            )
-            seen_values.update(
-                (row.field_id, row.member_id) for row in existing_values
-            )
+        # Field values: the (field_id, member_id) pair guard is also
+        # unconditional - a reused definition plus a deduped member would
+        # otherwise trip the UNIQUE constraint, a hard error rather than
+        # a preference. Pre-seeded with the system's existing pairs.
+        value_guard = await load_field_value_guard(db, system.id)
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
             field_def = old_field_to_def.get(old_fid)
@@ -594,10 +628,8 @@ async def run_import(
                 member = old_id_to_member.get(old_mid)
                 if not member:
                     continue
-                vkey = (field_def.id, member.id)
-                if vkey in seen_values:
+                if not value_guard.add((field_def.id, member.id)):
                     continue
-                seen_values.add(vkey)
                 cfv = CustomFieldValue(
                     id=uuid.uuid4(),
                     field_id=field_def.id,
@@ -609,24 +641,45 @@ async def run_import(
     # --- Groups ---
     if groups:
         export_groups = data.get("groups", [])
+        group_index = (
+            await load_group_index(db, system.id) if dedupe else ContentMatchIndex()
+        )
+        created_group_ids: set[uuid.UUID] = set()
 
         # First pass: create groups without parent links
         for g_data in export_groups:
             old_gid = g_data.get("id", "")
+            name = (g_data.get("name") or "unnamed")[:100]
+            existing_group = group_index.get(name) if dedupe else None
+            if existing_group is not None:
+                # Reuse the existing same-named group so membership and
+                # channel group-rules land on it.
+                old_gid_to_group[old_gid] = existing_group
+                result.groups_skipped += 1
+                continue
             group = Group(
                 id=uuid.uuid4(),
                 system_id=system.id,
-                name=(g_data.get("name") or "unnamed")[:100],
+                name=name,
                 description=_resolve_md(g_data.get("description")),
                 color=_trunc(g_data.get("color"), 7),
             )
             db.add(group)
+            group_index.register(name, group)
+            created_group_ids.add(group.id)
             old_gid_to_group[old_gid] = group
             result.groups_imported += 1
 
         await db.flush()
 
-        # Second pass: parent links and member associations
+        # Second pass: parent links and member associations. Parent
+        # links are only written onto groups created THIS run - a
+        # skipped group keeps whatever hierarchy it already had (skip
+        # must not mutate existing rows). The pair guard covers reused
+        # group + skipped member and in-file duplicates.
+        group_member_guard = (
+            await load_group_member_guard(db, system.id) if dedupe else PairGuard()
+        )
         for g_data in export_groups:
             old_gid = g_data.get("id", "")
             group = old_gid_to_group.get(old_gid)
@@ -634,12 +687,16 @@ async def run_import(
                 continue
 
             old_parent = g_data.get("parent_id")
-            if old_parent and old_parent in old_gid_to_group:
+            if (
+                group.id in created_group_ids
+                and old_parent
+                and old_parent in old_gid_to_group
+            ):
                 group.parent_id = old_gid_to_group[old_parent].id
 
             for old_mid in g_data.get("member_ids", []):
                 member = old_id_to_member.get(old_mid)
-                if member:
+                if member and group_member_guard.add((group.id, member.id)):
                     await db.execute(
                         group_members.insert().values(
                             group_id=group.id, member_id=member.id
@@ -648,6 +705,9 @@ async def run_import(
 
     # --- Fronts ---
     if fronts:
+        front_index = (
+            await load_front_index(db, system.id) if dedupe else ContentMatchIndex()
+        )
         for f_data in data.get("fronts", []):
             started_at = _parse_iso(f_data.get("started_at"))
             if not started_at:
@@ -664,6 +724,16 @@ async def run_import(
             ]
             if not front_member_ids:
                 continue
+
+            # Dedup key: same interval, same (resolved) member set.
+            # Works because skipped members resolve onto their existing
+            # rows, so the ids here line up with existing front_members.
+            fkey = front_key(started_at, ended_at, set(front_member_ids))
+            if dedupe:
+                if front_index.get(fkey) is not None:
+                    result.fronts_skipped += 1
+                    continue
+                front_index.register(fkey)
 
             plaintext_status = f_data.get("custom_status")
             front = Front(
@@ -690,6 +760,11 @@ async def run_import(
 
     # --- Journals ---
     if journals:
+        journal_index = (
+            await load_journal_index(db, system.id)
+            if dedupe
+            else ContentMatchIndex()
+        )
         for j_data in data.get("journals", []):
             old_jid = j_data.get("id", "")
             old_member_id = j_data.get("member_id")
@@ -699,6 +774,20 @@ async def run_import(
                 # whose member wasn't imported has nowhere to live, so drop it.
                 member = old_id_to_member.get(old_member_id)
                 if member is None:
+                    continue
+            created = _parse_iso(j_data.get("created_at"))
+            # Dedup key: (member, created_at). Bodies are encrypted
+            # non-deterministically so content can't be the key; the
+            # preserved source timestamp identifies the entry. Rows
+            # without a created_at (malformed/legacy) always create.
+            jkey = (member.id if member else None, created)
+            if dedupe and created is not None:
+                existing_entry = journal_index.get(jkey)
+                if existing_entry is not None:
+                    # Point the revision map at the existing row so its
+                    # edit history attaches (and dedups) correctly.
+                    old_journal_to_entry[old_jid] = existing_entry
+                    result.journals_skipped += 1
                     continue
             title = j_data.get("title")
             entry = JournalEntry(
@@ -727,13 +816,14 @@ async def run_import(
                     _str_list(j_data.get("image_keys"))
                 ),
             )
-            created = _parse_iso(j_data.get("created_at"))
             if created:
                 entry.created_at = created
             updated = _parse_iso(j_data.get("updated_at"))
             if updated:
                 entry.updated_at = updated
             db.add(entry)
+            if created is not None:
+                journal_index.register(jkey, entry)
             old_journal_to_entry[old_jid] = entry
             result.journals_imported += 1
 
@@ -744,6 +834,11 @@ async def run_import(
     # the member / journal maps, so bio revisions follow their member and
     # journal revisions only land if the journals section ran. Message-target
     # revisions aren't exported, so they never appear here.
+    revision_index = (
+        await load_revision_index(db, system.user_id)
+        if dedupe
+        else ContentMatchIndex()
+    )
     for r_data in data.get("revisions", []):
         target_type = r_data.get("target_type")
         old_target = r_data.get("target_id")
@@ -755,6 +850,16 @@ async def run_import(
             target = None
         if target is None:
             continue
+        # Dedup key: (target type, resolved target, created_at) - lines
+        # up with existing rows because skipped members / journals
+        # resolve onto the existing targets above.
+        created = _parse_iso(r_data.get("created_at"))
+        rkey = (str(target_type), target.id, created)
+        if dedupe and created is not None:
+            if revision_index.get(rkey) is not None:
+                result.revisions_skipped += 1
+                continue
+            revision_index.register(rkey)
         title = r_data.get("title")
         revision = ContentRevision(
             id=uuid.uuid4(),
@@ -777,7 +882,6 @@ async def run_import(
             ),
             pinned_at=_parse_iso(r_data.get("pinned_at")),
         )
-        created = _parse_iso(r_data.get("created_at"))
         if created:
             revision.created_at = created
         db.add(revision)
@@ -785,7 +889,24 @@ async def run_import(
 
     # --- Messages (board posts + replies) ---
     if messages:
+        # Skip decisions use counted occurrences, not a key set:
+        # Postgres freezes now() per transaction, so rows created
+        # together legitimately share a created_at, and a key set would
+        # wrongly drop the siblings on first import. The row index is
+        # kept alongside purely for reply linkage onto skipped parents
+        # (best-effort for colliding keys).
+        message_counts = (
+            await load_message_count_index(db, system.id)
+            if dedupe
+            else CountedIndex()
+        )
+        message_rows = (
+            await load_message_index(db, system.id)
+            if dedupe
+            else ContentMatchIndex()
+        )
         old_msg_to_new: dict[str, Message] = {}
+        created_msg_ids: set[uuid.UUID] = set()
         # First pass: create posts without reply links. A member-wall post
         # whose board member wasn't imported is dropped along with the wall.
         for msg_data in data.get("messages", []):
@@ -797,6 +918,14 @@ async def run_import(
                 board_member = old_id_to_member.get(old_board) if old_board else None
                 if board_member is None:
                     continue
+            created = _parse_iso(msg_data.get("created_at"))
+            mkey = (board_member.id if board_member else None, created)
+            if dedupe and created is not None and message_counts.should_skip(mkey):
+                existing_msg = message_rows.get(mkey)
+                if existing_msg is not None:
+                    old_msg_to_new[old_mid] = existing_msg
+                result.messages_skipped += 1
+                continue
             old_author = msg_data.get("author_member_id")
             author = old_id_to_member.get(old_author) if old_author else None
             message = Message(
@@ -809,7 +938,6 @@ async def run_import(
                     _resolve_md(msg_data.get("body")) or ""
                 ),
             )
-            created = _parse_iso(msg_data.get("created_at"))
             if created:
                 message.created_at = created
             updated = _parse_iso(msg_data.get("updated_at"))
@@ -817,24 +945,34 @@ async def run_import(
                 message.updated_at = updated
             db.add(message)
             old_msg_to_new[old_mid] = message
+            created_msg_ids.add(message.id)
             result.messages_imported += 1
 
         await db.flush()
 
         # Second pass: wire reply pointers now every post exists. A parent that
         # didn't import (deleted, or on a dropped wall) leaves the reply
-        # parentless, which the UI renders as "[deleted]".
+        # parentless, which the UI renders as "[deleted]". Only messages
+        # created THIS run get a pointer written - a skipped (existing)
+        # reply keeps whatever threading it already had.
         for msg_data in data.get("messages", []):
             old_parent = msg_data.get("parent_message_id")
             if not old_parent:
                 continue
             child = old_msg_to_new.get(msg_data.get("id", ""))
             parent = old_msg_to_new.get(old_parent)
-            if child is not None and parent is not None:
+            if (
+                child is not None
+                and parent is not None
+                and child.id in created_msg_ids
+            ):
                 child.parent_message_id = parent.id
 
     # --- Polls (config + current votes + audit log) ---
     if polls:
+        poll_index = (
+            await load_poll_index(db, system.id) if dedupe else ContentMatchIndex()
+        )
         for p_data in data.get("polls", []):
             closes_at = _parse_iso(p_data.get("closes_at"))
             if not closes_at:
@@ -842,6 +980,14 @@ async def run_import(
                     f"Skipped poll with invalid closes_at: {p_data.get('id', '?')}"
                 )
                 continue
+            # Dedup key: created_at. Options / votes / audit events
+            # belong to the poll row and skip wholesale with it.
+            pcreated = _parse_iso(p_data.get("created_at"))
+            if dedupe and pcreated is not None:
+                if poll_index.get(pcreated) is not None:
+                    result.polls_skipped += 1
+                    continue
+                poll_index.register(pcreated)
             description = p_data.get("description")
             poll = Poll(
                 id=uuid.uuid4(),
@@ -864,9 +1010,8 @@ async def run_import(
                     p_data.get("restrict_voting_to_fronters", False)
                 ),
             )
-            created = _parse_iso(p_data.get("created_at"))
-            if created:
-                poll.created_at = created
+            if pcreated:
+                poll.created_at = pcreated
             db.add(poll)
 
             # Options first; vote/event option references resolve through this.
@@ -951,19 +1096,47 @@ async def run_import(
     # pending_registration state so the owner re-activates / re-enters the
     # secret on the new instance.
     if notifications:
+        token_index = (
+            await load_watch_token_index(db, system.id)
+            if dedupe
+            else ContentMatchIndex()
+        )
+        channel_index = (
+            await load_channel_index(db, system.id)
+            if dedupe
+            else ContentMatchIndex()
+        )
         for t_data in data.get("watch_tokens", []):
-            token = WatchToken(
-                id=uuid.uuid4(),
-                system_id=system.id,
-                label=_trunc(t_data.get("label"), 120),
-                revoked_at=_parse_iso(t_data.get("revoked_at")),
-            )
             tcreated = _parse_iso(t_data.get("created_at"))
-            if tcreated:
-                token.created_at = tcreated
-            db.add(token)
+            token = None
+            if dedupe and tcreated is not None:
+                # A skipped token still hosts the channel walk below -
+                # new channels under a re-imported token attach to the
+                # existing row.
+                token = token_index.get(tcreated)
+            if token is None:
+                token = WatchToken(
+                    id=uuid.uuid4(),
+                    system_id=system.id,
+                    label=_trunc(t_data.get("label"), 120),
+                    revoked_at=_parse_iso(t_data.get("revoked_at")),
+                )
+                if tcreated:
+                    token.created_at = tcreated
+                db.add(token)
+                if tcreated is not None:
+                    token_index.register(tcreated, token)
 
             for c_data in t_data.get("channels", []):
+                ccreated = _parse_iso(c_data.get("created_at"))
+                if dedupe and ccreated is not None:
+                    existing_channel = channel_index.get(ccreated)
+                    if existing_channel is not None:
+                        # Reuse the existing channel (reminders below
+                        # resolve onto it); its rules are left untouched.
+                        old_channel_to_new[c_data.get("id", "")] = existing_channel
+                        result.channels_skipped += 1
+                        continue
                 dest_type = c_data.get("destination_type")
                 if dest_type not in _VALID_DESTINATION_TYPE:
                     warnings.append(
@@ -1014,10 +1187,11 @@ async def run_import(
                         else None
                     ),
                 )
-                ccreated = _parse_iso(c_data.get("created_at"))
                 if ccreated:
                     channel.created_at = ccreated
                 db.add(channel)
+                if ccreated is not None:
+                    channel_index.register(ccreated, channel)
                 old_channel_to_new[c_data.get("id", "")] = channel
 
                 # Group rules resolve against imported groups.
@@ -1064,6 +1238,11 @@ async def run_import(
 
     # --- Reminders ---
     if reminders:
+        reminder_index = (
+            await load_reminder_index(db, system.id)
+            if dedupe
+            else ContentMatchIndex()
+        )
         for rm_data in data.get("reminders", []):
             channel = old_channel_to_new.get(rm_data.get("channel_id"))
             if channel is None:
@@ -1075,6 +1254,12 @@ async def run_import(
                     "notification channel was not imported"
                 )
                 continue
+            rcreated = _parse_iso(rm_data.get("created_at"))
+            if dedupe and rcreated is not None:
+                if reminder_index.get(rcreated) is not None:
+                    result.reminders_skipped += 1
+                    continue
+                reminder_index.register(rcreated)
             old_tm = rm_data.get("trigger_member_id")
             trigger_member = old_id_to_member.get(old_tm) if old_tm else None
             if old_tm and trigger_member is None:
@@ -1118,7 +1303,6 @@ async def run_import(
                 scope=rm_data.get("scope") or "system",
                 digest_when_absent=bool(rm_data.get("digest_when_absent", True)),
             )
-            rcreated = _parse_iso(rm_data.get("created_at"))
             if rcreated:
                 reminder.created_at = rcreated
             db.add(reminder)
