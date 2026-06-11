@@ -12,7 +12,10 @@ an array of documents. The key collections we care about:
 - users: system profile (username, desc, color)
 """
 
+import base64
+import binascii
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -23,6 +26,7 @@ from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, F
 from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
+from sheaf.models.message import BoardKind, Message
 from sheaf.models.system import System
 from sheaf.schemas.sp_import import (
     SPImportOptions,
@@ -34,6 +38,7 @@ from sheaf.schemas.sp_import import (
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
+    CountedIndex,
     PairGuard,
     front_key,
     load_field_def_index,
@@ -41,6 +46,7 @@ from sheaf.services.import_content_dedup import (
     load_front_index,
     load_group_index,
     load_group_member_guard,
+    load_message_count_index,
 )
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -165,6 +171,103 @@ def _parse_sp_time(value: object) -> datetime | None:
     return None
 
 
+# --- Chat-message helpers --------------------------------------------------
+
+_SP_B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+_SP_MENTION_RE = re.compile(r"<###@([^>#]+?)###>")
+# A short alphanumeric body (e.g. "test") is valid base64 but obviously plain;
+# SP also leaves a stale iv around after decrypting, so this dodges that false
+# positive.
+_SP_SHORT_PLAIN_RE = re.compile(r"^[A-Za-z0-9]{1,16}$")
+
+
+def _strict_b64decode(value: str) -> bytes | None:
+    """Decode strict base64, or None. Rejects whitespace, bad padding, and any
+    non-base64 character so ordinary prose isn't mistaken for ciphertext."""
+    if not value or value != value.strip() or len(value) % 4 != 0:
+        return None
+    if not _SP_B64_RE.match(value):
+        return None
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _looks_like_plaintext(data: bytes) -> bool:
+    """True if bytes decode as UTF-8 that is >=85% printable - i.e. never
+    ciphertext, just base64-looking text."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not text:
+        return False
+    printable = sum(
+        1 for ch in text if ch in "\t\n\r" or (ord(ch) >= 0x20 and ord(ch) != 0x7F)
+    )
+    return printable / len(text) >= 0.85
+
+
+def _looks_encrypted_sp_message(content: str, raw_iv: object) -> bool:
+    """Detect a still-encrypted legacy SP chat message (heuristic ported from
+    Prism's importer).
+
+    SP's old chat encryption stored a 16-byte IV alongside base64 ciphertext.
+    The format is undocumented and we don't have the key, so callers DETECT and
+    skip rather than decrypt. A message looks encrypted iff: an `iv` base64-
+    decodes to exactly 16 bytes, the content isn't a short plain token, and the
+    content base64-decodes to bytes that don't look like UTF-8 text."""
+    if raw_iv is None:
+        return False
+    iv_bytes = _strict_b64decode(str(raw_iv))
+    if iv_bytes is None or len(iv_bytes) != 16:
+        return False
+    if _SP_SHORT_PLAIN_RE.match(content):
+        return False
+    content_bytes = _strict_b64decode(content)
+    if not content_bytes:
+        return False
+    return not _looks_like_plaintext(content_bytes)
+
+
+def _rewrite_sp_mentions(text: str, sp_id_to_name: dict[str, str]) -> str:
+    """Rewrite SP mention tokens `<###@spId###>` to `@name`. Unresolvable ids are
+    left verbatim rather than dropped, so partial exports aren't truncated."""
+    if "<###@" not in text:
+        return text
+
+    def repl(match: re.Match) -> str:
+        name = sp_id_to_name.get(match.group(1))
+        return f"@{name}" if name else match.group(0)
+
+    return _SP_MENTION_RE.sub(repl, text)
+
+
+def _sp_chat_rows(data: dict) -> list[tuple[str, dict]]:
+    """Flatten SP chat into (channel_id, message) pairs across both export
+    shapes: `messages` as a map of channelId -> [msg] (or a flat list), and
+    `chatMessages` as a flat array where each message carries its own
+    `channel`."""
+    rows: list[tuple[str, dict]] = []
+    raw = data.get("messages")
+    if isinstance(raw, dict):
+        for cid, msgs in raw.items():
+            if isinstance(msgs, list):
+                rows.extend(
+                    (str(cid), m) for m in msgs if isinstance(m, dict)
+                )
+    elif isinstance(raw, list):
+        rows.extend(
+            (_coerce_str(m.get("channel")) or "", m)
+            for m in raw
+            if isinstance(m, dict)
+        )
+    for m in _get_collection(data, "chatMessages"):
+        rows.append((_coerce_str(m.get("channel")) or "", m))
+    return rows
+
+
 def preview(data: dict) -> SPPreviewSummary:
     """Parse SP export JSON and return a summary for the user to review."""
     members = _get_collection(data, "members")
@@ -198,6 +301,7 @@ def preview(data: dict) -> SPPreviewSummary:
         group_count=len(groups),
         custom_field_count=len(fields),
         note_count=len(notes),
+        message_count=len(_sp_chat_rows(data)),
     )
 
 
@@ -258,9 +362,13 @@ async def run_import(
     # Both members and custom fronts are Member rows and count toward the
     # cap; under skip/update a pure re-import adds nothing.
     member_candidates: list[tuple[Member, str]] = []
+    # SP id -> plaintext name, used to rewrite chat mention tokens later.
+    sp_id_to_name: dict[str, str] = {}
     for sp_m in sp_members:
         sp_id = sp_m.get("_id", "")
         plaintext_name = (_coerce_str(sp_m.get("name")) or "unnamed")[:100]
+        if sp_id:
+            sp_id_to_name[sp_id] = plaintext_name
         plaintext_description = _coerce_str(sp_m.get("desc"))
         member = Member(
             id=uuid.uuid4(),
@@ -290,6 +398,8 @@ async def run_import(
         for sp_cf in _get_collection_alt(data, "frontStatuses", "customFronts"):
             sp_id = sp_cf.get("_id", "")
             plaintext_cf_name = (_coerce_str(sp_cf.get("name")) or "unnamed")[:100]
+            if sp_id:
+                sp_id_to_name[sp_id] = plaintext_cf_name
             plaintext_cf_description = _coerce_str(sp_cf.get("desc"))
             member = Member(
                 id=uuid.uuid4(),
@@ -592,8 +702,126 @@ async def run_import(
                 "Notes will be importable once journals ship."
             )
 
+    # --- Chat messages -> system board ---
+    if options.messages:
+        m_imported, m_skipped, m_encrypted = await _import_messages(
+            data, all_sp_to_member, sp_id_to_name, system, db, warnings, dedupe=dedupe
+        )
+        result.messages_imported = m_imported
+        result.messages_skipped = m_skipped
+        result.messages_encrypted_skipped = m_encrypted
+
     result.warnings = warnings
     return result
+
+
+async def _import_messages(
+    data: dict,
+    all_sp_to_member: dict[str, Member],
+    sp_id_to_name: dict[str, str],
+    system: System,
+    db: AsyncSession,
+    warnings: list[str],
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int, int]:
+    """Collapse SP chat onto the Sheaf system board.
+
+    Sheaf has one system board, not a channel set, so every message lands there,
+    prefixed `[<channel>]` when more than one channel is present (matching the
+    PluralSpace importer). Authors resolve via the SP member-id map; the reply
+    chain is rebuilt in a second pass; mention tokens are rewritten.
+
+    Legacy exports leave some bodies encrypted in an undocumented format; those
+    are detected and skipped (we can't decrypt them) with a single warning.
+    Returns (imported, skipped, encrypted_skipped)."""
+    rows = _sp_chat_rows(data)
+    if not rows:
+        return 0, 0, 0
+
+    channel_names: dict[str, str] = {}
+    for ch in _get_collection(data, "channels"):
+        cid = _coerce_str(ch.get("_id")) or _coerce_str(ch.get("id"))
+        if cid:
+            channel_names[cid] = _coerce_str(ch.get("name")) or "channel"
+    multi_channel = len({cid for cid, _ in rows if cid}) > 1
+
+    msg_index = (
+        await load_message_count_index(db, system.id) if dedupe else CountedIndex()
+    )
+
+    imported = 0
+    skipped = 0
+    encrypted_skipped = 0
+    missing_authors = 0
+    sp_msg_to_new: dict[str, Message] = {}
+    pending_replies: list[tuple[Message, str]] = []
+
+    for channel_id, m in rows:
+        content = (
+            _coerce_str(m.get("message")) or _coerce_str(m.get("content")) or ""
+        )
+        if _looks_encrypted_sp_message(content, m.get("iv")):
+            encrypted_skipped += 1
+            continue
+        created = _parse_sp_time(
+            m.get("timestamp") or m.get("writtenAt") or m.get("createdAt")
+        )
+        if dedupe and created is not None and msg_index.should_skip((None, created)):
+            skipped += 1
+            continue
+        body = _rewrite_sp_mentions(content, sp_id_to_name)
+        if multi_channel:
+            name = channel_names.get(channel_id, "channel")
+            body = f"[{name}] {body}".rstrip()
+        sender = (
+            _coerce_str(m.get("sender"))
+            or _coerce_str(m.get("writer"))
+            or _coerce_str(m.get("member"))
+        )
+        author = all_sp_to_member.get(sender) if sender else None
+        if sender and author is None:
+            missing_authors += 1
+        message = Message(
+            id=uuid.uuid4(),
+            system_id=system.id,
+            board_kind=BoardKind.SYSTEM.value,
+            board_member_id=None,
+            author_member_id=author.id if author else None,
+            body=encrypt(body),
+        )
+        if created:
+            message.created_at = created
+        db.add(message)
+        sp_id = _coerce_str(m.get("_id")) or _coerce_str(m.get("id"))
+        if sp_id:
+            sp_msg_to_new[sp_id] = message
+        reply_to = _coerce_str(m.get("replyTo"))
+        if reply_to:
+            pending_replies.append((message, reply_to))
+        imported += 1
+
+    await db.flush()
+
+    # Second pass: wire reply pointers now every message exists. A reply whose
+    # parent didn't import (encrypted, deleted, dedup-skipped) stays parentless.
+    for message, reply_to in pending_replies:
+        parent = sp_msg_to_new.get(reply_to)
+        if parent is not None:
+            message.parent_message_id = parent.id
+
+    if encrypted_skipped:
+        warnings.append(
+            f"Skipped {encrypted_skipped} chat messages still encrypted in "
+            "SimplyPlural's legacy format - Sheaf can't decrypt them. Request a "
+            "fresh export, or import via the SP API, to bring readable chat across."
+        )
+    if missing_authors:
+        warnings.append(
+            f"{missing_authors} chat messages referenced an author not imported; "
+            "those were attributed to nobody."
+        )
+    return imported, skipped, encrypted_skipped
 
 
 def _normalize_color(color: object) -> str | None:

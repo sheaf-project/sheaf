@@ -76,6 +76,7 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
             f"{insum.front_history_count} front intervals, "
             f"{insum.group_count} groups, "
             f"{insum.custom_field_count} custom fields, "
+            f"{insum.message_count} chat messages, "
             f"{insum.note_count} notes"
         ),
     )
@@ -97,6 +98,9 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
         groups_skipped=result.groups_skipped,
         custom_fields_imported=result.custom_fields_imported,
         custom_fields_skipped=result.custom_fields_skipped,
+        messages_imported=result.messages_imported,
+        messages_skipped=result.messages_skipped,
+        messages_encrypted_skipped=result.messages_encrypted_skipped,
         notes_skipped=result.notes_skipped,
     )
     for warning in result.warnings:
