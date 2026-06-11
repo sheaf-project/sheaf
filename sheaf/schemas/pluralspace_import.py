@@ -90,7 +90,11 @@ class PluralspaceImportResult(BaseModel):
     groups_imported: int = 0
     custom_fields_imported: int = 0
     fronts_imported: int = 0
+    fronts_skipped: int = 0
     journals_imported: int = 0
+    journals_skipped: int = 0
     messages_imported: int = 0
+    messages_skipped: int = 0
     polls_imported: int = 0
+    polls_skipped: int = 0
     warnings: list[str] = Field(default_factory=list)

@@ -69,8 +69,11 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
         members_skipped=result.members_skipped,
         members_updated=result.members_updated,
         fronts_imported=result.fronts_imported,
+        fronts_skipped=result.fronts_skipped,
         groups_imported=result.groups_imported,
+        groups_skipped=result.groups_skipped,
         custom_fields_imported=result.custom_fields_imported,
+        custom_fields_skipped=result.custom_fields_skipped,
         notes_skipped=result.notes_skipped,
     )
     for warning in result.warnings:

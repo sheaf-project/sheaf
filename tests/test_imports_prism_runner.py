@@ -608,3 +608,33 @@ def test_external_avatar_with_bad_scheme_is_dropped(auth_client: httpx.Client):
     assert any(
         "external avatar" in e["message"].lower() for e in final["events"]
     ), final["events"]
+
+
+def test_prism_reimport_is_idempotent(auth_client: httpx.Client):
+    """Re-importing the same envelope skips members and every content
+    section, and does not crash on the custom-field value or
+    group-membership constraints (both pre-seeded guards)."""
+    payload, media = _make_export()
+    envelope = synthesize_envelope(payload, _PASSPHRASE, media_blobs=media)
+
+    first = _post_file(auth_client, envelope)
+    drive_import_runner()
+    f1 = wait_for_terminal(auth_client, first["id"])
+    assert f1["status"] == "complete", f1
+
+    second = _post_file(auth_client, envelope)
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, second["id"])
+    assert f2["status"] == "complete", f2
+
+    counts = f2["counts"]
+    assert counts.get("members_imported", 0) == 0, counts
+    assert counts.get("members_skipped", 0) >= 1, counts
+    for key in (
+        "fronts_imported",
+        "journals_imported",
+        "messages_imported",
+        "polls_imported",
+        "board_posts_imported",
+    ):
+        assert counts.get(key, 0) == 0, (key, counts)

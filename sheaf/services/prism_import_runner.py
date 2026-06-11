@@ -104,10 +104,15 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
         custom_fields_imported=result.custom_fields_imported,
         custom_field_values_imported=result.custom_field_values_imported,
         fronts_imported=result.fronts_imported,
+        fronts_skipped=result.fronts_skipped,
         journals_imported=result.journals_imported,
+        journals_skipped=result.journals_skipped,
         messages_imported=result.messages_imported,
+        messages_skipped=result.messages_skipped,
         board_posts_imported=result.board_posts_imported,
+        board_posts_skipped=result.board_posts_skipped,
         polls_imported=result.polls_imported,
+        polls_skipped=result.polls_skipped,
         media_attachments_imported=result.media_attachments_imported,
     )
     for warning in result.warnings:

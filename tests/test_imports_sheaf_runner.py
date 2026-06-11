@@ -596,3 +596,165 @@ def test_sheaf_runner_strips_cross_account_image_refs(auth_client: httpx.Client)
     journals = auth_client.get("/v1/journals").json()
     j = next(j for j in journals["items"] if j["title"] == "entry")
     assert "v1/files" not in (j["body"] or "")
+
+
+# --- Re-import idempotence (content dedup) -----------------------------------
+
+# Every section populated, every timestamp fixed, so a second import of
+# the same payload must skip every row.
+_RICH_EXPORT = {
+    "version": "2",
+    "system": {"name": "Idem System"},
+    "members": [
+        {"id": "m1", "name": "IdemAda"},
+        {"id": "m2", "name": "IdemBea"},
+    ],
+    "tags": [{"id": "t1", "name": "idem-core", "member_ids": ["m1"]}],
+    "groups": [{"id": "g1", "name": "Idem Inner", "member_ids": ["m1", "m2"]}],
+    "fronts": [
+        {
+            "id": "f1",
+            "started_at": "2026-06-01T10:00:00+00:00",
+            "ended_at": "2026-06-01T11:00:00+00:00",
+            "member_ids": ["m1"],
+        }
+    ],
+    "custom_fields": [
+        {
+            "id": "cf1",
+            "name": "Idem Likes",
+            "field_type": "text",
+            "values": [{"member_id": "m1", "value": {"v": "tea"}}],
+        }
+    ],
+    "journals": [
+        {
+            "id": "j1",
+            "title": "idem entry",
+            "body": "hello",
+            "created_at": "2026-06-02T10:00:00+00:00",
+        }
+    ],
+    "revisions": [
+        {
+            "id": "r1",
+            "target_type": "member_bio",
+            "target_id": "m1",
+            "body": "old bio",
+            "created_at": "2026-06-03T10:00:00+00:00",
+        }
+    ],
+    "messages": [
+        {
+            "id": "msg1",
+            "board_kind": "system",
+            "body": "idem post",
+            "created_at": "2026-06-04T10:00:00+00:00",
+        }
+    ],
+    "polls": [
+        {
+            "id": "p1",
+            "question": "idem?",
+            "closes_at": "2027-01-01T00:00:00+00:00",
+            "created_at": "2026-06-05T10:00:00+00:00",
+            "options": [{"id": "o1", "text": "yes", "position": 0}],
+            "votes": [],
+            "events": [],
+        }
+    ],
+    "watch_tokens": [
+        {
+            "id": "wt1",
+            "label": "idem token",
+            "created_at": "2026-06-06T10:00:00+00:00",
+            "channels": [
+                {
+                    "id": "ch1",
+                    "name": "idem chan",
+                    "destination_type": "webhook",
+                    "destination_config": {},
+                    "event_type": "front_change",
+                    "created_at": "2026-06-06T11:00:00+00:00",
+                    "group_rules": [],
+                    "member_rules": [],
+                }
+            ],
+        }
+    ],
+    "reminders": [
+        {
+            "id": "rm1",
+            "channel_id": "ch1",
+            "name": "idem reminder",
+            "title": "T",
+            "trigger_type": "repeated",
+            "scope": "system",
+            "created_at": "2026-06-07T10:00:00+00:00",
+            "scope_member_ids": [],
+        }
+    ],
+}
+
+
+def test_sheaf_reimport_is_idempotent_across_all_sections(
+    auth_client: httpx.Client,
+):
+    """The 1.0 restore guarantee: importing the same export twice adds
+    nothing the second time - every section reports skipped, none
+    report imported, and the row counts visible through the API are
+    unchanged."""
+    payload = json.dumps(_RICH_EXPORT).encode()
+
+    first = _post_file(auth_client, payload=payload)
+    drive_import_runner()
+    f1 = wait_for_terminal(auth_client, first["id"])
+    assert f1["status"] == "complete", f1
+    imported_keys = {
+        k: v for k, v in f1["counts"].items() if k.endswith("_imported") and v
+    }
+    # Every section landed on the first pass.
+    assert imported_keys == {
+        "members_imported": 2,
+        "tags_imported": 1,
+        "groups_imported": 1,
+        "fronts_imported": 1,
+        "custom_fields_imported": 1,
+        "journals_imported": 1,
+        "revisions_imported": 1,
+        "messages_imported": 1,
+        "polls_imported": 1,
+        "channels_imported": 1,
+        "reminders_imported": 1,
+    }, f1["counts"]
+
+    second = _post_file(auth_client, payload=payload)
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, second["id"])
+    assert f2["status"] == "complete", f2
+
+    counts = f2["counts"]
+    # Nothing imported the second time...
+    for key, value in counts.items():
+        if key.endswith("_imported"):
+            assert value == 0, (key, counts)
+    # ...because everything was recognised and skipped.
+    for key, expected in {
+        "members_skipped": 2,
+        "tags_skipped": 1,
+        "groups_skipped": 1,
+        "fronts_skipped": 1,
+        "custom_fields_skipped": 1,
+        "journals_skipped": 1,
+        "revisions_skipped": 1,
+        "messages_skipped": 1,
+        "polls_skipped": 1,
+        "channels_skipped": 1,
+        "reminders_skipped": 1,
+    }.items():
+        assert counts.get(key, 0) == expected, (key, counts)
+
+    # Row counts via the API are unchanged.
+    assert len(auth_client.get("/v1/members").json()) == 2
+    assert len(auth_client.get("/v1/groups").json()) == 1
+    assert len(auth_client.get("/v1/fields").json()) == 1

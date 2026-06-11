@@ -67,6 +67,7 @@ async def handle_tupperbox_file(job: ImportJob, db: AsyncSession) -> None:
         members_skipped=result.members_skipped,
         members_updated=result.members_updated,
         groups_imported=result.groups_imported,
+        groups_skipped=result.groups_skipped,
     )
     for warning in result.warnings:
         append_event(job, level="warning", stage="import", message=warning)

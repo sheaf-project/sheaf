@@ -54,7 +54,10 @@ class SPImportResult(BaseModel):
     members_skipped: int = 0
     members_updated: int = 0
     fronts_imported: int = 0
+    fronts_skipped: int = 0
     groups_imported: int = 0
+    groups_skipped: int = 0
     custom_fields_imported: int = 0
+    custom_fields_skipped: int = 0
     notes_skipped: int = 0  # Until journal feature exists
     warnings: list[str] = []

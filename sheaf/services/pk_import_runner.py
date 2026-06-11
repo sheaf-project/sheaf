@@ -161,15 +161,19 @@ async def _process_pk_export(
 
     if options.groups:
         try:
-            count = await import_groups(
-                get_list(parsed, "groups"), system.id, hid_to_member, db
+            count, group_skipped = await import_groups(
+                get_list(parsed, "groups"),
+                system.id,
+                hid_to_member,
+                db,
+                conflict_strategy=options.conflict_strategy,
             )
-            update_counts(job, groups_imported=count)
+            update_counts(job, groups_imported=count, groups_skipped=group_skipped)
             append_event(
                 job,
                 level="info",
                 stage="groups",
-                message=f"imported {count} groups",
+                message=f"imported {count} groups ({group_skipped} already present)",
             )
         except Exception as exc:
             append_event(
@@ -184,10 +188,16 @@ async def _process_pk_export(
 
     if options.front_history:
         try:
-            fronts, warnings = await import_switches(
-                get_list(parsed, "switches"), system.id, hid_to_member, db
+            fronts, fronts_skipped, warnings = await import_switches(
+                get_list(parsed, "switches"),
+                system.id,
+                hid_to_member,
+                db,
+                conflict_strategy=options.conflict_strategy,
             )
-            update_counts(job, fronts_imported=fronts)
+            update_counts(
+                job, fronts_imported=fronts, fronts_skipped=fronts_skipped
+            )
             append_event(
                 job,
                 level="info",

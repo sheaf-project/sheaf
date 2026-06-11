@@ -101,6 +101,17 @@ from sheaf.schemas.prism_import import (
     PrismPreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_content_dedup import (
+    ContentMatchIndex,
+    CountedIndex,
+    front_key,
+    load_field_value_guard,
+    load_front_index,
+    load_group_member_guard,
+    load_journal_index,
+    load_message_count_index,
+    load_poll_index,
+)
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
     candidate_key,
@@ -421,51 +432,71 @@ async def run_import(
         result.custom_fields_imported += cf_imported
         result.custom_field_values_imported += cfv_imported
 
+    # Content dedup is active under skip/update; CREATE keeps the old
+    # append-everything behaviour (groups / field definitions have
+    # always reused same-named rows regardless).
+    content_dedupe = conflict_strategy != ImportConflictStrategy.CREATE
+
     if front_sessions:
-        result.fronts_imported += await _import_front_sessions(
+        f_imported, f_skipped = await _import_front_sessions(
             _list(data.get("frontSessions")),
             ps_id_to_handle,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.fronts_imported += f_imported
+        result.fronts_skipped += f_skipped
 
     if notes:
-        result.journals_imported += await _import_notes(
+        j_imported, j_skipped = await _import_notes(
             _list(data.get("notes")),
             ps_id_to_handle,
             system,
             db,
+            dedupe=content_dedupe,
         )
+        result.journals_imported += j_imported
+        result.journals_skipped += j_skipped
 
     if polls:
-        result.polls_imported += await _import_polls(
+        p_imported, p_skipped = await _import_polls(
             _list(data.get("polls")),
             _list(data.get("pollOptions")),
             ps_id_to_handle,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.polls_imported += p_imported
+        result.polls_skipped += p_skipped
 
     if conversations:
-        result.messages_imported += await _import_conversations(
+        m_imported, m_skipped = await _import_conversations(
             _list(data.get("conversations")),
             _list(data.get("messages")),
             ps_id_to_handle,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.messages_imported += m_imported
+        result.messages_skipped += m_skipped
 
     if member_board_posts:
-        result.board_posts_imported += await _import_member_board_posts(
+        b_imported, b_skipped = await _import_member_board_posts(
             _list(data.get("memberBoardPosts")),
             ps_id_to_handle,
             system.id,
             db,
             result.warnings,
+            dedupe=content_dedupe,
         )
+        result.board_posts_imported += b_imported
+        result.board_posts_skipped += b_skipped
 
     if media_attachments:
         result.media_attachments_imported += await _import_media_attachments(
@@ -584,7 +615,10 @@ async def _import_groups(
 
     await db.flush()
 
-    seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    # Pre-seeded with the system's existing pairs: a reused group plus a
+    # deduped (skipped) member would otherwise violate the association's
+    # composite primary key on every re-import.
+    pair_guard = await load_group_member_guard(db, system_id)
     for entry in entries_in:
         if not isinstance(entry, dict):
             continue
@@ -594,10 +628,8 @@ async def _import_groups(
         handle = ps_id_to_handle.get(mid) if mid else None
         if group is None or handle is None:
             continue
-        pair = (group.id, handle.member.id)
-        if pair in seen:
+        if not pair_guard.add((group.id, handle.member.id)):
             continue
-        seen.add(pair)
         await db.execute(
             group_members.insert().values(
                 group_id=group.id, member_id=handle.member.id
@@ -691,7 +723,10 @@ async def _import_custom_fields(
     await db.flush()
 
     values_imported = 0
-    seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    # Pre-seeded with the system's existing pairs: a reused definition
+    # plus a deduped (skipped) member would otherwise trip the
+    # UNIQUE(field_id, member_id) constraint on every re-import.
+    value_guard = await load_field_value_guard(db, system_id)
     for v in values_in:
         if not isinstance(v, dict):
             continue
@@ -701,12 +736,10 @@ async def _import_custom_fields(
         handle = ps_id_to_handle.get(member_id) if member_id else None
         if field_def is None or handle is None:
             continue
-        pair = (field_def.id, handle.member.id)
-        if pair in seen:
-            continue
-        seen.add(pair)
         raw_value = v.get("value")
         if raw_value is None or raw_value == "":
+            continue
+        if not value_guard.add((field_def.id, handle.member.id)):
             continue
         cfv = CustomFieldValue(
             id=uuid.uuid4(),
@@ -725,9 +758,19 @@ async def _import_front_sessions(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
-    """Each Prism frontSession is one-member fronting, one Sheaf Front."""
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
+    """Each Prism frontSession is one-member fronting, one Sheaf Front.
+
+    Under dedupe, an interval that already exists (same start, end,
+    member) is skipped. Returns (imported, skipped).
+    """
     imported = 0
+    skipped = 0
+    front_index = (
+        await load_front_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
     missing = 0
     for s in sessions_in:
         if not isinstance(s, dict):
@@ -745,6 +788,12 @@ async def _import_front_sessions(
         if handle is None:
             missing += 1
             continue
+        if dedupe:
+            fkey = front_key(started_at, ended_at, {handle.member.id})
+            if front_index.get(fkey) is not None:
+                skipped += 1
+                continue
+            front_index.register(fkey)
         front = Front(
             id=uuid.uuid4(),
             system_id=system_id,
@@ -763,7 +812,7 @@ async def _import_front_sessions(
         warnings.append(
             f"Skipped {missing} front sessions whose headmate wasn't imported."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_notes(
@@ -771,9 +820,19 @@ async def _import_notes(
     ps_id_to_handle: dict[str, _MemberHandle],
     system: System,
     db: AsyncSession,
-) -> int:
-    """Prism notes (per-member or system-wide) map onto Sheaf journals."""
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
+    """Prism notes (per-member or system-wide) map onto Sheaf journals.
+
+    Under dedupe, a note matching an existing (member, created_at)
+    journal is skipped. Returns (imported, skipped).
+    """
     imported = 0
+    skipped = 0
+    journal_index = (
+        await load_journal_index(db, system.id) if dedupe else ContentMatchIndex()
+    )
     for n in notes_in:
         if not isinstance(n, dict):
             continue
@@ -789,6 +848,13 @@ async def _import_notes(
         elif handle is not None:
             author_ids.append(str(handle.member.id))
             author_names.append(handle.plaintext_name)
+        created = _parse_iso(n.get("createdAt"))
+        if dedupe and created is not None:
+            jkey = (handle.member.id if handle else None, created)
+            if journal_index.get(jkey) is not None:
+                skipped += 1
+                continue
+            journal_index.register(jkey)
         entry = JournalEntry(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -801,7 +867,6 @@ async def _import_notes(
             author_member_names=author_names,
             image_keys=[],
         )
-        created = _parse_iso(n.get("createdAt"))
         if created:
             entry.created_at = created
         updated = _parse_iso(n.get("modifiedAt"))
@@ -809,7 +874,7 @@ async def _import_notes(
             entry.updated_at = updated
         db.add(entry)
         imported += 1
-    return imported
+    return imported, skipped
 
 
 async def _import_polls(
@@ -819,7 +884,9 @@ async def _import_polls(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Map Prism polls + sibling pollOptions to Sheaf Poll/Option/Vote rows.
 
     Prism's poll options sit in a top-level `pollOptions[]` array
@@ -827,9 +894,15 @@ async def _import_polls(
     Sheaf's per-voter PollVote with `option_ids`. `isClosed=false`
     polls get a one-year close window since Sheaf polls require one.
     `responseText` on "other" option votes is appended to the option
-    text (Sheaf has no per-vote freeform field).
+    text (Sheaf has no per-vote freeform field). Under dedupe, a poll
+    matching an existing created_at is skipped wholesale (options +
+    votes belong to the poll row). Returns (imported, skipped).
     """
     imported = 0
+    skipped = 0
+    poll_index = (
+        await load_poll_index(db, system_id) if dedupe else ContentMatchIndex()
+    )
     open_ended = 0
     anonymous_count = 0
     response_text_dropped = 0
@@ -854,6 +927,11 @@ async def _import_polls(
         if bool(p.get("isAnonymous")):
             anonymous_count += 1
         created_at = _parse_iso(p.get("createdAt"))
+        if dedupe and created_at is not None:
+            if poll_index.get(created_at) is not None:
+                skipped += 1
+                continue
+            poll_index.register(created_at)
         if is_closed:
             closes_at = created_at or datetime.now(UTC)
         else:
@@ -961,7 +1039,7 @@ async def _import_polls(
         warnings.append(
             f"Dropped {missing_voter} poll votes whose voter wasn't imported."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_conversations(
@@ -971,7 +1049,9 @@ async def _import_conversations(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Collapse Prism conversations + messages to the Sheaf system board.
 
     Each message body is prefixed with `[DM with X]` for direct
@@ -987,7 +1067,12 @@ async def _import_conversations(
         if cid:
             convs_by_id[cid] = c
     if not convs_by_id and not msgs_in:
-        return 0
+        return 0, 0
+    # Counted occurrences: chat timestamps are coarse enough that
+    # distinct messages can share one, and all must import first pass.
+    message_index = (
+        await load_message_count_index(db, system_id) if dedupe else CountedIndex()
+    )
     has_dm = any(
         isinstance(c, dict)
         and (
@@ -1012,9 +1097,14 @@ async def _import_conversations(
         )
 
     imported = 0
+    skipped = 0
     missing_author = 0
     for m in msgs_in:
         if not isinstance(m, dict):
+            continue
+        ts = _parse_iso(m.get("timestamp"))
+        if dedupe and ts is not None and message_index.should_skip((None, ts)):
+            skipped += 1
             continue
         cid = _clean_str(m.get("conversationId"))
         conv = convs_by_id.get(cid) if cid else None
@@ -1045,7 +1135,6 @@ async def _import_conversations(
             author_member_id=author_handle.member.id if author_handle else None,
             body=encrypt(body),
         )
-        ts = _parse_iso(m.get("timestamp"))
         if ts:
             message.created_at = ts
         db.add(message)
@@ -1055,7 +1144,7 @@ async def _import_conversations(
             f"{missing_author} chat messages referenced an author that wasn't "
             "imported; those messages were attributed to nobody."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_member_board_posts(
@@ -1064,7 +1153,9 @@ async def _import_member_board_posts(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
-) -> int:
+    *,
+    dedupe: bool = False,
+) -> tuple[int, int]:
     """Prism `memberBoardPosts` map to Sheaf board posts.
 
     `targetMemberId` present -> per-member wall. Absent -> system
@@ -1072,6 +1163,10 @@ async def _import_member_board_posts(
     default ("public" / unset).
     """
     imported = 0
+    skipped = 0
+    message_index = (
+        await load_message_count_index(db, system_id) if dedupe else CountedIndex()
+    )
     missing_target = 0
     deleted_skipped = 0
     for p in posts_in:
@@ -1086,6 +1181,16 @@ async def _import_member_board_posts(
         target_handle = ps_id_to_handle.get(target_id) if target_id else None
         if target_id and target_handle is None:
             missing_target += 1
+            continue
+        written = _parse_iso(p.get("writtenAt")) or _parse_iso(p.get("createdAt"))
+        if (
+            dedupe
+            and written is not None
+            and message_index.should_skip(
+                (target_handle.member.id if target_handle else None, written)
+            )
+        ):
+            skipped += 1
             continue
         title = _clean_str(p.get("title"))
         body = _clean_str(p.get("body")) or ""
@@ -1104,7 +1209,6 @@ async def _import_member_board_posts(
             author_member_id=author_handle.member.id if author_handle else None,
             body=encrypt(body),
         )
-        written = _parse_iso(p.get("writtenAt")) or _parse_iso(p.get("createdAt"))
         if written:
             message.created_at = written
         db.add(message)
@@ -1118,7 +1222,7 @@ async def _import_member_board_posts(
             f"Skipped {missing_target} board posts whose target member wasn't "
             "imported."
         )
-    return imported
+    return imported, skipped
 
 
 async def _import_media_attachments(

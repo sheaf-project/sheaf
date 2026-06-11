@@ -504,3 +504,39 @@ def test_external_avatar_with_bad_scheme_is_dropped(auth_client: httpx.Client):
     assert any(
         "external avatar" in e["message"].lower() for e in final["events"]
     ), final["events"]
+
+
+def test_ps_reimport_is_idempotent(auth_client: httpx.Client):
+    """Re-importing the same zip skips members and every content
+    section (fronts, journals, messages, polls) and does not crash on
+    the custom-field value constraint."""
+    data = _sample_data()
+    blob = _build_zip(data)
+
+    first = _post_file(auth_client, blob)
+    drive_import_runner()
+    f1 = wait_for_terminal(auth_client, first["id"])
+    assert f1["status"] == "complete", f1
+
+    second = _post_file(auth_client, _build_zip(data))
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, second["id"])
+    assert f2["status"] == "complete", f2
+
+    counts = f2["counts"]
+    assert counts.get("members_imported", 0) == 0, counts
+    assert counts.get("members_skipped", 0) >= 1, counts
+    for key in (
+        "fronts_imported",
+        "journals_imported",
+        "messages_imported",
+        "polls_imported",
+    ):
+        assert counts.get(key, 0) == 0, (key, counts)
+    for key in (
+        "fronts_skipped",
+        "journals_skipped",
+        "messages_skipped",
+        "polls_skipped",
+    ):
+        assert counts.get(key, 0) >= 1, (key, counts)

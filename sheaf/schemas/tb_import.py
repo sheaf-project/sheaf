@@ -47,4 +47,5 @@ class TBImportResult(BaseModel):
     members_skipped: int = 0
     members_updated: int = 0
     groups_imported: int = 0
+    groups_skipped: int = 0
     warnings: list[str] = []

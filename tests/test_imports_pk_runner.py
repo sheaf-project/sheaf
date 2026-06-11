@@ -261,3 +261,24 @@ def test_pk_reimport_create_strategy_appends(auth_client: httpx.Client):
 
     members = auth_client.get("/v1/members").json()
     assert len(members) == 6
+
+
+def test_pk_reimport_skips_groups_and_switch_history(auth_client: httpx.Client):
+    """Content dedup: groups match by name and switch-history intervals
+    by (start, end, member set), so a re-import adds neither."""
+    first = _post_pk_file(auth_client, options={"front_history": True})
+    drive_import_runner()
+    f1 = wait_for_terminal(auth_client, first["id"])
+    assert f1["status"] == "complete", f1
+    groups_first = f1["counts"].get("groups_imported", 0)
+    fronts_first = f1["counts"].get("fronts_imported", 0)
+    assert groups_first >= 1 and fronts_first >= 1, f1["counts"]
+
+    second = _post_pk_file(auth_client, options={"front_history": True})
+    drive_import_runner()
+    f2 = wait_for_terminal(auth_client, second["id"])
+    assert f2["status"] == "complete", f2
+    assert f2["counts"].get("groups_imported", 0) == 0, f2["counts"]
+    assert f2["counts"].get("groups_skipped", 0) == groups_first, f2["counts"]
+    assert f2["counts"].get("fronts_imported", 0) == 0, f2["counts"]
+    assert f2["counts"].get("fronts_skipped", 0) == fronts_first, f2["counts"]
