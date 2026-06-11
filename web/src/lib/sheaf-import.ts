@@ -24,6 +24,11 @@ export interface SheafPreviewSummary {
   poll_count: number;
   reminder_count: number;
   channel_count: number;
+  // True when the uploaded file was an export-with-images zip; the
+  // submit step then uses source "sheaf_archive" and may restore the
+  // bundled images.
+  archive: boolean;
+  image_count: number;
 }
 
 export async function previewSheafImport(file: File): Promise<SheafPreviewSummary> {

@@ -18,8 +18,8 @@ def test_streaming_export_cleans_up_tempfile_on_failure(monkeypatch):
     tempfile would have been created, then count files in the build
     tmpdir."""
     from sheaf.api.v1 import export as export_api
-    from sheaf.services.export_builder import _assemble_zip_to_tempfile
     from sheaf.config import settings
+    from sheaf.services.export_builder import _assemble_zip_to_tempfile
 
     async def _boom(**_kwargs):
         raise RuntimeError("synthetic build failure")

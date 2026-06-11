@@ -75,10 +75,10 @@ from sheaf.services.import_dedup import (
     resolve_member,
 )
 from sheaf.services.import_image_strip import (
-    strip_internal_avatar_url,
-    strip_internal_image_keys,
-    strip_internal_image_refs_md,
-    strip_internal_image_refs_md_to_none,
+    rewrite_internal_avatar_url,
+    rewrite_internal_image_keys,
+    rewrite_internal_image_refs_md,
+    rewrite_internal_image_refs_md_to_none,
 )
 from sheaf.services.member_limits import enforce_import_member_cap
 
@@ -204,6 +204,39 @@ def preview(data: dict) -> SheafPreviewSummary:
     return summary
 
 
+async def count_new_members_for_import(
+    data: dict,
+    system: System,
+    db: AsyncSession,
+    *,
+    member_ids: list[str] | None = None,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP,
+) -> int:
+    """How many members `run_import` would CREATE for this payload.
+
+    Mirrors the member-section candidate-key construction inside
+    `run_import` (same name truncation, same match keys) without
+    building Member rows. The archive importer uses this to run the
+    tier member-cap check BEFORE it uploads any image blobs, so a
+    cap failure never leaves freshly-written storage objects behind
+    for the runner's rollback to orphan.
+    """
+    export_members = data.get("members", [])
+    if member_ids is not None:
+        selected = set(member_ids)
+        export_members = [m for m in export_members if m.get("id") in selected]
+    keys = [
+        (
+            blind_index((m_data.get("name") or "unnamed")[:100]),
+            _trunc(m_data.get("pluralkit_id"), 8),
+            bool(m_data.get("is_custom_front", False)),
+        )
+        for m_data in export_members
+    ]
+    index = await load_member_match_index(db, system.id)
+    return count_new_members(keys, index=index, strategy=conflict_strategy)
+
+
 async def run_import(
     data: dict,
     system: System,
@@ -221,10 +254,38 @@ async def run_import(
     polls: bool = True,
     reminders: bool = True,
     notifications: bool = True,
+    image_key_map: dict[str, str] | None = None,
+    used_image_keys: set[str] | None = None,
 ) -> SheafImportResult:
-    """Import Sheaf export data into the user's system."""
+    """Import Sheaf export data into the user's system.
+
+    `image_key_map` is the archive importer's old-key -> new-key map of
+    re-uploaded image blobs: internal image references (avatars, markdown
+    embeds, image_keys caches) with a mapping are rewritten to the new
+    key instead of being stripped, and the old keys actually referenced
+    by written rows are recorded into `used_image_keys` so the caller
+    can discard uploads nothing ended up using. With no map (the plain
+    JSON import) every internal reference is stripped as before.
+    """
     result = SheafImportResult()
     warnings: list[str] = []
+
+    # Image-reference handling, bound once so the call sites below stay
+    # one-liners. Empty map == strip mode.
+    _ikm: dict[str, str] = image_key_map or {}
+    _used: set[str] = used_image_keys if used_image_keys is not None else set()
+
+    def _resolve_avatar_url(value: str | None) -> str | None:
+        return rewrite_internal_avatar_url(value, _ikm, _used)
+
+    def _resolve_md(text: str | None) -> str | None:
+        return rewrite_internal_image_refs_md(text, _ikm, _used)
+
+    def _resolve_md_to_none(text: str | None) -> str | None:
+        return rewrite_internal_image_refs_md_to_none(text, _ikm, _used)
+
+    def _resolve_image_keys(keys: list[str] | None) -> list[str]:
+        return rewrite_internal_image_keys(keys, _ikm, _used)
     # Old-export-id -> new-object maps, hoisted to function scope so later
     # sections can resolve cross-references regardless of which earlier
     # sections the user opted into.
@@ -241,7 +302,7 @@ async def run_import(
             if sys_data.get("description") is not None:
                 # Strip any /v1/files/... image embeds — those keys belong
                 # to the exporting account, not this one.
-                system.description = strip_internal_image_refs_md(
+                system.description = _resolve_md(
                     sys_data["description"]
                 )
             if sys_data.get("tag") is not None:
@@ -253,7 +314,7 @@ async def run_import(
             # Notes are encrypted at rest. Empty-string clears (matches the
             # PATCH /systems/me semantics).
             if "note" in sys_data:
-                note_val = strip_internal_image_refs_md_to_none(
+                note_val = _resolve_md_to_none(
                     sys_data.get("note")
                 )
                 system.note = encrypt(note_val) if note_val else None
@@ -263,7 +324,7 @@ async def run_import(
                 # bytes, so drop the reference. External URLs (gravatar
                 # etc.) pass through unchanged.
                 system.avatar_url = _trunc(
-                    strip_internal_avatar_url(sys_data["avatar_url"]), 500
+                    _resolve_avatar_url(sys_data["avatar_url"]), 500
                 )
             if "replace_fronts_default" in sys_data:
                 system.replace_fronts_default = bool(
@@ -323,18 +384,21 @@ async def run_import(
     # below counts only the rows this run would actually CREATE. Under
     # skip/update a pure re-import (e.g. restoring a backup over the same
     # roster) adds nothing and must not trip the cap.
-    candidates: list[tuple[Member, str]] = []
+    candidates: list[tuple[Member, str, set[str]]] = []
     for m_data in export_members:
         old_id = m_data.get("id", "")
         plaintext_name = (m_data.get("name") or "unnamed")[:100]
-        # Drop /v1/files/... markdown image embeds in the bio + note;
-        # the keys point at the exporting account's storage and we can't
-        # rehost them on import. External URLs survive.
-        plaintext_description = strip_internal_image_refs_md(
-            m_data.get("description")
+        # Rewrite (or drop) /v1/files/... image refs in the bio + note +
+        # avatar. Usage is tracked per-candidate rather than into the
+        # shared set: a candidate the dedup pass skips below never
+        # persists, so its keys must not count as used or the archive
+        # importer would keep blobs nothing references.
+        member_used: set[str] = set()
+        plaintext_description = rewrite_internal_image_refs_md(
+            m_data.get("description"), _ikm, member_used
         )
-        plaintext_note = strip_internal_image_refs_md_to_none(
-            m_data.get("note")
+        plaintext_note = rewrite_internal_image_refs_md_to_none(
+            m_data.get("note"), _ikm, member_used
         )
         member = Member(
             id=uuid.uuid4(),
@@ -354,7 +418,10 @@ async def run_import(
             ),
             pronouns=_trunc(m_data.get("pronouns"), 100),
             avatar_url=_trunc(
-                strip_internal_avatar_url(m_data.get("avatar_url")), 500
+                rewrite_internal_avatar_url(
+                    m_data.get("avatar_url"), _ikm, member_used
+                ),
+                500,
             ),
             color=_trunc(m_data.get("color"), 7),
             birthday=_trunc(m_data.get("birthday"), 10),
@@ -370,11 +437,11 @@ async def run_import(
             # notify_on_front_member_ids points at other members by id; remapped
             # in the second pass below once every member row exists.
         )
-        candidates.append((member, old_id))
+        candidates.append((member, old_id, member_used))
 
     index = await load_member_match_index(db, system.id)
     new_count = count_new_members(
-        [candidate_key(m) for m, _ in candidates],
+        [candidate_key(m) for m, _, _ in candidates],
         index=index,
         strategy=conflict_strategy,
     )
@@ -385,7 +452,7 @@ async def run_import(
     # second-pass notify remap below leaves skipped members untouched.
     old_id_to_member: dict[str, Member] = {}
     written_old_ids: set[str] = set()
-    for member, old_id in candidates:
+    for member, old_id, member_used in candidates:
         resolution = resolve_member(
             member, index=index, strategy=conflict_strategy
         )
@@ -393,9 +460,13 @@ async def run_import(
             db.add(resolution.member)
             result.members_imported += 1
             written_old_ids.add(old_id)
+            _used |= member_used
         elif resolution.disposition == "updated":
+            # _apply_update copies the candidate's rewritten description /
+            # note / avatar onto the existing row, so its refs ARE used.
             result.members_updated += 1
             written_old_ids.add(old_id)
+            _used |= member_used
         else:
             result.members_skipped += 1
         old_id_to_member[old_id] = resolution.member
@@ -546,7 +617,7 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=(g_data.get("name") or "unnamed")[:100],
-                description=strip_internal_image_refs_md(g_data.get("description")),
+                description=_resolve_md(g_data.get("description")),
                 color=_trunc(g_data.get("color"), 7),
             )
             db.add(group)
@@ -636,7 +707,7 @@ async def run_import(
                 member_id=member.id if member else None,
                 title=encrypt(title) if title else None,
                 body=encrypt(
-                    strip_internal_image_refs_md(j_data.get("body")) or ""
+                    _resolve_md(j_data.get("body")) or ""
                 ),
                 visibility=j_data.get("visibility") or "system",
                 # The original authoring account is meaningless on this
@@ -652,7 +723,7 @@ async def run_import(
                 # image_keys is a pre-extracted hosted-keys list; every entry
                 # here is by construction a key belonging to the exporting
                 # account. Drop them all rather than carrying dangling refs.
-                image_keys=strip_internal_image_keys(
+                image_keys=_resolve_image_keys(
                     _str_list(j_data.get("image_keys"))
                 ),
             )
@@ -699,9 +770,9 @@ async def run_import(
             editor_member_names=_str_list(r_data.get("editor_member_names")),
             title=encrypt(title) if title else None,
             body=encrypt(
-                strip_internal_image_refs_md(r_data.get("body")) or ""
+                _resolve_md(r_data.get("body")) or ""
             ),
-            image_keys=strip_internal_image_keys(
+            image_keys=_resolve_image_keys(
                 _str_list(r_data.get("image_keys"))
             ),
             pinned_at=_parse_iso(r_data.get("pinned_at")),
@@ -735,7 +806,7 @@ async def run_import(
                 board_member_id=board_member.id if board_member else None,
                 author_member_id=author.id if author else None,
                 body=encrypt(
-                    strip_internal_image_refs_md(msg_data.get("body")) or ""
+                    _resolve_md(msg_data.get("body")) or ""
                 ),
             )
             created = _parse_iso(msg_data.get("created_at"))
@@ -1011,7 +1082,7 @@ async def run_import(
                     f"Reminder '{rm_data.get('name', '?')}' trigger member "
                     "was not imported; kept without a member trigger"
                 )
-            body = strip_internal_image_refs_md_to_none(rm_data.get("body"))
+            body = _resolve_md_to_none(rm_data.get("body"))
             reminder = Reminder(
                 id=uuid.uuid4(),
                 system_id=system.id,

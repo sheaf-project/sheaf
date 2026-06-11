@@ -62,13 +62,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sheaf.config import settings
 from sheaf.crypto import blind_index, encrypt
-from sheaf.image_processing import ImageNormalizationError, normalize_image
 from sheaf.models.custom_field import (
     CustomFieldDefinition,
     CustomFieldValue,
@@ -93,8 +90,7 @@ from sheaf.models.poll import (
 )
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
-from sheaf.models.uploaded_file import UploadedFile
-from sheaf.models.user import User, UserTier
+from sheaf.models.user import User
 from sheaf.schemas.pluralspace_import import (
     PluralspaceImportResult,
     PluralspacePreviewMember,
@@ -108,45 +104,26 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_media import (
+    ImportImageError,
+    store_imported_image,
+    user_can_upload_images,
+)
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     safe_json_loads,
     sanitize_external_avatar_url,
 )
 from sheaf.services.member_limits import enforce_import_member_cap
-from sheaf.storage import get_storage
 
 logger = logging.getLogger("sheaf.imports.pluralspace")
 
 
 # --- Zip + JSON parsing ----------------------------------------------------
 
-# Image upload pipeline mirrors files.py. Kept private here so the
-# importer doesn't need to depend on the v1 router module.
-_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-_MIME_EXT = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/gif": "gif",
-    "image/webp": "webp",
-}
-
-
-def _sniff_image_mime(data: bytes) -> str | None:
-    """Magic-byte image format sniffer. Same predicates as the upload endpoint."""
-    if len(data) < 12:
-        return None
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
-        return "image/gif"
-    if data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
+# The image-ingest pipeline (sniff / normalize / quota / UploadedFile)
+# lives in sheaf.services.import_media, shared with the other importers
+# that carry image bytes.
 @dataclass
 class _ParsedExport:
     """The parsed contents of a PluralSpace export zip.
@@ -1188,7 +1165,7 @@ async def _persist_avatar_from_zip(
     images on this instance. Failures append a single user-facing
     warning each (deduped where it makes sense).
     """
-    if not _user_can_upload_images(user):
+    if not user_can_upload_images(user):
         warnings.append(
             "Skipped avatar imports: image uploads are not enabled for this "
             "account."
@@ -1209,92 +1186,27 @@ async def _persist_avatar_from_zip(
     if raw is None:
         warnings.append(f"Avatar file {media_path!r} was missing from the export.")
         return None
-    sniffed = _sniff_image_mime(raw)
-    if sniffed is None or sniffed not in _ALLOWED_IMAGE_TYPES:
-        warnings.append(
-            f"Avatar file {media_path!r} did not match a supported image format."
-        )
-        return None
 
     try:
-        normalised, mime, _was_animated = await run_in_threadpool(
-            normalize_image,
-            raw,
-            sniffed,
-            allow_animation=_animation_allowed(user),
-            max_dim=settings.max_image_dimension,
-            max_frames=settings.max_animated_frames,
-            max_decoded_bytes=settings.max_animated_decoded_bytes,
-        )
-    except ImageNormalizationError:
-        warnings.append(
-            f"Could not process avatar {media_path!r} (decode rejected by "
-            "normaliser)."
-        )
-        return None
-    size = len(normalised)
-
-    quota = _user_quota_bytes(user)
-    if quota > 0:
-        used = await db.scalar(
-            select(_sum_uploaded_size()).where(UploadedFile.user_id == user.id)
-        ) or 0
-        if (used + size) > quota:
+        stored = await store_imported_image(raw, db=db, user=user, purpose="avatar")
+    except ImportImageError as exc:
+        if exc.reason == "bad_format":
+            warnings.append(
+                f"Avatar file {media_path!r} did not match a supported image "
+                "format."
+            )
+        elif exc.reason == "normalize_rejected":
+            warnings.append(
+                f"Could not process avatar {media_path!r} (decode rejected by "
+                "normaliser)."
+            )
+        else:  # quota_full
             warnings.append(
                 "Avatar imports stopped: storage quota reached. Remaining "
                 "members will be imported without avatars."
             )
-            return None
-
-    ext = _MIME_EXT[mime]
-    key = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
-
-    storage = get_storage()
-    await storage.put(key, normalised, mime)
-
-    db.add(
-        UploadedFile(
-            user_id=user.id,
-            key=key,
-            purpose="avatar",
-            content_type=mime,
-            size_bytes=size,
-        )
-    )
-    return key
-
-
-def _user_can_upload_images(user: User) -> bool:
-    return bool(user.is_admin or settings.allow_image_uploads or user.can_upload_images)
-
-
-def _animation_allowed(user: User) -> bool:
-    """Mirror sheaf.files.animation_allowed for the importer context.
-
-    Re-implemented locally rather than imported so the importer doesn't
-    take a runtime dependency on the v1 files module.
-    """
-    if not settings.allow_animated_uploads:
-        return False
-    if user.is_admin:
-        return True
-    return bool(getattr(user, "can_upload_animated_images", False))
-
-
-def _user_quota_bytes(user: User) -> int:
-    quota_map = {
-        UserTier.FREE: settings.storage_quota_free_mb,
-        UserTier.PLUS: settings.storage_quota_plus_mb,
-        UserTier.SELF_HOSTED: settings.storage_quota_selfhosted_mb,
-    }
-    mb = quota_map.get(user.tier, 0)
-    return mb * 1024 * 1024 if mb > 0 else 0
-
-
-def _sum_uploaded_size():
-    from sqlalchemy import func
-
-    return func.coalesce(func.sum(UploadedFile.size_bytes), 0)
+        return None
+    return stored.key
 
 
 # --- Tiny helpers ----------------------------------------------------------

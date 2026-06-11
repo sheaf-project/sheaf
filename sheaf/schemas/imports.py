@@ -41,6 +41,7 @@ class ImportFileCreateRequest(BaseModel):
         ImportJobSource.TUPPERBOX_FILE,
         ImportJobSource.SIMPLYPLURAL_FILE,
         ImportJobSource.SHEAF_FILE,
+        ImportJobSource.SHEAF_ARCHIVE,
         ImportJobSource.PLURALSPACE_FILE,
         ImportJobSource.PRISM_FILE,
     ]

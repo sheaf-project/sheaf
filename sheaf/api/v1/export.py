@@ -460,13 +460,14 @@ def _channel_dict(channel: NotificationChannel) -> dict:
 
 
 def _uploaded_file_dict(f: UploadedFile) -> dict:
-    """File-inventory metadata — bytes themselves don't ride along with
-    the sync export (use the async with-images job for that). Listed
-    here so a re-import can know which files existed even though it
-    can't restore the blobs."""
+    """File-inventory metadata - bytes themselves don't ride along with
+    the sync export. The async with-images job bundles them, and the
+    archive importer restores them; listed here so a plain-JSON
+    re-import still knows which files existed."""
     return {
         "id": str(f.id),
         "key": f.key,
+        "purpose": f.purpose,
         "size_bytes": f.size_bytes,
         "content_type": f.content_type,
         "created_at": f.created_at.isoformat(),

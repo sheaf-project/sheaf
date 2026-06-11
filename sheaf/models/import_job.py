@@ -29,6 +29,9 @@ class ImportJobSource(enum.StrEnum):
     TUPPERBOX_FILE = "tupperbox_file"
     SIMPLYPLURAL_FILE = "simplyplural_file"
     SHEAF_FILE = "sheaf_file"
+    # Export-with-images zip (export.json + images/). Same JSON walk as
+    # SHEAF_FILE, plus blob restore.
+    SHEAF_ARCHIVE = "sheaf_archive"
     PLURALSPACE_FILE = "pluralspace_file"
     PRISM_FILE = "prism_file"
 
