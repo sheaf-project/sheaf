@@ -16,10 +16,14 @@ ones for cross-references inside the file. References to user accounts
 historical audit actors are dropped, since the original account UUIDs
 are meaningless on the target instance.
 
-Re-import is additive, with one exception: custom field *definitions*
-are deduped by (name, type) against the target system, so restoring a
-backup into a populated system doesn't leave a second copy of every
-field. Members and their data are still added rather than merged.
+Re-import deduplicates members against the target system (see
+`import_dedup`): the chosen conflict strategy decides whether a member
+that already exists is skipped (default) or updated, so restoring a
+backup into a populated system doesn't double the roster. Custom field
+*definitions* are likewise deduped by (name, type). Everything else a
+member owns (fronts, journals, messages, polls, reminders) is still
+added rather than merged, so re-importing those sections over existing
+data appends duplicates - dedup is member-scoped only.
 """
 
 import logging
@@ -63,6 +67,13 @@ from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.watch_token import WatchToken
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_dedup import (
+    ImportConflictStrategy,
+    candidate_key,
+    count_new_members,
+    load_member_match_index,
+    resolve_member,
+)
 from sheaf.services.import_image_strip import (
     strip_internal_avatar_url,
     strip_internal_image_keys,
@@ -148,6 +159,8 @@ class SheafPreviewSummary:
 class SheafImportResult:
     def __init__(self):
         self.members_imported: int = 0
+        self.members_skipped: int = 0
+        self.members_updated: int = 0
         self.fronts_imported: int = 0
         self.groups_imported: int = 0
         self.tags_imported: int = 0
@@ -196,6 +209,7 @@ async def run_import(
     system: System,
     db: AsyncSession,
     *,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP,
     system_profile: bool = True,
     member_ids: list[str] | None = None,
     fronts: bool = True,
@@ -305,12 +319,11 @@ async def run_import(
         selected = set(member_ids)
         export_members = [m for m in export_members if m.get("id") in selected]
 
-    # Hard-fail before writing anything if this would blow the member cap.
-    await enforce_import_member_cap(db, system, len(export_members))
-
-    # Map old export ID → new Member
-    old_id_to_member: dict[str, Member] = {}
-
+    # Build candidates first (no DB writes), so the member-cap check
+    # below counts only the rows this run would actually CREATE. Under
+    # skip/update a pure re-import (e.g. restoring a backup over the same
+    # roster) adds nothing and must not trip the cap.
+    candidates: list[tuple[Member, str]] = []
     for m_data in export_members:
         old_id = m_data.get("id", "")
         plaintext_name = (m_data.get("name") or "unnamed")[:100]
@@ -357,18 +370,48 @@ async def run_import(
             # notify_on_front_member_ids points at other members by id; remapped
             # in the second pass below once every member row exists.
         )
-        db.add(member)
-        old_id_to_member[old_id] = member
-        result.members_imported += 1
+        candidates.append((member, old_id))
+
+    index = await load_member_match_index(db, system.id)
+    new_count = count_new_members(
+        [candidate_key(m) for m, _ in candidates],
+        index=index,
+        strategy=conflict_strategy,
+    )
+    await enforce_import_member_cap(db, system, new_count)
+
+    # Map old export ID → resolved Member (created / skipped / updated).
+    # `written_old_ids` tracks the rows this run actually wrote, so the
+    # second-pass notify remap below leaves skipped members untouched.
+    old_id_to_member: dict[str, Member] = {}
+    written_old_ids: set[str] = set()
+    for member, old_id in candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=conflict_strategy
+        )
+        if resolution.disposition == "created":
+            db.add(resolution.member)
+            result.members_imported += 1
+            written_old_ids.add(old_id)
+        elif resolution.disposition == "updated":
+            result.members_updated += 1
+            written_old_ids.add(old_id)
+        else:
+            result.members_skipped += 1
+        old_id_to_member[old_id] = resolution.member
 
     await db.flush()
 
     # Second pass: notify_on_front_member_ids references other members by their
     # export id, which only fully resolve once every member exists. Remap old
     # ids to the new member ids, dropping any member that didn't import. Members
-    # with no such preference settle to the model default ([]).
+    # with no such preference settle to the model default ([]). Skipped members
+    # are left untouched (they keep whatever the existing row already had).
     for m_data in export_members:
-        member = old_id_to_member.get(m_data.get("id", ""))
+        old_id = m_data.get("id", "")
+        if old_id not in written_old_ids:
+            continue
+        member = old_id_to_member.get(old_id)
         if member is None:
             continue
         member.notify_on_front_member_ids = [
@@ -451,10 +494,25 @@ async def run_import(
         await db.flush()
 
         # Import field values. A reused definition can be referenced by more
-        # than one export field (a file with duplicate defs, or future deduped
+        # than one export field (a file with duplicate defs, or deduped
         # members), so guard (field, member) uniqueness ourselves to avoid
         # tripping the UNIQUE(field_id, member_id) constraint mid-import.
         seen_values: set[tuple[uuid.UUID, uuid.UUID]] = set()
+        # Pre-seed the guard with values already in the system: a re-import
+        # that reused an existing definition AND matched an existing
+        # (deduped) member would otherwise try to insert a second value for
+        # the same pair. Skip-if-present keeps re-import idempotent for
+        # field values (dedup is member-scoped; values ride along).
+        field_def_ids = {fd.id for fd in old_field_to_def.values()}
+        if field_def_ids:
+            existing_values = await db.execute(
+                select(CustomFieldValue.field_id, CustomFieldValue.member_id).where(
+                    CustomFieldValue.field_id.in_(field_def_ids)
+                )
+            )
+            seen_values.update(
+                (row.field_id, row.member_id) for row in existing_values
+            )
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
             field_def = old_field_to_def.get(old_fid)

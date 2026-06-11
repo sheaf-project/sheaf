@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sheaf.services.import_dedup import ImportConflictStrategy
+
 
 class SPImportOptions(BaseModel):
     """What to import from the SP export."""
@@ -10,6 +12,7 @@ class SPImportOptions(BaseModel):
     # than being silently ignored.
     model_config = ConfigDict(extra="forbid")
 
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     system_profile: bool = True
     member_ids: list[str] | None = Field(
         None, max_length=10_000, description="SP member IDs to import. None = all."
@@ -46,6 +49,10 @@ class SPPreviewSummary(BaseModel):
 class SPImportResult(BaseModel):
     members_imported: int = 0
     custom_fronts_imported: int = 0
+    # Dedup dispositions, covering all roster rows (members + custom
+    # fronts) that matched an existing row instead of being created.
+    members_skipped: int = 0
+    members_updated: int = 0
     fronts_imported: int = 0
     groups_imported: int = 0
     custom_fields_imported: int = 0

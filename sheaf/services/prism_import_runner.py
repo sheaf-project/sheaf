@@ -76,6 +76,7 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
         system,
         user,
         db,
+        conflict_strategy=options.conflict_strategy,
         system_profile=options.system_profile,
         member_ids=options.member_ids,
         member_avatars=options.member_avatars,
@@ -96,6 +97,8 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
     update_counts(
         job,
         members_imported=result.members_imported,
+        members_skipped=result.members_skipped,
+        members_updated=result.members_updated,
         avatars_imported=result.avatars_imported,
         groups_imported=result.groups_imported,
         custom_fields_imported=result.custom_fields_imported,

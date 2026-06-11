@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Import deduplication.** Every importer (PluralKit, SimplyPlural, Tupperbox, PluralSpace, Prism, and Sheaf native re-import) now matches each incoming member against the system's existing roster before writing, so re-importing the same export no longer doubles your members. Matching is by PluralKit ID where present (exact, so PK round-trips cleanly) and otherwise by name, scoped so a member and a custom front sharing a name never collide. A new `conflict_strategy` option chooses what happens on a match: `skip` (default - leave the existing member untouched and add nothing), `update` (overwrite the existing member's importable fields from the export), or `create` (the old append-everything behaviour, kept as an escape hatch). The tier member cap now counts only the members an import would actually create, so re-importing into a near-full system no longer trips the cap on members that already exist. Deduplication is member-scoped: fronts, groups, journals, messages, polls, and reminders are still appended on re-import, so re-importing those sections over existing data can still duplicate them. The PluralKit member HID is now also confirmed to land in each member's `pluralkit_id` field, which doubles as the dedup key.
+
 ## [0.5.1] - 2026-06-10
 
 ### Added

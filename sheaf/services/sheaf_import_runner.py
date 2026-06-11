@@ -64,6 +64,7 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
         parsed,
         system,
         db,
+        conflict_strategy=options.conflict_strategy,
         system_profile=options.system_profile,
         member_ids=options.member_ids,
         fronts=options.fronts,
@@ -80,6 +81,8 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
     update_counts(
         job,
         members_imported=result.members_imported,
+        members_skipped=result.members_skipped,
+        members_updated=result.members_updated,
         fronts_imported=result.fronts_imported,
         groups_imported=result.groups_imported,
         tags_imported=result.tags_imported,

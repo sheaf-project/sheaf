@@ -24,6 +24,12 @@ from sheaf.crypto import decrypt
 from sheaf.models.import_job import ImportJob, ImportJobSource
 from sheaf.models.member import Member
 from sheaf.schemas.pk_import import PKImportOptions
+from sheaf.services.import_dedup import (
+    candidate_key,
+    count_new_members,
+    load_member_match_index,
+    resolve_member,
+)
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     expect_dict,
@@ -86,10 +92,11 @@ async def _process_pk_export(
         wanted = set(options.member_ids)
         pk_members = [m for m in pk_members if m.get("id") in wanted]
 
-    # Hard-fail before writing anything if this would blow the member cap.
-    await enforce_import_member_cap(db, system, len(pk_members))
-
-    hid_to_member: dict[str, Member] = {}
+    # Build all candidates first (pure construction, no DB writes), so
+    # the member-cap check below counts only the rows this run would
+    # actually CREATE. Under skip/update a pure re-import adds nothing
+    # and must not trip the cap.
+    candidates: list[tuple[Member, str]] = []
     for pk_m in pk_members:
         # Defensive: each member runs in its own try so one bad row
         # doesn't kill the whole batch. Bad rows append an error event
@@ -118,11 +125,35 @@ async def _process_pk_export(
                 record_ref=str(hid_for_event) if hid_for_event else None,
             )
             continue
-        db.add(member)
-        hid = str(hid_for_event or "")
+        candidates.append((member, str(hid_for_event or "")))
+
+    # Match against members already in the system. Hard-fail before
+    # writing anything if the NEW members would blow the cap.
+    index = await load_member_match_index(db, system.id)
+    new_count = count_new_members(
+        [candidate_key(m) for m, _ in candidates],
+        index=index,
+        strategy=options.conflict_strategy,
+    )
+    await enforce_import_member_cap(db, system, new_count)
+
+    hid_to_member: dict[str, Member] = {}
+    for member, hid in candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=options.conflict_strategy
+        )
+        if resolution.disposition == "created":
+            db.add(resolution.member)
+            update_counts(job, members_imported=1)
+        elif resolution.disposition == "updated":
+            update_counts(job, members_updated=1)
+        else:
+            update_counts(job, members_skipped=1)
+        # Downstream sections (groups, switches) link via this map, so it
+        # must point at the resolved row whether created, skipped, or
+        # updated.
         if hid:
-            hid_to_member[hid] = member
-        update_counts(job, members_imported=1)
+            hid_to_member[hid] = resolution.member
 
     await db.flush()
 

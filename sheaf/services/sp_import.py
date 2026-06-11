@@ -32,6 +32,12 @@ from sheaf.schemas.sp_import import (
     SPPreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_dedup import (
+    candidate_key,
+    count_new_members,
+    load_member_match_index,
+    resolve_member,
+)
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
 
@@ -123,16 +129,11 @@ async def run_import(
         selected = set(options.member_ids)
         sp_members = [m for m in sp_members if m.get("_id") in selected]
 
-    # Custom fronts also become Member rows and count toward the cap, so fold
-    # them into the headroom check. Hard-fail before writing anything.
-    incoming = len(sp_members)
-    if options.custom_fronts:
-        incoming += len(_get_collection(data, "frontStatuses"))
-    await enforce_import_member_cap(db, system, incoming)
-
-    # Map SP member _id → new Sheaf Member for cross-referencing
-    sp_id_to_member: dict[str, Member] = {}
-
+    # Build member + custom-front candidates first (no DB writes), so the
+    # member-cap check below counts only the rows this run would CREATE.
+    # Both members and custom fronts are Member rows and count toward the
+    # cap; under skip/update a pure re-import adds nothing.
+    member_candidates: list[tuple[Member, str]] = []
     for sp_m in sp_members:
         sp_id = sp_m.get("_id", "")
         plaintext_name = (sp_m.get("name") or "unnamed")[:100]
@@ -153,16 +154,14 @@ async def run_import(
             color=_normalize_color(sp_m.get("color")),
             privacy=_map_privacy(sp_m.get("private", True)),
         )
-        db.add(member)
-        sp_id_to_member[sp_id] = member
-        result.members_imported += 1
+        member_candidates.append((member, sp_id))
 
     # --- Custom fronts → imported as Members with is_custom_front=True ---
     # SP's "frontStatuses" are non-counting fronting entities like "Asleep"
     # or "Away". Sheaf models them as Members carrying the is_custom_front
     # flag, which the UI uses to list them separately from headcounted
     # members and exclude them from member-count statistics.
-    sp_id_to_custom_front: dict[str, Member] = {}
+    custom_front_candidates: list[tuple[Member, str]] = []
     if options.custom_fronts:
         for sp_cf in _get_collection(data, "frontStatuses"):
             sp_id = sp_cf.get("_id", "")
@@ -183,9 +182,51 @@ async def run_import(
                 privacy=_map_privacy(sp_cf.get("private", True)),
                 is_custom_front=True,
             )
-            db.add(member)
-            sp_id_to_custom_front[sp_id] = member
+            custom_front_candidates.append((member, sp_id))
+
+    # Match against existing roster, then hard-fail before writing anything
+    # if the NEW rows would blow the cap.
+    index = await load_member_match_index(db, system.id)
+    new_count = count_new_members(
+        [
+            candidate_key(m)
+            for m, _ in (*member_candidates, *custom_front_candidates)
+        ],
+        index=index,
+        strategy=options.conflict_strategy,
+    )
+    await enforce_import_member_cap(db, system, new_count)
+
+    # Map SP member _id → resolved Sheaf Member for cross-referencing.
+    # The map points at the resolved row (created / skipped / updated) so
+    # later sections (fronts, custom fields, groups) link correctly.
+    sp_id_to_member: dict[str, Member] = {}
+    for member, sp_id in member_candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=options.conflict_strategy
+        )
+        if resolution.disposition == "created":
+            db.add(resolution.member)
+            result.members_imported += 1
+        elif resolution.disposition == "updated":
+            result.members_updated += 1
+        else:
+            result.members_skipped += 1
+        sp_id_to_member[sp_id] = resolution.member
+
+    sp_id_to_custom_front: dict[str, Member] = {}
+    for member, sp_id in custom_front_candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=options.conflict_strategy
+        )
+        if resolution.disposition == "created":
+            db.add(resolution.member)
             result.custom_fronts_imported += 1
+        elif resolution.disposition == "updated":
+            result.members_updated += 1
+        else:
+            result.members_skipped += 1
+        sp_id_to_custom_front[sp_id] = resolution.member
 
     # Flush to get member IDs assigned
     await db.flush()
