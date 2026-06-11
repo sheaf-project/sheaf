@@ -22,6 +22,8 @@ import {
   forceRotateApiKeys,
   getAdminUsers,
   listUserSessionsAdmin,
+  listUserImportJobs,
+  viewImportJobDetail,
   suspendUser,
   terminateUserSession,
   unbanUser,
@@ -34,6 +36,7 @@ import {
   type AdminUser,
   type AdminUserPatch,
   type AdminUserSession,
+  type AdminImportJobSummary,
   type ExplainAccountResponse,
 } from "@/lib/admin";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
@@ -129,6 +132,151 @@ function SessionsSection({ userId }: { userId: string }) {
   );
 }
 
+function ImportLogsSection({ userId }: { userId: string }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [openJobId, setOpenJobId] = useState<string | null>(null);
+
+  const { data: jobs } = useQuery<AdminImportJobSummary[]>({
+    queryKey: ["admin", "import-jobs", userId],
+    queryFn: () => listUserImportJobs(userId),
+  });
+
+  // Viewing a job's events writes an `import_log_view` audit row server-side,
+  // so the reason is required and the audit list is refreshed on success.
+  const view = useMutation({
+    mutationFn: ({ jobId, why }: { jobId: string; why: string }) =>
+      viewImportJobDetail(jobId, why),
+    onSuccess: (detail) => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", userId] });
+      setOpenJobId(detail.id);
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
+  if (!jobs || jobs.length === 0) return null;
+
+  return (
+    <div>
+      <div className="mb-1 text-muted-foreground">Import jobs:</div>
+      <ul className="space-y-1 font-mono">
+        {jobs.map((j) => {
+          const detail =
+            view.data && view.data.id === j.id && openJobId === j.id
+              ? view.data
+              : null;
+          return (
+            <li key={j.id} className="space-y-1">
+              <div className="flex items-start gap-2">
+                <span className="flex-1 truncate">
+                  {j.source} · {j.status}
+                  {j.created_at
+                    ? ` · ${new Date(j.created_at).toLocaleString()}`
+                    : ""}
+                  {j.last_error ? " · error" : ""}
+                </span>
+                {confirming === j.id ? (
+                  <div className="flex items-center gap-1">
+                    <Input
+                      className="h-6 w-44 text-[10px]"
+                      placeholder="Reason"
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                    />
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-6 text-[10px]"
+                      disabled={!reason.trim() || view.isPending}
+                      onClick={() => view.mutate({ jobId: j.id, why: reason })}
+                    >
+                      View
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px]"
+                      onClick={() => {
+                        setConfirming(null);
+                        setReason("");
+                      }}
+                    >
+                      X
+                    </Button>
+                  </div>
+                ) : detail ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px]"
+                    onClick={() => setOpenJobId(null)}
+                  >
+                    Hide
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px]"
+                    onClick={() => setConfirming(j.id)}
+                  >
+                    View logs
+                  </Button>
+                )}
+              </div>
+              {detail && (
+                <div className="rounded border bg-background/50 p-1.5 text-[10px]">
+                  {detail.last_error && (
+                    <div className="mb-1 text-destructive">
+                      error: {detail.last_error}
+                    </div>
+                  )}
+                  {detail.events.length === 0 ? (
+                    <div className="text-muted-foreground">(no events)</div>
+                  ) : (
+                    detail.events.map((ev, i) => (
+                      <div
+                        key={i}
+                        className="flex gap-2 border-b border-border/50 py-0.5 last:border-0"
+                      >
+                        <span
+                          className={`w-12 shrink-0 font-medium ${
+                            ev.level === "error"
+                              ? "text-destructive"
+                              : ev.level === "warning"
+                                ? "text-amber-600 dark:text-amber-500"
+                                : "text-muted-foreground"
+                          }`}
+                        >
+                          {ev.level}
+                        </span>
+                        <span className="w-20 shrink-0 text-muted-foreground">
+                          {ev.stage}
+                        </span>
+                        <span className="flex-1 break-words">
+                          {ev.message}
+                          {ev.record_ref ? (
+                            <span className="ml-1 text-muted-foreground">
+                              ({ev.record_ref})
+                            </span>
+                          ) : null}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function ExplainPanel({ userId }: { userId: string }) {
   const [open, setOpen] = useState(false);
   const { data, isLoading } = useQuery<ExplainAccountResponse>({
@@ -210,6 +358,7 @@ function ExplainPanel({ userId }: { userId: string }) {
                 </div>
               )}
               <SessionsSection userId={userId} />
+              <ImportLogsSection userId={userId} />
               {data.recent_admin_audit.length > 0 && (
                 <div>
                   <div className="mb-1 text-muted-foreground">
