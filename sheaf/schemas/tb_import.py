@@ -9,6 +9,8 @@ mirror that smaller surface.
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sheaf.services.import_dedup import ImportConflictStrategy
+
 
 class TBImportOptions(BaseModel):
     """What to import from a Tupperbox export."""
@@ -17,6 +19,7 @@ class TBImportOptions(BaseModel):
     # than being silently ignored.
     model_config = ConfigDict(extra="forbid")
 
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     member_ids: list[str] | None = Field(
         default=None,
         max_length=10_000,
@@ -41,5 +44,7 @@ class TBPreviewSummary(BaseModel):
 
 class TBImportResult(BaseModel):
     members_imported: int = 0
+    members_skipped: int = 0
+    members_updated: int = 0
     groups_imported: int = 0
     warnings: list[str] = []

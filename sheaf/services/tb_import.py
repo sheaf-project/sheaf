@@ -43,6 +43,12 @@ from sheaf.schemas.tb_import import (
     TBPreviewMember,
     TBPreviewSummary,
 )
+from sheaf.services.import_dedup import (
+    candidate_key,
+    count_new_members,
+    load_member_match_index,
+    resolve_member,
+)
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
 
@@ -97,24 +103,44 @@ async def run_import(
         wanted = set(options.member_ids)
         tuppers = [t for t in tuppers if _tupper_id(t) in wanted]
 
-    # Hard-fail before writing anything if this would blow the member cap.
-    await enforce_import_member_cap(db, system, len(tuppers))
-
-    id_to_member: dict[str, Member] = {}
+    # Build candidates first (no DB writes), so the member-cap check
+    # below counts only the rows this run would actually CREATE.
+    candidates: list[tuple[Member, str | None]] = []
     tuppers_no_name = 0
-    tuppers_no_id = 0
     for tupper in tuppers:
         member = _build_member(tupper, system.id)
         if member is None:
             tuppers_no_name += 1
             continue
-        db.add(member)
-        tid = _tupper_id(tupper)
+        candidates.append((member, _tupper_id(tupper)))
+
+    index = await load_member_match_index(db, system.id)
+    new_count = count_new_members(
+        [candidate_key(m) for m, _ in candidates],
+        index=index,
+        strategy=options.conflict_strategy,
+    )
+    await enforce_import_member_cap(db, system, new_count)
+
+    id_to_member: dict[str, Member] = {}
+    tuppers_no_id = 0
+    for member, tid in candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=options.conflict_strategy
+        )
+        if resolution.disposition == "created":
+            db.add(resolution.member)
+            result.members_imported += 1
+        elif resolution.disposition == "updated":
+            result.members_updated += 1
+        else:
+            result.members_skipped += 1
+        # Map by tupper id (when present) to the resolved row so groups
+        # wire onto the right member whether created, skipped, or updated.
         if tid is None:
             tuppers_no_id += 1
         else:
-            id_to_member[tid] = member
-        result.members_imported += 1
+            id_to_member[tid] = resolution.member
 
     await db.flush()
 

@@ -196,6 +196,8 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [importFronts, setImportFronts] = useState(true);
   const [importGroups, setImportGroups] = useState(true);
@@ -237,6 +239,7 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
         options: {
           system_profile: systemProfile,
           member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
           fronts: importFronts,
           groups: importGroups,
           tags: importTags,
@@ -383,6 +386,11 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
                 )}
               </div>
 
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
               <MemberSelector
                 members={preview.members}
                 totalCount={preview.member_count}
@@ -417,6 +425,8 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [customFronts, setCustomFronts] = useState(true);
   const [customFields, setCustomFields] = useState(true);
@@ -454,6 +464,7 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
         options: {
           system_profile: systemProfile,
           member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
           custom_fronts: customFronts,
           custom_fields: customFields,
           groups,
@@ -556,6 +567,11 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
                 onChange={setFrontHistory}
               />
 
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
               <MemberSelector
                 members={preview.members}
                 totalCount={preview.member_count}
@@ -599,6 +615,8 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
 
   const [systemProfile, setSystemProfile] = useState(true);
   const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState(true);
   const [frontHistory, setFrontHistory] = useState(false);
@@ -649,6 +667,7 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
     const options = {
       system_profile: systemProfile,
       member_ids: allMembers ? null : Array.from(selectedMembers),
+      conflict_strategy: conflictStrategy,
       groups,
       front_history: frontHistory,
     };
@@ -864,6 +883,11 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
                 onChange={setFrontHistory}
               />
 
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
               <MemberSelector
                 members={preview.members}
                 totalCount={preview.member_count}
@@ -897,6 +921,8 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
   const [idemKey] = useState(newIdempotencyKey);
 
   const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState(true);
 
@@ -929,6 +955,7 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
         idempotencyKey: idemKey,
         options: {
           member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
           groups,
         },
       });
@@ -1003,6 +1030,11 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
                 onChange={setGroups}
               />
 
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
               <MemberSelector
                 members={preview.members}
                 totalCount={preview.member_count}
@@ -1037,6 +1069,8 @@ function PSImportFlow({ onBack }: { onBack: () => void }) {
   const [idemKey] = useState(newIdempotencyKey);
 
   const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [systemProfile, setSystemProfile] = useState(true);
   const [customFronts, setCustomFronts] = useState(true);
@@ -1079,6 +1113,7 @@ function PSImportFlow({ onBack }: { onBack: () => void }) {
         options: {
           system_profile: systemProfile,
           member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
           custom_fronts: customFronts,
           member_avatars: memberAvatars,
           roles_as_tags: rolesAsTags,
@@ -1229,6 +1264,11 @@ function PSImportFlow({ onBack }: { onBack: () => void }) {
                 onChange={setPolls}
               />
 
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
               <MemberSelector
                 members={preview.members}
                 totalCount={preview.member_count}
@@ -1265,6 +1305,8 @@ function PrismImportFlow({ onBack }: { onBack: () => void }) {
   const [idemKey] = useState(newIdempotencyKey);
 
   const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
   const [systemProfile, setSystemProfile] = useState(true);
   const [memberAvatars, setMemberAvatars] = useState(true);
@@ -1323,6 +1365,7 @@ function PrismImportFlow({ onBack }: { onBack: () => void }) {
         options: {
           system_profile: systemProfile,
           member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
           member_avatars: memberAvatars,
           member_groups: memberGroups,
           custom_fields: customFields,
@@ -1505,6 +1548,11 @@ function PrismImportFlow({ onBack }: { onBack: () => void }) {
                 onChange={setMediaAttachments}
               />
 
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
               <MemberSelector
                 members={preview.members}
                 totalCount={preview.member_count}
@@ -1626,6 +1674,57 @@ function ImportSubmit({
         Import
       </Button>
     </div>
+  );
+}
+
+type ConflictStrategy = "skip" | "update" | "create";
+
+function ConflictStrategyField({
+  value,
+  onChange,
+}: {
+  value: ConflictStrategy;
+  onChange: (v: ConflictStrategy) => void;
+}) {
+  const options: { value: ConflictStrategy; label: string; hint: string }[] = [
+    {
+      value: "skip",
+      label: "Skip members that already exist",
+      hint: "Re-importing the same export won't duplicate your roster. Existing members are left as they are.",
+    },
+    {
+      value: "update",
+      label: "Update members that already exist",
+      hint: "Overwrite an existing member's details from the import. Use this to refresh from a newer export.",
+    },
+    {
+      value: "create",
+      label: "Always add as new members",
+      hint: "Add every member even if one with the same name or PluralKit ID already exists. Can create duplicates.",
+    },
+  ];
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">If a member already exists</legend>
+      {options.map((o) => (
+        <label
+          key={o.value}
+          className="flex items-start gap-2 text-sm cursor-pointer"
+        >
+          <input
+            type="radio"
+            name="conflict-strategy"
+            checked={value === o.value}
+            onChange={() => onChange(o.value)}
+            className="mt-0.5 h-4 w-4 border-input"
+          />
+          <span>
+            {o.label}
+            <span className="block text-xs text-muted-foreground">{o.hint}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
   );
 }
 

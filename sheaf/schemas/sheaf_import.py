@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sheaf.services.import_dedup import ImportConflictStrategy
+
 
 class SheafImportOptions(BaseModel):
     """What to import from a Sheaf export. Each flag gates one section;
@@ -21,6 +23,7 @@ class SheafImportOptions(BaseModel):
     # than being silently ignored.
     model_config = ConfigDict(extra="forbid")
 
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     system_profile: bool = True
     member_ids: list[str] | None = Field(default=None, max_length=10_000)
     fronts: bool = True

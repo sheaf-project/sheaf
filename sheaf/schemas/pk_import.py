@@ -9,6 +9,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sheaf.services.import_dedup import ImportConflictStrategy
+
 
 class PKImportOptions(BaseModel):
     """What to import from a PluralKit export."""
@@ -18,6 +20,7 @@ class PKImportOptions(BaseModel):
     # the importer just dropped unknown keys; this is a tightening.
     model_config = ConfigDict(extra="forbid")
 
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     system_profile: bool = True
     member_ids: list[str] | None = Field(
         default=None,

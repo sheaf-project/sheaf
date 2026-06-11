@@ -172,3 +172,92 @@ def test_pk_file_runner_finalize_wipes_storage_key(auth_client: httpx.Client):
     # row stays even after the blob is gone.
     resp = auth_client.get(f"/v1/imports/{job['id']}")
     assert resp.status_code == 200
+
+
+# --- pluralkit_id + deduplication ------------------------------------------
+
+
+def test_pk_file_runner_populates_pluralkit_id(auth_client: httpx.Client):
+    """Regression (#349): the PK member HID is imported into the Sheaf
+    member's pluralkit_id, which is also the dedup match key for
+    re-imports."""
+    job = _post_pk_file(auth_client)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete"
+
+    members = auth_client.get("/v1/members").json()
+    by_name = {m["name"]: m for m in members}
+    assert by_name["Alice"]["pluralkit_id"] == "alice"
+    assert by_name["Bob"]["pluralkit_id"] == "bobxyz"
+    assert by_name["Carol"]["pluralkit_id"] == "carol1"
+
+
+def test_pk_reimport_skips_duplicates_by_default(auth_client: httpx.Client):
+    """Importing the same export twice leaves a single roster: the second
+    run matches every member by pluralkit_id and skips it (default
+    strategy), so nothing is appended."""
+    first = _post_pk_file(auth_client)
+    drive_import_runner()
+    assert wait_for_terminal(auth_client, first["id"])["status"] == "complete"
+
+    second = _post_pk_file(auth_client)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, second["id"])
+
+    assert final["status"] == "complete"
+    assert final["counts"].get("members_imported", 0) == 0
+    assert final["counts"].get("members_skipped", 0) == 3
+
+    members = auth_client.get("/v1/members").json()
+    names = [m["name"] for m in members]
+    assert sorted(names) == ["Alice", "Bob", "Carol"], names
+
+
+def test_pk_reimport_update_overwrites_existing(auth_client: httpx.Client):
+    """conflict_strategy=update re-points an existing member's importable
+    fields at the new payload instead of skipping or duplicating."""
+    first = _post_pk_file(auth_client)
+    drive_import_runner()
+    assert wait_for_terminal(auth_client, first["id"])["status"] == "complete"
+
+    # Re-upload the same export with Alice's display name changed.
+    data = json.loads(PK_FIXTURE.read_bytes())
+    for m in data["members"]:
+        if m["id"] == "alice":
+            m["display_name"] = "Alice (updated)"
+    payload = json.dumps(data).encode()
+
+    second = _post_pk_file(
+        auth_client, options={"conflict_strategy": "update"}, payload=payload
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, second["id"])
+
+    assert final["status"] == "complete"
+    assert final["counts"].get("members_imported", 0) == 0
+    assert final["counts"].get("members_updated", 0) == 3
+
+    members = auth_client.get("/v1/members").json()
+    assert len(members) == 3  # no duplicates
+    alice = next(m for m in members if m["name"] == "Alice")
+    assert alice["display_name"] == "Alice (updated)"
+
+
+def test_pk_reimport_create_strategy_appends(auth_client: httpx.Client):
+    """conflict_strategy=create is the explicit escape hatch: it restores
+    the old append-everything behaviour, doubling a re-imported roster."""
+    first = _post_pk_file(auth_client)
+    drive_import_runner()
+    assert wait_for_terminal(auth_client, first["id"])["status"] == "complete"
+
+    second = _post_pk_file(auth_client, options={"conflict_strategy": "create"})
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, second["id"])
+
+    assert final["status"] == "complete"
+    assert final["counts"].get("members_imported", 0) == 3
+    assert final["counts"].get("members_skipped", 0) == 0
+
+    members = auth_client.get("/v1/members").json()
+    assert len(members) == 6

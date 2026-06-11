@@ -101,6 +101,13 @@ from sheaf.schemas.pluralspace_import import (
     PluralspacePreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_dedup import (
+    ImportConflictStrategy,
+    candidate_key,
+    count_new_members,
+    load_member_match_index,
+    resolve_member,
+)
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     safe_json_loads,
@@ -322,6 +329,7 @@ async def run_import(
     user: User,
     db: AsyncSession,
     *,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP,
     system_profile: bool = True,
     member_ids: list[str] | None = None,
     custom_fronts: bool = True,
@@ -367,11 +375,11 @@ async def run_import(
         if bool(m_data.get("is_custom_front")) and not custom_fronts:
             continue
         eligible.append(m_data)
-    await enforce_import_member_cap(db, system, len(eligible))
 
-    ps_id_to_member: dict[str, Member] = {}
-    member_name_to_member: dict[str, Member] = {}
-
+    # Build candidates first (no DB writes), then size the member-cap
+    # check on the rows this run would actually CREATE. Both regular
+    # members and custom fronts are Member rows and count toward the cap.
+    candidates: list[tuple[Member, str, str, bool]] = []
     for m_data in eligible:
         ps_id = _clean_str(m_data.get("id"))
         is_cf = bool(m_data.get("is_custom_front"))
@@ -392,13 +400,36 @@ async def run_import(
             is_custom_front=is_cf,
             privacy=PrivacyLevel.PRIVATE,
         )
-        db.add(member)
-        ps_id_to_member[ps_id] = member
-        member_name_to_member[plaintext_name] = member
-        if is_cf:
-            result.custom_fronts_imported += 1
+        candidates.append((member, ps_id, plaintext_name, is_cf))
+
+    index = await load_member_match_index(db, system.id)
+    new_count = count_new_members(
+        [candidate_key(m) for m, _, _, _ in candidates],
+        index=index,
+        strategy=conflict_strategy,
+    )
+    await enforce_import_member_cap(db, system, new_count)
+
+    # Map PS id -> resolved row (created / skipped / updated) so later
+    # sections (avatars, tags, groups, fronts) link correctly.
+    ps_id_to_member: dict[str, Member] = {}
+    member_name_to_member: dict[str, Member] = {}
+    for member, ps_id, plaintext_name, is_cf in candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=conflict_strategy
+        )
+        if resolution.disposition == "created":
+            db.add(resolution.member)
+            if is_cf:
+                result.custom_fronts_imported += 1
+            else:
+                result.members_imported += 1
+        elif resolution.disposition == "updated":
+            result.members_updated += 1
         else:
-            result.members_imported += 1
+            result.members_skipped += 1
+        ps_id_to_member[ps_id] = resolution.member
+        member_name_to_member[plaintext_name] = resolution.member
 
     if not ps_id_to_member:
         # Nothing else has anywhere to live; bail before walking the rest.

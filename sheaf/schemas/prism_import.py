@@ -18,10 +18,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sheaf.services.import_dedup import ImportConflictStrategy
+
 
 class PrismImportOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     system_profile: bool = True
     member_ids: list[str] | None = None
 
@@ -82,6 +85,8 @@ class PrismImportResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     members_imported: int = 0
+    members_skipped: int = 0
+    members_updated: int = 0
     avatars_imported: int = 0
     groups_imported: int = 0
     custom_fields_imported: int = 0

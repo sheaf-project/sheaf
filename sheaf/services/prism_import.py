@@ -105,6 +105,13 @@ from sheaf.schemas.prism_import import (
     PrismPreviewSummary,
 )
 from sheaf.services.custom_fields import encrypt_field_value
+from sheaf.services.import_dedup import (
+    ImportConflictStrategy,
+    candidate_key,
+    count_new_members,
+    load_member_match_index,
+    resolve_member,
+)
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     sanitize_external_avatar_url,
@@ -269,6 +276,7 @@ async def run_import(
     user: User,
     db: AsyncSession,
     *,
+    conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP,
     system_profile: bool = True,
     member_ids: list[str] | None = None,
     member_avatars: bool = True,
@@ -313,9 +321,10 @@ async def run_import(
         if selected is not None and ps_id not in selected:
             continue
         eligible.append(m)
-    await enforce_import_member_cap(db, system, len(eligible))
 
-    ps_id_to_handle: dict[str, _MemberHandle] = {}
+    # Build candidates first (no DB writes), then size the member-cap
+    # check on the rows this run would actually CREATE.
+    candidates: list[tuple[Member, str, str, dict]] = []
     for m in eligible:
         ps_id = _clean_str(m.get("id"))
         plaintext_name = (_clean_str(m.get("name")) or "unnamed")[:100]
@@ -346,11 +355,33 @@ async def run_import(
         created_at = _parse_iso(m.get("createdAt"))
         if created_at:
             member.created_at = created_at
-        db.add(member)
-        ps_id_to_handle[ps_id] = _MemberHandle(
-            member=member, plaintext_name=plaintext_name, source=m
+        candidates.append((member, ps_id, plaintext_name, m))
+
+    index = await load_member_match_index(db, system.id)
+    new_count = count_new_members(
+        [candidate_key(c) for c, _, _, _ in candidates],
+        index=index,
+        strategy=conflict_strategy,
+    )
+    await enforce_import_member_cap(db, system, new_count)
+
+    # Map PS id -> handle wrapping the resolved row (created / skipped /
+    # updated) so every later section attributes to the right member.
+    ps_id_to_handle: dict[str, _MemberHandle] = {}
+    for member, ps_id, plaintext_name, source in candidates:
+        resolution = resolve_member(
+            member, index=index, strategy=conflict_strategy
         )
-        result.members_imported += 1
+        if resolution.disposition == "created":
+            db.add(resolution.member)
+            result.members_imported += 1
+        elif resolution.disposition == "updated":
+            result.members_updated += 1
+        else:
+            result.members_skipped += 1
+        ps_id_to_handle[ps_id] = _MemberHandle(
+            member=resolution.member, plaintext_name=plaintext_name, source=source
+        )
 
     if not ps_id_to_handle:
         return result

@@ -64,6 +64,8 @@ async def handle_tupperbox_file(job: ImportJob, db: AsyncSession) -> None:
     update_counts(
         job,
         members_imported=result.members_imported,
+        members_skipped=result.members_skipped,
+        members_updated=result.members_updated,
         groups_imported=result.groups_imported,
     )
     for warning in result.warnings:

@@ -69,9 +69,13 @@ def test_sheaf_runner_roundtrip_from_export(auth_client: httpx.Client):
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
     assert final["status"] == "complete", final
-    # The exported member comes back in on re-import (alongside the
-    # original — re-import is additive, not a replace).
-    assert final["counts"]["members_imported"] >= 1, final["counts"]
+    # Re-importing an export into the system it came from now deduplicates
+    # (skip is the default conflict strategy): the member matches the
+    # existing one by name and is skipped rather than doubled.
+    assert final["counts"].get("members_imported", 0) == 0, final["counts"]
+    assert final["counts"].get("members_skipped", 0) == 1, final["counts"]
+    members = auth_client.get("/v1/members").json()
+    assert len([m for m in members if m["name"] == "RoundtripMember"]) == 1
 
 
 def test_sheaf_runner_roundtrips_notify_prefs_and_coalesce(auth_client: httpx.Client):
