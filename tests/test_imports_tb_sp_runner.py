@@ -396,3 +396,148 @@ def test_sp_reimport_is_idempotent_and_does_not_crash(auth_client: httpx.Client)
     assert f2["counts"].get("fronts_skipped", 0) == 1, f2["counts"]
     assert f2["counts"].get("custom_fields_skipped", 0) == 1, f2["counts"]
     assert f2["counts"].get("fronts_imported", 0) == 0, f2["counts"]
+
+
+# --- Format robustness (skylar's SP export-variant survey) ------------------
+#
+# Real SP exports carry shape/field variants that tidy fixtures don't. Each
+# test pins one variant that previously skipped data or crashed the import.
+
+
+def test_sp_imports_map_keyed_collections(auth_client: httpx.Client):
+    """Some SP exports key a collection by id ({"id": {...}}) rather than using
+    an array. Both shapes must import (a map previously iterated its string keys
+    and crashed)."""
+    payload = _sp_payload(
+        members={
+            "spm1": {"_id": "spm1", "name": "MapAlice", "private": False},
+            "spm2": {"_id": "spm2", "name": "MapBob", "private": False},
+        },
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("members_imported", 0) == 2, final["counts"]
+    names = {m["name"] for m in auth_client.get("/v1/members").json()}
+    assert {"MapAlice", "MapBob"}.issubset(names), names
+
+
+def test_sp_parses_varied_timestamp_shapes(auth_client: httpx.Client):
+    """Front timestamps come as int millis, numeric strings, zone-less ISO
+    strings, and Firebase {_seconds} objects. All four yield a front; only a
+    genuinely junk one is skipped with a warning."""
+    payload = _sp_payload(
+        members=[{"_id": "spm1", "name": "TimeAlice", "private": False}],
+        frontHistory=[
+            {"_id": "f-int", "member": "spm1", "startTime": 1_700_000_000_000},
+            {"_id": "f-str", "member": "spm1", "startTime": "1700000100000"},
+            {
+                "_id": "f-iso",
+                "member": "spm1",
+                "startTime": "2023-11-14T16:13:20.000",
+            },
+            {
+                "_id": "f-fb",
+                "member": "spm1",
+                "startTime": {"_seconds": 1_700_000_200, "_nanoseconds": 0},
+            },
+            {"_id": "f-junk", "member": "spm1", "startTime": "not a time"},
+        ],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"front_history": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("fronts_imported", 0) == 4, final["counts"]
+    assert any(
+        "unparseable startTime" in w for w in _warnings(final["events"])
+    ), final["events"]
+
+
+def test_sp_reads_variant_collection_keys(auth_client: httpx.Client):
+    """Newer exports use customFronts (not frontStatuses) and fronters (not
+    frontHistory)."""
+    payload = _sp_payload(
+        members=[{"_id": "spm1", "name": "VarAlice", "private": False}],
+        customFronts=[{"_id": "cf1", "name": "Asleep", "private": False}],
+        fronters=[{"_id": "fr1", "member": "spm1", "startTime": 1_700_000_000_000}],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"front_history": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("custom_fronts_imported", 0) == 1, final["counts"]
+    assert final["counts"].get("fronts_imported", 0) == 1, final["counts"]
+    names = {m["name"] for m in auth_client.get("/v1/members").json()}
+    assert "Asleep" in names, names
+
+
+def test_sp_constructs_avatar_from_uuid_and_normalizes_argb(
+    auth_client: httpx.Client,
+):
+    """avatarUuid + system-owner id builds the serve.apparyllis.com URL, and an
+    8-char ARGB colour reduces to #rrggbb."""
+    payload = _sp_payload(
+        users=[{"_id": "ownerX", "uid": "ownerX", "username": "Sys"}],
+        members=[
+            {
+                "_id": "spm1",
+                "name": "AvAlice",
+                "private": False,
+                "avatarUuid": "av-123",
+                "color": "#ff0088ff",
+            },
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    member = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "AvAlice"
+    )
+    assert (
+        member["avatar_url"]
+        == "https://serve.apparyllis.com/avatars/ownerX/av-123"
+    ), member
+    assert member["color"] == "#0088ff", member
+
+
+def test_sp_survives_malformed_field_types(auth_client: httpx.Client):
+    """Wrong-typed names/descriptions/colours coerce away instead of crashing
+    the job, and no member content leaks into the event log."""
+    payload = _sp_payload(
+        members=[
+            {"_id": "spm1", "name": "Alpha", "private": False},
+            {
+                "_id": "spm2",
+                "name": "Beta",
+                "desc": {"x": 1},
+                "displayName": 7,
+                "pronouns": ["they"],
+                "color": 999,
+                "private": False,
+            },
+            # Junk name falls back to "unnamed" but still imports.
+            {"_id": "spm3", "name": 12345, "private": False},
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("members_imported", 0) == 3, final["counts"]
+    blob = " ".join(e["message"] for e in final["events"])
+    for leaked in ("Alpha", "Beta", "12345"):
+        assert leaked not in blob, blob

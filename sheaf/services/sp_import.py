@@ -68,40 +68,130 @@ _SP_FIELD_TYPE_MAP: dict[int, FieldType] = {
 
 
 def _get_collection(data: dict, name: str) -> list[dict]:
-    """Get a collection from SP export data, returning empty list if missing."""
-    return data.get(name, [])
+    """Return an SP collection as a list of dict rows.
+
+    SP exports a collection as either a JSON array or a map keyed by id
+    (`{"id1": {...}, "id2": {...}}`) - the shape drifted across export versions.
+    Normalise both to a list and drop any non-dict entries, so the per-record
+    walks can iterate uniformly without crashing on a map-keyed collection (which
+    would otherwise iterate the string keys). Missing -> []."""
+    raw = data.get(name)
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)]
+    if isinstance(raw, dict):
+        return [r for r in raw.values() if isinstance(r, dict)]
+    return []
 
 
-def _ms_to_datetime(ms: int | float | None) -> datetime | None:
-    """Convert millisecond epoch timestamp to datetime."""
-    if not ms:
+def _get_collection_alt(data: dict, *names: str) -> list[dict]:
+    """First non-empty collection across alternate key names.
+
+    SP renamed several collections across versions (e.g. `frontStatuses` ->
+    `customFronts`); try each in order and return the first that has rows."""
+    for name in names:
+        coll = _get_collection(data, name)
+        if coll:
+            return coll
+    return []
+
+
+def _coerce_str(value: object) -> str | None:
+    """Return a plain string, or None for null / non-string values.
+
+    SP exports come out of MongoDB, where a field the schema treats as a string
+    is occasionally null, a number, or an object in real data. Coerce defensively
+    so one malformed field can't crash slicing or `encrypt()`. A non-string value
+    is dropped, never str()-quoted, so member content can't leak into an error."""
+    return value if isinstance(value, str) else None
+
+
+def _epoch_ms_to_datetime(ms: int | float) -> datetime | None:
+    """Millisecond epoch -> aware UTC datetime, or None if out of range."""
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=UTC)
+    except (OverflowError, OSError, ValueError):
         return None
-    return datetime.fromtimestamp(ms / 1000, tz=UTC)
+
+
+def _parse_iso_utc(value: str) -> datetime | None:
+    """Parse an ISO-8601 string; SP often omits the zone, so treat naive as UTC."""
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _parse_sp_time(value: object) -> datetime | None:
+    """Parse an SP timestamp across every shape real exports carry.
+
+    SP timestamps come as: an integer/float epoch in milliseconds, a numeric
+    string, an ISO-8601 string (frequently zone-less), or a Firebase-style object
+    (`{_seconds, _nanoseconds}` or `{seconds, nanoseconds}`). Missing, malformed,
+    or out-of-range values return None so one bad row can't crash or skew the
+    import. Replaces the int-only converter that silently dropped (or, before
+    hardening, crashed on) the string and Firebase shapes live exports actually
+    use - a prime cause of "every front got skipped" imports.
+
+    Not handled: the rare `{__time__: ...}` Firebase shape (Prism doesn't either);
+    add it here if a real export turns one up."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return _epoch_ms_to_datetime(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return _epoch_ms_to_datetime(int(s))
+        except ValueError:
+            return _parse_iso_utc(s)
+    if isinstance(value, dict):
+        seconds = value.get("_seconds", value.get("seconds"))
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+            raw_nanos = value.get("_nanoseconds", value.get("nanoseconds"))
+            nanos = (
+                raw_nanos
+                if isinstance(raw_nanos, (int, float))
+                and not isinstance(raw_nanos, bool)
+                else 0
+            )
+            return _epoch_ms_to_datetime(
+                int(seconds * 1000) + int(nanos // 1_000_000)
+            )
+    return None
 
 
 def preview(data: dict) -> SPPreviewSummary:
     """Parse SP export JSON and return a summary for the user to review."""
     members = _get_collection(data, "members")
-    custom_fronts = _get_collection(data, "frontStatuses")
-    fronts = _get_collection(data, "frontHistory")
+    custom_fronts = _get_collection_alt(data, "frontStatuses", "customFronts")
+    fronts = _get_collection_alt(data, "frontHistory", "fronters")
     groups = _get_collection(data, "groups")
     fields = _get_collection(data, "customFields")
     notes = _get_collection(data, "notes")
 
     # System profile from users collection
     users = _get_collection(data, "users")
-    system_name = users[0].get("username") if users else None
+    system_name = _coerce_str(users[0].get("username")) if users else None
 
     return SPPreviewSummary(
         system_name=system_name,
         member_count=len(members),
         members=[
-            SPPreviewMember(id=m.get("_id", ""), name=m.get("name", "unnamed"))
+            SPPreviewMember(
+                id=m.get("_id", ""), name=_coerce_str(m.get("name")) or "unnamed"
+            )
             for m in members
         ],
         custom_front_count=len(custom_fronts),
         custom_fronts=[
-            SPPreviewCustomFront(id=cf.get("_id", ""), name=cf.get("name", "unnamed"))
+            SPPreviewCustomFront(
+                id=cf.get("_id", ""), name=_coerce_str(cf.get("name")) or "unnamed"
+            )
             for cf in custom_fronts
         ],
         front_history_count=len(fronts),
@@ -121,17 +211,40 @@ async def run_import(
     result = SPImportResult()
     warnings: list[str] = []
 
+    # SP system-owner id, used to construct member / custom-front avatar URLs
+    # from an avatarUuid (their avatars are served from the owner's namespace).
+    # Resolved up front so it's available whether or not the profile runs.
+    sp_users = _get_collection(data, "users")
+    sp_owner_id = ""
+    if sp_users:
+        sp_owner_id = (
+            _coerce_str(sp_users[0].get("uid"))
+            or _coerce_str(sp_users[0].get("_id"))
+            or ""
+        )
+
     # --- System profile ---
     if options.system_profile:
-        users = _get_collection(data, "users")
-        if users:
-            sp_user = users[0]
-            if sp_user.get("username") and not system.name:
-                system.name = sp_user["username"][:100]
-            if sp_user.get("desc"):
-                system.description = sp_user["desc"]
-            if sp_user.get("color"):
-                system.color = _normalize_color(sp_user["color"])
+        sp_user = sp_users[0] if sp_users else {}
+        sp_settings = data.get("settings")
+        sp_settings = sp_settings if isinstance(sp_settings, dict) else {}
+        # System name: settings.systemName (newer) or users[0].username (older).
+        sp_name = (
+            _coerce_str(sp_settings.get("systemName"))
+            or _coerce_str(sp_user.get("username"))
+            or _coerce_str(sp_user.get("name"))
+        )
+        if sp_name and not system.name:
+            system.name = sp_name[:100]
+        sp_desc = _coerce_str(sp_user.get("desc")) or _coerce_str(
+            sp_settings.get("desc")
+        )
+        if sp_desc:
+            system.description = sp_desc
+        system.color = _normalize_color(sp_user.get("color")) or system.color
+        sys_avatar = _sp_avatar_url(sp_user, sp_owner_id)
+        if sys_avatar:
+            system.avatar_url = sys_avatar
 
     # --- Members ---
     sp_members = _get_collection(data, "members")
@@ -147,8 +260,8 @@ async def run_import(
     member_candidates: list[tuple[Member, str]] = []
     for sp_m in sp_members:
         sp_id = sp_m.get("_id", "")
-        plaintext_name = (sp_m.get("name") or "unnamed")[:100]
-        plaintext_description = sp_m.get("desc")
+        plaintext_name = (_coerce_str(sp_m.get("name")) or "unnamed")[:100]
+        plaintext_description = _coerce_str(sp_m.get("desc"))
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -161,7 +274,7 @@ async def run_import(
                 else None
             ),
             pronouns=_truncate(sp_m.get("pronouns"), 100),
-            avatar_url=sanitize_external_avatar_url(sp_m.get("avatarUrl")),
+            avatar_url=_sp_avatar_url(sp_m, sp_owner_id),
             color=_normalize_color(sp_m.get("color")),
             privacy=_map_privacy(sp_m.get("private", True)),
         )
@@ -174,10 +287,10 @@ async def run_import(
     # members and exclude them from member-count statistics.
     custom_front_candidates: list[tuple[Member, str]] = []
     if options.custom_fronts:
-        for sp_cf in _get_collection(data, "frontStatuses"):
+        for sp_cf in _get_collection_alt(data, "frontStatuses", "customFronts"):
             sp_id = sp_cf.get("_id", "")
-            plaintext_cf_name = (sp_cf.get("name") or "unnamed")[:100]
-            plaintext_cf_description = sp_cf.get("desc")
+            plaintext_cf_name = (_coerce_str(sp_cf.get("name")) or "unnamed")[:100]
+            plaintext_cf_description = _coerce_str(sp_cf.get("desc"))
             member = Member(
                 id=uuid.uuid4(),
                 system_id=system.id,
@@ -189,7 +302,7 @@ async def run_import(
                     else None
                 ),
                 color=_normalize_color(sp_cf.get("color")),
-                avatar_url=sanitize_external_avatar_url(sp_cf.get("avatarUrl")),
+                avatar_url=_sp_avatar_url(sp_cf, sp_owner_id),
                 privacy=_map_privacy(sp_cf.get("private", True)),
                 is_custom_front=True,
             )
@@ -405,7 +518,11 @@ async def run_import(
         )
         fronts_missing_member = 0
         fronts_missing_member_ref = 0
-        for sp_f in _get_collection(data, "frontHistory"):
+        fronts_bad_timestamp = 0
+        # Live/current fronts live under `fronters` in some exports; fall back to
+        # it when `frontHistory` is absent (rows carry member + startTime, no
+        # endTime, so they map to open fronts).
+        for sp_f in _get_collection_alt(data, "frontHistory", "fronters"):
             sp_member_id = sp_f.get("member")
             if not sp_member_id:
                 fronts_missing_member_ref += 1
@@ -417,14 +534,12 @@ async def run_import(
                 fronts_missing_member += 1
                 continue
 
-            started = _ms_to_datetime(sp_f.get("startTime"))
+            started = _parse_sp_time(sp_f.get("startTime"))
             if not started:
-                warnings.append(
-                    f"Skipped front with no startTime: {sp_f.get('_id', '?')}"
-                )
+                fronts_bad_timestamp += 1
                 continue
 
-            ended = _ms_to_datetime(sp_f.get("endTime"))
+            ended = _parse_sp_time(sp_f.get("endTime"))
             is_live = sp_f.get("live", False)
             if is_live:
                 ended = None
@@ -461,6 +576,11 @@ async def run_import(
                 f"Skipped {fronts_missing_member_ref} front-history rows "
                 "with no member id (malformed export row)."
             )
+        if fronts_bad_timestamp:
+            warnings.append(
+                f"Skipped {fronts_bad_timestamp} front-history rows with a "
+                "missing or unparseable startTime."
+            )
 
     # --- Notes (skipped until journal feature) ---
     if options.notes:
@@ -476,29 +596,61 @@ async def run_import(
     return result
 
 
-def _normalize_color(color: str | None) -> str | None:
-    """Normalize a color value to 7-char hex or None."""
-    if not color:
+def _normalize_color(color: object) -> str | None:
+    """Normalize a colour to '#rrggbb', or None.
+
+    Handles the shapes SP carries: 6-hex (with or without '#'), 3-hex shorthand,
+    and 8-hex ARGB (alpha-first, as SP/Android colours store it) which is reduced
+    to RGB by dropping the leading alpha byte. Non-string or unrecognised input
+    returns None rather than a mangled value."""
+    if not isinstance(color, str):
         return None
-    color = color.strip()
-    if color.startswith("#") and len(color) == 7:
-        return color
-    if color.startswith("#") and len(color) == 4:
-        # Expand shorthand #abc → #aabbcc
-        return f"#{color[1]*2}{color[2]*2}{color[3]*2}"
-    if not color.startswith("#") and len(color) == 6:
-        return f"#{color}"
-    return color[:7] if color.startswith("#") else None
+    s = color.strip().lstrip("#")
+    if len(s) == 3:
+        s = f"{s[0] * 2}{s[1] * 2}{s[2] * 2}"
+    elif len(s) == 8:
+        # ARGB -> RGB: drop the leading 2 alpha chars (alpha is the high byte).
+        s = s[2:]
+    if len(s) != 6 or not all(c in "0123456789abcdefABCDEF" for c in s):
+        return None
+    return f"#{s.lower()}"
 
 
-def _map_privacy(private: bool) -> str:
-    """Map SP's boolean privacy to our enum value."""
+_SP_AVATAR_BASE = "https://serve.apparyllis.com/avatars"
+
+
+def _sp_avatar_url(obj: dict, owner_id: str | None) -> str | None:
+    """Resolve an SP avatar to a policy-gated external URL.
+
+    Prefer a direct `avatarUrl`; otherwise construct from `avatarUuid` plus the
+    owning system id (the object's own `uid`, falling back to the passed
+    `owner_id`), the way SP serves uploaded avatars. Everything routes through
+    `sanitize_external_avatar_url` so the hotlink policy and scheme checks apply
+    uniformly - a constructed URL is dropped just like a direct one when the
+    instance forbids external images."""
+    direct = sanitize_external_avatar_url(obj.get("avatarUrl"))
+    if direct:
+        return direct
+    avatar_uuid = _coerce_str(obj.get("avatarUuid"))
+    owner = _coerce_str(obj.get("uid")) or _coerce_str(owner_id)
+    if avatar_uuid and owner:
+        return sanitize_external_avatar_url(
+            f"{_SP_AVATAR_BASE}/{owner}/{avatar_uuid}"
+        )
+    return None
+
+
+def _map_privacy(private: object) -> str:
+    """Map SP's boolean privacy to our enum value. Non-bool / missing -> private."""
     from sheaf.models.system import PrivacyLevel
-    return PrivacyLevel.PRIVATE if private else PrivacyLevel.PUBLIC
+    return PrivacyLevel.PUBLIC if private is False else PrivacyLevel.PRIVATE
 
 
-def _truncate(value: str | None, max_len: int) -> str | None:
-    """Truncate a string or return None."""
-    if not value:
+def _truncate(value: object, max_len: int) -> str | None:
+    """Truncate a string, or return None for empty / non-string values.
+
+    Type-guarded like `_coerce_str` so a number or object where SP expected a
+    string can't crash slicing."""
+    if not isinstance(value, str) or not value:
         return None
     return value[:max_len]
