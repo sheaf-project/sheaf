@@ -141,6 +141,19 @@ PIP_EXTRA_INDEX_URL=
 
 Drop one (or both) into a gitignored `.env` next to `docker-compose.yml` and re-run `docker compose build`. `PIP_INDEX_URL` replaces PyPI entirely (use this when the mirror itself is a transparent PyPI proxy); `PIP_EXTRA_INDEX_URL` is checked first with PyPI as fallback. Empty values pass through to pip's default behaviour, so leaving them unset means public-PyPI builds as before.
 
+### Build provenance in `/v1/version`
+
+`GET /v1/version` reports the running version plus the commit, tag, and build time it was built from. The official ghcr images set those automatically in CI. For a **local `docker compose build`** they default to empty, because compose can't run git itself; pass them from the host (where git is available) if you want `/v1/version` to identify your build:
+
+```bash
+GIT_COMMIT=$(git rev-parse --short HEAD) \
+GIT_TAG=$(git describe --tags --always) \
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+docker compose up --build -d app
+```
+
+Leaving them unset is harmless; only the provenance fields read back as null. See [VERIFYING.md](VERIFYING.md) for the full supply-chain verification story.
+
 ---
 
 ## Email
