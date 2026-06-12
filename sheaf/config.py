@@ -344,6 +344,16 @@ class Settings(BaseSettings):
     terms_url: str = ""
     privacy_url: str = ""
 
+    # Operator support contact, surfaced on the in-app Support page
+    # (optional). Each is independent; the whole operator section hides
+    # if all are empty. status_url is the operator's own status page -
+    # a selfhoster's status page is theirs, so it's set here rather than
+    # baked into the static project section.
+    support_email: str = ""
+    support_url: str = ""
+    support_note: str = ""
+    status_url: str = ""
+
     # Captcha (signup gate; optionally login).
     # Provider: "" (disabled) | "altcha". Altcha is in-process proof-of-work
     # with no third-party dependency — see sheaf/services/captcha.py.

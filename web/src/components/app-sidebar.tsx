@@ -21,6 +21,7 @@ import {
   BarChart3,
   Vote,
   MessageSquare,
+  LifeBuoy,
   PanelLeftClose,
   PanelLeftOpen,
   X,
@@ -38,6 +39,7 @@ const navItems = [
   { to: "/reminders", label: "Reminders", icon: BellRing },
   { to: "/polls", label: "Polls", icon: Vote },
   { to: "/messages", label: "Messages", icon: MessageSquare },
+  { to: "/support", label: "Support", icon: LifeBuoy },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

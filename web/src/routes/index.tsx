@@ -19,6 +19,7 @@ import { ImportPage } from "./import";
 import { ImportsPage } from "./imports";
 import { ImportDetailPage } from "./imports.$id";
 import { AboutPage } from "./about";
+import { SupportPage } from "./support";
 import { JournalsPage } from "./journals";
 import { JournalDetailPage } from "./journals.$id";
 import { NotFoundPage } from "./not-found";
@@ -101,6 +102,7 @@ export const router = createBrowserRouter([
       { path: "imports", element: <ImportsPage /> },
       { path: "imports/:id", element: <ImportDetailPage /> },
       { path: "about", element: <AboutPage /> },
+      { path: "support", element: <SupportPage /> },
       {
         path: "admin",
         element: <AdminLayout />,
