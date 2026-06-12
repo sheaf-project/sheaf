@@ -178,6 +178,23 @@ Port 465 uses implicit TLS; all other ports use STARTTLS (when `SMTP_TLS=true`).
 
 **Requires the `smtp` extra** — see [Optional dependencies](#optional-dependencies).
 
+Plain SMTP has no feedback channel, so by default nothing flags a bounced or complained address - the [deliverability gate](#deliverability-state) simply never trips. If your SMTP provider offers a webhook, wire it up to keep bounce suppression working (see SMTP2GO below).
+
+#### SMTP2GO bounce/complaint feedback
+
+If you send via SMTP2GO (`EMAIL_BACKEND=smtp` pointed at SMTP2GO's relay), add a webhook so delivery/bounce/spam events drive the deliverability state. SMTP2GO does not sign payloads, so the endpoint is guarded by a shared secret in the URL. Set it in `.env`:
+
+```env
+SMTP2GO_WEBHOOK_SECRET=your-random-secret-here
+```
+
+Then in the SMTP2GO app (Settings -> Webhooks), add a webhook with:
+- **URL:** `https://your-instance/v1/webhooks/smtp2go/events?token=your-random-secret-here`
+- **Output type:** JSON or Form-encoded (both accepted)
+- **Events:** at minimum Delivered, Bounce, and Spam. Delivered is what lets a greylisted first attempt self-heal once the retry lands - see [Deliverability state](#deliverability-state).
+
+When `SMTP2GO_WEBHOOK_SECRET` is empty the endpoint returns 404. For defence in depth, also restrict the endpoint to SMTP2GO's published source IPs (`webhooks.smtp2go.com`) at your reverse proxy, since the secret travels in the URL.
+
 ### AWS SES
 
 ```env
@@ -237,7 +254,7 @@ Bounce and complaint feedback (SES queue or SendGrid webhook above) drives a per
 
 - **Users are never silently locked out.** When an address is flagged, the user sees a banner on sign-in prompting them to re-verify or change their email. Re-verifying (the verification email is sent even to a currently-blocked address) clears the block. No admin intervention or manual database edit is required.
 
-If you run plain SMTP (`EMAIL_BACKEND=smtp`) with no bounce-feedback channel wired up, no addresses are ever auto-flagged - the deliverability gate simply never trips. Wire your provider's webhook/feedback into the SES or SendGrid handlers if you want bounce suppression on SMTP.
+Bounce/complaint feedback comes from a provider webhook or queue: the SES SQS handler, the SendGrid Event Webhook, or the SMTP2GO webhook (see [SMTP2GO bounce/complaint feedback](#smtp2go-bouncecomplaint-feedback)). If you run plain SMTP with no such channel wired up, no addresses are ever auto-flagged - the deliverability gate simply never trips, which is a safe (if unfiltered) default.
 
 ### Disabling email
 

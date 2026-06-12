@@ -220,6 +220,16 @@ class Settings(BaseSettings):
     # as a possible replay.
     sendgrid_webhook_max_skew_seconds: int = 600
 
+    # SMTP2GO webhook. SMTP2GO does not sign payloads (no HMAC), so the
+    # endpoint is guarded by a shared secret in the URL: configure the
+    # SMTP2GO webhook to POST to
+    # /v1/webhooks/smtp2go/events?token=<this value> with JSON output.
+    # When empty, the webhook endpoint returns 404. Pair with SMTP2GO's
+    # IP allowlist (webhooks.smtp2go.com) at the proxy for defence in
+    # depth. Feeds the same deliverability lifecycle as the SES/SendGrid
+    # handlers.
+    smtp2go_webhook_secret: str = ""
+
     # Registration
     registration_mode: str = "open"  # "open", "approval", "invite", "closed"
     invite_codes_enabled: bool = False  # Accept invite codes in open/approval modes too
