@@ -159,6 +159,10 @@ async def get_auth_config():
         "file_cdn_base": settings.s3_public_url.rstrip("/") or None,
         "terms_url": settings.terms_url or None,
         "privacy_url": settings.privacy_url or None,
+        "support_email": settings.support_email or None,
+        "support_url": settings.support_url or None,
+        "support_note": settings.support_note or None,
+        "status_url": settings.status_url or None,
         "captcha_provider": settings.captcha_provider or None,
         "captcha_on_login": captcha.required_for_login(),
     }

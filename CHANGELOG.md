@@ -4,6 +4,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 `v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
+## [Unreleased]
+
+### Added
+
+- **Support page.** A new Support entry in the sidebar with two sections. The top is an operator contact card populated from optional env vars (`SUPPORT_EMAIL`, `SUPPORT_URL`, `SUPPORT_NOTE`, `STATUS_URL`), surfaced read-only via `GET /v1/auth/config` the same way the legal-footer links are; it hides entirely when none are set, so a bare self-host shows nothing there. The bottom is static and identical on every instance: links to the project's GitHub issue tracker for bug reports and to the security policy + `security@sheaf.sh` for private vulnerability disclosure. The status-page link is operator-set rather than static, since a self-hosted instance's status page is the operator's own.
+
 ## [1.0.0] - 2026-06-12
 
 ### Added
