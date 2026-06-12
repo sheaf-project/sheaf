@@ -150,3 +150,37 @@ def test_different_endpoints_have_separate_limits(anon_client):
         json={"email": email, "password": "testpassword123"},
     )
     assert resp.status_code == 200
+
+
+def test_per_user_block_records_admin_history(admin_client):
+    """End-to-end: a blocked per-user check leaves a triage trail
+    readable via GET /admin/users/{id}/rate-limit-history."""
+    # Fresh authenticated user who is about to misbehave.
+    email = f"rl-hist-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+        user_id = c.get("/v1/auth/me").json()["id"]
+
+        # /v1/import/prism/preview is rate_limit(5, 60, "user"); the
+        # bodyless posts 4xx harmlessly but still consume the budget.
+        statuses = [
+            c.post("/v1/import/prism/preview").status_code for _ in range(8)
+        ]
+        assert 429 in statuses, statuses
+
+    resp = admin_client.get(f"/v1/admin/users/{user_id}/rate-limit-history")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["entries"], "blocked check was not recorded"
+    top = data["entries"][0]
+    assert top["scope"] == "per_user"
+    assert top["route"] == "/v1/import/prism/preview"
+    assert top["bucket"]
+    assert top["ip"]
+    # One history entry per 429, no more, no fewer.
+    assert sum(data["summary"].values()) == statuses.count(429)

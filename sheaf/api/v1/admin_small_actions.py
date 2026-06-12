@@ -57,6 +57,14 @@ PR 5 endpoints:
 
   - POST /admin/users/{id}/unban
         Lift a permanent ban. Returns the user to ACTIVE.
+
+Batch 2 close-out:
+
+  - GET /admin/users/{id}/rate-limit-history
+        Recent rate-limit hits attributed to this account, read from
+        the capped Redis history the limiter records on blocked
+        checks. Pure read; no audit row written (same posture as
+        /explain and the session list).
 """
 
 from __future__ import annotations
@@ -225,6 +233,90 @@ async def explain_account(
         api_key_count=api_key_count,
         system=system_block,
         recent_admin_audit=recent_audit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit hit history (pure read; no audit row)
+# ---------------------------------------------------------------------------
+
+
+class _RateLimitHit(BaseModel):
+    at: datetime
+    bucket: str
+    scope: str
+    route: str
+    ip: str | None = None
+
+
+class RateLimitHistoryResponse(BaseModel):
+    enabled: bool
+    retention_hours: int
+    # Per-bucket totals over the retained window, for the at-a-glance
+    # row ("login: 12, upload: 3") before reading individual entries.
+    summary: dict[str, int]
+    # Newest first, capped server-side by the recording list length.
+    entries: list[_RateLimitHit]
+
+
+@router.get(
+    "/users/{user_id}/rate-limit-history",
+    response_model=RateLimitHistoryResponse,
+)
+async def rate_limit_history(
+    user_id: uuid.UUID,
+    _: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recent rate-limit hits attributed to this account.
+
+    The aggregate Prometheus counters answer "is the instance being
+    hammered"; this answers the triage question "what has THIS account
+    tripped recently". Sourced from the capped per-user Redis list the
+    limiter writes on blocked checks - covers per-user limits always,
+    and per-IP limits when the request carried resolved auth. The
+    anonymous global backstop is not attributable and not included.
+
+    Read-only; not logged (matches /explain and the session list:
+    operational metadata, no user content)."""
+    from sheaf.config import settings
+    from sheaf.middleware.rate_limit import read_user_hit_history
+
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    try:
+        raw = await read_user_hit_history(user_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate-limit history is temporarily unavailable",
+        ) from exc
+
+    entries: list[_RateLimitHit] = []
+    summary: dict[str, int] = {}
+    for item in raw:
+        bucket = str(item.get("bucket") or "other")
+        summary[bucket] = summary.get(bucket, 0) + 1
+        entries.append(
+            _RateLimitHit(
+                at=datetime.fromtimestamp(item["t"], tz=UTC),
+                bucket=bucket,
+                scope=str(item.get("scope") or "unknown"),
+                route=str(item.get("route") or ""),
+                ip=item.get("ip"),
+            )
+        )
+
+    return RateLimitHistoryResponse(
+        enabled=settings.rate_limit_history_enabled,
+        retention_hours=settings.rate_limit_history_hours,
+        summary=summary,
+        entries=entries,
     )
 
 
@@ -903,6 +995,17 @@ async def export_user_dossier(
         for s in sessions
     ]
 
+    # Rate-limit hit history is held personal data (IP + behaviour),
+    # so an Article 15 bundle must include it. Best-effort: a Redis
+    # blip degrades to an explicit unavailability marker rather than
+    # failing the DSAR or silently omitting the section.
+    from sheaf.middleware.rate_limit import read_user_hit_history
+
+    try:
+        rl_history: list[dict] | None = await read_user_hit_history(user_id)
+    except Exception:
+        rl_history = None
+
     trusted_rows = await db.execute(
         select(TrustedDevice).where(TrustedDevice.user_id == user_id)
     )
@@ -1032,6 +1135,8 @@ async def export_user_dossier(
         "admin_audit_history": audit_block,
         "import_jobs": import_block,
         "export_jobs": export_block,
+        "rate_limit_history": rl_history,
+        "rate_limit_history_unavailable": rl_history is None,
     }
 
     # Log BEFORE returning so a connection drop mid-stream still

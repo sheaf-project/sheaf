@@ -253,6 +253,16 @@ class Settings(BaseSettings):
     rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
     rate_limit_global_window: int = 60  # window in seconds
 
+    # Per-user rate-limit hit history (admin abuse triage). Blocked
+    # checks attributable to an authenticated user are recorded to a
+    # capped Redis list so an admin can see what an account has tripped
+    # recently. Bounded twice: max entries per user, and a retention
+    # TTL in hours. Disable to record nothing (the read endpoint then
+    # just returns empty histories).
+    rate_limit_history_enabled: bool = True
+    rate_limit_history_hours: int = 48
+    rate_limit_history_max_entries: int = 200
+
     # Per-account login lockout. Any combination of wrong-password and
     # wrong-TOTP attempts counts. On reaching max_failures, the account is
     # locked for lockout_minutes. A successful login clears both fields;

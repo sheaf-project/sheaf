@@ -10,10 +10,17 @@ Redis key layout:
          sheaf:rl:user:abc-def:1711670400
 
 Each key is an integer counter with a TTL equal to the window size.
+
+Blocked checks that can be attributed to an authenticated user are
+additionally recorded to a per-user history list for admin abuse
+triage (see record_user_hit / read_user_hit_history):
+    sheaf:rlh:{user_id}
+a capped LPUSH list of JSON entries with a retention TTL.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -118,6 +125,86 @@ def _rate_limit_headers(limit: Limit, remaining: int, reset: int) -> dict[str, s
 
 
 # ---------------------------------------------------------------------------
+# Per-user hit history - admin abuse-triage trail
+# ---------------------------------------------------------------------------
+#
+# The Prometheus counters answer "is something being hammered"; this
+# answers "what has THIS account tripped recently". Recording happens
+# only on BLOCKED checks where the request carries an authenticated
+# user id, so the volume is self-limiting (at most one entry per 429).
+# Storage is a capped Redis list with a retention TTL - nothing here
+# touches Postgres, and an idle key ages out on its own.
+
+def _history_key(user_id) -> str:
+    return f"sheaf:rlh:{user_id}"
+
+
+async def record_user_hit(
+    redis,
+    user_id,
+    *,
+    bucket: str,
+    scope: str,
+    route: str,
+    ip: str | None,
+) -> None:
+    """Append one blocked-check entry to the user's history list.
+
+    Best-effort by contract: callers wrap this in try/except so a Redis
+    hiccup can never turn a clean 429 into a 500. LTRIM bounds the list
+    length; EXPIRE bounds idle lifetime. A user who keeps tripping
+    refreshes the TTL, so the read side filters by timestamp too.
+    """
+    entry = json.dumps(
+        {
+            "t": int(time.time()),
+            "bucket": bucket,
+            "scope": scope,
+            "route": route,
+            "ip": ip,
+        },
+        separators=(",", ":"),
+    )
+    pipe = redis.pipeline()
+    pipe.lpush(_history_key(user_id), entry)
+    pipe.ltrim(_history_key(user_id), 0, settings.rate_limit_history_max_entries - 1)
+    pipe.expire(_history_key(user_id), settings.rate_limit_history_hours * 3600)
+    await pipe.execute()
+
+
+async def delete_user_hit_history(user_id) -> None:
+    """Remove a user's hit history outright (account deletion path)."""
+    redis = await _get_redis()
+    await redis.delete(_history_key(user_id))
+
+
+async def read_user_hit_history(user_id) -> list[dict]:
+    """Return the user's recorded hits, newest first.
+
+    Entries older than the retention window are filtered out here
+    rather than trusting the key TTL alone - a fresh hit refreshes the
+    whole key's TTL, which would otherwise resurrect stale entries.
+    Unparseable entries are dropped silently (format drift across
+    deploys shouldn't 500 the admin panel).
+    """
+    redis = await _get_redis()
+    raw = await redis.lrange(_history_key(user_id), 0, -1)
+    cutoff = int(time.time()) - settings.rate_limit_history_hours * 3600
+    out: list[dict] = []
+    for item in raw:
+        try:
+            entry = json.loads(item)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(entry, dict) or not isinstance(entry.get("t"), int):
+            continue
+        if entry["t"] < cutoff:
+            continue
+        out.append(entry)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Dependency factory — per-endpoint limits
 # ---------------------------------------------------------------------------
 
@@ -193,6 +280,26 @@ def rate_limit(
         ).inc()
 
         if not allowed:
+            # Attribute the hit to a user when we can. key="user" limits
+            # always have one; key="ip" limits only when another dep
+            # resolved auth first. Best-effort: never let the history
+            # write break the 429 itself.
+            hit_user_id = getattr(request.state, "user_id", None)
+            if hit_user_id is not None and settings.rate_limit_history_enabled:
+                try:
+                    await record_user_hit(
+                        r,
+                        hit_user_id,
+                        bucket=bucket,
+                        scope=scope_label,
+                        route=getattr(route_obj, "path", None) or route,
+                        ip=_client_ip(request),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to record rate-limit hit history",
+                        exc_info=True,
+                    )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Rate limit exceeded. Try again later.",
