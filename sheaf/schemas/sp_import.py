@@ -21,6 +21,7 @@ class SPImportOptions(BaseModel):
     custom_fields: bool = True
     groups: bool = True
     front_history: bool = False  # Default off — can be huge
+    messages: bool = False  # Default off - chat can be huge
     notes: bool = False  # Maps to future journal feature
 
 
@@ -44,6 +45,7 @@ class SPPreviewSummary(BaseModel):
     group_count: int = 0
     custom_field_count: int = 0
     note_count: int = 0
+    message_count: int = 0
 
 
 class SPImportResult(BaseModel):
@@ -59,5 +61,8 @@ class SPImportResult(BaseModel):
     groups_skipped: int = 0
     custom_fields_imported: int = 0
     custom_fields_skipped: int = 0
+    messages_imported: int = 0
+    messages_skipped: int = 0
+    messages_encrypted_skipped: int = 0
     notes_skipped: int = 0  # Until journal feature exists
     warnings: list[str] = []

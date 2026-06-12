@@ -9,6 +9,7 @@ walks emit when they encounter malformed or dangling references.
 
 from __future__ import annotations
 
+import base64
 import json
 import pathlib
 import uuid
@@ -396,3 +397,283 @@ def test_sp_reimport_is_idempotent_and_does_not_crash(auth_client: httpx.Client)
     assert f2["counts"].get("fronts_skipped", 0) == 1, f2["counts"]
     assert f2["counts"].get("custom_fields_skipped", 0) == 1, f2["counts"]
     assert f2["counts"].get("fronts_imported", 0) == 0, f2["counts"]
+
+
+# --- Format robustness (skylar's SP export-variant survey) ------------------
+#
+# Real SP exports carry shape/field variants that tidy fixtures don't. Each
+# test pins one variant that previously skipped data or crashed the import.
+
+
+def test_sp_imports_map_keyed_collections(auth_client: httpx.Client):
+    """Some SP exports key a collection by id ({"id": {...}}) rather than using
+    an array. Both shapes must import (a map previously iterated its string keys
+    and crashed)."""
+    payload = _sp_payload(
+        members={
+            "spm1": {"_id": "spm1", "name": "MapAlice", "private": False},
+            "spm2": {"_id": "spm2", "name": "MapBob", "private": False},
+        },
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("members_imported", 0) == 2, final["counts"]
+    names = {m["name"] for m in auth_client.get("/v1/members").json()}
+    assert {"MapAlice", "MapBob"}.issubset(names), names
+
+
+def test_sp_parses_varied_timestamp_shapes(auth_client: httpx.Client):
+    """Front timestamps come as int millis, numeric strings, zone-less ISO
+    strings, and Firebase {_seconds} objects. All four yield a front; only a
+    genuinely junk one is skipped with a warning."""
+    payload = _sp_payload(
+        members=[{"_id": "spm1", "name": "TimeAlice", "private": False}],
+        frontHistory=[
+            {"_id": "f-int", "member": "spm1", "startTime": 1_700_000_000_000},
+            {"_id": "f-str", "member": "spm1", "startTime": "1700000100000"},
+            {
+                "_id": "f-iso",
+                "member": "spm1",
+                "startTime": "2023-11-14T16:13:20.000",
+            },
+            {
+                "_id": "f-fb",
+                "member": "spm1",
+                "startTime": {"_seconds": 1_700_000_200, "_nanoseconds": 0},
+            },
+            {"_id": "f-junk", "member": "spm1", "startTime": "not a time"},
+        ],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"front_history": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("fronts_imported", 0) == 4, final["counts"]
+    assert any(
+        "unparseable startTime" in w for w in _warnings(final["events"])
+    ), final["events"]
+
+
+def test_sp_reads_variant_collection_keys(auth_client: httpx.Client):
+    """Newer exports use customFronts (not frontStatuses) and fronters (not
+    frontHistory)."""
+    payload = _sp_payload(
+        members=[{"_id": "spm1", "name": "VarAlice", "private": False}],
+        customFronts=[{"_id": "cf1", "name": "Asleep", "private": False}],
+        fronters=[{"_id": "fr1", "member": "spm1", "startTime": 1_700_000_000_000}],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"front_history": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("custom_fronts_imported", 0) == 1, final["counts"]
+    assert final["counts"].get("fronts_imported", 0) == 1, final["counts"]
+    names = {m["name"] for m in auth_client.get("/v1/members").json()}
+    assert "Asleep" in names, names
+
+
+def test_sp_constructs_avatar_from_uuid_and_normalizes_argb(
+    auth_client: httpx.Client,
+):
+    """avatarUuid + system-owner id builds the serve.apparyllis.com URL, and an
+    8-char ARGB colour reduces to #rrggbb."""
+    payload = _sp_payload(
+        users=[{"_id": "ownerX", "uid": "ownerX", "username": "Sys"}],
+        members=[
+            {
+                "_id": "spm1",
+                "name": "AvAlice",
+                "private": False,
+                "avatarUuid": "av-123",
+                "color": "#ff0088ff",
+            },
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    member = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "AvAlice"
+    )
+    assert (
+        member["avatar_url"]
+        == "https://serve.apparyllis.com/avatars/ownerX/av-123"
+    ), member
+    assert member["color"] == "#0088ff", member
+
+
+def test_sp_survives_malformed_field_types(auth_client: httpx.Client):
+    """Wrong-typed names/descriptions/colours coerce away instead of crashing
+    the job, and no member content leaks into the event log."""
+    payload = _sp_payload(
+        members=[
+            {"_id": "spm1", "name": "Alpha", "private": False},
+            {
+                "_id": "spm2",
+                "name": "Beta",
+                "desc": {"x": 1},
+                "displayName": 7,
+                "pronouns": ["they"],
+                "color": 999,
+                "private": False,
+            },
+            # Junk name falls back to "unnamed" but still imports.
+            {"_id": "spm3", "name": 12345, "private": False},
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("members_imported", 0) == 3, final["counts"]
+    blob = " ".join(e["message"] for e in final["events"])
+    for leaked in ("Alpha", "Beta", "12345"):
+        assert leaked not in blob, blob
+
+
+# --- Chat message import (Tier 2) ------------------------------------------
+
+
+def test_sp_imports_chat_messages_and_skips_encrypted(auth_client: httpx.Client):
+    """Plaintext chat imports to the system board; a legacy still-encrypted
+    message (16-byte base64 iv + base64 ciphertext) is detected and skipped."""
+    enc_iv = base64.b64encode(bytes(16)).decode()
+    enc_body = base64.b64encode(bytes([0xFF, 0xFE, 0xFD, 0xFC]) * 10).decode()
+    payload = _sp_payload(
+        members=[{"_id": "spm1", "name": "ChatAlice", "private": False}],
+        channels=[{"_id": "ch1", "name": "General"}],
+        messages={
+            "ch1": [
+                {
+                    "_id": "m1",
+                    "sender": "spm1",
+                    "message": "hello board",
+                    "timestamp": 1_700_000_000_000,
+                },
+                {
+                    "_id": "m2",
+                    "sender": "spm1",
+                    "message": enc_body,
+                    "iv": enc_iv,
+                    "timestamp": 1_700_000_001_000,
+                },
+            ],
+        },
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"messages": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("messages_imported", 0) == 1, final["counts"]
+    assert final["counts"].get("messages_encrypted_skipped", 0) == 1, final["counts"]
+    assert any(
+        "still encrypted" in w for w in _warnings(final["events"])
+    ), final["events"]
+    bodies = [m["body"] for m in auth_client.get("/v1/export").json()["messages"]]
+    assert any(b == "hello board" for b in bodies), bodies  # single channel, no prefix
+
+
+def test_sp_chat_replies_mentions_and_channel_prefix(auth_client: httpx.Client):
+    """Reply chains rebuild, mention tokens rewrite to @name, and multi-channel
+    chat is prefixed with the channel name."""
+    payload = _sp_payload(
+        members=[
+            {"_id": "spm1", "name": "ChatAlice", "private": False},
+            {"_id": "spm2", "name": "ChatBob", "private": False},
+        ],
+        channels=[
+            {"_id": "ch1", "name": "General"},
+            {"_id": "ch2", "name": "Random"},
+        ],
+        messages={
+            "ch1": [
+                {
+                    "_id": "m1",
+                    "sender": "spm1",
+                    "message": "hey <###@spm2###>",
+                    "timestamp": 1_700_000_000_000,
+                },
+                {
+                    "_id": "m2",
+                    "sender": "spm2",
+                    "message": "reply!",
+                    "replyTo": "m1",
+                    "timestamp": 1_700_000_001_000,
+                },
+            ],
+            "ch2": [
+                {
+                    "_id": "m3",
+                    "sender": "spm1",
+                    "message": "other channel",
+                    "timestamp": 1_700_000_002_000,
+                },
+            ],
+        },
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"messages": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("messages_imported", 0) == 3, final["counts"]
+    msgs = auth_client.get("/v1/export").json()["messages"]
+    bodies = [m["body"] for m in msgs]
+    assert any(b.startswith("[General] ") for b in bodies), bodies
+    assert any(b.startswith("[Random] ") for b in bodies), bodies
+    assert any("@ChatBob" in b for b in bodies), bodies
+    reply = next(m for m in msgs if "reply!" in m["body"])
+    parent = next(m for m in msgs if "hey" in m["body"])
+    assert reply["parent_message_id"] == parent["id"], (reply, parent)
+
+
+def test_sp_imports_chatmessages_flat_array(auth_client: httpx.Client):
+    """The alternate `chatMessages` flat-array shape (each message carries its
+    own channel) imports too, via the content/writtenAt field aliases."""
+    payload = _sp_payload(
+        members=[{"_id": "spm1", "name": "FlatAlice", "private": False}],
+        channels=[{"_id": "ch1", "name": "General"}],
+        chatMessages=[
+            {
+                "_id": "m1",
+                "channel": "ch1",
+                "sender": "spm1",
+                "content": "flat hello",
+                "writtenAt": 1_700_000_000_000,
+            },
+        ],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"messages": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("messages_imported", 0) == 1, final["counts"]
+    bodies = [m["body"] for m in auth_client.get("/v1/export").json()["messages"]]
+    assert any("flat hello" in b for b in bodies), bodies

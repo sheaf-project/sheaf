@@ -30,6 +30,7 @@ from sheaf.services.import_runner import (
     update_counts,
 )
 from sheaf.services.import_storage import get_payload
+from sheaf.services.sp_import import preview as sp_preview
 from sheaf.services.sp_import import run_import as sp_run_import
 
 logger = logging.getLogger("sheaf.imports.sp")
@@ -57,6 +58,29 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
     )
 
     parsed = expect_dict(safe_json_loads(blob), descriptor="SimplyPlural export")
+
+    # Log what the export CONTAINED (input), so an admin can compare against the
+    # imported/skipped counts below. "export had 50 members, imported 0" is the
+    # signal that fixtures never produce but a broken real import does. Counts
+    # come from the same parser the import uses, so variant keys / map-shaped
+    # collections are reflected.
+    insum = sp_preview(parsed)
+    append_event(
+        job,
+        level="info",
+        stage="parse",
+        message=(
+            "export contained: "
+            f"{insum.member_count} members, "
+            f"{insum.custom_front_count} custom fronts, "
+            f"{insum.front_history_count} front intervals, "
+            f"{insum.group_count} groups, "
+            f"{insum.custom_field_count} custom fields, "
+            f"{insum.message_count} chat messages, "
+            f"{insum.note_count} notes"
+        ),
+    )
+
     options = parse_options(job.payload_metadata, SPImportOptions)
     system = await load_user_system(db, job.user_id)
 
@@ -74,6 +98,9 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
         groups_skipped=result.groups_skipped,
         custom_fields_imported=result.custom_fields_imported,
         custom_fields_skipped=result.custom_fields_skipped,
+        messages_imported=result.messages_imported,
+        messages_skipped=result.messages_skipped,
+        messages_encrypted_skipped=result.messages_encrypted_skipped,
         notes_skipped=result.notes_skipped,
     )
     for warning in result.warnings:
