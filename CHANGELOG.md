@@ -2,9 +2,9 @@
 
 All notable changes to Sheaf are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and Sheaf adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`v0.x.y` releases are betas — APIs and database schema may still change. The first stable release will be `v1.0.0`.
+`v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
-## [Unreleased]
+## [1.0.0] - 2026-06-12
 
 ### Added
 
