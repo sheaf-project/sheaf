@@ -4,6 +4,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 `v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
+## [Unreleased]
+
+### Added
+
+- **SMTP2GO delivery webhook.** A new `POST /v1/webhooks/smtp2go/events` endpoint feeds SMTP2GO's delivery/bounce/spam events into the same deliverability lifecycle as the SES and SendGrid handlers, so bounce suppression and soft-bounce self-healing work when sending via SMTP2GO (over the `smtp` backend). `delivered` clears transient soft-bounce state, `bounce` maps hard/soft from SMTP2GO's classification (an unclassified bounce defaults to soft, the conservative choice), and `spam` is treated as a complaint. SMTP2GO does not sign payloads, so the endpoint is guarded by a shared secret in the URL (`SMTP2GO_WEBHOOK_SECRET`; returns 404 when unset) - point the SMTP2GO webhook at `/v1/webhooks/smtp2go/events?token=<secret>` (JSON or form-encoded output both accepted) and enable at least the Delivered, Bounce, and Spam events. See SELFHOSTING for setup.
+
 ## [1.0.0] - 2026-06-12
 
 ### Added
