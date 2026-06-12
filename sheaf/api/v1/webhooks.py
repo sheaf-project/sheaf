@@ -122,7 +122,11 @@ async def sendgrid_events(
             webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
-    from sheaf.services.email_events import apply_bounce, apply_complaint
+    from sheaf.services.email_events import (
+        apply_bounce,
+        apply_complaint,
+        apply_delivered,
+    )
 
     try:
         events = await request.json()
@@ -144,7 +148,9 @@ async def sendgrid_events(
         if not email or not event_type:
             continue
 
-        if event_type in ("bounce", "blocked", "dropped", "deferred", "spamreport"):
+        if event_type in (
+            "bounce", "blocked", "dropped", "deferred", "spamreport", "delivered",
+        ):
             email_provider_events_total.labels(
                 provider="sendgrid", event=event_type,
             ).inc()
@@ -157,6 +163,12 @@ async def sendgrid_events(
                 if await apply_bounce(db, email, permanent=False):
                     processed += 1
             elif event_type == "spamreport" and await apply_complaint(db, email):
+                processed += 1
+            elif event_type == "delivered" and await apply_delivered(db, email):
+                # A successful delivery clears transient soft-bounce state,
+                # so a greylisted first attempt self-heals once the retry
+                # lands. Requires the "Delivered" event enabled in the
+                # SendGrid Event Webhook config.
                 processed += 1
         except Exception:
             logger.exception("Failed to process SendGrid event: %s", event_type)

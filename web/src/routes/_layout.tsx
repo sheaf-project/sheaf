@@ -6,6 +6,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { AccountPending } from "@/components/account-pending";
 import { AnnouncementBanners } from "@/components/announcement-banners";
 import { DeletionBanner } from "@/components/deletion-banner";
+import { EmailDeliverabilityBanner } from "@/components/email-deliverability-banner";
 import { LegalFooter } from "@/components/legal-footer";
 import { Logo } from "@/components/logo";
 import { RetentionTrimNoticeBanner } from "@/components/retention-trim-notice-banner";
@@ -90,6 +91,7 @@ export function AppLayout() {
         </header>
         <AnnouncementBanners />
         {user.account_status === "pending_deletion" && <DeletionBanner />}
+        <EmailDeliverabilityBanner />
         <SystemSafetyBanner />
         <RetentionTrimNoticeBanner />
         <main className="flex-1 overflow-auto p-4 md:p-6">
