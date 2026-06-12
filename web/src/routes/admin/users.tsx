@@ -21,6 +21,7 @@ import {
   explainAccount,
   forceRotateApiKeys,
   getAdminUsers,
+  getRateLimitHistory,
   listUserSessionsAdmin,
   listUserImportJobs,
   viewImportJobDetail,
@@ -38,6 +39,7 @@ import {
   type AdminUserSession,
   type AdminImportJobSummary,
   type ExplainAccountResponse,
+  type RateLimitHistoryResponse,
 } from "@/lib/admin";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 
@@ -277,6 +279,50 @@ function ImportLogsSection({ userId }: { userId: string }) {
   );
 }
 
+function RateLimitSection({ userId }: { userId: string }) {
+  const [showAll, setShowAll] = useState(false);
+  const { data } = useQuery<RateLimitHistoryResponse>({
+    queryKey: ["admin", "rate-limit-history", userId],
+    queryFn: () => getRateLimitHistory(userId),
+    staleTime: 30_000,
+  });
+
+  // Hide entirely when there is nothing to triage - the panel is noisy
+  // enough already, and "no hits" is the healthy steady state.
+  if (!data || data.entries.length === 0) return null;
+
+  const shown = showAll ? data.entries : data.entries.slice(0, 5);
+
+  return (
+    <div>
+      <div className="mb-1 text-muted-foreground">
+        Rate-limit hits (last {data.retention_hours}h):{" "}
+        {Object.entries(data.summary)
+          .sort((a, b) => b[1] - a[1])
+          .map(([bucket, count]) => `${bucket}: ${count}`)
+          .join(" · ")}
+      </div>
+      <ul className="space-y-0.5 font-mono">
+        {shown.map((hit, i) => (
+          <li key={i}>
+            {new Date(hit.at).toLocaleString()} · {hit.bucket} ({hit.scope}) ·{" "}
+            {hit.route}
+            {hit.ip ? ` · ${hit.ip}` : ""}
+          </li>
+        ))}
+      </ul>
+      {data.entries.length > 5 && (
+        <button
+          className="mt-0.5 text-[10px] text-muted-foreground underline hover:text-foreground"
+          onClick={() => setShowAll((v) => !v)}
+        >
+          {showAll ? "Show fewer" : `Show all ${data.entries.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ExplainPanel({ userId }: { userId: string }) {
   const [open, setOpen] = useState(false);
   const { data, isLoading } = useQuery<ExplainAccountResponse>({
@@ -358,6 +404,7 @@ function ExplainPanel({ userId }: { userId: string }) {
                 </div>
               )}
               <SessionsSection userId={userId} />
+              <RateLimitSection userId={userId} />
               <ImportLogsSection userId={userId} />
               {data.recent_admin_audit.length > 0 && (
                 <div>

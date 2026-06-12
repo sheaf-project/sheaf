@@ -287,6 +287,19 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
         except Exception:
             logger.warning("Failed to delete sessions for user %s", user.id)
 
+        # Drop the rate-limit hit history too rather than letting it
+        # ride out its TTL - erasure shouldn't leave a 48h echo. Best
+        # effort for the same reason sessions are: the TTL is the
+        # backstop if Redis blips here.
+        try:
+            from sheaf.middleware.rate_limit import delete_user_hit_history
+
+            await delete_user_hit_history(user.id)
+        except Exception:
+            logger.warning(
+                "Failed to delete rate-limit history for user %s", user.id
+            )
+
         # Delete user (DB CASCADE handles system, members, etc.)
         await db.execute(delete(User).where(User.id == user.id))
         deleted += 1

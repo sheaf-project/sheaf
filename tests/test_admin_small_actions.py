@@ -333,3 +333,112 @@ def test_terminate_by_handle_kills_the_real_session(
         "/v1/auth/me", cookies={"sheaf_session": raw_sid}
     )
     assert check.status_code == 401, check.text
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit hit history (read-only; no audit row)
+# ---------------------------------------------------------------------------
+
+
+def _seed_history(user_id: str, entries: list[dict]) -> None:
+    """Write entries to the per-user history list in the exact format
+    the limiter records, oldest first (mirroring LPUSH order), so the
+    endpoint shape is covered even in configs where rate limiting is
+    disabled and a real 429 can't be provoked."""
+    import json as _json
+    import os
+
+    import redis as _redis
+
+    r = _redis.from_url(
+        os.environ.get("SHEAF_TEST_REDIS_URL", "redis://localhost:6380/0")
+    )
+    key = f"sheaf:rlh:{user_id}"
+    r.delete(key)
+    for entry in entries:
+        r.lpush(key, _json.dumps(entry, separators=(",", ":")))
+    r.expire(key, 3600)
+    r.close()
+
+
+def test_rate_limit_history_empty_for_clean_user(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    me = auth_client.get("/v1/auth/me").json()
+    resp = admin_client.get(f"/v1/admin/users/{me['id']}/rate-limit-history")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["entries"] == []
+    assert data["summary"] == {}
+    assert data["retention_hours"] > 0
+
+
+def test_rate_limit_history_404_for_missing(admin_client: httpx.Client):
+    resp = admin_client.get(
+        f"/v1/admin/users/{uuid.uuid4()}/rate-limit-history"
+    )
+    assert resp.status_code == 404
+
+
+def test_rate_limit_history_returns_seeded_hits(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    import time as _time
+
+    me = auth_client.get("/v1/auth/me").json()
+    now = int(_time.time())
+    _seed_history(
+        me["id"],
+        [
+            # Stale entry beyond any sane retention window - must be
+            # filtered out at read time even though the key still
+            # holds it (a fresh hit refreshes the whole key's TTL).
+            {
+                "t": now - 365 * 24 * 3600,
+                "bucket": "login",
+                "scope": "per_ip",
+                "route": "/v1/auth/login",
+                "ip": "203.0.113.9",
+            },
+            {
+                "t": now - 60,
+                "bucket": "login",
+                "scope": "per_ip",
+                "route": "/v1/auth/login",
+                "ip": "203.0.113.9",
+            },
+            {
+                "t": now - 5,
+                "bucket": "upload",
+                "scope": "per_user",
+                "route": "/v1/files/upload",
+                "ip": "203.0.113.9",
+            },
+        ],
+    )
+
+    resp = admin_client.get(f"/v1/admin/users/{me['id']}/rate-limit-history")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["summary"] == {"login": 1, "upload": 1}
+    assert len(data["entries"]) == 2
+    # Newest first (LPUSH head order).
+    assert data["entries"][0]["bucket"] == "upload"
+    assert data["entries"][0]["scope"] == "per_user"
+    assert data["entries"][0]["route"] == "/v1/files/upload"
+    assert data["entries"][0]["ip"] == "203.0.113.9"
+    assert data["entries"][1]["bucket"] == "login"
+
+
+def test_rate_limit_history_does_not_log(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    me = auth_client.get("/v1/auth/me").json()
+    before = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={me['id']}"
+    ).json()
+    admin_client.get(f"/v1/admin/users/{me['id']}/rate-limit-history")
+    after = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={me['id']}"
+    ).json()
+    assert len(after) == len(before)

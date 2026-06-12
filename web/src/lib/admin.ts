@@ -415,6 +415,27 @@ export function explainAccount(userId: string) {
   );
 }
 
+export interface RateLimitHit {
+  at: string;
+  bucket: string;
+  scope: string;
+  route: string;
+  ip: string | null;
+}
+
+export interface RateLimitHistoryResponse {
+  enabled: boolean;
+  retention_hours: number;
+  summary: Record<string, number>;
+  entries: RateLimitHit[];
+}
+
+export function getRateLimitHistory(userId: string) {
+  return apiFetch<RateLimitHistoryResponse>(
+    `/v1/admin/users/${userId}/rate-limit-history`,
+  );
+}
+
 export function terminateUserSession(
   userId: string,
   sessionId: string,

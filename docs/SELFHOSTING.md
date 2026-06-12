@@ -723,6 +723,18 @@ RATE_LIMIT_GLOBAL_PER_IP=600   # max requests per window
 RATE_LIMIT_GLOBAL_WINDOW=60    # window in seconds
 ```
 
+### Per-user hit history
+
+When a rate-limit check blocks a request that can be attributed to a logged-in account, the hit (bucket, route, timestamp, IP) is recorded to a short-lived Redis list so an admin can see what that account has tripped recently (Admin -> Users -> Explain account). This is triage data, not analytics: it only records *blocked* checks, it is bounded per user, and it ages out on its own. Nothing is written to Postgres.
+
+```env
+RATE_LIMIT_HISTORY_ENABLED=true
+RATE_LIMIT_HISTORY_HOURS=48          # retention window
+RATE_LIMIT_HISTORY_MAX_ENTRIES=200   # cap per user
+```
+
+Set `RATE_LIMIT_HISTORY_ENABLED=false` to record nothing new; anything recorded before the switch remains visible until its retention TTL lapses. Anonymous traffic (failed logins from logged-out clients, the global per-IP backstop) is not attributable to an account and is never recorded here - the Prometheus metrics cover those in aggregate.
+
 ### Trusted proxies
 
 When Sheaf sits behind a reverse proxy, the connecting IP is the proxy, not the client. Set `TRUSTED_PROXIES` to trust `X-Forwarded-For` headers from specific IPs:
