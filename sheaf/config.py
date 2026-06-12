@@ -178,7 +178,16 @@ class Settings(BaseSettings):
     file_url_expiry_seconds: int = 3600
 
     # Email
-    email_backend: str = "none"  # "none", "smtp", or "ses"
+    email_backend: str = "none"  # "none", "smtp", "ses", or "sendgrid"
+
+    # Soft-bounce tolerance. A soft bounce is transient (greylisting, full
+    # mailbox, temporary MTA failure) and routinely a false positive - our
+    # own rspamd greylist trips it on the first delivery attempt. So a
+    # single soft bounce must NOT block mail: the address is only flagged
+    # undeliverable once `email_soft_bounce_count` reaches this threshold
+    # without an intervening successful delivery (which resets the count).
+    # A `delivered` provider event clears the soft state entirely.
+    email_soft_bounce_threshold: int = 5
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

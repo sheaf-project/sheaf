@@ -217,7 +217,27 @@ Configure a [SendGrid Event Webhook](https://docs.sendgrid.com/for-developers/tr
 SENDGRID_WEBHOOK_SECRET=your-random-secret-here
 ```
 
-When configured, Sheaf automatically handles bounce, block, drop, deferred, and spam complaint events. When `SENDGRID_WEBHOOK_SECRET` is empty, the webhook endpoint returns 404.
+When configured, Sheaf automatically handles bounce, block, drop, deferred, spam complaint, and delivered events. When `SENDGRID_WEBHOOK_SECRET` is empty, the webhook endpoint returns 404.
+
+Enable the **Delivered** event in the SendGrid Event Webhook event selection (alongside the bounce/drop/spam events), not just the failure events. Sheaf uses a successful delivery to clear transient soft-bounce state, so without it a greylisted first attempt can leave an address flagged even after the retry delivers. See [Deliverability state](#deliverability-state) below.
+
+### Deliverability state
+
+Bounce and complaint feedback (SES queue or SendGrid webhook above) drives a per-account deliverability state that gates outgoing mail. It is a recoverable lifecycle, not a one-way block:
+
+- **Soft bounces are tolerated.** A soft bounce is transient - greylisting (e.g. an rspamd-based MX defers the first attempt), a full mailbox, a momentary MTA failure. A single one never blocks mail. An address is only flagged undeliverable after `EMAIL_SOFT_BOUNCE_THRESHOLD` soft bounces accumulate *without* an intervening successful delivery, which resets the count.
+
+  ```env
+  EMAIL_SOFT_BOUNCE_THRESHOLD=5   # consecutive soft bounces before an address is flagged
+  ```
+
+- **A delivery self-heals soft state.** A `delivered`/successful-delivery event clears soft-bounce state back to healthy, so the greylist-then-retry pattern recovers on its own. (It deliberately does not clear a hard bounce or a spam complaint - those are cleared only by the user re-verifying.)
+
+- **Hard bounces and complaints block immediately** and flag the account for revalidation.
+
+- **Users are never silently locked out.** When an address is flagged, the user sees a banner on sign-in prompting them to re-verify or change their email. Re-verifying (the verification email is sent even to a currently-blocked address) clears the block. No admin intervention or manual database edit is required.
+
+If you run plain SMTP (`EMAIL_BACKEND=smtp`) with no bounce-feedback channel wired up, no addresses are ever auto-flagged - the deliverability gate simply never trips. Wire your provider's webhook/feedback into the SES or SendGrid handlers if you want bounce suppression on SMTP.
 
 ### Disabling email
 

@@ -276,7 +276,12 @@ async def _send_verification_email(db: AsyncSession, user: "User", email: str) -
 
     subject, html, text = verification_email(token)
     try:
-        await send_email(email, subject, html, text, kind="verification")
+        # force=True: verification is the sanctioned recovery channel for
+        # a flagged address, so it must bypass the deliverability gate -
+        # otherwise a user whose mail is blocked could never receive the
+        # very link that clears the block (the lockout this whole flow
+        # exists to prevent).
+        await send_email(email, subject, html, text, kind="verification", force=True)
     except Exception:
         logger.exception("Failed to send verification email to user %s", user.id)
 
@@ -444,6 +449,13 @@ async def verify_email(
     user.email_verified = True
     user.email_verification_token = None
     user.email_verification_sent_at = None
+    # Completing verification proves the user controls and can receive at
+    # this address, so it clears any deliverability block (hard bounce,
+    # complaint, or soft-threshold). This is the escape hatch from the
+    # otherwise-permanent lockout a flagged address would cause.
+    from sheaf.services.email_events import clear_delivery_state
+
+    clear_delivery_state(user)
     await db.commit()
     return {"verified": True}
 
@@ -464,6 +476,58 @@ async def resend_verification(
     if user.email_verification_sent_at is not None:
         age = (datetime.now(UTC) - user.email_verification_sent_at).total_seconds()
         if age < 1200:  # 20 minutes between resends
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Please wait before requesting another verification email",
+            )
+
+    email = decrypt(user.email)
+    await _send_verification_email(db, user, email)
+    await db.commit()
+    return {"sent": True}
+
+
+@router.post(
+    "/revalidate-email",
+    dependencies=[rate_limit(3, 3600, "user", fail_closed=True)],
+)
+async def revalidate_email(
+    user: User = Depends(get_current_user_allow_unverified),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-send a verification link to clear a deliverability block.
+
+    For a signed-in user whose current address has been flagged
+    undeliverable (hard bounce, complaint, or the soft-bounce
+    threshold). The verification send uses force=True so it reaches the
+    blocked address, and completing the link clears the block (see
+    verify_email + clear_delivery_state). This is the self-service exit
+    from what would otherwise be a permanent, admin-only lockout.
+
+    Refuses with 400 when the address isn't flagged, so it can't be used
+    as an unmetered mail trigger; throttled the same way as
+    resend-verification on top of the per-user rate limit.
+    """
+    from sheaf.models.user import EmailDeliveryStatus
+
+    if settings.email_backend == "none":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email sending is not configured",
+        )
+
+    if (
+        user.email_delivery_status == EmailDeliveryStatus.OK
+        and not user.email_revalidation_required
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is not flagged for revalidation",
+        )
+
+    if user.email_verification_sent_at is not None:
+        age = (datetime.now(UTC) - user.email_verification_sent_at).total_seconds()
+        if age < 1200:  # 20 minutes between resends, same as resend-verification
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Please wait before requesting another verification email",
@@ -786,6 +850,13 @@ async def change_email(
     user.email_verified = False
     user.email_verification_token = None
     user.email_verification_sent_at = None
+    # A new address starts with a clean deliverability slate - the old
+    # address's bounce/complaint history doesn't apply to it. Without
+    # this, the row's stale block would (since the gate keys on the
+    # row's current hash) silently drop mail to the new address too.
+    from sheaf.services.email_events import clear_delivery_state
+
+    clear_delivery_state(user)
 
     verification_sent = False
     if settings.email_backend != "none":
