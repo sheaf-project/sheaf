@@ -18,6 +18,7 @@ class MemberCreate(BaseModel):
     description: str | None = None
     pronouns: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = Field(default=None, max_length=500)
+    banner_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     birthday: str | None = Field(default=None, max_length=10)
     pluralkit_id: str | None = Field(default=None, max_length=8)
@@ -27,7 +28,9 @@ class MemberCreate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
     quick_switch_pin: int | None = Field(default=None, ge=0)
 
-    @field_validator("avatar_url", mode="before")
+    # banner_url shares the avatar normaliser: both are image storage keys /
+    # external URLs with the same allow_external_images gate.
+    @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:
         return normalize_avatar_url(v)
@@ -44,6 +47,7 @@ class MemberUpdate(BaseModel):
     description: str | None = None
     pronouns: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = Field(default=None, max_length=500)
+    banner_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     birthday: str | None = Field(default=None, max_length=10)
     pluralkit_id: str | None = Field(default=None, max_length=8)
@@ -54,7 +58,7 @@ class MemberUpdate(BaseModel):
     # Explicit null clears the pin (unpins); omitted leaves it untouched.
     quick_switch_pin: int | None = Field(default=None, ge=0)
 
-    @field_validator("avatar_url", mode="before")
+    @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:
         return normalize_avatar_url(v)
@@ -91,6 +95,7 @@ class MemberRead(BaseModel):
     description: str | None
     pronouns: str | None
     avatar_url: str | None
+    banner_url: str | None
     color: str | None
     birthday: str | None
     pluralkit_id: str | None
@@ -114,7 +119,7 @@ class MemberRead(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_serializer("avatar_url")
+    @field_serializer("avatar_url", "banner_url")
     def _sign_avatar_url(self, v: str | None) -> str | None:
         return resolve_avatar_url(v)
 

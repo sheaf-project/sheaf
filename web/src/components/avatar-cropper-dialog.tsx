@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Cropper from "react-easy-crop";
 import type { Area } from "react-easy-crop";
+import { RotateCcw, RotateCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,12 +19,31 @@ import { Label } from "@/components/ui/label";
 // the upload payload sensible without losing user-visible quality.
 const MAX_OUTPUT_DIM = 1024;
 
+const clampRotation = (v: number): number => Math.max(-180, Math.min(180, v));
+
+// Quarter-turn buttons: jump to the next multiple of 90 in each direction.
+// The +/-1 nudge means landing exactly on a multiple advances to the next one
+// rather than sticking. The slider itself stays free for fine adjustment.
+const rotateToPrev90 = (r: number): number =>
+  clampRotation(Math.floor((r - 1) / 90) * 90);
+const rotateToNext90 = (r: number): number =>
+  clampRotation(Math.ceil((r + 1) / 90) * 90);
+
 interface AvatarCropperDialogProps {
   open: boolean;
   file: File | null;
   aspect?: number;          // 1 for avatars; undefined => freeform
   cropShape?: "round" | "rect";
   outputMime?: "image/png" | "image/jpeg" | "image/webp";
+  // Smallest zoom (1 = "cover" the frame). Below 1 the image can shrink
+  // inside the frame, letterboxing, so the crop can include the whole image.
+  // Defaults below 1 so any crop (round avatar, rect embed, banner) can zoom
+  // out to fit the whole image rather than forcing the corners/edges off.
+  minZoom?: number;
+  // When false, the image can be panned so the crop frame reaches past its
+  // edges (the overflow renders transparent). Off by default so a crop can go
+  // right to the edge of an image whose ratio doesn't match the frame.
+  restrictPosition?: boolean;
   onConfirm: (cropped: Blob) => void;
   onCancel: () => void;
 }
@@ -34,6 +54,8 @@ export function AvatarCropperDialog({
   aspect = 1,
   cropShape = "round",
   outputMime = "image/png",
+  minZoom = 0.1,
+  restrictPosition = false,
   onConfirm,
   onCancel,
 }: AvatarCropperDialogProps) {
@@ -116,6 +138,8 @@ export function AvatarCropperDialog({
               aspect={aspect}
               cropShape={cropShape}
               showGrid={cropShape === "rect"}
+              minZoom={minZoom}
+              restrictPosition={restrictPosition}
               onCropChange={setCrop}
               onCropComplete={onCropComplete}
               onZoomChange={setZoom}
@@ -129,7 +153,7 @@ export function AvatarCropperDialog({
             <Label className="text-xs text-muted-foreground">Zoom</Label>
             <input
               type="range"
-              min={1}
+              min={minZoom}
               max={4}
               step={0.01}
               value={zoom}
@@ -140,16 +164,40 @@ export function AvatarCropperDialog({
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Rotation</Label>
-            <input
-              type="range"
-              min={-180}
-              max={180}
-              step={1}
-              value={rotation}
-              onChange={(e) => setRotation(Number(e.target.value))}
-              className="w-full accent-primary"
-              aria-label="Rotation"
-            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={() => setRotation(rotateToPrev90(rotation))}
+                title="Rotate 90 left"
+                aria-label="Rotate 90 degrees left"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </Button>
+              <input
+                type="range"
+                min={-180}
+                max={180}
+                step={1}
+                value={rotation}
+                onChange={(e) => setRotation(Number(e.target.value))}
+                className="w-full accent-primary"
+                aria-label="Rotation"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={() => setRotation(rotateToNext90(rotation))}
+                title="Rotate 90 right"
+                aria-label="Rotate 90 degrees right"
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
         </div>
 

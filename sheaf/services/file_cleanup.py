@@ -68,15 +68,16 @@ async def find_orphaned_files(
     for (avatar_url,) in result:
         referenced.update(_key_from_avatar(avatar_url))
 
-    # Member avatars and bios
+    # Member avatars, banners, and bios
     result = await db.execute(
-        select(Member.avatar_url, Member.description)
+        select(Member.avatar_url, Member.banner_url, Member.description)
         .join(System)
         .join(User)
         .where(User.id == user_id)
     )
-    for avatar_url, description in result:
+    for avatar_url, banner_url, description in result:
         referenced.update(_key_from_avatar(avatar_url))
+        referenced.update(_key_from_avatar(banner_url))
         # Member.description is encrypted at rest; decrypt for the markdown
         # scan. This runs in the app container which has the key.
         if description is not None:
@@ -169,6 +170,13 @@ async def find_file_references(
             refs.append({
                 "kind": "member_avatar",
                 "label": f"{name}'s avatar",
+                "target_type": "member",
+                "target_id": str(m.id),
+            })
+        if m.banner_url == key:
+            refs.append({
+                "kind": "member_banner",
+                "label": f"{name}'s banner",
                 "target_type": "member",
                 "target_id": str(m.id),
             })

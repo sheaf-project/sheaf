@@ -18,6 +18,7 @@ import { listTags } from "@/lib/tags";
 import { getNotifySettings, setNotifySettings } from "@/lib/messages";
 import { getSystemSafety } from "@/lib/system-safety";
 import { AvatarUpload } from "@/components/avatar-upload";
+import { BannerUpload } from "@/components/banner-upload";
 import { Badge } from "@/components/ui/badge";
 import { ColorDot } from "@/components/color-dot";
 import { ContentRevisionList } from "@/components/content-revision-list";
@@ -76,6 +77,7 @@ function MemberForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
   const [avatarUrl, setAvatarUrl] = useState(initial?.avatar_url ?? null);
+  const [bannerUrl, setBannerUrl] = useState(initial?.banner_url ?? null);
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? "");
   const [color, setColor] = useState(initial?.color ?? "#6366f1");
   const [description, setDescription] = useState(initial?.description ?? "");
@@ -98,6 +100,7 @@ function MemberForm({
       name,
       display_name: displayName || null,
       avatar_url: avatarUrl,
+      banner_url: bannerUrl,
       pronouns: pronouns || null,
       color: color || null,
       description: description || null,
@@ -119,6 +122,14 @@ function MemberForm({
         onUpload={setAvatarUrl}
         onRemove={() => setAvatarUrl(null)}
       />
+      <div className="space-y-2">
+        <Label>Banner</Label>
+        <BannerUpload
+          url={bannerUrl}
+          onUpload={setBannerUrl}
+          onRemove={() => setBannerUrl(null)}
+        />
+      </div>
       <div className="space-y-2">
         <Label htmlFor="member-name">Name</Label>
         <Input id="member-name" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -179,6 +190,7 @@ function MemberForm({
             value={birthday}
             onChange={setBirthday}
             placeholder="Birthday"
+            noYearLabel="No birth year"
           />
         </div>
       </div>
@@ -976,6 +988,13 @@ function MemberView({
           </div>
         </DialogHeader>
         <div className="space-y-4">
+          {member.banner_url && (
+            <img
+              src={member.banner_url}
+              alt=""
+              className="aspect-[3/1] w-full rounded-md object-cover"
+            />
+          )}
           {/* Header: avatar + name + pronouns */}
           <div className="flex items-center gap-4">
             <Avatar className="size-16">
@@ -1253,11 +1272,21 @@ function MemberGrid({
         <Card
           key={m.id}
           className={cn(
-            "cursor-pointer transition-colors hover:bg-accent/50",
+            "cursor-pointer overflow-hidden transition-colors hover:bg-accent/50",
+            // Banner sits flush to the card's top edge: drop the card's top
+            // padding and the flex gap so it isn't inset below them.
+            m.banner_url && "gap-0 pt-0",
             m.pending_delete_at && "opacity-60",
           )}
           onClick={() => onView(m)}
         >
+          {m.banner_url && (
+            <img
+              src={m.banner_url}
+              alt=""
+              className="aspect-[3/1] w-full object-cover"
+            />
+          )}
           <CardContent className="flex items-center gap-3 p-4">
             <Avatar>
               {m.avatar_url && <AvatarImage src={m.avatar_url} />}

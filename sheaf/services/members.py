@@ -82,6 +82,7 @@ def decrypt_member_for_read(
         "description": member_description_plaintext(member),
         "pronouns": member.pronouns,
         "avatar_url": member.avatar_url,
+        "banner_url": member.banner_url,
         "color": member.color,
         "birthday": member.birthday,
         "pluralkit_id": member.pluralkit_id,

@@ -6,9 +6,19 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Member banner photo.** Members now have an optional wide header image (`banner_url`) alongside their avatar, shown across the top of the member profile. It rides the same upload pipeline and trust model as avatars: upload-and-crop (landscape 3:1) or paste an external URL, gated by the same instance image-upload and external-image policies, stored as a bare key and signed on read. Banners are included in the data export, round-trip through native re-import and the with-images archive, and are tracked by the orphaned-file cleanup and the "where is this image used?" view so a banner blob is never garbage-collected while still referenced.
+
+### Changed
+
+- **Image cropper: edge-to-edge crops and quarter-turn buttons.** Every crop surface that shares the dialog - avatars, bio and journal image embeds, and the new member banner - can now zoom out and pan past the image edges, so a fixed-aspect crop (the round avatar, the 3:1 banner) can include the whole of an image whose ratio doesn't match, letterboxed, instead of forcing the corners or sides off. The rotation control also gained rotate-left / rotate-right buttons that snap to the nearest 90 degrees, alongside the free slider for fine angles.
+
 ### Fixed
 
 - **Route labels in metrics and rate-limit history dropped the `/v1` prefix.** Starlette 1.0 changed `request.scope["route"].path` to be relative to the outermost prefixed router (reporting `/members/{id}` instead of `/v1/members/{id}`) without moving the prefix into `root_path`, which silently relabelled every `sheaf_http_requests_total` series and rate-limit bucket and made the per-account rate-limit history record routes without their prefix. A shared `route_template()` helper now reconstructs the full template (keeping path params as placeholders so cardinality stays bounded), used by both the metrics middleware and the rate-limit middleware.
+- **Custom-field date "No year" label.** The optional-year checkbox on a date custom field read "No birth year", borrowed from the member Birthday field; it now reads "No year" everywhere except the Birthday field, which keeps its specific wording.
+- **Export build worker no longer spins the job loop every 10s.** The pending-export poll interval defaulted to 10 seconds (with a mislabelled comment), and because the background job runner wakes at the smallest registered interval, that held the whole registry to a 10-second tick. Exports are a deferred build-then-download/email flow, so the default is now 60 seconds, cutting idle wakeups across all background jobs. Override with `EXPORT_BUILD_INTERVAL_SECONDS`.
 
 ## [1.0.1] - 2026-06-12
 

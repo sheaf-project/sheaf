@@ -95,6 +95,7 @@ CLASSIFICATION: dict[type, dict] = {
     Member: {
         "exported": {
             "name", "display_name", "description", "pronouns", "avatar_url",
+            "banner_url",
             "color", "birthday", "pluralkit_id", "emoji", "is_custom_front",
             "privacy", "note", "quick_switch_pin", "created_at",
             "notify_on_front_global", "notify_on_front_self",

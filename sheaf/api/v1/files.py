@@ -123,7 +123,7 @@ def _effective_size_limit_mb(purpose: str) -> int:
 )
 async def upload_file(
     file: UploadFile,
-    purpose: str = Query(default="avatar", pattern="^(avatar|bio)$"),
+    purpose: str = Query(default="avatar", pattern="^(avatar|bio|banner)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -223,7 +223,7 @@ async def upload_file(
     # Server-derived extension + content-type from validated MIME. Never
     # trust file.filename or file.content_type for the stored object.
     ext = _MIME_EXT[actual_mime]
-    prefix = "bios" if purpose == "bio" else "avatars"
+    prefix = {"bio": "bios", "banner": "banners"}.get(purpose, "avatars")
     key = f"{prefix}/{user.id}/{uuid.uuid4().hex}.{ext}"
 
     storage = get_storage()

@@ -23,11 +23,13 @@ export function DatePicker({
   onChange,
   placeholder = "Pick a date",
   includeYear = true,
+  noYearLabel = "No year",
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   includeYear?: boolean;
+  noYearLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [yearOptional, setYearOptional] = useState(!includeYear || !!(value && !value.includes("-", 3)));
@@ -87,7 +89,7 @@ export function DatePicker({
           onChange={(e) => setYearOptional(e.target.checked)}
           className="rounded"
         />
-        No birth year
+        {noYearLabel}
       </label>
       <p className="text-xs text-muted-foreground">
         Format: {yearOptional ? "MM-DD" : "YYYY-MM-DD"}

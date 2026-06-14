@@ -462,6 +462,12 @@ async def run_import(
                 ),
                 500,
             ),
+            banner_url=_trunc(
+                rewrite_internal_avatar_url(
+                    m_data.get("banner_url"), _ikm, member_used
+                ),
+                500,
+            ),
             color=_trunc(m_data.get("color"), 7),
             birthday=_trunc(m_data.get("birthday"), 10),
             pluralkit_id=_trunc(m_data.get("pluralkit_id"), 8),

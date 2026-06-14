@@ -240,6 +240,7 @@ def collect_image_references(data: dict) -> dict[str, list[str]]:
             continue
         mid = m_data.get("id", "?")
         _from_url(m_data.get("avatar_url"), f"member {mid} avatar")
+        _from_url(m_data.get("banner_url"), f"member {mid} banner")
         for fld in _MD_FIELDS_MEMBER:
             _from_md(m_data.get(fld), f"member {mid} {fld}")
 
