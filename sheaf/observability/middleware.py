@@ -30,17 +30,37 @@ def _status_class(status: int) -> str:
     return f"{status // 100}xx"
 
 
-def _route_template(request: Request) -> str:
-    """Return the Starlette route template, or '<unmatched>'.
+def route_template(request: Request) -> str:
+    """Return the full matched route template, e.g. '/v1/members/{id}'.
 
-    `request.scope["route"]` is set by Starlette's router after the
-    route resolves. If we get here without a match (404), there's no
-    template — collapse to a single label so URL scanners can't
-    explode cardinality.
+    `request.scope["route"]` is set by Starlette's router after the route
+    resolves. If we get here without a match (404), there's no template -
+    collapse to a single label so URL scanners can't explode cardinality.
+
+    Starlette 1.0 changed `route.path` to be relative to the outermost
+    prefixed router: a route under `APIRouter(prefix="/v1")` reports
+    "/members/{id}", not "/v1/members/{id}", and the dropped prefix is NOT
+    moved into root_path. Left as-is that silently relabels every metric and
+    rate-limit bucket without the "/v1" prefix. Reconstruct the full template
+    by prepending the leading segments of the real request path that the
+    relative template omits, keeping the path params templated so cardinality
+    stays bounded.
     """
     route = request.scope.get("route")
-    path = getattr(route, "path", None)
-    return path or "<unmatched>"
+    tmpl = getattr(route, "path", None)
+    if not tmpl:
+        return "<unmatched>"
+    real = request.scope.get("path") or request.url.path
+    real_segs = [s for s in real.split("/") if s]
+    tmpl_segs = [s for s in tmpl.split("/") if s]
+    missing = len(real_segs) - len(tmpl_segs)
+    if missing > 0:
+        return "/" + "/".join(real_segs[:missing]) + tmpl
+    return tmpl
+
+
+# Backwards-compatible private alias (kept so existing imports don't break).
+_route_template = route_template
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):

@@ -4,6 +4,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 `v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
+## [Unreleased]
+
+### Fixed
+
+- **Route labels in metrics and rate-limit history dropped the `/v1` prefix.** Starlette 1.0 changed `request.scope["route"].path` to be relative to the outermost prefixed router (reporting `/members/{id}` instead of `/v1/members/{id}`) without moving the prefix into `root_path`, which silently relabelled every `sheaf_http_requests_total` series and rate-limit bucket and made the per-account rate-limit history record routes without their prefix. A shared `route_template()` helper now reconstructs the full template (keeping path params as placeholders so cardinality stays bounded), used by both the metrics middleware and the rate-limit middleware.
+
 ## [1.0.1] - 2026-06-12
 
 ### Added
