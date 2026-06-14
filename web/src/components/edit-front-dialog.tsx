@@ -42,6 +42,7 @@ export function EditFrontDialog({
   onSaved?: () => void;
 }) {
   const updateFront = useUpdateFront();
+  const [error, setError] = useState("");
 
   // Reinit the form on the open transition without useEffect (lint
   // blocks setState-in-effect). Tracking which front the form was
@@ -71,12 +72,32 @@ export function EditFrontDialog({
       reopen: false,
       customStatus: front.custom_status ?? "",
     });
+    setError("");
   } else if (!front && draft.fromFrontId !== null) {
     setDraft((d) => ({ ...d, fromFrontId: null }));
   }
 
   function handleSave() {
     if (!front) return;
+
+    // Validate the *effective* resulting times before sending. A
+    // datetime-local that the browser couldn't represent (e.g. an
+    // impossible date like 31 April) comes through empty; without this
+    // check the empty start would be silently omitted from the PATCH
+    // while ended_at still goes, leaving an end before the unchanged
+    // start that the server rejects with a generic 400. Catch it here
+    // with a precise message instead.
+    if (!draft.startedAt) {
+      setError("A start time is required.");
+      return;
+    }
+    const effEnded = draft.reopen ? "" : draft.endedAt;
+    if (effEnded && new Date(effEnded) < new Date(draft.startedAt)) {
+      setError("The end time can't be before the start time.");
+      return;
+    }
+    setError("");
+
     const body: {
       started_at?: string;
       ended_at?: string | null;
@@ -177,6 +198,11 @@ export function EditFrontDialog({
           </div>
         </div>
 
+        <p className="text-xs text-muted-foreground">
+          Times are in your device's local timezone, in the date format your
+          browser uses.
+        </p>
+
         {front?.ended_at && (
           <div className="flex items-center gap-2">
             <Checkbox
@@ -213,6 +239,8 @@ export function EditFrontDialog({
             maxLength={500}
           />
         </div>
+
+        {error && <p className="text-sm text-destructive">{error}</p>}
 
         <DialogFooter>
           <Button
