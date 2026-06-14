@@ -31,6 +31,7 @@ from starlette.responses import JSONResponse
 
 from sheaf.config import settings
 from sheaf.observability.metrics import rate_limit_checks_total
+from sheaf.observability.middleware import route_template
 
 logger = logging.getLogger("sheaf.ratelimit")
 
@@ -268,10 +269,12 @@ def rate_limit(
 
         allowed, remaining, reset = await _check_limit(r, redis_key, limit)
 
-        # Bucket is derived from the matched route template when available
-        # so per-instance path noise doesn't bloat label cardinality.
-        route_obj = request.scope.get("route")
-        bucket = _route_to_bucket(getattr(route_obj, "path", None) or route)
+        # Bucket is derived from the matched route template (with path params
+        # left as placeholders) so per-instance path noise doesn't bloat label
+        # cardinality. route_template restores the "/v1" prefix Starlette 1.0
+        # drops from route.path.
+        full_route = route_template(request)
+        bucket = _route_to_bucket(full_route)
         scope_label = "per_user" if (key == "user" and identifier.startswith("user:")) else "per_ip"
         rate_limit_checks_total.labels(
             bucket=bucket,
@@ -292,7 +295,7 @@ def rate_limit(
                         hit_user_id,
                         bucket=bucket,
                         scope=scope_label,
-                        route=getattr(route_obj, "path", None) or route,
+                        route=full_route,
                         ip=_client_ip(request),
                     )
                 except Exception:
