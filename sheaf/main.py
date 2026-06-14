@@ -5,7 +5,10 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf import __version__
@@ -180,6 +183,55 @@ async def body_too_large_handler(
     return JSONResponse(
         status_code=413,
         content={"detail": f"Request body too large. Max: {mb}MB"},
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    # Log the reason for every deliberate client/server error so a bare
+    # status code in the access log can be traced to *why* without
+    # reproducing. `exc.detail` is the same user-facing string already
+    # returned in the body; no request body or secrets are logged. 5xx is
+    # surfaced at WARNING, 4xx at INFO (filter-friendly on a busy public
+    # instance where 401/404 probes are routine). The response is byte-for-
+    # byte the FastAPI default, headers included.
+    if exc.status_code >= 500:
+        logger.warning(
+            "%s %s -> %d: %s",
+            request.method, request.url.path, exc.status_code, exc.detail,
+        )
+    elif exc.status_code >= 400:
+        logger.info(
+            "%s %s -> %d: %s",
+            request.method, request.url.path, exc.status_code, exc.detail,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    # 422s are request-shape mismatches. Log the field locations, messages,
+    # and error types - deliberately NOT the submitted `input` values, which
+    # can carry user data - so a malformed client request is diagnosable. The
+    # response body keeps the FastAPI default shape (which does include the
+    # inputs, same as before this handler existed).
+    safe = [
+        {"loc": e.get("loc"), "msg": e.get("msg"), "type": e.get("type")}
+        for e in exc.errors()
+    ]
+    logger.info(
+        "%s %s -> 422 validation: %s", request.method, request.url.path, safe
+    )
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(exc.errors())}
     )
 
 
