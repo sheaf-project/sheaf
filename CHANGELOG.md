@@ -4,6 +4,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 `v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
+## [Unreleased]
+
+### Fixed
+
+- **Clearer errors when browser-push subscription fails.** When a recipient subscribes to web push, the browser's own `pushManager.subscribe()` can fail with an opaque message (e.g. Chrome's "Registration failed - push service error") if it can't reach its push backend - and the redeem page showed that raw string with nothing logged for debugging. The page now logs the full exception to the console, maps the common failures to actionable guidance ("permission was denied", "your browser couldn't reach its push service - check that notifications or Google Play services aren't blocked"), and refuses to attempt a keyless subscribe when the server's VAPID key can't be loaded (which produced that same opaque error) in favour of a clear "couldn't load the push key" message.
+
 ## [1.0.2] - 2026-06-14
 
 ### Added

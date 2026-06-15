@@ -52,7 +52,9 @@ async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
   if (existing) return existing;
 
   // Pull the deployment's VAPID public key from /v1/version. Browsers
-  // reject subscribe() without applicationServerKey.
+  // reject subscribe() without applicationServerKey, and Chrome's failure
+  // for a missing/undefined key is the opaque "Registration failed - push
+  // service error", so guard it explicitly with a clearer message.
   let appKey: BufferSource | undefined;
   try {
     const resp = await fetch("/v1/version");
@@ -63,13 +65,37 @@ async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
       }
     }
   } catch {
-    // ignore; fall through
+    // ignore; handled by the missing-key check below
+  }
+  if (!appKey) {
+    throw new Error(
+      "Couldn't load this server's push key. Refresh and try again; if it " +
+        "keeps failing, web push may not be configured on this instance.",
+    );
   }
 
   return reg.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: appKey,
   });
+}
+
+// The browser's own push-subscription failures surface as opaque DOMException
+// messages (e.g. Chrome's "Registration failed - push service error"). Map the
+// common ones to something actionable; fall back to the raw message otherwise.
+function pushErrorMessage(exc: unknown): string {
+  if (!(exc instanceof Error)) return String(exc);
+  const name = (exc as { name?: string }).name;
+  if (name === "NotAllowedError") {
+    return "Notification permission was denied. Allow notifications for this site, then try again.";
+  }
+  if (name === "AbortError" || /push service/i.test(exc.message)) {
+    return (
+      "Your browser couldn't reach its push service. Check that notifications " +
+      "(and Google Play services, on Android) aren't blocked or offline, then try again."
+    );
+  }
+  return exc.message;
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
@@ -161,10 +187,11 @@ export function NotificationsRedeemPage() {
         managementUrl: resp.management_url,
       });
     } catch (exc) {
-      setPhase({
-        kind: "error",
-        message: exc instanceof Error ? exc.message : String(exc),
-      });
+      // The browser's push failures are opaque and otherwise leave nothing to
+      // debug, so log the raw exception (name + stack) to the console and show
+      // a mapped, actionable message in the UI.
+      console.error("Web push subscription failed:", exc);
+      setPhase({ kind: "error", message: pushErrorMessage(exc) });
     }
   }
 
