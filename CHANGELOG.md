@@ -4,7 +4,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 `v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
-## [Unreleased]
+## [1.0.2] - 2026-06-14
 
 ### Added
 
