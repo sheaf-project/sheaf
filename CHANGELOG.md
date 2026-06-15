@@ -4,6 +4,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 `v1.0.0` is the first stable release. The `v0.x.y` releases were betas; from 1.0 on, the v1 API and database schema carry semver compatibility guarantees.
 
+## [Unreleased]
+
+### Fixed
+
+- **Member banners 403 behind the image worker.** Banner images are stored under a new `banners/` storage prefix (added in 1.0.2), but the bundled `selfhost-utils/cf-image-worker` allowlist (`ALLOWED_KEY_PREFIXES`) still only permitted `avatars/,bios/`, so the worker rejected every banner with a 403 before reaching S3. The bundled default now includes `banners/`. **Selfhost operators running the image worker must add `banners/` to their `ALLOWED_KEY_PREFIXES`** (redeploy the worker) for member banners to load.
+
 ## [1.0.2] - 2026-06-14
 
 ### Added

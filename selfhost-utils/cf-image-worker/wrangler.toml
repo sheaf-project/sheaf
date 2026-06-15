@@ -13,8 +13,8 @@ S3_REGION = "us-east-1"
 S3_ENDPOINT = ""
 # Optional whitelist — only keys starting with one of these prefixes are
 # served. Comma-separated. Leave unset to allow any key the token validates.
-# Recommended: "avatars/,bios/"
-ALLOWED_KEY_PREFIXES = "avatars/,bios/"
+# Recommended: "avatars/,bios/,banners/"
+ALLOWED_KEY_PREFIXES = "avatars/,bios/,banners/"
 
 # Secrets below are set via `wrangler secret put <NAME>`, not here.
 # Required secrets:
