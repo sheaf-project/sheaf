@@ -840,7 +840,13 @@ async def send_test(
     # otherwise clicking "send test" silently muted real front-change events
     # for the next debounce_seconds window, which looked like a missing-
     # notification bug.
-    outcome = await deliver(channel, message, event_id=str(uuid.uuid4()))
+    # Pass the request's db session: mobile-push (FCM/APNs) channels fan out
+    # over push_device_tokens and need it; without it the handler fails with
+    # "called without a db session". owner_user_id/tier stay None - test sends
+    # deliberately skip Pushover's per-user monthly cap (see deliver()).
+    outcome = await deliver(
+        channel, message, event_id=str(uuid.uuid4()), db=db
+    )
     return TestDispatchResponse(delivered=outcome.ok, error=outcome.error)
 
 

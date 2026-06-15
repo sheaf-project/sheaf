@@ -394,3 +394,17 @@ def test_channel_metadata_threaded_to_send_to_token(auth_client, monkeypatch):
         assert call["channel_name"] == "phone"
         # event_type defaults to "front_change" on creation.
         assert call["event_type"] == "front_change"
+
+
+def test_send_test_passes_db_to_mobile_handler(auth_client):
+    """Regression: the send-test endpoint must pass its DB session through to
+    the mobile-push handler, which fans out over push_device_tokens. Without
+    it the handler returned a transient 'called without a db session' and the
+    test send failed. A redeemed channel with no devices is a clean no-op
+    success, which still exercises the DB lookup path the bug skipped."""
+    channel_id, _ = _setup_channel_with_devices(auth_client, devices=[])
+    r = auth_client.post(f"/v1/channels/{channel_id}/test")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["delivered"] is True, body
+    assert not body.get("error"), body
