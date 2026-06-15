@@ -80,6 +80,10 @@ class Member(UUIDMixin, TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     pronouns: Mapped[str | None] = mapped_column(String(100), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Wide header image for the member profile. Same storage/trust model as
+    # avatar_url (bare storage key or external URL, gated by
+    # allow_external_images); differs only in aspect ratio at the UI layer.
+    banner_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     # Stored as "MM-DD" or "YYYY-MM-DD" to support year-optional birthdays
     birthday: Mapped[str | None] = mapped_column(String(10), nullable=True)

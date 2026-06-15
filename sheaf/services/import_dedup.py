@@ -68,6 +68,7 @@ _OVERWRITE_IF_SET = (
     "description",
     "pronouns",
     "avatar_url",
+    "banner_url",
     "color",
     "birthday",
     "pluralkit_id",

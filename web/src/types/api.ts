@@ -98,6 +98,7 @@ export interface Member {
   description: string | null;
   pronouns: string | null;
   avatar_url: string | null;
+  banner_url: string | null;
   color: string | null;
   birthday: string | null;
   pluralkit_id: string | null;
@@ -131,6 +132,7 @@ export interface MemberCreate {
   description?: string | null;
   pronouns?: string | null;
   avatar_url?: string | null;
+  banner_url?: string | null;
   color?: string | null;
   birthday?: string | null;
   pluralkit_id?: string | null;
@@ -147,6 +149,7 @@ export interface MemberUpdate {
   description?: string | null;
   pronouns?: string | null;
   avatar_url?: string | null;
+  banner_url?: string | null;
   color?: string | null;
   birthday?: string | null;
   pluralkit_id?: string | null;

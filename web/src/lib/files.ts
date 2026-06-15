@@ -11,7 +11,7 @@ interface UploadResponse {
   animated: boolean;
 }
 
-export function uploadFile(file: File, purpose: "avatar" | "bio" = "avatar"): Promise<UploadResponse> {
+export function uploadFile(file: File, purpose: "avatar" | "bio" | "banner" = "avatar"): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
   return apiFetch<UploadResponse>(`/v1/files/upload?purpose=${purpose}`, {
@@ -61,6 +61,7 @@ export function listFiles() {
 export type FileReferenceKind =
   | "system_avatar"
   | "member_avatar"
+  | "member_banner"
   | "member_bio"
   | "journal"
   | "revision";

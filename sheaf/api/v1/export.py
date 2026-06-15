@@ -230,6 +230,7 @@ async def export_all(
                 "description": description,
                 "pronouns": m.pronouns,
                 "avatar_url": m.avatar_url,
+                "banner_url": m.banner_url,
                 "color": m.color,
                 "birthday": m.birthday,
                 "pluralkit_id": m.pluralkit_id,

@@ -538,8 +538,12 @@ class Settings(BaseSettings):
     export_job_ttl_hours: int = 72
     # How often the cleanup worker sweeps for expired jobs.
     export_cleanup_interval_seconds: int = 3600
-    # How many jobs the build worker processes per tick.
-    export_build_interval_seconds: int = 10
+    # How often the build worker polls for pending export jobs to assemble.
+    # Exports are a deferred "request now, download/email later" flow with no
+    # wake signal, so a minute of pickup latency is fine - and since the job
+    # runner wakes at the smallest registered interval, a tight value here
+    # spins the whole registry loop needlessly.
+    export_build_interval_seconds: int = 60
     # Where the build worker drops its temp zip while assembling.
     # Empty = use the system default (tempfile picks $TMPDIR or /tmp).
     # Set this when running on small root volumes or when the system
