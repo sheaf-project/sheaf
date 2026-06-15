@@ -89,6 +89,12 @@ export function DatePicker({
         />
         No birth year
       </label>
+      <p className="text-xs text-muted-foreground">
+        Format: {yearOptional ? "MM-DD" : "YYYY-MM-DD"}
+        {value && !date && (
+          <span className="text-destructive"> - that isn't a valid date</span>
+        )}
+      </p>
     </div>
   );
 }

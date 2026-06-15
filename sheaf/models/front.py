@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,4 +45,13 @@ class Front(UUIDMixin, Base):
         Index("ix_fronts_system_started", "system_id", "started_at"),
         # Fast lookup for "who is currently fronting" (ended_at IS NULL)
         Index("ix_fronts_system_current", "system_id", "ended_at"),
+        # A closed front can't end before it starts. The edit endpoint already
+        # checks this, but creation/import paths build Front rows directly and
+        # bypassed it - this is the mechanical backstop so a mis-ordered front
+        # can never be persisted (and then become un-editable). Added NOT VALID
+        # in the migration so pre-existing rows aren't retroactively rejected.
+        CheckConstraint(
+            "ended_at IS NULL OR ended_at >= started_at",
+            name="ck_fronts_ended_after_started",
+        ),
     )
