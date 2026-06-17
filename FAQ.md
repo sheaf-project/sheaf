@@ -22,9 +22,26 @@ Yes. Export your data from SimplyPlural, then use the import feature in Sheaf. Y
 
 Yes, both ways: upload a `pk;export` JSON file, or paste the token from `pk;token` to pull live from the PluralKit API. PK's switch log is converted into Sheaf's front-interval model, and each member's PK HID is stored on the imported member so you can keep cross-referencing between the two. Tokens are forwarded once and never stored. See [docs/IMPORT.md](docs/IMPORT.md) for details.
 
+### Can I import my data from other system trackers?
+
+Yes. Export your data, then use the import feature in Sheaf. You can choose exactly what to import — specific members, front history, custom fields, groups, etc.
+
+We currently support imports from:
+
+* Simply Plural
+* PluralKit
+* Tupperbox
+* Octocon and compatible forks
+* Plural Space
+* Prism Pluram
+
 ### Does Sheaf have mobile apps?
 
-Yes, iOS and Android apps are in development.
+Yes, iOS and Android apps are available, and also include wearables (WearOS/WatchOS support)?
+
+### What about a client for $insert_platform_here? 
+
+Not currently, but Sheaf is designed to support custom clients with full first-party feature support via an open API. See [docs/CLIENT_DESIGN.md](docs/CLIENT_DESIGN.md) for details. Build a new client and show us!
 
 ## Self-Hosting
 
@@ -52,7 +69,7 @@ No. The AGPL only applies when run for the public. There are no such restriction
 
 ### Is my data encrypted?
 
-Application-level encryption protects email addresses and TOTP secrets at rest. Beyond that, you should encrypt your server's disk (LUKS, encrypted EBS volumes, etc). See the Security section of the README for details.
+Application-level encryption protects sensitive data such as member data, email addresses, and TOTP secrets at rest. Beyond that, you should encrypt your server's disk (LUKS, encrypted EBS volumes, etc). See the Security section of the README for details.
 
 ### Can I use a cloud database instead of the Docker one?
 
@@ -70,11 +87,11 @@ The biggest realworld risk is probably of a hosted instance shutting down due to
 
 On a self-hosted instance: only what you put in. There is no telemetry, no analytics, no phoning home.
 
-A future hosted service would collect only what's needed to provide the service (account email, your system data). No selling data, no ads, ever.
+On our hosted instance (app.sheaf.sh), this is the same - only what's needed to provide the service (account email, your system data). No selling data, no ads, ever.
 
 ### Is Sheaf end-to-end encrypted?
 
-No. The server encrypts sensitive fields (email, TOTP secrets) at rest, but it holds the encryption key when running. This means a server operator *could* read data if they wanted to (they shouldn't, but technically could).
+No. The server encrypts sensitive fields (email, TOTP secrets, member data) at rest, but it holds the encryption key when running. This means a server operator *could* read data if they wanted to (they shouldn't, but technically could).
 
 True end-to-end encryption (where the server can't read your data at all) is a fundamentally different architecture that also makes features like server-side search impossible. If you want that level of protection, self-host, and secure the database with disk encryption at the server level where you control the encryption key yourself.
 
@@ -102,7 +119,9 @@ Yes! See [CONTRIBUTING.md](CONTRIBUTING.md). We welcome code contributions, bug 
 
 ### What contributions are you most interested in receiving?
 
-At this time, probably the web UI and Android app, although PRs are welcome for all aspects.
+At this time, probably the web UI and mobile apps, although PRs are welcome for all aspects. If you can not contribute code, bug reports and feedback are also welcome.
+
+If you speak a language other than English and are willing to discuss your background with the language (just as a basic quality filter) and commit to what we will admit is sometimes difficult and repetitive work but with a real impact, register your interest in translating Sheaf #i18n-translation on the Discord server or in GitHub discussions. i18n work represents a significant expenditure of our energy and time in a domain of software engineering we have never worked in before, where we will likely need to seek outside assistance, so we want to make 100% sure that we have enough people committed to working on it to make it worth our time.
 
 ## Terminology
 
