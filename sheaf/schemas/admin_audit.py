@@ -23,6 +23,11 @@ class AdminAuditEventRead(BaseModel):
     before_json: dict[str, Any] | None
     after_json: dict[str, Any] | None
     created_at: datetime
+    # Where the admin acted from. Admin-surface only - deliberately not
+    # on UserAdminActivityRead, since the admin's origin isn't the
+    # affected user's to see.
+    ip: str | None = None
+    user_agent: str | None = None
 
     model_config = {"from_attributes": True}
 

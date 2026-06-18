@@ -770,7 +770,21 @@ RATE_LIMIT_HISTORY_HOURS=48          # retention window
 RATE_LIMIT_HISTORY_MAX_ENTRIES=200   # cap per user
 ```
 
-Set `RATE_LIMIT_HISTORY_ENABLED=false` to record nothing new; anything recorded before the switch remains visible until its retention TTL lapses. Anonymous traffic (failed logins from logged-out clients, the global per-IP backstop) is not attributable to an account and is never recorded here - the Prometheus metrics cover those in aggregate.
+Set `RATE_LIMIT_HISTORY_ENABLED=false` to record nothing new; anything recorded before the switch remains visible until its retention TTL lapses. Anonymous traffic (failed logins from logged-out clients, the global per-IP backstop) is not attributable to an account and is never recorded *here* - the Prometheus metrics cover it in aggregate, and the security-event log below records failed logins (with IP) durably for abuse investigation.
+
+### Security-event log
+
+The auth funnel - logins (success and every failure reason), registrations, password-reset requests/completions, and self-service password changes - is recorded to an append-only `security_events` table in Postgres, each row carrying the originating client IP and user-agent. Unlike the per-user hit history above, this captures anonymous failures too: a failed login against a non-existent account is recorded with no account link, and the attempted address is never stored. That is what lets an operator spot credential stuffing and account-takeover attempts the per-account lockout and aggregate metrics miss.
+
+Three admin endpoints read it: `POST /v1/admin/security/ip-lookup` (everything seen from an exact IP or CIDR subnet), `GET /v1/admin/security/stuffing` (top failing IPs in a window, ranked by how many distinct accounts each targeted), and `POST /v1/admin/users/{id}/security-events` (one account's auth timeline). The two per-target reads require a reason and write an admin audit row. Admin audit rows themselves now also record the acting admin's IP and user-agent, so an admin action from an unexpected origin is visible.
+
+IP addresses are personal data, so rows age out automatically rather than accumulating:
+
+```env
+SECURITY_EVENT_RETENTION_DAYS=30   # delete security-event rows older than this
+```
+
+If you run a public instance, this is new processing of personal data (client IPs tied to authentication events): make sure your privacy policy covers logging IP and device information for security and abuse prevention, and states the retention period.
 
 ### Trusted proxies
 

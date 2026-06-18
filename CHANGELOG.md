@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Security-event log and admin IP search.** The auth funnel (logins with every success/failure outcome, registrations, password-reset requests/completions, and self-service password changes) is now recorded to an append-only `security_events` table with the originating client IP, so an operator can answer questions the per-account lockout counter and Prometheus aggregates can't: "is this IP credential-stuffing?" (one IP failing against many distinct accounts), "show me everything from this IP or subnet", and "what happened on this account before the takeover report came in?". Three admin tools sit on top: `POST /v1/admin/security/ip-lookup` (exact IP or CIDR subnet, with the distinct accounts seen from there), `GET /v1/admin/security/stuffing` (top failing IPs in a window, ranked by distinct accounts targeted), and `POST /v1/admin/users/{id}/security-events` (one account's auth timeline). The two reads that target a specific IP or account require a reason and write an admin audit row, like dossier export; the aggregate stuffing view is an operational read. Rows age out via a daily cleanup job after `SECURITY_EVENT_RETENTION_DAYS` (default 30) - IP is personal data, so retention is a bounded investigation window, not a permanent archive. Failed logins against a non-existent account record no account link and never store the attempted address. Admin audit rows now also capture the acting admin's IP and user-agent, so an admin action from an unexpected origin is visible.
+
 ### Fixed
 
 - **Member banners 403 behind the image worker.** Banner images are stored under a new `banners/` storage prefix (added in 1.0.2), but the bundled `selfhost-utils/cf-image-worker` allowlist (`ALLOWED_KEY_PREFIXES`) still only permitted `avatars/,bios/`, so the worker rejected every banner with a 403 before reaching S3. The bundled default now includes `banners/`. **Selfhost operators running the image worker must add `banners/` to their `ALLOWED_KEY_PREFIXES`** (redeploy the worker) for member banners to load.

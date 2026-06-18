@@ -22,6 +22,7 @@ from sheaf.models.admin_audit_event import (
     AdminAuditTargetType,
 )
 from sheaf.models.user import User
+from sheaf.request_context import get_client_ip, get_user_agent
 
 
 def _safe_decrypt_email(user: User) -> str | None:
@@ -69,6 +70,11 @@ async def log_admin_action(
         after_json=after,
         created_at=datetime.now(UTC),
         admin_email=_safe_decrypt_email(admin),
+        # Request-scoped origin, set by the admin auth dependency. NULL
+        # for actions with no request context (e.g. the suspension sweep
+        # writing USER_UNSUSPEND from a background job).
+        ip=get_client_ip(),
+        user_agent=get_user_agent(),
     )
     db.add(event)
     return event

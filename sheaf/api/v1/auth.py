@@ -66,6 +66,7 @@ from sheaf.database import get_db
 from sheaf.image_processing import animation_allowed
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.api_key import ApiKey
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User, UserTier
@@ -89,6 +90,7 @@ from sheaf.schemas.user import (
     UserUpdate,
 )
 from sheaf.services import captcha
+from sheaf.services.security_events import record_security_event
 
 _VALID_SCOPES = {
     "system:read", "system:write",
@@ -399,6 +401,14 @@ async def register(
 
     await db.commit()
 
+    await record_security_event(
+        event_type=SecurityEventType.REGISTER,
+        outcome="success",
+        user_id=user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
     response.set_cookie(
         key="sheaf_session",
         value=session_id,
@@ -610,7 +620,16 @@ async def request_password_reset(
         if user.password_reset_sent_at is not None:
             age = (datetime.now(UTC) - user.password_reset_sent_at).total_seconds()
             if age < settings.password_reset_rate_limit_minutes * 60:
-                # Still return 200 — don't reveal timing info
+                # Still return 200 - don't reveal timing info. Record the
+                # throttle: repeated reset requests for a real account from
+                # one IP are the abuse signal here.
+                await record_security_event(
+                    event_type=SecurityEventType.PASSWORD_RESET_REQUEST,
+                    outcome="throttled",
+                    user_id=user.id,
+                    ip=client_ip(request),
+                    user_agent=request.headers.get("user-agent"),
+                )
                 return {"requested": True}
 
         token = secrets.token_urlsafe(32)
@@ -620,6 +639,13 @@ async def request_password_reset(
 
         background.add_task(
             _deliver_password_reset_email, body.email, token, client_ip(request)
+        )
+        await record_security_event(
+            event_type=SecurityEventType.PASSWORD_RESET_REQUEST,
+            outcome="sent",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
         )
     else:
         # Symmetric work on the no-match branch so timing matches the
@@ -631,6 +657,12 @@ async def request_password_reset(
         token = secrets.token_urlsafe(32)
         hash_mail_token(token)
         await db.commit()
+        await record_security_event(
+            event_type=SecurityEventType.PASSWORD_RESET_REQUEST,
+            outcome="user_not_found",
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
 
     # Counted regardless of whether an email actually went out — the rate
     # at which reset is requested is the signal, not the email count
@@ -642,6 +674,7 @@ async def request_password_reset(
 @router.post("/reset-password", dependencies=[rate_limit(5, 60, fail_closed=True)])
 async def reset_password(
     body: PasswordReset,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Reset password using a token from the password reset email."""
@@ -666,6 +699,12 @@ async def reset_password(
         # and purged" from "never existed" here, so both increment the same
         # stage; the requested-vs-completed funnel still tells the story.
         auth_password_reset_total.labels(stage="expired").inc()
+        await record_security_event(
+            event_type=SecurityEventType.PASSWORD_RESET_COMPLETE,
+            outcome="invalid_token",
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
@@ -676,6 +715,13 @@ async def reset_password(
         age = (datetime.now(UTC) - user.password_reset_sent_at).total_seconds()
         if age > 3600:
             auth_password_reset_total.labels(stage="expired").inc()
+            await record_security_event(
+                event_type=SecurityEventType.PASSWORD_RESET_COMPLETE,
+                outcome="expired_token",
+                user_id=user.id,
+                ip=client_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Reset token has expired. Please request a new one.",
@@ -698,6 +744,13 @@ async def reset_password(
     await db.commit()
     await delete_all_user_sessions(user.id)
     auth_password_reset_total.labels(stage="completed").inc()
+    await record_security_event(
+        event_type=SecurityEventType.PASSWORD_RESET_COMPLETE,
+        outcome="success",
+        user_id=user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     return {"reset": True}
 
 
@@ -707,6 +760,7 @@ async def reset_password(
 )
 async def change_password(
     body: PasswordChange,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_id: str | None = Cookie(default=None, alias="sheaf_session"),
@@ -718,6 +772,15 @@ async def change_password(
     cookie elsewhere can't survive the change; the calling session stays
     alive.
     """
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.PASSWORD_CHANGE,
+            outcome=outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
     if len(body.new_password) < 8:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -740,6 +803,7 @@ async def change_password(
 
     if not await verify_password(body.current_password, user.password_hash):
         await record_login_failure(db, user)
+        await _sec("password_incorrect")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
@@ -747,6 +811,7 @@ async def change_password(
 
     if user.totp_enabled:
         if not body.totp_code:
+            await _sec("totp_required")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="TOTP code required",
@@ -756,6 +821,7 @@ async def change_password(
         totp_ok = await verify_code_once(user.id, secret, body.totp_code)
         if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
             await record_login_failure(db, user, reason="totp_failures")
+            await _sec("totp_invalid")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid TOTP code",
@@ -782,6 +848,7 @@ async def change_password(
     if session_id:
         revoked = await delete_other_sessions(user.id, session_id)
 
+    await _sec("success")
     return {"changed": True, "revoked_other_sessions": revoked}
 
 
@@ -897,8 +964,26 @@ async def login(
         default=None, alias=TRUSTED_DEVICE_COOKIE,
     ),
 ):
+    # Security-event origin, captured once. The outcome strings mirror
+    # the auth_logins_total metric labels so the durable log and the
+    # aggregate counter line up. user_id is passed when the account is
+    # known (NULL for unknown-email attempts, which we still want for
+    # the per-IP stuffing signal without storing the attempted address).
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str, user_id=None) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.LOGIN,
+            outcome=outcome,
+            user_id=user_id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     if captcha.required_for_login() and not captcha.verify(body.captcha):
         auth_logins_total.labels(outcome="captcha_failed").inc()
+        await _sec("captcha_failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Captcha verification failed",
@@ -916,18 +1001,21 @@ async def login(
             ensure_not_locked(user)
         except HTTPException:
             auth_logins_total.labels(outcome="locked").inc()
+            await _sec("locked", user.id)
             raise
 
     if user is None or not await verify_password(body.password, user.password_hash):
         if user is not None:
             await record_login_failure(db, user)
             auth_logins_total.labels(outcome="password_incorrect").inc()
+            await _sec("password_incorrect", user.id)
         else:
             # Spend an equivalent Argon2 verify so an unknown email can't
             # be distinguished from a wrong password by response latency.
             # `or` short-circuits, so verify_password never ran here.
             await dummy_verify()
             auth_logins_total.labels(outcome="user_not_found").inc()
+            await _sec("user_not_found")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -946,12 +1034,14 @@ async def login(
             if until is not None:
                 parts.append(f"until: {until.isoformat()}")
             auth_logins_total.labels(outcome="account_suspended").inc()
+            await _sec("account_suspended", user.id)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="; ".join(parts),
             )
     if user.account_status == AccountStatus.BANNED:
         auth_logins_total.labels(outcome="account_banned").inc()
+        await _sec("account_banned", user.id)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account banned",
@@ -971,6 +1061,7 @@ async def login(
         else:
             if not body.totp_code:
                 auth_logins_total.labels(outcome="totp_required").inc()
+                await _sec("totp_required", user.id)
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="TOTP code required",
@@ -987,6 +1078,7 @@ async def login(
                 else:
                     await record_login_failure(db, user, reason="totp_failures")
                     auth_logins_total.labels(outcome="totp_invalid").inc()
+                    await _sec("totp_invalid", user.id)
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid TOTP code",
@@ -1068,11 +1160,14 @@ async def login(
 
     if bypassed_via_trusted_device:
         auth_logins_total.labels(outcome="trusted_device_bypass").inc()
+        await _sec("trusted_device_bypass", user.id)
     elif recovery_code_used:
         auth_logins_total.labels(outcome="recovery_code_used").inc()
         auth_recovery_codes_used_total.inc()
+        await _sec("recovery_code_used", user.id)
     else:
         auth_logins_total.labels(outcome="success").inc()
+        await _sec("success", user.id)
 
     return TokenResponse(
         access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
