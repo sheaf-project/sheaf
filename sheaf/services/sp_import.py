@@ -47,6 +47,7 @@ from sheaf.services.import_content_dedup import (
     load_group_index,
     load_group_member_guard,
     load_message_count_index,
+    normalize_front_interval,
 )
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -632,6 +633,7 @@ async def run_import(
         # Live/current fronts live under `fronters` in some exports; fall back to
         # it when `frontHistory` is absent (rows carry member + startTime, no
         # endTime, so they map to open fronts).
+        fronts_swapped = 0
         for sp_f in _get_collection_alt(data, "frontHistory", "fronters"):
             sp_member_id = sp_f.get("member")
             if not sp_member_id:
@@ -653,6 +655,10 @@ async def run_import(
             is_live = sp_f.get("live", False)
             if is_live:
                 ended = None
+
+            started, ended, swapped = normalize_front_interval(started, ended)
+            if swapped:
+                fronts_swapped += 1
 
             if dedupe:
                 fkey = front_key(started, ended, {member.id})
@@ -690,6 +696,12 @@ async def run_import(
             warnings.append(
                 f"Skipped {fronts_bad_timestamp} front-history rows with a "
                 "missing or unparseable startTime."
+            )
+        if fronts_swapped:
+            warnings.append(
+                f"Adjusted {fronts_swapped} front-history "
+                f"{'entry' if fronts_swapped == 1 else 'entries'} whose end "
+                "time was before the start time (swapped the two)."
             )
 
     # --- Notes (skipped until journal feature) ---

@@ -9,6 +9,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 ### Fixed
 
 - **Clearer errors when browser-push subscription fails.** When a recipient subscribes to web push, the browser's own `pushManager.subscribe()` can fail with an opaque message (e.g. Chrome's "Registration failed - push service error") if it can't reach its push backend - and the redeem page showed that raw string with nothing logged for debugging. The page now logs the full exception to the console, maps the common failures to actionable guidance ("permission was denied", "your browser couldn't reach its push service - check that notifications or Google Play services aren't blocked"), and refuses to attempt a keyless subscribe when the server's VAPID key can't be loaded (which produced that same opaque error) in favour of a clear "couldn't load the push key" message.
+- **Imports no longer abort on a front whose end is before its start.** Some exports (notably SimplyPlural) carry a front-history entry whose end timestamp precedes its start. Since 1.0.2 the `ck_fronts_ended_after_started` DB constraint rejects those, which aborted the entire import job. Every importer (SimplyPlural, PluralKit, Tupperbox, PluralSpace, Prism, and Sheaf native re-import) now normalises a mis-ordered interval by swapping the two timestamps - the most data-preserving fix, keeping the interval's duration - and records a per-import warning so the affected entries can be reviewed.
 
 ## [1.0.2] - 2026-06-14
 

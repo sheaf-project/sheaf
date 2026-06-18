@@ -49,6 +49,7 @@ from sheaf.services.import_content_dedup import (
     load_front_index,
     load_group_index,
     load_group_member_guard,
+    normalize_front_interval,
 )
 from sheaf.services.import_dedup import ImportConflictStrategy
 from sheaf.services.import_parsing import sanitize_external_avatar_url
@@ -312,6 +313,7 @@ async def import_switches(
 
     imported = 0
     skipped = 0
+    fronts_swapped = 0
     missing_hids: set[str] = set()
     dedupe = conflict_strategy != ImportConflictStrategy.CREATE
     front_index = (
@@ -340,6 +342,9 @@ async def import_switches(
             continue
 
         ended_at = parsed[i + 1][0] if i + 1 < len(parsed) else None
+        ts, ended_at, swapped = normalize_front_interval(ts, ended_at)
+        if swapped:
+            fronts_swapped += 1
         if dedupe:
             fkey = front_key(ts, ended_at, {m.id for m in members})
             if front_index.get(fkey) is not None:
@@ -365,6 +370,12 @@ async def import_switches(
         warnings.append(
             f"Skipped {len(missing_hids)} member references in switch history "
             "that pointed to members not selected for import."
+        )
+    if fronts_swapped:
+        warnings.append(
+            f"Adjusted {fronts_swapped} switch "
+            f"{'interval' if fronts_swapped == 1 else 'intervals'} whose end "
+            "time was before the start time (swapped the two)."
         )
 
     return imported, skipped, warnings

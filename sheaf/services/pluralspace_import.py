@@ -106,6 +106,7 @@ from sheaf.services.import_content_dedup import (
     load_journal_index,
     load_message_count_index,
     load_poll_index,
+    normalize_front_interval,
 )
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -900,6 +901,7 @@ async def _import_fronts(
     )
     unknown_types: set[str] = set()
     missing_members = 0
+    fronts_swapped = 0
     for f_data in fronts_in:
         if not isinstance(f_data, dict):
             continue
@@ -915,6 +917,11 @@ async def _import_fronts(
         if member is None:
             missing_members += 1
             continue
+        started_at, ended_at, swapped = normalize_front_interval(
+            started_at, ended_at
+        )
+        if swapped:
+            fronts_swapped += 1
         if dedupe:
             fkey = front_key(started_at, ended_at, {member.id})
             if front_index.get(fkey) is not None:
@@ -949,6 +956,12 @@ async def _import_fronts(
             "Front entry types other than 'front' were preserved as basic "
             f"fronts (saw: {', '.join(sorted(unknown_types))}). PluralSpace's "
             "type taxonomy doesn't fully map to Sheaf today."
+        )
+    if fronts_swapped:
+        warnings.append(
+            f"Adjusted {fronts_swapped} front "
+            f"{'entry' if fronts_swapped == 1 else 'entries'} whose end time "
+            "was before the start time (swapped the two)."
         )
     return imported, skipped
 

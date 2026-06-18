@@ -210,6 +210,24 @@ def front_key(
     return (started_at, ended_at, frozenset(member_ids))
 
 
+def normalize_front_interval(
+    started_at: datetime, ended_at: datetime | None
+) -> tuple[datetime, datetime | None, bool]:
+    """Ensure a closed front's end isn't before its start.
+
+    Source exports (notably SimplyPlural) occasionally carry a front whose
+    end timestamp precedes its start - transposed or otherwise corrupt data.
+    The `ck_fronts_ended_after_started` DB constraint rejects those, which
+    would abort the whole import, so importers normalise first: swap the two
+    (the most data-preserving fix - it keeps the interval's duration and span)
+    and report it. Returns `(started_at, ended_at, swapped)`; open fronts
+    (ended_at is None) and already-ordered intervals pass through untouched.
+    """
+    if ended_at is not None and ended_at < started_at:
+        return ended_at, started_at, True
+    return started_at, ended_at, False
+
+
 async def load_journal_index(
     db: AsyncSession, system_id: uuid.UUID
 ) -> ContentMatchIndex:

@@ -224,6 +224,36 @@ def test_sp_warns_when_front_history_member_missing(auth_client: httpx.Client):
     ), warnings
 
 
+def test_sp_swaps_front_with_end_before_start(auth_client: httpx.Client):
+    # A front whose end precedes its start would violate the
+    # ck_fronts_ended_after_started DB constraint and abort the whole import.
+    # The importer must normalise it (swap the two) and warn, not crash.
+    payload = _sp_payload(
+        frontHistory=[
+            {
+                "_id": "fh-swap",
+                "member": "spm1",
+                "startTime": 1_700_000_100_000,
+                "endTime": 1_700_000_000_000,  # 100s BEFORE startTime
+            },
+        ],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"front_history": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert any(
+        "before the start time" in w and "swapped" in w
+        for w in _warnings(final["events"])
+    ), final["events"]
+
+
 def test_sp_warns_when_group_members_or_parent_missing(auth_client: httpx.Client):
     payload = _sp_payload(
         groups=[
