@@ -13,6 +13,7 @@ from sheaf.auth.sessions import check_admin_step_up, get_session_user_id, touch_
 from sheaf.database import get_db
 from sheaf.models.user import AccountStatus, User
 from sheaf.request import client_ip
+from sheaf.request_context import set_request_origin
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -269,6 +270,9 @@ async def get_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
+    # Stamp the request origin so log_admin_action can record where this
+    # admin acted from without threading `request` through every caller.
+    set_request_origin(client_ip(request), request.headers.get("user-agent"))
     await _check_admin_step_up(request, user)
     return user
 
@@ -290,6 +294,9 @@ async def get_admin_write_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
+    # Stamp the request origin so log_admin_action can record where this
+    # admin acted from without threading `request` through every caller.
+    set_request_origin(client_ip(request), request.headers.get("user-agent"))
     await _check_admin_step_up(request, user)
     return user
 

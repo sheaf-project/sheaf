@@ -5,6 +5,7 @@ from sheaf.api.v1 import (
     admin,
     admin_audit,
     admin_emergency,
+    admin_security,
     admin_small_actions,
     analytics,
     announcements,
@@ -65,6 +66,11 @@ v1_router.include_router(admin_emergency.router)
 # terminate, force-rotate API keys, bulk-approve. Mix of read +
 # mutation; each endpoint enforces its own admin gate.
 v1_router.include_router(admin_small_actions.router)
+# Admin security-event search: IP/subnet lookup, credential-stuffing
+# view, per-account auth timeline. The per-IP / per-user reads require a
+# reason and are audited; the aggregate stuffing view is an operational
+# read.
+v1_router.include_router(admin_security.router)
 # Account-level (Article 15 etc.) — session/JWT auth only, body-gated
 # step-up. Lives outside the scope-gated section since API key access
 # is refused inline by the endpoint.

@@ -41,6 +41,24 @@ if [[ "${1:-}" == "--no-build" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Single-runner lock
+# ---------------------------------------------------------------------------
+# The test stack is a singleton: a fixed compose project (sheaf-test) on
+# fixed host ports (8001/5433/6380). Two runs from different checkouts
+# race on those ports and the shared volumes and wedge each other. Take a
+# system-wide advisory lock before touching the stack so concurrent runs
+# queue instead of colliding. fd stays open for the life of the script;
+# the lock releases automatically on exit. Override the path with
+# SHEAF_TEST_LOCK if /tmp isn't shared between your checkouts.
+LOCK_FILE="${SHEAF_TEST_LOCK:-/tmp/sheaf-test-stack.lock}"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "Another test run holds the stack lock ($LOCK_FILE); waiting..."
+    flock 9
+fi
+echo "Acquired test-stack lock ($LOCK_FILE)."
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

@@ -648,6 +648,24 @@ async def _cleanup_job_logs(db: AsyncSession) -> dict:
     return {"items_processed": result.rowcount}
 
 
+async def _cleanup_security_events(db: AsyncSession) -> dict:
+    """Delete security-event rows past the retention window.
+
+    Bounded retention is the whole point: IP is personal data, so the
+    log is a short investigation window, not a permanent archive.
+    """
+    from sheaf.models.security_event import SecurityEvent
+
+    cutoff = datetime.now(UTC) - timedelta(
+        days=settings.security_event_retention_days
+    )
+    result = await db.execute(
+        delete(SecurityEvent).where(SecurityEvent.created_at < cutoff)
+    )
+    await db.commit()
+    return {"items_processed": result.rowcount or 0}
+
+
 # ---------------------------------------------------------------------------
 # System Safety — finalize pending destructive actions + safety-setting changes
 # ---------------------------------------------------------------------------
@@ -1035,6 +1053,13 @@ def _register_all_jobs() -> None:
         name="cleanup_job_logs",
         description="Delete job run logs older than 30 days",
         func=_cleanup_job_logs,
+        interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="cleanup_security_events",
+        description="Delete security-event rows past the retention window",
+        func=_cleanup_security_events,
         interval_seconds=lambda: 86400,  # daily
     )
 

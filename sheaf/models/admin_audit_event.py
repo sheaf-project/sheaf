@@ -33,6 +33,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sheaf.models.base import Base, UUIDMixin
+from sheaf.models.types import InetStr
 
 
 class AdminAuditAction(enum.StrEnum):
@@ -60,6 +61,8 @@ class AdminAuditAction(enum.StrEnum):
     INVITE_CREATE = "invite_create"
     INVITE_DELETE = "invite_delete"
     JOB_TRIGGER = "job_trigger"                    # manual job / maintenance runs
+    SECURITY_IP_LOOKUP = "security_ip_lookup"      # searched security log by IP/subnet
+    SECURITY_HISTORY_VIEW = "security_history_view"  # viewed one account's security events
 
 
 class AdminAuditTargetType(enum.StrEnum):
@@ -147,3 +150,10 @@ class AdminAuditEvent(UUIDMixin, Base):
     # NOT a privacy regression — admin emails are already exposed via
     # the admin users listing.
     admin_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Where the admin acted from. Populated from the request-scoped
+    # client IP (see request_context) so an action from an unexpected
+    # origin is visible. INET for subnet queries; NULL if unresolved
+    # (e.g. an internal/job-triggered action with no request).
+    ip: Mapped[str | None] = mapped_column(InetStr, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)

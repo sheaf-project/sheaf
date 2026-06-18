@@ -396,6 +396,14 @@ class Settings(BaseSettings):
     # single age cutoff covers everything in a done state.
     notification_outbox_retention_days: int = 30
 
+    # How long security-event rows (login attempts, registrations,
+    # password resets/changes, with originating IP) are kept before the
+    # cleanup sweep deletes them. IP is personal data, so a bounded
+    # window does the minimisation: long enough to investigate an abuse
+    # report that lands weeks late, short enough not to hoard. Operators
+    # with a longer legal basis can raise it; self-hosters set their own.
+    security_event_retention_days: int = 30
+
     # A job stuck in `running` longer than this is presumed orphaned by
     # a crashed worker; the recovery sweep resets it to `pending` for a
     # retry. Generous — a large PluralKit API import paginating switch
