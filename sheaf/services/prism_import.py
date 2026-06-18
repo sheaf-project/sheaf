@@ -111,6 +111,7 @@ from sheaf.services.import_content_dedup import (
     load_journal_index,
     load_message_count_index,
     load_poll_index,
+    normalize_front_interval,
 )
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -772,6 +773,7 @@ async def _import_front_sessions(
         await load_front_index(db, system_id) if dedupe else ContentMatchIndex()
     )
     missing = 0
+    fronts_swapped = 0
     for s in sessions_in:
         if not isinstance(s, dict):
             continue
@@ -788,6 +790,11 @@ async def _import_front_sessions(
         if handle is None:
             missing += 1
             continue
+        started_at, ended_at, swapped = normalize_front_interval(
+            started_at, ended_at
+        )
+        if swapped:
+            fronts_swapped += 1
         if dedupe:
             fkey = front_key(started_at, ended_at, {handle.member.id})
             if front_index.get(fkey) is not None:
@@ -811,6 +818,12 @@ async def _import_front_sessions(
     if missing:
         warnings.append(
             f"Skipped {missing} front sessions whose headmate wasn't imported."
+        )
+    if fronts_swapped:
+        warnings.append(
+            f"Adjusted {fronts_swapped} front "
+            f"{'session' if fronts_swapped == 1 else 'sessions'} whose end "
+            "time was before the start time (swapped the two)."
         )
     return imported, skipped
 

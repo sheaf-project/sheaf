@@ -87,6 +87,7 @@ from sheaf.services.import_content_dedup import (
     load_revision_index,
     load_tag_index,
     load_watch_token_index,
+    normalize_front_interval,
 )
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -714,6 +715,7 @@ async def run_import(
         front_index = (
             await load_front_index(db, system.id) if dedupe else ContentMatchIndex()
         )
+        fronts_swapped = 0
         for f_data in data.get("fronts", []):
             started_at = _parse_iso(f_data.get("started_at"))
             if not started_at:
@@ -730,6 +732,12 @@ async def run_import(
             ]
             if not front_member_ids:
                 continue
+
+            started_at, ended_at, swapped = normalize_front_interval(
+                started_at, ended_at
+            )
+            if swapped:
+                fronts_swapped += 1
 
             # Dedup key: same interval, same (resolved) member set.
             # Works because skipped members resolve onto their existing
@@ -763,6 +771,12 @@ async def run_import(
                     )
                 )
             result.fronts_imported += 1
+        if fronts_swapped:
+            warnings.append(
+                f"Adjusted {fronts_swapped} front "
+                f"{'entry' if fronts_swapped == 1 else 'entries'} whose end "
+                "time was before the start time (swapped the two)."
+            )
 
     # --- Journals ---
     if journals:
