@@ -97,6 +97,7 @@ from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.user import AccountStatus, User
 from sheaf.services.admin_audit import log_admin_action
+from sheaf.services.security_events import events_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -1006,6 +1007,21 @@ async def export_user_dossier(
     except Exception:
         rl_history = None
 
+    # Security event log - same Article 15 rationale as the rate-limit
+    # history above (IP + behaviour tied to the account). Capped
+    # newest-first to keep the dossier bounded.
+    security_event_rows = await events_for_user(db, user_id, limit=2000)
+    security_events_block = [
+        {
+            "created_at": e.created_at.isoformat(),
+            "event_type": str(e.event_type),
+            "outcome": e.outcome,
+            "ip": e.ip,
+            "user_agent": e.user_agent,
+        }
+        for e in security_event_rows
+    ]
+
     trusted_rows = await db.execute(
         select(TrustedDevice).where(TrustedDevice.user_id == user_id)
     )
@@ -1137,6 +1153,7 @@ async def export_user_dossier(
         "export_jobs": export_block,
         "rate_limit_history": rl_history,
         "rate_limit_history_unavailable": rl_history is None,
+        "security_events": security_events_block,
     }
 
     # Log BEFORE returning so a connection drop mid-stream still
