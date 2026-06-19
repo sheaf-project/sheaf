@@ -17,6 +17,8 @@ venv/
 .ruff_cache/
 .mypy_cache/
 
+.nvmrc
+
 *.db
 *.sqlite3
 
