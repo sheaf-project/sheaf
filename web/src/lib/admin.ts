@@ -213,6 +213,75 @@ export function viewImportJobDetail(jobId: string, reason: string) {
   });
 }
 
+// --- Security-event search ---
+
+export interface SecurityEventRow {
+  id: string;
+  created_at: string;
+  event_type: string;
+  outcome: string;
+  user_id: string | null;
+  ip: string | null;
+  user_agent: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+export interface IpLookupResult {
+  query: string;
+  is_subnet: boolean;
+  event_count: number;
+  events: SecurityEventRow[];
+  distinct_account_ids: string[];
+  signup_match_ids: string[];
+  note: string;
+}
+
+// Privileged read: audited, so it takes a reason and is a POST.
+export function securityIpLookup(target: string, reason: string) {
+  return apiFetch<IpLookupResult>("/v1/admin/security/ip-lookup", {
+    method: "POST",
+    body: JSON.stringify({ target, reason }),
+  });
+}
+
+export interface StuffingOffender {
+  ip: string;
+  distinct_accounts: number;
+  failures: number;
+  last_seen: string;
+}
+
+export interface StuffingResult {
+  since: string;
+  window_hours: number;
+  min_failures: number;
+  offenders: StuffingOffender[];
+}
+
+export function securityStuffingView(
+  opts: { hours?: number; min_failures?: number; limit?: number } = {},
+) {
+  const params = new URLSearchParams();
+  params.set("hours", String(opts.hours ?? 24));
+  params.set("min_failures", String(opts.min_failures ?? 10));
+  params.set("limit", String(opts.limit ?? 50));
+  return apiFetch<StuffingResult>(`/v1/admin/security/stuffing?${params}`);
+}
+
+export interface UserSecurityHistory {
+  user_id: string;
+  event_count: number;
+  events: SecurityEventRow[];
+}
+
+// Audited per-account timeline; POST + reason like the import-log view.
+export function userSecurityEvents(userId: string, reason: string) {
+  return apiFetch<UserSecurityHistory>(
+    `/v1/admin/users/${userId}/security-events`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+}
+
 export function getPendingApprovals() {
   return apiFetch<PendingUser[]>("/v1/admin/approvals");
 }

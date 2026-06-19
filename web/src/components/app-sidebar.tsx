@@ -51,6 +51,7 @@ const adminItems = [
   { to: "/admin/announcements", label: "Announcements" },
   { to: "/admin/jobs", label: "Jobs" },
   { to: "/admin/audit", label: "Audit log" },
+  { to: "/admin/security", label: "Security" },
 ];
 
 export function AppSidebar({

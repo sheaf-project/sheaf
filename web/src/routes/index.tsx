@@ -42,6 +42,7 @@ import { AdminInvitesPage } from "./admin/invites";
 import { AdminAnnouncementsPage } from "./admin/announcements";
 import { AdminJobsPage } from "./admin/jobs";
 import { AdminAuditPage } from "./admin/audit";
+import { AdminSecurityPage } from "./admin/security";
 
 export const router = createBrowserRouter([
   {
@@ -114,6 +115,7 @@ export const router = createBrowserRouter([
           { path: "announcements", element: <AdminAnnouncementsPage /> },
           { path: "jobs", element: <AdminJobsPage /> },
           { path: "audit", element: <AdminAuditPage /> },
+          { path: "security", element: <AdminSecurityPage /> },
         ],
       },
       // Catch-all under AppLayout: unknown paths render the 404 inside the
