@@ -37,6 +37,7 @@ from sheaf.models.system import System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.services.security_events import events_for_user
 
 router = APIRouter(prefix="/account", tags=["account"])
 
@@ -59,9 +60,9 @@ async def get_account_data(
     Distinct from `/v1/export`, which is Article 20 (data portability) and
     only includes plural-system content. This endpoint adds account
     identity, sessions, IPs, API key audit metadata, email delivery
-    state, and other server-derived data that should NEVER ride along
-    with a portable export (info-leak hazard if shared or imported
-    elsewhere).
+    state, the security event log (auth attempts with IPs), and other
+    server-derived data that should NEVER ride along with a portable
+    export (info-leak hazard if shared or imported elsewhere).
 
     Always requires password (and TOTP if enrolled), regardless of the
     system's `delete_confirmation` setting — this is the highest-value
@@ -127,6 +128,15 @@ async def get_account_data(
         select(TrustedDevice).where(TrustedDevice.user_id == user.id)
     )
     trusted_devices = trusted_devices_result.scalars().all()
+
+    # Security event log for this account. Bounded by the retention
+    # window, but a stuffing victim can accumulate many failed-login
+    # rows, so cap at a generous newest-first slice rather than risk a
+    # huge response; the cap is surfaced in the payload.
+    _SECURITY_EVENT_CAP = 2000
+    security_events = await events_for_user(
+        db, user.id, limit=_SECURITY_EVENT_CAP
+    )
 
     client_settings_result = await db.execute(
         select(ClientSettings).where(ClientSettings.user_id == user.id)
@@ -265,6 +275,21 @@ async def get_account_data(
                 "expires_at": _iso(k.expires_at),
             }
             for k in api_keys
+        ],
+        # Auth-funnel events tied to this account (logins, registration,
+        # password resets/changes), each with its originating IP. This is
+        # the user-facing half of the security event log promised in the
+        # privacy policy; the full cross-account search is admin-only.
+        "security_events_truncated": len(security_events) >= _SECURITY_EVENT_CAP,
+        "security_events": [
+            {
+                "created_at": _iso(e.created_at),
+                "event_type": str(e.event_type),
+                "outcome": e.outcome,
+                "ip": e.ip,
+                "user_agent": e.user_agent,
+            }
+            for e in security_events
         ],
         "email_suppression": (
             {

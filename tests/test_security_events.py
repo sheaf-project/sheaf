@@ -249,3 +249,41 @@ def test_user_security_events_is_audited(admin_client: httpx.Client):
         f"/v1/admin/audit-events?action=security_history_view&target_user_id={uid}"
     ).json()
     assert any(r["target_user_id"] == uid and r["ip"] for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# Access-request inclusion (Article 15 self-service + admin dossier)
+# ---------------------------------------------------------------------------
+
+def test_account_data_includes_security_events():
+    # The Article 15 endpoint, not the portable Article 20 export, is where
+    # the IP-bearing security log belongs.
+    email = f"sec-a15-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        reg = c.post(
+            "/v1/auth/register", json={"email": email, "password": PASSWORD}
+        )
+        assert reg.status_code == 201, reg.text
+        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        resp = c.post("/v1/account/data", json={"password": PASSWORD})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "security_events" in body
+        assert "security_events_truncated" in body
+        # Registration alone produces at least the register event.
+        assert any(
+            e["event_type"] == "register" and e["ip"]
+            for e in body["security_events"]
+        )
+
+
+def test_dossier_includes_security_events(admin_client: httpx.Client):
+    email = _register("sec-dossier")
+    uid = _find_user_id(admin_client, email)
+    resp = admin_client.post(
+        f"/v1/admin/users/{uid}/dossier", json={"reason": "test"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "security_events" in body
+    assert any(e["event_type"] == "register" for e in body["security_events"])
