@@ -1,6 +1,6 @@
 # Contributing to Sheaf
 
-Thanks for considering contributing! Sheaf is built for plural systems, but we welcomes contributions from anyone who shares our goals, including singlets.
+Thanks for considering contributing! Sheaf is built for plural systems, but we welcome contributions from anyone who shares our goals, including singlets.
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
@@ -49,7 +49,7 @@ Use `run_tests.sh` to spin up a dedicated isolated Docker stack, run tests again
 ./run_tests.sh
 ```
 
-This tests four configurations: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, and saas mode. Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack.
+This runs nine configurations in sequence: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and five selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, and the metrics endpoint enabled). Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack.
 
 ```bash
 # Skip rebuilding the image if you haven't changed backend code:
@@ -77,7 +77,7 @@ Replace `<POSTGRES_PASSWORD>` with the value from your `.env`.
 - `admin_client` — registers a fresh user, promotes to admin directly via DB, completes admin step-up automatically (adapts to whatever `ADMIN_AUTH_LEVEL` the server has configured)
 - `raw_admin_client` — same as `admin_client` but skips step-up — use this to test step-up enforcement
 
-Test markers gate config-specific tests: `admin_auth_password`, `admin_auth_totp`, `saas`. The conftest skips them unless the matching server config is active.
+Test markers gate config-specific tests: `admin_auth_password`, `admin_auth_totp`, `saas`, `selfhosted`, `rate_limit`, `uploads_disabled`, `bio_uploads_disabled`, and `external_images_disabled`. The conftest skips a marked test unless the matching server config is active, so each only runs in the `run_tests.sh` phase that sets up its config.
 
 ### Linting
 
@@ -106,6 +106,25 @@ alembic upgrade head
 ```
 
 When adding enum columns, ensure the migration creates the Postgres enum type with **lowercase values** to match the StrEnum values.
+
+#### Lock-taking DDL must fail fast
+
+Most `ALTER TABLE` migrations (adding a constraint, a column with a default that rewrites the table, an index without `CONCURRENTLY`) take an `ACCESS EXCLUSIVE` lock. If any other session holds a conflicting lock, the migration blocks waiting for it, and while it waits it queues every other query on that table behind it. A single forgotten `idle in transaction` session can stall such a migration for a long time. Put a short lock timeout at the top of `upgrade()` so it errors out fast instead of dragging the table's whole query queue, and re-run it during a quiet moment:
+
+```python
+def upgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
+    op.add_column(...)
+```
+
+For a `CHECK` or foreign-key constraint on a large table, add it `NOT VALID` (via raw `op.execute`, since Alembic's helper doesn't expose the flag) so it enforces new writes immediately without a full-table validating scan; run `VALIDATE CONSTRAINT` in a later migration once the existing rows are confirmed clean:
+
+```python
+op.execute(
+    "ALTER TABLE my_table ADD CONSTRAINT ck_my_rule "
+    "CHECK (some_col >= other_col) NOT VALID"
+)
+```
 
 #### Idempotency on long-running feature branches
 
@@ -157,11 +176,15 @@ If you're coming from SimplyPlural, we're especially interested in hearing about
 
 Releases are tag-driven and gated on a manual approval. The workflow:
 
-1. Bump the version in `pyproject.toml` and `web/package.json` to match the target tag (e.g. `0.1.1`).
-2. Move the `## [Unreleased]` section in `CHANGELOG.md` to a new `## [v0.1.1]` heading. The release workflow extracts that section verbatim into the GitHub release body.
+1. Bump the version to match the target tag in every place that restates it, including the two lockfiles (the easy ones to forget):
+   - `pyproject.toml` - `version = "X.Y.Z"`.
+   - `uv.lock` - regenerate with `uv lock` (updates the `name = "sheaf"` block); don't hand-edit it.
+   - `web/package.json` - `"version": "X.Y.Z"`.
+   - `web/package-lock.json` - edit ONLY the two `"version"` fields belonging to the `web` package (the top-level one and `packages.""`). Do NOT run `npm install --package-lock-only` just to bump the version: a local npm that differs from CI's can re-resolve optional/platform dependencies, and the churned lockfile then fails CI's `npm ci` with an "out of sync" error. A pure version bump must not move the dependency tree.
+2. Move the `## [Unreleased]` section in `CHANGELOG.md` to a new `## [X.Y.Z]` heading. The release workflow extracts that section verbatim into the GitHub release body.
 3. Land those changes on `main` via PR.
-4. Tag and push: `git tag v0.1.1 && git push --tags`.
-5. The CI workflow's `docker` job builds, signs, and attests the images. Then the `release` job pauses for human approval — the request shows up under repo Actions → workflow run → "Review deployments". Approving creates the GitHub release and uploads the frontend tarball + build manifest.
+4. Tag the release commit and push that tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. (Push the specific tag rather than `--tags` / a follow-tags push, which can drag unrelated local tags. If the release PR was squash-merged, tag the squashed merge commit on `main`, not the pre-merge branch commit.)
+5. The CI workflow's `docker` job builds, signs, and attests the images. Then the `release` job pauses for manual approval — the request shows up under repo Actions → workflow run → "Review deployments". Approving creates the GitHub release and uploads the frontend tarball + build manifest.
 6. If the tag's version doesn't match `pyproject.toml`, the release job fails before publishing — re-tag rather than overriding.
 
 `v0.x.y` releases are tagged as GitHub prereleases automatically (until `v1.0.0`).
