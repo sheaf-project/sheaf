@@ -432,6 +432,7 @@ def _register_builtin_handlers() -> None:
     """
     # pk_import_runner registers both pluralkit_file and pluralkit_api.
     from sheaf.services import (
+        openplural_import_runner,  # noqa: F401
         pk_import_runner,  # noqa: F401
         pluralspace_import_runner,  # noqa: F401
         prism_import_runner,  # noqa: F401

@@ -35,13 +35,17 @@ import {
   previewImport as previewPrism,
 } from "@/lib/prism-import";
 import {
+  type OpenpluralPreviewSummary,
+  previewOpenpluralImport,
+} from "@/lib/openplural-import";
+import {
   createApiImport,
   createFileImport,
   newIdempotencyKey,
 } from "@/lib/imports";
 import { Input } from "@/components/ui/input";
 
-type Source = "choose" | "sheaf" | "sp" | "pk" | "tb" | "ps" | "prism";
+type Source = "choose" | "sheaf" | "sp" | "pk" | "tb" | "ps" | "prism" | "op";
 // "importing" shows a brief spinner while the enqueue POST is in
 // flight; on success the flow navigates to /imports/:id, which owns
 // the running/done UI. There's no "done" step here any more.
@@ -76,6 +80,9 @@ export function ImportPage() {
       )}
       {source === "prism" && (
         <PrismImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "op" && (
+        <OPImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -173,6 +180,22 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
             messages, and member-board posts. Prism's sleep tracking, habits,
             and reminders aren't surfaces Sheaf has yet and are dropped with
             a warning event on the import detail page.
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("op")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from OpenPlural</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Import an OpenPlural v0.1 export from Sheaf or another
+            OpenPlural-compatible app. Upload the <code>.json</code>{" "}
+            document, or the <code>.openplural.zip</code> bundle (the
+            bundle restores avatars and embedded images too).
           </p>
         </CardContent>
       </Card>
@@ -1568,6 +1591,270 @@ function PrismImportFlow({ onBack }: { onBack: () => void }) {
                 checked={mediaAttachments}
                 onChange={setMediaAttachments}
               />
+
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
+              <MemberSelector
+                members={preview.members}
+                totalCount={preview.member_count}
+                allMembers={allMembers}
+                setAllMembers={setAllMembers}
+                selectedMembers={selectedMembers}
+                toggleMember={toggleMember}
+              />
+
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OpenPlural import flow
+// ---------------------------------------------------------------------------
+
+function OPImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<OpenpluralPreviewSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // One idempotency key per flow visit - a double-click on Import
+  // reuses it, so the server dedupes instead of enqueueing twice.
+  const [idemKey] = useState(newIdempotencyKey);
+
+  const [systemProfile, setSystemProfile] = useState(true);
+  const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+  const [importFronts, setImportFronts] = useState(true);
+  const [importGroups, setImportGroups] = useState(true);
+  const [importTags, setImportTags] = useState(true);
+  const [importFields, setImportFields] = useState(true);
+  const [importJournals, setImportJournals] = useState(true);
+  const [importMessages, setImportMessages] = useState(true);
+  const [importPolls, setImportPolls] = useState(true);
+  const [importNotifications, setImportNotifications] = useState(true);
+  const [importReminders, setImportReminders] = useState(true);
+  // Only meaningful for the .openplural.zip bundle (preview.archive).
+  const [restoreImages, setRestoreImages] = useState(true);
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewOpenpluralImport(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to parse file"));
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const isArchive = preview?.archive ?? false;
+      const job = await createFileImport({
+        source: "openplural_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          system_profile: systemProfile,
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
+          fronts: importFronts,
+          groups: importGroups,
+          tags: importTags,
+          custom_fields: importFields,
+          journals: importJournals,
+          messages: importMessages,
+          polls: importPolls,
+          notifications: importNotifications,
+          // Reminders need a channel; without notifications there's nothing
+          // for them to attach to.
+          reminders: importReminders && importNotifications,
+          // The images toggle only applies to the .openplural.zip bundle.
+          ...(isArchive ? { images: restoreImages } : {}),
+        },
+      });
+      navigate(`/imports/${job.id}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Import failed"));
+      setStep("preview");
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload OpenPlural export</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Upload an OpenPlural v0.1 export from Sheaf or another
+              OpenPlural-compatible app. Either the bare{" "}
+              <code>.json</code> document, or the full{" "}
+              <code>.openplural.zip</code> bundle (the bundle restores
+              avatars and embedded images too).
+            </p>
+            <input
+              type="file"
+              accept=".json,.zip,.openplural.zip,application/json,application/zip"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={onBack}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                Export summary
+                {preview.system_name && (
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    - {preview.system_name}
+                  </span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>Fronts: <strong>{preview.front_count}</strong></div>
+              <div>Groups: <strong>{preview.group_count}</strong></div>
+              <div>Tags: <strong>{preview.tag_count}</strong></div>
+              <div>Custom fields: <strong>{preview.custom_field_count}</strong></div>
+              <div>Journals: <strong>{preview.journal_count}</strong></div>
+              <div>Messages: <strong>{preview.message_count}</strong></div>
+              <div>Polls: <strong>{preview.poll_count}</strong></div>
+              <div>Reminders: <strong>{preview.reminder_count}</strong></div>
+              <div>Notification channels: <strong>{preview.channel_count}</strong></div>
+              {preview.archive && (
+                <div>Images: <strong>{preview.image_count}</strong></div>
+              )}
+            </CardContent>
+          </Card>
+
+          {preview.lineage_length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              This file carries history from{" "}
+              {preview.lineage_length.toLocaleString()} prior export(s).
+            </p>
+          )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="System profile (name, description, color, tag, safety + retention settings)"
+                checked={systemProfile}
+                onChange={setSystemProfile}
+              />
+              <Checkbox
+                label={`Fronts (${preview.front_count.toLocaleString()} entries)`}
+                checked={importFronts}
+                onChange={setImportFronts}
+              />
+              <Checkbox
+                label="Groups"
+                checked={importGroups}
+                onChange={setImportGroups}
+              />
+              <Checkbox
+                label="Tags"
+                checked={importTags}
+                onChange={setImportTags}
+              />
+              <Checkbox
+                label="Custom fields (definitions + values)"
+                checked={importFields}
+                onChange={setImportFields}
+              />
+              <Checkbox
+                label={`Journals (${preview.journal_count.toLocaleString()} entries, with edit history)`}
+                checked={importJournals}
+                onChange={setImportJournals}
+              />
+              <Checkbox
+                label={`Messages (${preview.message_count.toLocaleString()} board posts)`}
+                checked={importMessages}
+                onChange={setImportMessages}
+              />
+              <Checkbox
+                label={`Polls (${preview.poll_count.toLocaleString()}, with votes + audit log)`}
+                checked={importPolls}
+                onChange={setImportPolls}
+              />
+              <Checkbox
+                label={`Notification setup (${preview.channel_count.toLocaleString()} channels - recipients re-activate on this instance)`}
+                checked={importNotifications}
+                onChange={setImportNotifications}
+              />
+              <div>
+                <Checkbox
+                  label={`Reminders (${preview.reminder_count.toLocaleString()})`}
+                  checked={importReminders && importNotifications}
+                  onChange={setImportReminders}
+                />
+                {!importNotifications && (
+                  <p className="ml-6 text-xs text-muted-foreground">
+                    Reminders attach to a notification channel, so they need
+                    Notification setup enabled to come across.
+                  </p>
+                )}
+              </div>
+              {preview.archive && (
+                <div>
+                  <Checkbox
+                    label={`Restore images (${preview.image_count.toLocaleString()} bundled)`}
+                    checked={restoreImages}
+                    onChange={setRestoreImages}
+                  />
+                  <p className="ml-6 text-xs text-muted-foreground">
+                    Avatars and embedded images are re-uploaded to this
+                    account (they count toward your storage quota). Unticked,
+                    image references are removed like a plain JSON import.
+                  </p>
+                </div>
+              )}
 
               <ConflictStrategyField
                 value={conflictStrategy}

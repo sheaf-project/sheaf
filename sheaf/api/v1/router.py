@@ -23,6 +23,7 @@ from sheaf.api.v1 import (
     messages,
     notification_channels,
     notifications_public,
+    openplural_import,
     pk_import,
     pluralspace_import,
     polls,
@@ -148,6 +149,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     pluralspace_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    openplural_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 v1_router.include_router(

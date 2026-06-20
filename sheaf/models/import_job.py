@@ -34,6 +34,11 @@ class ImportJobSource(enum.StrEnum):
     SHEAF_ARCHIVE = "sheaf_archive"
     PLURALSPACE_FILE = "pluralspace_file"
     PRISM_FILE = "prism_file"
+    # OpenPlural v0.1 envelope: a bare .json document or an .openplural.zip
+    # bundle (openplural.json + assets/). The runner sniffs which by the
+    # zip magic; both translate to the native shape and reuse the Sheaf
+    # JSON / archive importers underneath.
+    OPENPLURAL_FILE = "openplural_file"
 
 
 class ImportJobStatus(enum.StrEnum):

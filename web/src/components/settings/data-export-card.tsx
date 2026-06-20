@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type ExportMode = "with_images" | "account_data";
+type ExportFormat = "sheaf_native" | "openplural";
 
 function formatBytes(n: number | null): string {
   if (n === null) return "—";
@@ -138,6 +139,7 @@ export function DataExportCard() {
   const qc = useQueryClient();
   const [syncing, setSyncing] = useState(false);
   const [mode, setMode] = useState<ExportMode | null>(null);
+  const [format, setFormat] = useState<ExportFormat>("sheaf_native");
   const [searchParams, setSearchParams] = useSearchParams();
   const highlightJobId = searchParams.get("job");
   // Row refs so we can scroll the highlighted backup into view once
@@ -236,6 +238,7 @@ export function DataExportCard() {
     if (mode === "with_images") {
       createJob.mutate({
         include_images: true,
+        format,
         password,
         totp_code: totp || undefined,
       });
@@ -286,6 +289,41 @@ export function DataExportCard() {
               need to be re-uploaded by hand. The image bytes are present
               for your records.
             </p>
+            <fieldset className="space-y-2 mb-3">
+              <legend className="text-sm font-medium mb-1">Format</legend>
+              <label className="flex items-start gap-2 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="export-format"
+                  className="mt-0.5 h-4 w-4 border-input"
+                  checked={format === "sheaf_native"}
+                  onChange={() => setFormat("sheaf_native")}
+                />
+                <span>
+                  Sheaf (native)
+                  <span className="block text-xs text-muted-foreground">
+                    Re-importable into another Sheaf instance with full
+                    fidelity.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="export-format"
+                  className="mt-0.5 h-4 w-4 border-input"
+                  checked={format === "openplural"}
+                  onChange={() => setFormat("openplural")}
+                />
+                <span>
+                  OpenPlural
+                  <span className="block text-xs text-muted-foreground">
+                    An OpenPlural v0.1 bundle (.openplural.zip) for
+                    interchange with other OpenPlural-compatible apps.
+                  </span>
+                </span>
+              </label>
+            </fieldset>
             <Button onClick={() => setMode("with_images")} variant="outline">
               Build full backup (with images)
             </Button>

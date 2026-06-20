@@ -36,6 +36,10 @@ export function listExportJobs() {
 
 export function createExportJob(body: {
   include_images: boolean;
+  // Artefact format: "sheaf_native" (export.json + images/) or
+  // "openplural" (an .openplural.zip bundle). Defaults server-side to
+  // "sheaf_native" when omitted.
+  format?: "sheaf_native" | "openplural";
   password: string;
   totp_code?: string;
 }) {
