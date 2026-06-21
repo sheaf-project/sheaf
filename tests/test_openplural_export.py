@@ -218,6 +218,51 @@ def test_parse_json_rejects_non_dict_and_bad_version():
         parse_json(json.dumps({"openplural_version": "9.9"}).encode())
 
 
+def test_front_events_convert_to_intervals():
+    """A switch-log file (front_events) becomes Sheaf interval fronts: each
+    event runs until the next, an empty-assignment event is a gap, and the
+    last event stays open-ended."""
+    env = {
+        "openplural_version": "0.1",
+        "members": [{"id": "m1", "name": "A"}, {"id": "m2", "name": "B"}],
+        "front_events": [
+            {"id": "e1", "at": "2026-01-01T00:00:00+00:00",
+             "assignments": [{"member_id": "m1"}]},
+            {"id": "e2", "at": "2026-01-02T00:00:00+00:00",
+             "assignments": [{"member_id": "m1"}, {"member_id": "m2"}]},
+            {"id": "e3", "at": "2026-01-03T00:00:00+00:00", "assignments": []},
+        ],
+    }
+    fronts = to_native(env)["fronts"]
+    assert len(fronts) == 2  # e3 is a gap, emits no interval
+    assert fronts[0]["member_ids"] == ["m1"]
+    assert fronts[0]["started_at"] == "2026-01-01T00:00:00+00:00"
+    assert fronts[0]["ended_at"] == "2026-01-02T00:00:00+00:00"
+    assert sorted(fronts[1]["member_ids"]) == ["m1", "m2"]
+    # The gap event closes the second interval.
+    assert fronts[1]["ended_at"] == "2026-01-03T00:00:00+00:00"
+
+
+def test_front_events_dedup_against_periods():
+    """A file carrying both a period and an identical event collapses to one
+    front (no double-import); the open-ended period is preserved."""
+    env = {
+        "openplural_version": "0.1",
+        "members": [{"id": "m1", "name": "A"}],
+        "front_periods": [
+            {"id": "p1", "started_at": "2026-01-01T00:00:00+00:00", "ended_at": None,
+             "assignments": [{"member_id": "m1"}]},
+        ],
+        "front_events": [
+            {"id": "e1", "at": "2026-01-01T00:00:00+00:00",
+             "assignments": [{"member_id": "m1"}]},
+        ],
+    }
+    fronts = to_native(env)["fronts"]
+    assert len(fronts) == 1
+    assert fronts[0]["ended_at"] is None
+
+
 def test_privacy_buckets_round_to_known():
     native = _native()
     native["members"][0]["privacy"] = "weird-value"

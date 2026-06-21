@@ -229,8 +229,8 @@ def to_native(envelope: dict) -> dict:
         )
     native["custom_fields"] = fields
 
-    # --- Front periods -> fronts ------------------------------------------
-    fronts: list[dict] = []
+    # --- Fronts: front_periods (intervals) + front_events (switch log) ----
+    period_fronts: list[dict] = []
     for f in envelope.get("front_periods", []) or []:
         if not isinstance(f, dict):
             continue
@@ -239,7 +239,7 @@ def to_native(envelope: dict) -> dict:
             for a in (f.get("assignments") or [])
             if isinstance(a, dict) and a.get("member_id")
         ]
-        fronts.append(
+        period_fronts.append(
             {
                 "id": f.get("id"),
                 "started_at": f.get("started_at"),
@@ -248,6 +248,24 @@ def to_native(envelope: dict) -> dict:
                 "custom_status": f.get("status"),
             }
         )
+    # Some apps record fronting as a switch log rather than intervals;
+    # derive intervals from it. Both shapes can co-exist in one file, so
+    # dedup the union by normalised interval + member set (the importer's
+    # own dedup keys on the same thing, but doing it here keeps a file
+    # carrying both representations from double-importing).
+    event_fronts = _fronts_from_events(envelope.get("front_events") or [])
+    seen: set[tuple] = set()
+    fronts: list[dict] = []
+    for fr in period_fronts + event_fronts:
+        key = (
+            fr["started_at"],
+            fr["ended_at"],
+            tuple(sorted(mid for mid in fr["member_ids"] if mid)),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        fronts.append(fr)
     native["fronts"] = fronts
 
     # --- Notes -> journals ------------------------------------------------
@@ -325,6 +343,48 @@ def _file_extensions(envelope: dict) -> dict:
         return {}
     sheaf = ext.get(EXT_NS)
     return sheaf if isinstance(sheaf, dict) else {}
+
+
+def _fronts_from_events(events: object) -> list[dict]:
+    """Convert OpenPlural point-in-time ``front_events`` (a switch log) into
+    Sheaf interval fronts.
+
+    Each event names who is fronting *from its timestamp onward*; the
+    interval ends at the next event. An event with no assignments is a gap
+    (it closes the previous interval and opens none); the final event stays
+    open-ended (currently fronting). This mirrors the PluralKit switch-log
+    to front-interval conversion - the same model, a different source field.
+    """
+    timed: list[tuple[str, list[str], str]] = []
+    for idx, e in enumerate(events or []):
+        if not isinstance(e, dict):
+            continue
+        at = e.get("at")
+        if not at:
+            continue
+        member_ids = [
+            a.get("member_id")
+            for a in (e.get("assignments") or [])
+            if isinstance(a, dict) and a.get("member_id")
+        ]
+        timed.append((at, member_ids, str(e.get("id") or f"fe{idx}")))
+    timed.sort(key=lambda t: t[0])
+
+    fronts: list[dict] = []
+    for i, (at, member_ids, eid) in enumerate(timed):
+        if not member_ids:
+            continue  # gap: nobody fronting from here, no interval emitted
+        ended_at = timed[i + 1][0] if i + 1 < len(timed) else None
+        fronts.append(
+            {
+                "id": f"event-{eid}",
+                "started_at": at,
+                "ended_at": ended_at,
+                "member_ids": member_ids,
+                "custom_status": None,
+            }
+        )
+    return fronts
 
 
 def _pluralkit_id(source_refs: object) -> str | None:

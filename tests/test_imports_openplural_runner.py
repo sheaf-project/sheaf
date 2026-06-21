@@ -173,6 +173,33 @@ def test_preview_reports_counts_and_lineage(auth_client: httpx.Client):
     assert auth_client.get("/v1/members").json() == []
 
 
+def test_front_events_imported_as_fronts(auth_client: httpx.Client):
+    """A switch-log style file (front_events, no front_periods) imports its
+    fronting history as intervals instead of dropping it."""
+    env = {
+        "openplural_version": "0.1",
+        "producer": {"app": "PluralKit", "app_id": "pluralkit"},
+        "systems": [{"id": "s1", "name": "SwitchLog Sys", "privacy": "public"}],
+        "members": [
+            {"id": "m1", "name": "EventIris", "privacy": "private"},
+            {"id": "m2", "name": "EventJay", "privacy": "private"},
+        ],
+        "front_events": [
+            {"id": "e1", "at": "2026-01-01T00:00:00+00:00",
+             "assignments": [{"member_id": "m1"}]},
+            {"id": "e2", "at": "2026-01-02T00:00:00+00:00",
+             "assignments": [{"member_id": "m1"}, {"member_id": "m2"}]},
+        ],
+    }
+    job = _post(auth_client, json.dumps(env).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["counts"]["members_imported"] == 2, final["counts"]
+    assert final["counts"]["fronts_imported"] == 2, final["counts"]
+
+
 def _foreign_envelope_bytes() -> bytes:
     """An envelope as if from another app, carrying data Sheaf cannot model."""
     env = {

@@ -274,6 +274,14 @@ lifted directly into the native dict.
 - **Front status is free text.** `fronts[].custom_status` becomes
   `FrontPeriod.status` verbatim; there is no controlled vocabulary on the Sheaf
   side, so none is imposed.
+- **Fronting accepts both shapes.** Sheaf stores fronting as intervals
+  (`FrontPeriod`). On import it reads `front_periods` directly and also derives
+  intervals from `front_events` (a point-in-time switch log): each event sets
+  who is fronting until the next event, an empty-assignment event is a gap, and
+  the last event stays open-ended (same conversion as the PluralKit switch log).
+  A file carrying both representations is de-duplicated by interval + member set.
+  Sheaf only ever *emits* `front_periods`, so a re-export normalises events to
+  intervals (the fronting information is preserved; the event shape is not).
 - **Tags are taxonomy.** Sheaf tags become `TaxonomyTerm` with `kind: "tag"`;
   the importer only lifts terms whose `kind` is `tag` back into Sheaf tags, so a
   future taxonomy of another kind round-trips through extensions rather than
@@ -303,7 +311,7 @@ What is preserved (`services/openplural_archive.py`, `extract_residual`):
 | Foreign `extensions` namespaces | File-level `extensions` keys other than `sheaf` (e.g. `extensions.prism`). |
 | `chat` module | Whole object, re-advertised in `capabilities.modules` on export. |
 | `relationships` module | Whole object, re-advertised in `capabilities.modules` on export. |
-| `front_events` / `front_comments` | Fronting shapes Sheaf has no model for (intervals only; `front_events` conversion is tracked as a separate follow-up). |
+| `front_comments` | Time-anchored comments on fronting; Sheaf fronts have a free-text status but no per-comment model. (`front_events` are NOT preserved here - they are imported as intervals, see the fronting edge case below.) |
 | Non-tag `taxonomy_terms` + their assignments | Sheaf models only `kind: "tag"`; roles and other kinds are preserved. |
 
 Storage: the residual is JSON, zlib-compressed, then encrypted at rest (it can

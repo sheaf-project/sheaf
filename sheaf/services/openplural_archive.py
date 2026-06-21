@@ -34,10 +34,12 @@ from sheaf.crypto import decrypt, encrypt
 _OWN_NS = "sheaf"
 
 # Whole top-level objects/sections Sheaf does not translate. Captured
-# verbatim. `chat` / `relationships` are spec modules; `front_events` /
-# `front_comments` are fronting shapes Sheaf has no model for (it stores
-# intervals only - front_events conversion is tracked separately).
-_PASSTHROUGH_TOP_LEVEL = ("chat", "relationships", "front_events", "front_comments")
+# verbatim. `chat` / `relationships` are spec modules Sheaf has no feature
+# for; `front_comments` are time-anchored comments on fronting that Sheaf
+# has no model for. NB `front_events` are NOT here: the importer converts
+# them to interval fronts (see openplural_import._fronts_from_events), so
+# they are consumed, not preserved.
+_PASSTHROUGH_TOP_LEVEL = ("chat", "relationships", "front_comments")
 
 
 def extract_residual(envelope: dict) -> dict:
