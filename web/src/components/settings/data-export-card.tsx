@@ -213,14 +213,16 @@ export function DataExportCard() {
   async function handleSyncJsonExport() {
     setSyncing(true);
     try {
-      const data = await exportData();
+      const data = await exportData(format);
       const blob = new Blob([JSON.stringify(data, null, 2)], {
         type: "application/json",
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `sheaf-export-${new Date().toISOString().slice(0, 10)}.json`;
+      const date = new Date().toISOString().slice(0, 10);
+      const ext = format === "openplural" ? "openplural.json" : "json";
+      a.download = `sheaf-export-${date}.${ext}`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("Data exported");
@@ -267,30 +269,11 @@ export function DataExportCard() {
               Re-importable into another Sheaf instance via{" "}
               <strong>Data import</strong> below.
             </p>
-            <Button
-              onClick={handleSyncJsonExport}
-              variant="outline"
-              disabled={syncing}
-            >
-              {syncing ? "Exporting..." : "Export (JSON only)"}
-            </Button>
-          </div>
-
-          <div className="border-t pt-4">
-            <p className="text-sm text-muted-foreground mb-2 max-w-prose">
-              Full backup including image bytes (avatars, journal embeds,
-              bio history). Builds in the background — typically a few
-              minutes — then we'll email you and show a download button
-              here. The file is available for 72 hours.
-            </p>
-            <p className="text-xs text-muted-foreground mb-3 max-w-prose">
-              Note: importing this zip into another Sheaf instance brings
-              text content (members, journals, etc.) but image attachments
-              need to be re-uploaded by hand. The image bytes are present
-              for your records.
-            </p>
             <fieldset className="space-y-2 mb-3">
               <legend className="text-sm font-medium mb-1">Format</legend>
+              <p className="text-xs text-muted-foreground mb-2 max-w-prose">
+                Applies to both the JSON export here and the full backup below.
+              </p>
               <label className="flex items-start gap-2 text-sm cursor-pointer">
                 <input
                   type="radio"
@@ -318,12 +301,41 @@ export function DataExportCard() {
                 <span>
                   OpenPlural
                   <span className="block text-xs text-muted-foreground">
-                    An OpenPlural v0.1 bundle (.openplural.zip) for
-                    interchange with other OpenPlural-compatible apps.
+                    OpenPlural v0.1, for interchange with other
+                    OpenPlural-compatible apps. JSON export here is uri-only;
+                    the full backup is a .openplural.zip with image bytes.
                   </span>
                 </span>
               </label>
             </fieldset>
+            <Button
+              onClick={handleSyncJsonExport}
+              variant="outline"
+              disabled={syncing}
+            >
+              {syncing ? "Exporting..." : "Export (JSON only)"}
+            </Button>
+          </div>
+
+          <div className="border-t pt-4">
+            <p className="text-sm text-muted-foreground mb-2 max-w-prose">
+              Full backup including image bytes (avatars, journal embeds,
+              bio history). Builds in the background — typically a few
+              minutes — then we'll email you and show a download button
+              here. The file is available for 72 hours.
+            </p>
+            <p className="text-xs text-muted-foreground mb-3 max-w-prose">
+              Note: importing this zip into another Sheaf instance brings
+              text content (members, journals, etc.) but image attachments
+              need to be re-uploaded by hand. The image bytes are present
+              for your records.
+            </p>
+            <p className="text-xs text-muted-foreground mb-3 max-w-prose">
+              Uses the <strong>format</strong> selected above
+              {format === "openplural"
+                ? " (OpenPlural .openplural.zip)."
+                : " (Sheaf native zip)."}
+            </p>
             <Button onClick={() => setMode("with_images")} variant="outline">
               Build full backup (with images)
             </Button>
