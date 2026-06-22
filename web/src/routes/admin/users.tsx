@@ -25,6 +25,7 @@ import {
   listUserSessionsAdmin,
   listUserImportJobs,
   viewImportJobDetail,
+  userSecurityEvents,
   suspendUser,
   terminateUserSession,
   unbanUser,
@@ -279,6 +280,94 @@ function ImportLogsSection({ userId }: { userId: string }) {
   );
 }
 
+function SecurityEventsSection({ userId }: { userId: string }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState(false);
+
+  // Viewing the timeline writes a `security_history_view` audit row, so the
+  // reason is required and the audit list is refreshed on success.
+  const view = useMutation({
+    mutationFn: (why: string) => userSecurityEvents(userId, why),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "explain", userId] });
+      setConfirming(false);
+      setReason("");
+    },
+  });
+  const data = view.data;
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-muted-foreground">Security events:</span>
+        {confirming ? (
+          <div className="flex items-center gap-1">
+            <Input
+              className="h-6 w-44 text-[10px]"
+              placeholder="Reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="default"
+              className="h-6 text-[10px]"
+              disabled={!reason.trim() || view.isPending}
+              onClick={() => view.mutate(reason)}
+            >
+              View
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px]"
+              onClick={() => {
+                setConfirming(false);
+                setReason("");
+              }}
+            >
+              X
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px]"
+            onClick={() => setConfirming(true)}
+          >
+            {data ? "Refresh" : "View timeline"}
+          </Button>
+        )}
+      </div>
+      {data && (
+        <ul className="space-y-0.5 font-mono">
+          {data.events.map((e) => (
+            <li key={e.id}>
+              {new Date(e.created_at).toLocaleString()} · {e.event_type} ·{" "}
+              <span
+                className={
+                  e.outcome === "success" || e.outcome === "sent"
+                    ? "text-muted-foreground"
+                    : "text-destructive"
+                }
+              >
+                {e.outcome}
+              </span>
+              {e.ip ? ` · ${e.ip}` : ""}
+            </li>
+          ))}
+          {data.events.length === 0 && (
+            <li className="text-muted-foreground">(none)</li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function RateLimitSection({ userId }: { userId: string }) {
   const [showAll, setShowAll] = useState(false);
   const { data } = useQuery<RateLimitHistoryResponse>({
@@ -405,6 +494,7 @@ function ExplainPanel({ userId }: { userId: string }) {
               )}
               <SessionsSection userId={userId} />
               <RateLimitSection userId={userId} />
+              <SecurityEventsSection userId={userId} />
               <ImportLogsSection userId={userId} />
               {data.recent_admin_audit.length > 0 && (
                 <div>
