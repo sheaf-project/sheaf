@@ -48,6 +48,15 @@ class ExportJob(UUIDMixin, Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
 
+    # Output format: "sheaf_native" (export.json + images/) or
+    # "openplural" (openplural.json + assets/, an .openplural.zip bundle).
+    format: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="sheaf_native",
+        server_default="sheaf_native",
+    )
+
     # State machine: pending -> running -> done | failed; done -> expired
     # after the file is cleaned up. EXPIRED rows stick around so the user
     # can see the historical request even after the file is gone.

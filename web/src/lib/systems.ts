@@ -12,8 +12,9 @@ export function updateMySystem(data: SystemUpdate) {
   });
 }
 
-export function exportData() {
-  return apiFetch<Record<string, unknown>>("/v1/export");
+export function exportData(format: "sheaf_native" | "openplural" = "sheaf_native") {
+  const q = format === "openplural" ? "?format=openplural" : "";
+  return apiFetch<Record<string, unknown>>(`/v1/export${q}`);
 }
 
 // --- Article 15 + async export jobs ---------------------------------------
@@ -36,6 +37,10 @@ export function listExportJobs() {
 
 export function createExportJob(body: {
   include_images: boolean;
+  // Artefact format: "sheaf_native" (export.json + images/) or
+  // "openplural" (an .openplural.zip bundle). Defaults server-side to
+  // "sheaf_native" when omitted.
+  format?: "sheaf_native" | "openplural";
   password: string;
   totp_code?: string;
 }) {

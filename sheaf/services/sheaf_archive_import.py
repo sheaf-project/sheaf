@@ -82,15 +82,20 @@ class ParsedArchive:
 
     The zip handle stays open as long as this struct exists so image
     bytes can be fetched lazily by storage key.
+
+    `asset_prefix` is the in-zip directory blobs live under. The native
+    Sheaf archive uses ``images/``; the OpenPlural bundle reuses this
+    same struct with ``assets/`` (see ``openplural_import``).
     """
 
     data: dict
     zf: zipfile.ZipFile
     image_keys: set[str] = field(default_factory=set)
+    asset_prefix: str = "images/"
 
     def read_image(self, key: str) -> bytes | None:
-        """Bytes for `images/<key>`, or None when absent / over-cap."""
-        path = f"images/{key}"
+        """Bytes for `<asset_prefix><key>`, or None when absent / over-cap."""
+        path = f"{self.asset_prefix}{key}"
         if key not in self.image_keys:
             return None
         try:

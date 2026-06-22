@@ -171,6 +171,23 @@ bucket. The async `/v1/export/jobs` endpoint produces a zip with image bytes
 included; the import side that consumes those zips is on the roadmap (see
 [CHANGELOG.md](../CHANGELOG.md)).
 
+## OpenPlural import
+
+For moving data in from any app that speaks the
+[OpenPlural](https://github.com/skylartaylor/openplural) v0.1 standard, including
+a Sheaf OpenPlural export. Accepts either a bare `.json` document or an
+`.openplural.zip` bundle (`openplural.json` + `assets/`); the runner detects
+which by content. The envelope is translated back to the native shape and run
+through the same importer as a Sheaf re-import, so dedup, the member cap, the
+image-restore pipeline (for bundles), and the avatar-policy gate all apply. A
+file whose `openplural_version` this build does not understand is rejected
+rather than partially imported.
+
+Sheaf round-trips its own OpenPlural exports losslessly: anything the v0.1 spec
+cannot model rides under `extensions.sheaf.*` and is restored on import. See
+[OPENPLURAL.md](OPENPLURAL.md) for the full mapping, the per-version
+implementation log, and the known gaps.
+
 ---
 
 ## API surface

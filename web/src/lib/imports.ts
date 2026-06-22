@@ -16,7 +16,8 @@ export type ImportJobSource =
   | "sheaf_file"
   | "sheaf_archive"
   | "pluralspace_file"
-  | "prism_file";
+  | "prism_file"
+  | "openplural_file";
 
 export type ImportJobStatus =
   | "pending"
@@ -78,6 +79,7 @@ export const SOURCE_LABELS: Record<ImportJobSource, string> = {
   sheaf_archive: "Sheaf (with images)",
   pluralspace_file: "PluralSpace",
   prism_file: "Prism",
+  openplural_file: "OpenPlural",
 };
 
 const TERMINAL = new Set<ImportJobStatus>(["complete", "failed", "cancelled"]);

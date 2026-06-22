@@ -414,6 +414,30 @@ async def run_import(
                             _coerce_int(retention[key], default=0, minimum=0),
                         )
 
+            # OpenPlural import residual: a native export carries it as a
+            # plain dict (decrypted in export.py). Re-pack (compress +
+            # encrypt) and merge onto the column so a Sheaf backup/restore
+            # preserves another app's data the same way the OpenPlural
+            # importer does. See services/openplural_archive.py.
+            op_archive = sys_data.get("openplural_archive")
+            if isinstance(op_archive, dict) and op_archive:
+                from sheaf.config import settings
+                from sheaf.services.openplural_archive import (
+                    merge_residual,
+                    pack_residual,
+                    unpack_residual,
+                )
+
+                merged = merge_residual(
+                    unpack_residual(system.openplural_archive), op_archive
+                )
+                token, _warn = pack_residual(
+                    merged,
+                    max_bytes=settings.openplural_max_preserved_mb * 1024 * 1024,
+                )
+                if token is not None:
+                    system.openplural_archive = token
+
     # --- Members ---
     export_members = data.get("members", [])
     if member_ids is not None:

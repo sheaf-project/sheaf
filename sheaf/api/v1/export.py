@@ -2,7 +2,7 @@
 
 Returns the user's plural-system content in a structured, re-importable
 JSON format. Account/identity data + server-derived telemetry (sessions,
-API key audit, IPs) live in the Article 15 endpoint instead — they
+API key audit, IPs) live in the Article 15 endpoint instead - they
 shouldn't ride along when someone shares their export with another
 person or imports it into a different Sheaf instance.
 
@@ -13,8 +13,9 @@ delivered as a zip via S3-presigned download or filesystem stream.
 
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -45,6 +46,7 @@ from sheaf.services import export_storage
 from sheaf.services.custom_fields import field_value_plaintext
 from sheaf.services.journals import entry_plaintext, revision_plaintext
 from sheaf.services.members import member_plaintext
+from sheaf.services.openplural_archive import unpack_residual
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -53,11 +55,19 @@ router = APIRouter(prefix="/export", tags=["export"])
 async def export_all(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    format: Literal["sheaf", "openplural"] = Query(
+        "sheaf",
+        description=(
+            "Output format. 'sheaf' is the native re-importable JSON; "
+            "'openplural' wraps it in an OpenPlural v0.1 envelope "
+            "(uri-only assets; use the async zip export for image bytes)."
+        ),
+    ),
 ):
-    """Export the user's plural-system content as JSON. Article 20 — data
+    """Export the user's plural-system content as JSON. Article 20 - data
     portability. Re-importable into another Sheaf instance.
 
-    Excludes account-identity data (email, sessions, API keys, IPs) — that
+    Excludes account-identity data (email, sessions, API keys, IPs) - that
     lives in the separate /v1/account/data endpoint (Article 15).
     """
 
@@ -65,10 +75,10 @@ async def export_all(
     result = await db.execute(select(System).where(System.user_id == user.id))
     system = result.scalar_one_or_none()
     if system is None:
-        return _empty_export()
+        return _maybe_openplural(_empty_export(), format)
 
     # Members. Member.name is encrypted ciphertext, so DB-side ORDER BY on
-    # it is meaningless — sort in Python after decrypting names below.
+    # it is meaningless - sort in Python after decrypting names below.
     members_result = await db.execute(
         select(Member).where(Member.system_id == system.id)
     )
@@ -120,7 +130,7 @@ async def export_all(
 
     # Content revisions: bio (member.id) + journal-entry (entry.id) edit
     # history. Polymorphic, so we filter by target_id IN ({member_ids,
-    # journal_ids}) — much cheaper than a per-row lookup.
+    # journal_ids}) - much cheaper than a per-row lookup.
     member_id_set = {m.id for m, *_ in members_with_plaintext}
     journal_id_set = {e.id for e in journal_entries}
     targets = list(member_id_set | journal_id_set)
@@ -142,7 +152,7 @@ async def export_all(
     else:
         revisions = []
 
-    # Watch tokens + their channels — owner-side notification config the
+    # Watch tokens + their channels - owner-side notification config the
     # user explicitly built up. Re-importable in the sense that the
     # filter/trigger/payload/delivery shaping config carries over to
     # another instance; per-channel destination state (recipient
@@ -164,7 +174,7 @@ async def export_all(
     )
     watch_tokens = list(tokens_result.scalars().all())
 
-    # File inventory — image bytes themselves don't ride along with the
+    # File inventory - image bytes themselves don't ride along with the
     # sync export (use the async with-images job for that), but the
     # metadata IS portable user data and should be in the Article 20
     # dump so re-import can know "you had these files" even if it
@@ -176,7 +186,7 @@ async def export_all(
     )
     uploaded_files = list(files_result.scalars().all())
 
-    # Reminders — config the user explicitly set up. Title and body are
+    # Reminders - config the user explicitly set up. Title and body are
     # encrypted at rest; we decrypt for the export so the user has the
     # plaintext. Pending queue rows are runtime state and not exported.
     from sheaf.models.reminder import Reminder
@@ -189,7 +199,7 @@ async def export_all(
     )
     reminders = list(reminders_result.scalars().all())
 
-    # Polls — same encryption discipline as reminders. We export both
+    # Polls - same encryption discipline as reminders. We export both
     # current vote rows and the audit log, since the audit is part of
     # what makes the poll legible after the fact.
     from sheaf.models.poll import Poll
@@ -206,7 +216,7 @@ async def export_all(
     )
     polls = list(polls_result.scalars().all())
 
-    # Messages — boards + threads. Body is decrypted; deleted messages
+    # Messages - boards + threads. Body is decrypted; deleted messages
     # excluded (those carry no remaining content). Revisions ride the
     # existing content_revisions surface and aren't dumped here per the
     # same shape as journals.
@@ -219,7 +229,7 @@ async def export_all(
     )
     messages_rows = list(msgs_result.scalars().all())
 
-    return {
+    native = {
         "version": "2",
         "system": _system_dict(system),
         "members": [
@@ -304,6 +314,22 @@ async def export_all(
         "polls": [_poll_dict(p) for p in polls],
         "messages": [_message_dict(m) for m in messages_rows],
     }
+    return _maybe_openplural(native, format)
+
+
+def _maybe_openplural(native: dict, format: str) -> dict:
+    """Return the native dict unchanged, or wrap it in an OpenPlural v0.1
+    envelope when `format == "openplural"`.
+
+    The sync path produces uri-only assets (no image bytes); the async
+    zip builder calls `openplural_export.build_envelope` directly with
+    `include_asset_bytes=True` for the bundle.
+    """
+    if format != "openplural":
+        return native
+    from sheaf.services.openplural_export import build_envelope
+
+    return build_envelope(native, exported_at=datetime.now(UTC).isoformat())
 
 
 def _empty_export() -> dict:
@@ -362,6 +388,10 @@ def _system_dict(system: System) -> dict:
             "journal_max_revision_days": system.journal_max_revision_days,
             "pinned_revision_max_per_target": system.pinned_revision_max_per_target,
         },
+        # OpenPlural import residual (foreign data Sheaf cannot model),
+        # decrypted to a plain dict so it rides the portability export and
+        # is re-merged on a Sheaf OpenPlural export. None when empty.
+        "openplural_archive": unpack_residual(system.openplural_archive) or None,
     }
 
 
@@ -421,7 +451,7 @@ def _channel_dict(channel: NotificationChannel) -> dict:
     - webhook_secret_encrypted (lives in a separate column; would need
       to be re-entered by the owner on a new instance anyway)
 
-    destination_config is included verbatim — it may carry a recipient's
+    destination_config is included verbatim - it may carry a recipient's
     push endpoint or a webhook URL, all of which the owner already has
     in some external system; the secret bits (BYO Pushover app_token,
     ntfy auth header) are user-set credentials that the owner controls
@@ -593,6 +623,9 @@ def _poll_dict(poll) -> dict:
 
 class ExportJobRequest(BaseModel):
     include_images: bool = False
+    # Artefact format: "sheaf_native" (export.json + images/) or
+    # "openplural" (openplural.json + assets/, an .openplural.zip bundle).
+    format: Literal["sheaf_native", "openplural"] = "sheaf_native"
     # Step-up auth: same shape and rules as POST /v1/account/data. Always
     # required; mirrors the Article 15 lock since this is the broader read
     # (everything the user has, including binary blobs).
@@ -615,7 +648,7 @@ async def create_export_job(
     background; the user polls or waits for the email/banner.
 
     Step-up requires password (and TOTP if enrolled) regardless of the
-    system's `delete_confirmation` setting — async export is the highest-
+    system's `delete_confirmation` setting - async export is the highest-
     volume read endpoint we have, and the build worker delivers the file
     to whatever session ends up downloading it. Refuses API-key auth so
     a leaked key can't trigger an unattended bulk extraction.
@@ -683,6 +716,7 @@ async def create_export_job(
         id=uuid.uuid4(),
         user_id=user.id,
         include_images=body.include_images,
+        format=body.format,
         status=ExportJobStatus.PENDING,
         requested_at=datetime.now(UTC),
     )
@@ -726,7 +760,7 @@ async def download_export_job(
     """Stream the export artefact (filesystem) or 302 to a presigned URL
     (S3). Job must belong to the caller and be DONE + not yet expired.
 
-    Download is gated by the normal session/JWT auth — the step-up at
+    Download is gated by the normal session/JWT auth - the step-up at
     enqueue time is what protects against drive-by extraction; the
     download itself is just retrieving an already-built artefact.
     """
@@ -741,7 +775,10 @@ async def download_export_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Export file no longer available",
         )
-    filename = f"sheaf-export-{job.id}.zip"
+    if job.format == "openplural":
+        filename = f"sheaf-export-{job.id}.openplural.zip"
+    else:
+        filename = f"sheaf-export-{job.id}.zip"
     return await export_storage.download_response(job.file_location, filename)
 
 
@@ -760,6 +797,7 @@ def _job_to_dict(job: ExportJob) -> dict:
     return {
         "id": str(job.id),
         "include_images": job.include_images,
+        "format": job.format,
         "status": job.status,
         "requested_at": job.requested_at.isoformat(),
         "started_at": job.started_at.isoformat() if job.started_at else None,

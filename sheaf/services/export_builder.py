@@ -51,6 +51,24 @@ image references removed.
 """
 
 
+_OPENPLURAL_README = """\
+This zip is an OpenPlural v0.1 bundle export of your Sheaf data.
+
+Contents:
+- openplural.json -- your plural-system content mapped to the OpenPlural
+  v0.1 data standard (https://github.com/skylartaylor/openplural).
+  Systems, members, groups, tags, custom fields, front history, and
+  journals map to OpenPlural core records; everything Sheaf has that
+  the spec does not yet model is preserved under extensions.sheaf.*
+- assets/ -- the binary blobs (avatars, banners, journal images)
+  referenced by the assets[] entries via their bundle_path.
+
+Re-importable into Sheaf (Settings -> Import) and into any other app
+that supports OpenPlural v0.1. See docs/OPENPLURAL.md in the Sheaf
+source for the field-by-field mapping and known gaps.
+"""
+
+
 async def run_build_tick() -> int:
     """Process one batch of pending export jobs. Returns count handled.
 
@@ -113,7 +131,7 @@ async def _build(job_id: uuid.UUID) -> None:
         try:
             try:
                 tmp_path, size_bytes = await _assemble_zip_to_tempfile(
-                    db, user, include_images=job.include_images
+                    db, user, include_images=job.include_images, fmt=job.format
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Export build failed for job %s", job_id)
@@ -186,44 +204,94 @@ async def _mark_failed(db: AsyncSession, job: ExportJob, reason: str) -> None:
 
 
 async def _assemble_zip_to_tempfile(
-    db: AsyncSession, user: User, *, include_images: bool
+    db: AsyncSession, user: User, *, include_images: bool, fmt: str = "sheaf_native"
 ) -> tuple[str, int]:
     """Build the zip artefact on disk and return (path, size_bytes).
 
-    Layout:
+    Native layout (`fmt="sheaf_native"`):
         export.json   -- same shape as the sync /v1/export endpoint
         README.txt    -- explains the asymmetry around image re-import
         images/<key>  -- (when include_images) the binary blobs
 
+    OpenPlural bundle (`fmt="openplural"`):
+        openplural.json   -- OpenPlural v0.1 envelope
+        README.txt        -- bundle notes
+        assets/<key>      -- (when include_images) the referenced blobs
+
     Streams images through `zipfile.open(..., 'w')` so each blob lives
-    in RAM only while it's actively being written — never accumulates.
+    in RAM only while it's actively being written, never accumulating.
     The JSON payload is built in-memory because the sync /v1/export
     endpoint already returns the whole dict; refactoring that to
     stream would be a much bigger change.
     """
-    # Build the JSON payload by calling the same code path the sync
+    # Build the native payload by calling the same code path the sync
     # endpoint uses, so we don't drift between the two.
     from sheaf.api.v1.export import export_all  # late import to avoid cycle
 
-    json_payload = await export_all(user=user, db=db)
-    json_bytes = json.dumps(json_payload, indent=2, default=str).encode("utf-8")
+    native_payload = await export_all(user=user, db=db)
 
     tmp_dir = settings.export_build_tmp_dir or None
     fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="sheaf-export-", dir=tmp_dir)
     os.close(fd)  # zipfile reopens the path; we just needed exclusive creation
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("export.json", json_bytes)
-            zf.writestr("README.txt", _README)
+            if fmt == "openplural":
+                from sheaf.services.openplural_export import build_envelope
 
-            if include_images:
-                await _add_images(zf, db, user)
+                envelope = build_envelope(
+                    native_payload,
+                    exported_at=datetime.now(UTC).isoformat(),
+                    include_asset_bytes=include_images,
+                )
+                zf.writestr(
+                    "openplural.json",
+                    json.dumps(envelope, indent=2, default=str).encode("utf-8"),
+                )
+                zf.writestr("README.txt", _OPENPLURAL_README)
+                if include_images:
+                    await _add_openplural_assets(zf, envelope)
+            else:
+                zf.writestr(
+                    "export.json",
+                    json.dumps(native_payload, indent=2, default=str).encode("utf-8"),
+                )
+                zf.writestr("README.txt", _README)
+                if include_images:
+                    await _add_images(zf, db, user)
         size_bytes = os.path.getsize(tmp_path)
     except Exception:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_path)
         raise
     return tmp_path, size_bytes
+
+
+async def _add_openplural_assets(zf: zipfile.ZipFile, envelope: dict) -> None:
+    """Pack the blobs the OpenPlural envelope references under assets/<key>.
+
+    Only assets carrying an `extensions.sheaf.storage_key` (Sheaf-internal
+    references) have bytes to bundle; external CDN URLs stay uri-only.
+    Each blob is fetched and written one at a time so per-asset memory is
+    bounded by the largest single blob, mirroring `_add_images`.
+    """
+    storage = get_storage()
+    seen: set[str] = set()
+    for asset in envelope.get("assets", []) or []:
+        ext = (asset.get("extensions") or {}).get("sheaf") or {}
+        key = ext.get("storage_key")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            blob = await storage.get(key)
+        except Exception:  # noqa: BLE001
+            logger.warning("Skipping unreadable asset %s in OpenPlural export", key)
+            continue
+        if blob is None:
+            continue
+        with zf.open(f"assets/{key}", "w") as dest:
+            dest.write(blob)
+        del blob
 
 
 async def _add_images(

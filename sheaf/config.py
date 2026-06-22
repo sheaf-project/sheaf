@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     # the body is buffered anywhere. Must be >= the largest per-endpoint cap
     # (currently the 100MB import endpoint) plus a little multipart overhead.
     max_request_body_size_mb: int = 110
+    # OpenPlural import: max size (MB) of foreign data Sheaf cannot model
+    # (other apps' `extensions` namespaces, the chat/relationships modules,
+    # front_events/front_comments, non-tag taxonomy) that gets preserved as
+    # an opaque archive on the system and re-emitted on the next OpenPlural
+    # export. Measured on the raw (pre-compression) JSON; over this, the
+    # residual is dropped with a warning rather than stored unbounded.
+    openplural_max_preserved_mb: int = 8
+
     # Storage quotas per tier (MB). 0 = unlimited.
     storage_quota_free_mb: int = 50
     storage_quota_plus_mb: int = 500

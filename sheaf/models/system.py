@@ -139,6 +139,15 @@ class System(UUIDMixin, TimestampMixin, Base):
         Integer, nullable=True
     )
 
+    # OpenPlural import residual: foreign data Sheaf does not model (other
+    # apps' `extensions` namespaces, the chat/relationships modules,
+    # front_events/front_comments, non-tag taxonomy) preserved verbatim on
+    # import and re-merged into the next OpenPlural export, so a
+    # Sheaf-in-the-middle round-trip does not silently drop it. Stored
+    # encrypted (it can carry message bodies) and zlib-compressed; see
+    # services/openplural_archive.py. NULL when nothing was preserved.
+    openplural_archive: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Relationships
     user: Mapped["User"] = relationship(back_populates="system")
     members: Mapped[list["Member"]] = relationship(
