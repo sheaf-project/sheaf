@@ -110,15 +110,25 @@ async def _member_has_bio_revisions(
 
 @router.get("", response_model=list[MemberRead])
 async def list_members(
+    include_archived: bool = Query(
+        default=True,
+        description=(
+            "Include archived members. Defaults to true: archived members are "
+            "soft-hidden in the UI (lists / switcher) but must stay fetchable so "
+            "historical surfaces (fronts, journals) can still resolve their names. "
+            "Pass false for an active-only roster."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
     # Member.name is encrypted ciphertext, so DB-side ORDER BY on it is
     # meaningless. Decrypt then sort by display_name fallback to name.
-    result = await db.execute(
-        select(Member).where(Member.system_id == system.id)
-    )
+    query = select(Member).where(Member.system_id == system.id)
+    if not include_archived:
+        query = query.where(Member.archived_at.is_(None))
+    result = await db.execute(query)
     members = list(result.scalars().all())
     with_revisions = await _load_bio_revision_existence(
         db, [m.id for m in members]
@@ -250,7 +260,10 @@ async def top_fronters(
     )
 
     members_result = await db.execute(
-        select(Member).where(Member.system_id == system.id)
+        select(Member).where(
+            Member.system_id == system.id,
+            Member.archived_at.is_(None),
+        )
     )
     members = list(members_result.scalars().all())
 
@@ -394,6 +407,68 @@ async def delete_member(
     await db.delete(member)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{member_id}/archive",
+    response_model=MemberRead,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def archive_member(
+    member_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Archive a member: a reversible soft-hide, not a delete.
+
+    Hidden from the members list, switcher, top-fronters, and pickers, but
+    kept everywhere historical. Unlike delete there is no grace period; the
+    only optional friction is re-auth when the `archive` System Safety
+    category is on (and an auth tier is configured).
+    """
+    system = await _get_user_system(user, db)
+    if system.safety_applies_to_archive:
+        await verify_destructive_auth(
+            user,
+            system,
+            body.password if body else None,
+            body.totp_code if body else None,
+            db,
+        )
+    member = await _get_own_member(member_id, system, db)
+    if member.archived_at is None:
+        member.archived_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(member)
+    return decrypt_member_for_read(
+        member,
+        has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+    )
+
+
+@router.post(
+    "/{member_id}/unarchive",
+    response_model=MemberRead,
+    dependencies=[Depends(require_scope("members:write"))],
+)
+async def unarchive_member(
+    member_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore an archived member to active. Ungated - restoring visibility
+    is not a destructive action."""
+    system = await _get_user_system(user, db)
+    member = await _get_own_member(member_id, system, db)
+    if member.archived_at is not None:
+        member.archived_at = None
+        await db.commit()
+        await db.refresh(member)
+    return decrypt_member_for_read(
+        member,
+        has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+    )
 
 
 @router.get("/{member_id}/tags", response_model=list[TagRead])

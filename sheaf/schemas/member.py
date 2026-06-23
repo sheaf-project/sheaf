@@ -116,6 +116,9 @@ class MemberRead(BaseModel):
     # queue for deletion; null otherwise. Drives the "Pending delete" badge
     # in list views; cancelling via Settings -> Safety clears it.
     pending_delete_at: datetime | None = None
+    # Set when the member is archived (soft-hidden from lists / switcher /
+    # pickers; still shown in history). Null = active.
+    archived_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

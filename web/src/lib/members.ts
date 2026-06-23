@@ -59,6 +59,23 @@ export function deleteMember(id: string, confirm?: DestructiveConfirm) {
   });
 }
 
+/** Archive (soft-hide) a member. The optional confirm body is only needed
+ *  when the System Safety "archive" category is on and an auth tier is
+ *  configured. Returns the updated member. */
+export function archiveMember(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<Member>(`/v1/members/${id}/archive`, {
+    method: "POST",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
+}
+
+/** Restore an archived member. Ungated; no body. */
+export function unarchiveMember(id: string) {
+  return apiFetch<Member>(`/v1/members/${id}/unarchive`, {
+    method: "POST",
+  });
+}
+
 export function listMemberBioRevisions(id: string) {
   return apiFetch<ContentRevision[]>(`/v1/members/${id}/revisions`);
 }

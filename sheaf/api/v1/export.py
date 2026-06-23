@@ -253,6 +253,9 @@ async def export_all(
                 "notify_on_front_self": m.notify_on_front_self,
                 "notify_on_front_member_ids": m.notify_on_front_member_ids,
                 "created_at": m.created_at.isoformat(),
+                "archived_at": (
+                    m.archived_at.isoformat() if m.archived_at else None
+                ),
             }
             for (m, name, description) in members_with_plaintext
         ],
@@ -381,6 +384,7 @@ def _system_dict(system: System) -> dict:
             "applies_to_reminders": system.safety_applies_to_reminders,
             "applies_to_polls": system.safety_applies_to_polls,
             "applies_to_messages": system.safety_applies_to_messages,
+            "applies_to_archive": system.safety_applies_to_archive,
             "auto_pin_first_revision": system.auto_pin_first_revision,
         },
         "retention": {

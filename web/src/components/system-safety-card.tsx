@@ -64,6 +64,11 @@ const categoryLabels: {
     label: "Messages",
     desc: "Deleting a board message or thread",
   },
+  {
+    key: "applies_to_archive",
+    label: "Archive members",
+    desc: "Re-auth to archive a member. No grace period - speed-bump only.",
+  },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -415,6 +420,7 @@ const CATEGORY_KEYS = [
   "applies_to_reminders",
   "applies_to_polls",
   "applies_to_messages",
+  "applies_to_archive",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {

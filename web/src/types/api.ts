@@ -124,6 +124,11 @@ export interface Member {
    *  pending-delete grace queue; null otherwise. Drives the "Pending
    *  delete" badge + dim styling in list views. */
   pending_delete_at: string | null;
+  /** ISO timestamp when the member was archived (soft-hidden), or null
+   *  when active. Archived members are excluded from pickers and the
+   *  default member list view but still resolve in historical surfaces
+   *  (front history, journals). */
+  archived_at: string | null;
 }
 
 export interface MemberCreate {
@@ -454,6 +459,7 @@ export interface SystemSafetySettings {
   applies_to_reminders: boolean;
   applies_to_polls: boolean;
   applies_to_messages: boolean;
+  applies_to_archive: boolean;
   auto_pin_first_revision: boolean;
 }
 
@@ -472,6 +478,7 @@ export interface SystemSafetyUpdate {
   applies_to_reminders?: boolean;
   applies_to_polls?: boolean;
   applies_to_messages?: boolean;
+  applies_to_archive?: boolean;
   auto_pin_first_revision?: boolean;
   password?: string;
   totp_code?: string;

@@ -95,6 +95,7 @@ def decrypt_member_for_read(
         "updated_at": member.updated_at,
         "has_bio_revisions": has_bio_revisions,
         "pending_delete_at": pending_delete_at,
+        "archived_at": member.archived_at,
     })
 
 

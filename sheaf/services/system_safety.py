@@ -62,6 +62,12 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "reminders",
     "polls",
     "messages",
+    # Unlike the others, "archive" has no grace-able PendingAction; it only
+    # gates whether archiving a member requires re-auth (checked directly in
+    # the archive endpoint). Listed here so the settings surface treats it
+    # like any other toggle (and loosening it routes through the asymmetric
+    # delay via split_safety_changes).
+    "archive",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {

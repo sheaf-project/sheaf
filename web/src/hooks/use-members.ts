@@ -74,3 +74,35 @@ export function useDeleteMember() {
     },
   });
 }
+
+export function useArchiveMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.archiveMember(id, confirm),
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: memberKeys.all });
+      qc.invalidateQueries({ queryKey: ["members", "top-fronters"] });
+      qc.invalidateQueries({ queryKey: memberKeys.detail(id) });
+      toast.success("Member archived");
+    },
+  });
+}
+
+export function useUnarchiveMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.unarchiveMember(id),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: memberKeys.all });
+      qc.invalidateQueries({ queryKey: ["members", "top-fronters"] });
+      qc.invalidateQueries({ queryKey: memberKeys.detail(id) });
+      toast.success("Member unarchived");
+    },
+  });
+}

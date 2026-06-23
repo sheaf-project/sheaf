@@ -117,6 +117,12 @@ class System(UUIDMixin, TimestampMixin, Base):
     safety_applies_to_messages: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # Unlike the other categories (which gate the deletion grace period),
+    # this one gates whether archiving a member requires re-auth. Archive
+    # has no grace period, so this is a pure re-auth speed-bump.
+    safety_applies_to_archive: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # Auto-pin the first captured revision for each journal entry / member bio.
     # Independent of safety_applies_to_revisions: even without grace+re-auth on

@@ -44,6 +44,10 @@ export function MemberPillsInput({
   const candidates = useMemo(() => {
     const q = query.trim().toLowerCase();
     return members
+      // Don't offer archived members as new picks. Already-selected
+      // members (incl. archived ones from historical entries) still render
+      // as pills, since `selected` is derived from the full members prop.
+      .filter((m) => m.archived_at == null)
       .filter((m) => !selectedIds.includes(m.id))
       .filter((m) => {
         if (!q) return true;
