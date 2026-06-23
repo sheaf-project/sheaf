@@ -6,6 +6,11 @@ import { ColorDot } from "./color-dot";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import {
+  buildGroupTree,
+  flattenGroupTree,
+  getDescendantIds,
+} from "@/lib/group-tree";
 
 interface Props {
   selected: string[];
@@ -39,8 +44,23 @@ export function MemberSelect({
     }
   }
 
+  // Subtree-inclusive: selecting a group filters to members of it AND all
+  // its descendant subgroups.
+  const activeSubtreeIds =
+    activeGroupId !== null
+      ? getDescendantIds(activeGroupId, groups ?? [])
+      : null;
   const activeGroupMembers =
-    activeGroupId !== null ? groupMemberMap.get(activeGroupId) : null;
+    activeGroupId !== null
+      ? (() => {
+          const union = new Set<string>();
+          for (const gid of [activeGroupId, ...(activeSubtreeIds ?? [])]) {
+            const set = groupMemberMap.get(gid);
+            if (set) for (const id of set) union.add(id);
+          }
+          return union;
+        })()
+      : null;
   const activeTagMembers =
     activeTagId !== null ? tagMemberMap.get(activeTagId) : null;
   const searchLower = search.trim().toLowerCase();
@@ -74,19 +94,32 @@ export function MemberSelect({
           >
             All groups
           </Badge>
-          {groups!.map((g) => (
-            <Badge
-              key={g.id}
-              variant={activeGroupId === g.id ? "default" : "outline"}
-              className="cursor-pointer select-none gap-1.5"
-              onClick={() =>
-                setActiveGroupId(activeGroupId === g.id ? null : g.id)
-              }
-            >
-              {g.color && <ColorDot color={g.color} />}
-              {g.name}
-            </Badge>
-          ))}
+          {flattenGroupTree(buildGroupTree(groups!), new Set()).map(
+            ({ group: g, depth }) => {
+              const inActiveSubtree = activeSubtreeIds?.has(g.id) ?? false;
+              return (
+                <Badge
+                  key={g.id}
+                  variant={activeGroupId === g.id ? "default" : "outline"}
+                  style={
+                    depth > 0
+                      ? { marginLeft: Math.min(depth, 4) * 10 }
+                      : undefined
+                  }
+                  className={cn(
+                    "cursor-pointer select-none gap-1.5",
+                    inActiveSubtree && "ring-1 ring-primary/50",
+                  )}
+                  onClick={() =>
+                    setActiveGroupId(activeGroupId === g.id ? null : g.id)
+                  }
+                >
+                  {g.color && <ColorDot color={g.color} />}
+                  {g.name}
+                </Badge>
+              );
+            },
+          )}
         </div>
       )}
       {hasTags && (
