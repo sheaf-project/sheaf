@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 
 from sheaf.auth.dependencies import get_current_user
 from sheaf.models.user import User
-from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads
+from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
 from sheaf.services.sheaf_archive_import import parse_archive_async
 from sheaf.services.sheaf_archive_import import preview as archive_preview
 from sheaf.services.sheaf_import import SheafPreviewSummary, preview
@@ -28,13 +28,14 @@ MAX_IMPORT_SIZE = 100 * 1024 * 1024  # 100MB
 _ZIP_MAGIC = b"PK"
 
 
-def _parse_json_export(data: bytes) -> dict:
+async def _parse_json_export(data: bytes) -> dict:
     """Parse + shape-check a plain Sheaf export JSON file."""
     try:
         # Element-count cap (json-bomb guard), same as the async runner's
         # parse path - a preview must not be cheaper to DoS than the
-        # import itself.
-        parsed = safe_json_loads(data)
+        # import itself. Parsed off the event loop so a large export does
+        # not stall the loop while it decodes.
+        parsed = await safe_json_loads_async(data)
     except ImportPayloadError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -102,7 +103,7 @@ async def preview_import(
             "image_count": image_count,
         }
 
-    parsed_json = _parse_json_export(data)
+    parsed_json = await _parse_json_export(data)
     return {
         **_summary_dict(preview(parsed_json)),
         "archive": False,

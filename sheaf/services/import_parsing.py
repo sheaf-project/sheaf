@@ -18,6 +18,7 @@ members + groups still come in well under 100k elements.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -94,6 +95,44 @@ def safe_json_loads(
         elif isinstance(node, list):
             stack.extend(node)
     return parsed
+
+
+_json_parse_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_json_parse_semaphore() -> asyncio.Semaphore:
+    """Bound how many off-loop JSON parses run at once.
+
+    Preview endpoints parse untrusted uploads on a worker thread (so a
+    big file's parse can't stall the asyncio event loop). This caps the
+    concurrency so a burst of large uploads can't saturate the default
+    thread pool - the same Semaphore(2) the zip/decrypt parse paths use.
+    Lazily created so it binds to the running loop, not import time.
+    """
+    global _json_parse_semaphore
+    if _json_parse_semaphore is None:
+        _json_parse_semaphore = asyncio.Semaphore(2)
+    return _json_parse_semaphore
+
+
+async def safe_json_loads_async(
+    data: bytes | str,
+    *,
+    max_elements: int = DEFAULT_MAX_ELEMENTS,
+) -> Any:
+    """Off-loop variant of :func:`safe_json_loads`.
+
+    Runs the parse (and the element-count walk) on a worker thread under
+    a concurrency cap, so a large uploaded export does not block the
+    event loop for the duration of the parse. Call this from request
+    handlers (the preview endpoints); the background job runners are
+    already off the request path and can call the sync version directly.
+    Raises the same ``ImportPayloadError``.
+    """
+    async with _get_json_parse_semaphore():
+        return await asyncio.to_thread(
+            safe_json_loads, data, max_elements=max_elements
+        )
 
 
 def parse_options[OptionsT: BaseModel](

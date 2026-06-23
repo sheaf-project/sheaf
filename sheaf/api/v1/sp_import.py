@@ -6,13 +6,12 @@ parse an SP export and return a summary of importable data. Preview
 writes nothing.
 """
 
-import json
-
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 
 from sheaf.auth.dependencies import get_current_user
 from sheaf.models.user import User
 from sheaf.schemas.sp_import import SPPreviewSummary
+from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
 from sheaf.services.sp_import import preview
 
 router = APIRouter(prefix="/import", tags=["import"])
@@ -29,8 +28,8 @@ async def _parse_upload(file: UploadFile) -> dict:
             detail="Import file too large. Max 100MB.",
         )
     try:
-        return json.loads(data)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return await safe_json_loads_async(data)
+    except ImportPayloadError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid JSON file.",

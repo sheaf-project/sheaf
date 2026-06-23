@@ -23,8 +23,7 @@ from sheaf.services.openplural_import import (
     inherited_lineage,
     looks_like_zip,
     parse_bundle_async,
-    parse_json,
-    to_native,
+    parse_json_async,
 )
 from sheaf.services.sheaf_import import SheafPreviewSummary, preview
 
@@ -78,8 +77,8 @@ async def preview_openplural_import(
                 "image_count": len(parsed.image_keys),
                 "lineage_length": len(inherited_lineage(envelope)),
             }
-        envelope = parse_json(data)
-        summary = preview(to_native(envelope))
+        native, envelope = await parse_json_async(data)
+        summary = preview(native)
         return {
             **_summary_dict(summary),
             "archive": False,
