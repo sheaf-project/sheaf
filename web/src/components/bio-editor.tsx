@@ -9,6 +9,7 @@ import hljsDarkUrl from "highlight.js/styles/github-dark.min.css?url";
 import { useTheme } from "@/hooks/use-theme";
 import { useShowImageBadges } from "@/hooks/use-preferences";
 import { ImagePickerDialog } from "@/components/image-picker";
+import { MarkdownHelp } from "@/components/markdown-help";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -213,10 +214,13 @@ export function BioEditor({
     <div className="space-y-1">
       <Tabs value={tab} onValueChange={setTab}>
         <div className="flex items-center justify-between">
-          <TabsList className="h-8">
-            <TabsTrigger value="write" className="text-xs px-2 py-1">Write</TabsTrigger>
-            <TabsTrigger value="preview" className="text-xs px-2 py-1">Preview</TabsTrigger>
-          </TabsList>
+          <div className="flex items-center gap-1">
+            <TabsList className="h-8">
+              <TabsTrigger value="write" className="text-xs px-2 py-1">Write</TabsTrigger>
+              <TabsTrigger value="preview" className="text-xs px-2 py-1">Preview</TabsTrigger>
+            </TabsList>
+            <MarkdownHelp />
+          </div>
           {tab === "write" && (
             <div className="flex flex-wrap justify-end gap-0.5">
               <Button
