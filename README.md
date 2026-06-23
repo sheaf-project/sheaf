@@ -12,7 +12,7 @@
 
 Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
 
-> **Status:** selfhostable; hosted app in [open beta](https://test.sheaf.sh). Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://discord.gg/WFaKQPzFx8).
+> **Status:** selfhostable; hosted app in [open beta](https://test.sheaf.sh). Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://sheaf.sh/discord).
 
 [Android/WearOS](https://github.com/sheaf-project/android) and [iOS/WatchOS](https://github.com/sheaf-project/ios) clients are pending approval; ask on Discord for private test access.
 
