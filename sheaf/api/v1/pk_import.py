@@ -7,7 +7,6 @@ return a summary so the user can review + deselect members before
 enqueueing the real import. Preview does not write anything.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -19,6 +18,7 @@ from sheaf.schemas.pk_import import (
     PKApiPreviewRequest,
     PKPreviewSummary,
 )
+from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
 from sheaf.services.pk_api import (
     PKApiError,
     fetch_export,
@@ -42,8 +42,8 @@ async def _parse_upload(file: UploadFile) -> dict[str, Any]:
             detail="Import file too large. Max 100MB.",
         )
     try:
-        parsed = json.loads(data)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        parsed = await safe_json_loads_async(data)
+    except ImportPayloadError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid JSON file.",

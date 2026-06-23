@@ -505,3 +505,22 @@ def _get_parse_semaphore() -> asyncio.Semaphore:
 async def parse_bundle_async(blob: bytes):
     async with _get_parse_semaphore():
         return await asyncio.to_thread(parse_bundle, blob)
+
+
+async def parse_json_async(blob: bytes):
+    """Off-loop variant of :func:`parse_json` for the preview endpoint.
+
+    Returns ``(native_data, envelope)``: the native-translated dict ready
+    for ``preview()`` and the original envelope for lineage extraction.
+    Both the JSON decode and the ``to_native`` translation run on the
+    worker thread (mirroring the bundle path, which translates inside
+    ``parse_bundle``) so a large bare-JSON document does not block the
+    event loop. Shares the bundle parse semaphore.
+    """
+
+    def _parse_and_translate(b: bytes):
+        envelope = parse_json(b)
+        return to_native(envelope), envelope
+
+    async with _get_parse_semaphore():
+        return await asyncio.to_thread(_parse_and_translate, blob)

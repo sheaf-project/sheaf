@@ -211,5 +211,5 @@ This means:
 ## Questions or concerns?
 
 - File an issue at <https://github.com/sheaf-project/sheaf/issues>.
-- Discord: <https://discord.gg/WFaKQPzFx8>.
+- Discord: <https://sheaf.sh/discord>.
 - If you spot a tampered or mis-signed image, please report it via GitHub security advisory rather than a public issue.
