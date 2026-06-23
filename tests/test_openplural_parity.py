@@ -50,7 +50,7 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "safety_applies_to_revisions": EXT,
         "safety_applies_to_notifications": EXT,
         "safety_applies_to_reminders": EXT, "safety_applies_to_polls": EXT,
-        "safety_applies_to_messages": EXT,
+        "safety_applies_to_messages": EXT, "safety_applies_to_archive": EXT,
         "journal_max_revisions": EXT, "journal_max_revision_days": EXT,
         "pinned_revision_max_per_target": EXT,
         "openplural_archive": RESIDUAL,
@@ -60,6 +60,8 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "pronouns": CORE, "avatar_url": CORE, "banner_url": CORE,
         "color": CORE, "birthday": CORE, "is_custom_front": CORE,
         "privacy": CORE, "created_at": CORE,
+        # archived_at maps to the OpenPlural core Member.archived boolean.
+        "archived_at": CORE,
         # pluralkit_id becomes a SourceRef(app="pluralkit").
         "pluralkit_id": CORE,
         # extensions.sheaf.* on the member record.

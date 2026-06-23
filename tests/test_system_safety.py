@@ -435,6 +435,42 @@ def test_delete_endpoint_requires_password_when_tier_set(client: httpx.Client):
     assert ok.status_code == 204
 
 
+def test_archive_requires_password_when_category_on(client: httpx.Client):
+    """The `archive` category gates the archive endpoint with re-auth (no grace)."""
+    email, password = _register(client)
+    _set_system_safety_via_db(
+        email, delete_confirmation="password", safety_applies_to_archive=True
+    )
+    mid = client.post("/v1/members", json={"name": "GatedArchive"}).json()["id"]
+
+    # No password -> rejected; member stays active.
+    resp = client.post(f"/v1/members/{mid}/archive")
+    assert resp.status_code == 400, resp.text
+    assert client.get(f"/v1/members/{mid}").json()["archived_at"] is None
+
+    # Correct password -> archived.
+    resp = client.post(f"/v1/members/{mid}/archive", json={"password": password})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["archived_at"] is not None
+
+    # Unarchive stays ungated even with the category on.
+    resp = client.post(f"/v1/members/{mid}/unarchive")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["archived_at"] is None
+
+
+def test_archive_ungated_when_category_off(client: httpx.Client):
+    """A configured auth tier alone does NOT gate archiving; only the
+    per-category `archive` toggle does (unlike delete, gated by tier)."""
+    email, _password = _register(client)
+    _set_system_safety_via_db(email, delete_confirmation="password")
+    mid = client.post("/v1/members", json={"name": "UngatedArchive"}).json()["id"]
+
+    resp = client.post(f"/v1/members/{mid}/archive")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["archived_at"] is not None
+
+
 def test_delete_endpoint_reauth_then_queues_when_safeguarded(client: httpx.Client):
     """Re-auth must pass first, *then* the safeguard queues — both gates apply."""
     email, password = _register(client)

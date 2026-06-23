@@ -165,6 +165,12 @@ def to_native(envelope: dict) -> dict:
                 "pluralkit_id": _pluralkit_id(m.get("source_refs")),
                 "emoji": ext.get("emoji"),
                 "is_custom_front": bool(m.get("is_custom_front")),
+                # OpenPlural `archived` is a bool; Sheaf stores a timestamp.
+                # The exact archive time is not portable through the bool, so
+                # stamp it with the file's exported_at on import.
+                "archived_at": (
+                    envelope.get("exported_at") if m.get("archived") else None
+                ),
                 "privacy": m.get("privacy"),
                 "note": ext.get("note"),
                 "quick_switch_pin": ext.get("quick_switch_pin"),

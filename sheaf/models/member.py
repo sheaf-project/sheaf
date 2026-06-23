@@ -1,6 +1,17 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, Column, Enum, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -138,6 +149,16 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # The user controls it; the ranker never sets it.
     quick_switch_pin: Mapped[int | None] = mapped_column(
         Integer, nullable=True
+    )
+
+    # Archive: a soft-hide. When set, the member drops out of the members
+    # list, the front switcher, top-fronters, and pickers, but is never
+    # deleted and still renders everywhere historical (past fronts,
+    # journals, messages, revisions). NULL = active. Not a destructive
+    # action; gated only by the optional `safety_applies_to_archive`
+    # re-auth toggle, no grace period.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relationships

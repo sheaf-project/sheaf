@@ -1,7 +1,14 @@
 import { type FormEvent, lazy, Suspense, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useMembers, useCreateMember, useDeleteMember, useUpdateMember } from "@/hooks/use-members";
+import {
+  useMembers,
+  useCreateMember,
+  useDeleteMember,
+  useUpdateMember,
+  useArchiveMember,
+  useUnarchiveMember,
+} from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { cn } from "@/lib/utils";
@@ -22,6 +29,7 @@ import { BannerUpload } from "@/components/banner-upload";
 import { Badge } from "@/components/ui/badge";
 import { ColorDot } from "@/components/color-dot";
 import { ContentRevisionList } from "@/components/content-revision-list";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiErrorMessage, showApiErrorToast } from "@/lib/api-errors";
@@ -1010,6 +1018,11 @@ function MemberView({
               <p className="text-lg font-semibold">
                 {member.emoji && <span className="mr-1.5">{member.emoji}</span>}
                 {member.display_name || member.name}
+                {member.archived_at && (
+                  <Badge variant="secondary" className="ml-2 align-middle">
+                    Archived
+                  </Badge>
+                )}
               </p>
               {member.display_name && (
                 <p className="text-sm text-muted-foreground">{member.name}</p>
@@ -1102,13 +1115,34 @@ function MemberView({
 export function MembersPage() {
   const { data: members, isLoading } = useMembers();
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
+  const { data: safety } = useQuery({
+    queryKey: ["system-safety"],
+    queryFn: getSystemSafety,
+  });
   const createMember = useCreateMember();
   const updateMember = useUpdateMember();
+  const archiveMember = useArchiveMember();
+  const unarchiveMember = useUnarchiveMember();
   const [showCreate, setShowCreate] = useState(false);
   const [viewing, setViewing] = useState<Member | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
   const [deleting, setDeleting] = useState<Member | null>(null);
+  const [archiving, setArchiving] = useState<Member | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Archived members stay fetched (so historical surfaces can resolve their
+  // names) but are hidden from the default roster view.
+  const activeMembers = useMemo(
+    () => members?.filter((m) => m.archived_at == null) ?? [],
+    [members],
+  );
+
+  // Archiving may require re-auth, but only when the System Safety "archive"
+  // category is enabled. Unlike delete, archive has no grace period: the tier
+  // is a re-auth speed-bump only. When the category is off we send no body.
+  const archiveTier: DeleteConfirmation = safety?.settings.applies_to_archive
+    ? system?.delete_confirmation ?? "none"
+    : "none";
 
   // Deep link: /members?member=<id> opens that member's view dialog (used by
   // the uploaded-files "where is this used" links). Derived from the URL so it
@@ -1145,10 +1179,10 @@ export function MembersPage() {
             <Skeleton key={i} className="h-24" />
           ))}
         </div>
-      ) : members && members.length > 0 ? (
+      ) : activeMembers.length > 0 ? (
         (() => {
-          const realMembers = members.filter((m) => !m.is_custom_front);
-          const customFronts = members.filter((m) => m.is_custom_front);
+          const realMembers = activeMembers.filter((m) => !m.is_custom_front);
+          const customFronts = activeMembers.filter((m) => m.is_custom_front);
           return (
             <div className="space-y-8">
               <MemberGrid members={realMembers} onView={setViewing} />
@@ -1229,17 +1263,46 @@ export function MembersPage() {
                 submitLabel="Save"
               />
               <MemberFieldValues memberId={editing.id} />
-              <Button
-                variant="destructive"
-                size="sm"
-                className="mt-2"
-                onClick={() => {
-                  setDeleting(editing);
-                  setEditing(null);
-                }}
-              >
-                Delete member
-              </Button>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {editing.archived_at == null ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setArchiving(editing);
+                      setEditing(null);
+                    }}
+                  >
+                    Archive member
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={unarchiveMember.isPending}
+                    onClick={() =>
+                      unarchiveMember.mutate(editing.id, {
+                        onSuccess: (updated) => {
+                          setEditing(null);
+                          setViewing(updated);
+                        },
+                      })
+                    }
+                  >
+                    {unarchiveMember.isPending ? "Unarchiving..." : "Unarchive member"}
+                  </Button>
+                )}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setDeleting(editing);
+                    setEditing(null);
+                  }}
+                >
+                  Delete member
+                </Button>
+              </div>
             </>
           )}
         </DialogContent>
@@ -1254,6 +1317,26 @@ export function MembersPage() {
           onDeleted={() => setDeleting(null)}
         />
       )}
+
+      {/* Archive confirm: re-auth only when the Safety archive category is
+          on. No grace period; archiving is reversible from Settings. */}
+      <DestructiveConfirmDialog
+        open={!!archiving}
+        onOpenChange={(open) => !open && setArchiving(null)}
+        title="Archive member"
+        description={`Hide "${archiving?.name}" from the roster and pickers? They stay in front history and journals, and you can restore them from Settings > System.`}
+        tier={archiveTier}
+        actionLabel="Archive"
+        actionLabelLoading="Archiving..."
+        loading={archiveMember.isPending}
+        onConfirm={(confirm) =>
+          archiving &&
+          archiveMember.mutate(
+            { id: archiving.id, confirm },
+            { onSuccess: () => setArchiving(null) },
+          )
+        }
+      />
     </>
   );
 }

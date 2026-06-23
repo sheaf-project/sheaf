@@ -227,6 +227,7 @@ def build_envelope(
                 "color": m.get("color"),
                 "birthday": _birthday(m.get("birthday")),
                 "is_custom_front": bool(m.get("is_custom_front")),
+                "archived": bool(m.get("archived_at")),
                 "avatar_asset_id": assets.ref(m.get("avatar_url"), kind="avatar"),
                 "banner_asset_id": assets.ref(m.get("banner_url"), kind="banner"),
                 "privacy": _privacy(m.get("privacy")),

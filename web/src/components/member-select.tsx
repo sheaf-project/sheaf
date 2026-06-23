@@ -46,6 +46,8 @@ export function MemberSelect({
   const searchLower = search.trim().toLowerCase();
 
   const filtered = members.filter((m) => {
+    // Archived members can't be newly assigned to a front.
+    if (m.archived_at != null) return false;
     // Group + tag filters AND together — "in this group AND tagged this".
     if (activeGroupMembers && !activeGroupMembers.has(m.id)) return false;
     if (activeTagMembers && !activeTagMembers.has(m.id)) return false;

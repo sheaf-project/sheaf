@@ -144,6 +144,7 @@ _SAFETY_APPLIES_KEYS = (
     "applies_to_reminders",
     "applies_to_polls",
     "applies_to_messages",
+    "applies_to_archive",
 )
 
 
@@ -504,6 +505,7 @@ async def run_import(
                 m_data.get("notify_on_front_global", False)
             ),
             notify_on_front_self=bool(m_data.get("notify_on_front_self", False)),
+            archived_at=_parse_iso(m_data.get("archived_at")),
             # notify_on_front_member_ids points at other members by id; remapped
             # in the second pass below once every member row exists.
         )
