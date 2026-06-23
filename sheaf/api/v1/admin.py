@@ -11,7 +11,7 @@ from sheaf.api.v1.admin_small_actions import AdminReasonBody
 from sheaf.auth.dependencies import get_admin_user, get_admin_write_user, get_current_user
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.sessions import check_admin_step_up, set_admin_step_up
-from sheaf.auth.totp import verify_code_once
+from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.config import settings
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
@@ -119,10 +119,12 @@ async def verify_admin_step_up(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="TOTP code required"
             )
         totp_secret = decrypt_field(user.totp_secret, "totp_secret")
-        if not await verify_code_once(user.id, totp_secret, body.totp_code):
+        totp_result = await check_code_once(user.id, totp_secret, body.totp_code)
+        if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Invalid TOTP code"
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=totp_error_detail(totp_result),
             )
 
     await set_admin_step_up(user.id, session_id)

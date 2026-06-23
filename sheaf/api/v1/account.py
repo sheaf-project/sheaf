@@ -19,7 +19,7 @@ from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.sessions import list_user_sessions
-from sheaf.auth.totp import verify_code_once
+from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import blind_index, decrypt
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
@@ -110,11 +110,12 @@ async def get_account_data(
                 detail="TOTP code required",
             )
         secret = decrypt(user.totp_secret)
-        if not await verify_code_once(user.id, secret, body.totp_code):
+        totp_result = await check_code_once(user.id, secret, body.totp_code)
+        if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid TOTP code",
+                detail=totp_error_detail(totp_result),
             )
 
     sessions_raw = await list_user_sessions(user.id)

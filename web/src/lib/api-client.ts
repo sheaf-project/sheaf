@@ -80,13 +80,19 @@ import { ApiError } from "./api-error";
 interface ApiFetchOptions extends RequestInit {
   /** Skip automatic token refresh on 401. Use for login/register endpoints. */
   skipRefresh?: boolean;
+  /**
+   * Suppress the automatic error toast. Use when the caller renders the
+   * backend's error detail inline itself (e.g. the admin step-up form),
+   * so the helpful message isn't masked by a generic status-code toast.
+   */
+  skipErrorToast?: boolean;
 }
 
 export async function apiFetch<T>(
   path: string,
   options: ApiFetchOptions = {},
 ): Promise<T> {
-  const { skipRefresh, ...fetchOptions } = options;
+  const { skipRefresh, skipErrorToast, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
@@ -140,7 +146,7 @@ export async function apiFetch<T>(
       // pre-retry 401: silent refresh handles this; no toast.
     } else if (resp.status === 409) {
       // 409: caller shows it inline.
-    } else {
+    } else if (!skipErrorToast) {
       autoToastError(resp.status, detail);
     }
 
@@ -160,7 +166,7 @@ export async function apiFetchWithHeaders<T>(
   path: string,
   options: ApiFetchOptions = {},
 ): Promise<{ body: T; headers: Headers }> {
-  const { skipRefresh, ...fetchOptions } = options;
+  const { skipRefresh, skipErrorToast, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
@@ -211,7 +217,7 @@ export async function apiFetchWithHeaders<T>(
       // pre-retry 401: silent refresh handles this; no toast.
     } else if (resp.status === 409) {
       // 409: caller shows it inline.
-    } else {
+    } else if (!skipErrorToast) {
       autoToastError(resp.status, detail);
     }
     throw new ApiError(resp.status, detail);
