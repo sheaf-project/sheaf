@@ -1,8 +1,18 @@
+import { Suspense, lazy } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Mail, ExternalLink, Bug, ShieldAlert, Activity } from "lucide-react";
 import { getAuthConfig } from "@/lib/auth";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+// Lazy-loaded to match the other MarkdownPreview consumers (journals,
+// members): a static import here would pull react-markdown + highlight.js
+// into the main bundle for every page, not just this one.
+const MarkdownPreview = lazy(() =>
+  import("@/components/bio-editor").then((m) => ({
+    default: m.MarkdownPreview,
+  })),
+);
 
 // The Sheaf project itself - identical on every instance, so hardcoded.
 const REPO = "sheaf-project/sheaf";
@@ -22,6 +32,7 @@ export function SupportPage() {
   const supportEmail = config?.support_email;
   const supportUrl = config?.support_url;
   const supportNote = config?.support_note;
+  const supportCustomText = config?.support_custom_text;
   const statusUrl = config?.status_url;
   const hasOperatorSupport =
     Boolean(supportEmail) ||
@@ -86,6 +97,27 @@ export function SupportPage() {
                 </div>
               ) : null}
             </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* Operator's freeform markdown (CUSTOM_SUPPORT_TEXT_FILE). Rendered
+          independently of the contact card above - an instance may set only
+          this. HTML is already stripped server-side; MarkdownPreview renders
+          the remaining markdown. */}
+      {supportCustomText ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Instance information</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Suspense
+              fallback={
+                <p className="text-sm text-muted-foreground">Loading...</p>
+              }
+            >
+              <MarkdownPreview content={supportCustomText} />
+            </Suspense>
           </CardContent>
         </Card>
       ) : null}

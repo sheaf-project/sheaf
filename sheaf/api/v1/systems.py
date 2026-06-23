@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
-from sheaf.auth.totp import verify_code_once
+from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.models.system import DeleteConfirmation, System
@@ -102,11 +102,12 @@ async def update_delete_confirmation(
                 detail="TOTP code required",
             )
         secret = decrypt(user.totp_secret)
-        if not await verify_code_once(user.id, secret, body.totp_code):
+        totp_result = await check_code_once(user.id, secret, body.totp_code)
+        if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid TOTP code",
+                detail=totp_error_detail(totp_result),
             )
 
     # Don't allow setting to TOTP/both if TOTP isn't enabled

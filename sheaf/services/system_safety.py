@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
-from sheaf.auth.totp import verify_code_once
+from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import decrypt
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.custom_field import CustomFieldDefinition
@@ -187,12 +187,13 @@ async def verify_destructive_auth(
                 detail="TOTP code required",
             )
         secret = decrypt(user.totp_secret)
-        if not await verify_code_once(user.id, secret, totp_code):
+        totp_result = await check_code_once(user.id, secret, totp_code)
+        if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
             # Same reasoning as the wrong-password branch: 403, not 401.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid TOTP code",
+                detail=totp_error_detail(totp_result),
             )
 
 

@@ -994,11 +994,14 @@ SUPPORT_EMAIL=support@example.com      # mailto link
 SUPPORT_URL=https://help.example.com   # your support site / help desk
 SUPPORT_NOTE=Hours: Mon-Fri 9-5 UTC.   # free-text note shown above the links
 STATUS_URL=https://status.example.com  # your status / uptime page
+CUSTOM_SUPPORT_TEXT_FILE=/etc/sheaf/support.md  # markdown file, see below
 ```
 
-All four are independent and optional. The operator card is hidden entirely if you set none of them, so a bare self-host shows only the project section. `STATUS_URL` lives here (rather than in the static project section) because a self-hosted instance's status page is the operator's, not the project's.
+The first four are independent and optional. The operator card is hidden entirely if you set none of them, so a bare self-host shows only the project section. `STATUS_URL` lives here (rather than in the static project section) because a self-hosted instance's status page is the operator's, not the project's.
 
-These are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_URL` / `PRIVACY_URL`; like those, they're read at startup and changing them needs a restart.
+`CUSTOM_SUPPORT_TEXT_FILE` points at a file of your own freeform text (FAQ, onboarding notes, house rules, whatever) shown in its own card on the Support page. Basic markdown is supported - headings, lists, links, emphasis. Any HTML in the file is stripped server-side when it's loaded, so the API never emits raw tags and nothing relies on the browser to sanitise; write markdown, not HTML. Unlike the env vars above, this file is re-read whenever its modification time or size changes, so you can edit it without restarting. Content is capped at 20,000 characters. A path that can't be read logs a warning at startup and the card is simply omitted.
+
+The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_URL` / `PRIVACY_URL`; like those, they're read at startup and changing them needs a restart (the custom-text file is the exception noted above).
 
 ---
 
