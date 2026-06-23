@@ -1,7 +1,7 @@
 """TOTP test helpers.
 
 Server-side, every accepted TOTP code is single-use (replay guard in
-sheaf.auth.totp.verify_code_once). Tests that drive several TOTP-gated
+sheaf.auth.totp.check_code_once). Tests that drive several TOTP-gated
 actions inside one 30-second timestep would otherwise need real waits
 between steps; wiping the consumed-code markers lets them reuse the
 current code deterministically. Production behaviour stays covered by

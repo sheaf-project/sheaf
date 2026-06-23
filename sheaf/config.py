@@ -361,6 +361,13 @@ class Settings(BaseSettings):
     support_url: str = ""
     support_note: str = ""
     status_url: str = ""
+    # Path to a file of operator-authored freeform text rendered on the
+    # Support page. Basic markdown is supported; any raw HTML in the file is
+    # stripped server-side at load time (see read_custom_support_text), so
+    # the API never emits tags and no client has to be trusted to sanitise.
+    # Re-read when the file's mtime/size changes, so edits land without a
+    # restart. Empty = nothing extra shown.
+    custom_support_text_file: str = ""
 
     # Captcha (signup gate; optionally login).
     # Provider: "" (disabled) | "altcha". Altcha is in-process proof-of-work
@@ -676,6 +683,64 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+# Defensive cap on the custom support text so a huge (or runaway) file
+# can't bloat the public /auth/config response. Generous for a blurb.
+_MAX_SUPPORT_TEXT_CHARS = 20_000
+
+# Cache for the operator's custom support text, keyed on the source file's
+# (mtime_ns, size) so edits are reflected without a restart while a hot
+# /auth/config endpoint isn't re-reading the file on every call.
+_support_text_cache: tuple[str, tuple[int, int], str | None] | None = None
+
+
+def _strip_html(text: str) -> str:
+    """Remove every HTML tag from text, keeping the inner text content.
+
+    The custom support text is markdown, but the file is operator-authored
+    and we don't want to trust any consumer to neutralise embedded HTML. So
+    we strip it here, at the trust boundary, with an empty tag allowlist:
+    `<script>x</script>` becomes `x`, markdown syntax is left untouched. Any
+    client (web, mobile, third party) then only ever receives tag-free
+    markdown.
+    """
+    import nh3
+
+    return nh3.clean(text, tags=set(), attributes={})
+
+
+def read_custom_support_text() -> str | None:
+    """Return the operator's custom support text (markdown, HTML stripped).
+
+    Reads CUSTOM_SUPPORT_TEXT_FILE, caching on the file's mtime+size.
+    Returns None when the setting is unset, the file is missing/unreadable,
+    or it's empty. HTML is stripped here at load time so the API never
+    emits raw tags regardless of how a client renders the result.
+    """
+    global _support_text_cache
+    path_str = settings.custom_support_text_file
+    if not path_str:
+        return None
+    p = Path(path_str)
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    sig = (st.st_mtime_ns, st.st_size)
+    if (
+        _support_text_cache is not None
+        and _support_text_cache[0] == path_str
+        and _support_text_cache[1] == sig
+    ):
+        return _support_text_cache[2]
+    try:
+        raw = p.read_text(encoding="utf-8")[:_MAX_SUPPORT_TEXT_CHARS]
+    except OSError:
+        return None
+    result = _strip_html(raw).strip() or None
+    _support_text_cache = (path_str, sig, result)
+    return result
+
+
 _JWT_SECRET_DEFAULT = "changeme-in-production"
 
 
@@ -774,6 +839,20 @@ def _validate_settings() -> None:
             "Privacy Policy link. Strongly recommended for public instances, and "
             "may be required under GDPR/CCPA depending on jurisdiction."
         )
+
+    # Custom support text: warn (don't refuse) if the operator pointed at a
+    # file we can't read, so a typo'd path surfaces at startup instead of as
+    # a silently-missing card on the Support page.
+    if settings.custom_support_text_file:
+        try:
+            Path(settings.custom_support_text_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning(
+                "CUSTOM_SUPPORT_TEXT_FILE=%s could not be read (%s). The Support "
+                "page will not show the custom text until this is fixed.",
+                settings.custom_support_text_file,
+                exc,
+            )
 
     if settings.captcha_provider and settings.captcha_provider != "altcha":
         logger.critical(

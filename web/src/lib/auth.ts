@@ -13,6 +13,7 @@ export interface AuthConfig {
   support_email: string | null;
   support_url: string | null;
   support_note: string | null;
+  support_custom_text: string | null;
   status_url: string | null;
   captcha_provider: string | null;
   captcha_on_login: boolean;

@@ -46,10 +46,12 @@ from sheaf.auth.sessions import (
     session_handle,
 )
 from sheaf.auth.totp import (
+    TotpCheck,
+    check_code_once,
     generate_recovery_codes,
     generate_secret,
     get_provisioning_uri,
-    verify_code_once,
+    totp_error_detail,
 )
 from sheaf.auth.trusted_devices import (
     TRUSTED_DEVICE_COOKIE,
@@ -60,7 +62,7 @@ from sheaf.auth.trusted_devices import (
     revoke_trusted_device,
     verify_trusted_device,
 )
-from sheaf.config import SheafMode, settings
+from sheaf.config import SheafMode, read_custom_support_text, settings
 from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.image_processing import animation_allowed
@@ -164,6 +166,7 @@ async def get_auth_config():
         "support_email": settings.support_email or None,
         "support_url": settings.support_url or None,
         "support_note": settings.support_note or None,
+        "support_custom_text": read_custom_support_text(),
         "status_url": settings.status_url or None,
         "captcha_provider": settings.captcha_provider or None,
         "captcha_on_login": captcha.required_for_login(),
@@ -818,13 +821,15 @@ async def change_password(
                 headers={"X-Sheaf-2FA": "required"},
             )
         secret = decrypt(user.totp_secret)
-        totp_ok = await verify_code_once(user.id, secret, body.totp_code)
-        if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+        totp_result = await check_code_once(user.id, secret, body.totp_code)
+        if totp_result is not TotpCheck.OK and not await _check_recovery_code(
+            db, user, body.totp_code
+        ):
             await record_login_failure(db, user, reason="totp_failures")
             await _sec("totp_invalid")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid TOTP code",
+                detail=totp_error_detail(totp_result),
             )
 
     user.password_hash = await hash_password(body.new_password)
@@ -899,12 +904,14 @@ async def change_email(
                 headers={"X-Sheaf-2FA": "required"},
             )
         secret = decrypt(user.totp_secret)
-        totp_ok = await verify_code_once(user.id, secret, body.totp_code)
-        if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+        totp_result = await check_code_once(user.id, secret, body.totp_code)
+        if totp_result is not TotpCheck.OK and not await _check_recovery_code(
+            db, user, body.totp_code
+        ):
             await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid TOTP code",
+                detail=totp_error_detail(totp_result),
             )
 
     new_hash = blind_index(new_email)
@@ -1068,11 +1075,14 @@ async def login(
                     headers={"X-Sheaf-2FA": "required"},
                 )
             secret = decrypt(user.totp_secret)
-            # verify_code_once consumes the code (anti-replay) — a code
+            # check_code_once consumes the code (anti-replay): a code
             # seen by a shoulder-surfer or proxy can't be reused at any
-            # TOTP gate inside its validity window. Recovery codes are
-            # single-use via their own conditional UPDATE.
-            if not await verify_code_once(user.id, secret, body.totp_code):
+            # TOTP gate inside its validity window, and a replayed one is
+            # reported distinctly so we tell the user to wait for the next
+            # code. Recovery codes are single-use via their own
+            # conditional UPDATE.
+            totp_result = await check_code_once(user.id, secret, body.totp_code)
+            if totp_result is not TotpCheck.OK:
                 if await _check_recovery_code(db, user, body.totp_code):
                     recovery_code_used = True
                 else:
@@ -1081,7 +1091,7 @@ async def login(
                     await _sec("totp_invalid", user.id)
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Invalid TOTP code",
+                        detail=totp_error_detail(totp_result),
                     )
 
     # Rehash if argon2 params have been upgraded
@@ -1735,10 +1745,11 @@ async def totp_verify(
         )
 
     secret = decrypt(user.totp_secret)
-    if not await verify_code_once(user.id, secret, body.code):
+    totp_result = await check_code_once(user.id, secret, body.code)
+    if totp_result is not TotpCheck.OK:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid TOTP code",
+            detail=totp_error_detail(totp_result),
         )
 
     user.totp_enabled = True
@@ -1778,12 +1789,14 @@ async def totp_disable(
         )
 
     secret = decrypt(user.totp_secret)
-    totp_ok = await verify_code_once(user.id, secret, body.totp_code)
-    if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+    totp_result = await check_code_once(user.id, secret, body.totp_code)
+    if totp_result is not TotpCheck.OK and not await _check_recovery_code(
+        db, user, body.totp_code
+    ):
         await record_login_failure(db, user, reason="totp_failures")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid TOTP code",
+            detail=totp_error_detail(totp_result),
         )
 
     # If System Safety requires TOTP for destructive actions, disabling it
@@ -1833,11 +1846,12 @@ async def regenerate_recovery_codes(
     ensure_not_locked(user)
 
     secret = decrypt(user.totp_secret)
-    if not await verify_code_once(user.id, secret, body.code):
+    totp_result = await check_code_once(user.id, secret, body.code)
+    if totp_result is not TotpCheck.OK:
         await record_login_failure(db, user, reason="totp_failures")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid TOTP code",
+            detail=totp_error_detail(totp_result),
         )
 
     codes = generate_recovery_codes()
@@ -2003,12 +2017,14 @@ async def request_account_deletion(
                 headers={"X-Sheaf-2FA": "required"},
             )
         totp_secret = decrypt(user.totp_secret)
-        totp_ok = await verify_code_once(user.id, totp_secret, body.totp_code)
-        if not totp_ok and not await _check_recovery_code(db, user, body.totp_code):
+        totp_result = await check_code_once(user.id, totp_secret, body.totp_code)
+        if totp_result is not TotpCheck.OK and not await _check_recovery_code(
+            db, user, body.totp_code
+        ):
             await record_login_failure(db, user, reason="totp_failures")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid TOTP code",
+                detail=totp_error_detail(totp_result),
             )
 
     now = datetime.now(UTC)

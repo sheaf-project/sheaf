@@ -88,3 +88,36 @@ def test_totp_code_replay_rejected(auth_client: httpx.Client):
         json={"code": totp.at(time.time() + 30)},
     )
     assert resp.status_code == 200, resp.text
+
+
+def test_totp_replay_message_distinct_from_invalid(auth_client: httpx.Client):
+    """A replayed (already-spent) code is reported differently from a wrong
+    one, so the user is told to wait for the next code rather than that they
+    typed it wrong."""
+    setup = auth_client.post(
+        "/v1/auth/totp/setup", json={"password": "testpassword123"}
+    )
+    assert setup.status_code == 200, setup.text
+    totp = pyotp.TOTP(setup.json()["secret"])
+
+    code = totp.now()
+    # Enrolment consumes the code.
+    assert auth_client.post(
+        "/v1/auth/totp/verify", json={"code": code}
+    ).status_code == 204
+
+    # Replaying the spent code at another gate: replay-specific message.
+    replay = auth_client.post(
+        "/v1/auth/totp/regenerate-recovery-codes", json={"code": code}
+    )
+    assert replay.status_code == 400, replay.text
+    replay_detail = replay.json()["detail"]
+    assert "already been used" in replay_detail.lower()
+
+    # A plain wrong code: the generic message, distinct from the replay one.
+    wrong = auth_client.post(
+        "/v1/auth/totp/regenerate-recovery-codes", json={"code": "000000"}
+    )
+    assert wrong.status_code == 400, wrong.text
+    assert wrong.json()["detail"] == "Invalid TOTP code"
+    assert wrong.json()["detail"] != replay_detail

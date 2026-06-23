@@ -54,9 +54,13 @@ export function getAdminAuthStatus() {
 }
 
 export function verifyAdminStepUp(body: { password?: string; totp_code?: string }) {
+  // The step-up form renders the backend's error detail inline (wrong
+  // password, invalid/replayed TOTP), so suppress the generic status-code
+  // toast that would otherwise mask it.
   return apiFetch<{ verified: boolean }>("/v1/admin/auth", {
     method: "POST",
     body: JSON.stringify(body),
+    skipErrorToast: true,
   });
 }
 
