@@ -1,4 +1,5 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import {
   useGroups,
   useCreateGroup,
@@ -9,13 +10,18 @@ import {
 } from "@/hooks/use-groups";
 import { useQuery } from "@tanstack/react-query";
 import { getMySystem } from "@/lib/systems";
+import { showApiErrorToast } from "@/lib/api-errors";
+import {
+  buildGroupTree,
+  flattenGroupTree,
+  getDescendantIds,
+} from "@/lib/group-tree";
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { MemberSelect } from "@/components/member-select";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,6 +66,46 @@ function GroupMembersEditor({ groupId }: { groupId: string }) {
   );
 }
 
+/** A parent-group <select>; excludes self + descendants so you can't pick a
+ *  parent that would create a cycle. */
+function ParentSelect({
+  groups,
+  exclude,
+  value,
+  onChange,
+  id,
+}: {
+  groups: Group[];
+  exclude: Set<string>;
+  value: string;
+  onChange: (v: string) => void;
+  id: string;
+}) {
+  const rows = useMemo(
+    () =>
+      flattenGroupTree(buildGroupTree(groups), new Set()).filter(
+        (r) => !exclude.has(r.group.id),
+      ),
+    [groups, exclude],
+  );
+  return (
+    <select
+      id={id}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+    >
+      <option value="">Top level (no parent)</option>
+      {rows.map((r) => (
+        <option key={r.group.id} value={r.group.id}>
+          {" ".repeat(r.depth)}
+          {r.group.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export function GroupsPage() {
   const { data: groups, isLoading } = useGroups();
   const createGroup = useCreateGroup();
@@ -75,16 +121,28 @@ export function GroupsPage() {
 
   const [name, setName] = useState("");
   const [color, setColor] = useState("#6366f1");
+  const [parentId, setParentId] = useState("");
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
+
+  const allGroups = useMemo(() => groups ?? [], [groups]);
+  const rows = useMemo(
+    () => flattenGroupTree(buildGroupTree(allGroups), collapsed),
+    [allGroups, collapsed],
+  );
 
   function resetForm() {
     setName("");
     setColor("#6366f1");
+    setParentId("");
   }
 
   function handleCreate(e: FormEvent) {
     e.preventDefault();
     createGroup.mutate(
-      { name, color: color || null },
+      { name, color: color || null, parent_id: parentId || null },
       {
         onSuccess: () => {
           setShowCreate(false);
@@ -98,7 +156,10 @@ export function GroupsPage() {
     e.preventDefault();
     if (!editing) return;
     updateGroup.mutate(
-      { id: editing.id, data: { name, color: color || null } },
+      {
+        id: editing.id,
+        data: { name, color: color || null, parent_id: parentId || null },
+      },
       { onSuccess: () => setEditing(null) },
     );
   }
@@ -106,7 +167,34 @@ export function GroupsPage() {
   function openEdit(group: Group) {
     setName(group.name);
     setColor(group.color ?? "#6366f1");
+    setParentId(group.parent_id ?? "");
     setEditing(group);
+  }
+
+  function toggleCollapse(id: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** True when `targetId` would be an illegal parent for the dragged group
+   *  (itself or one of its descendants). */
+  function isInvalidDrop(targetId: string): boolean {
+    if (!draggingId) return true;
+    if (targetId === draggingId) return true;
+    return getDescendantIds(draggingId, allGroups).has(targetId);
+  }
+
+  function reparent(childId: string, newParentId: string | null) {
+    const child = allGroups.find((g) => g.id === childId);
+    if (!child || (child.parent_id ?? null) === newParentId) return;
+    updateGroup.mutate(
+      { id: childId, data: { parent_id: newParentId } },
+      { onError: (e) => showApiErrorToast(e, "Couldn't move group.") },
+    );
   }
 
   return (
@@ -123,38 +211,105 @@ export function GroupsPage() {
       </PageHeader>
 
       {isLoading ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-2">
           {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-20" />
+            <Skeleton key={i} className="h-12" />
           ))}
         </div>
-      ) : groups && groups.length > 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {groups.map((g) => (
-            <Card
-              key={g.id}
-              className={cn(
-                "cursor-pointer transition-colors hover:bg-accent/50",
-                g.pending_delete_at && "opacity-60",
-              )}
-              onClick={() => openEdit(g)}
-            >
-              <CardContent className="flex items-center gap-3 p-4">
-                <ColorDot color={g.color} className="h-4 w-4" />
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">{g.name}</p>
-                  <PendingDeleteBadge
-                    finalizeAt={g.pending_delete_at}
-                    className="mt-1"
-                  />
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+      ) : rows.length > 0 ? (
+        <div className="space-y-1">
+          {/* Top-level drop zone: drop here to un-nest a group. */}
+          <div
+            onDragOver={(e) => {
+              if (draggingId) {
+                e.preventDefault();
+                setDropTarget("root");
+              }
+            }}
+            onDragLeave={() => setDropTarget((t) => (t === "root" ? null : t))}
+            onDrop={() => {
+              if (draggingId) reparent(draggingId, null);
+              setDraggingId(null);
+              setDropTarget(null);
+            }}
+            className={cn(
+              "rounded-md border border-dashed px-3 py-1.5 text-xs text-muted-foreground transition-colors",
+              dropTarget === "root"
+                ? "border-primary bg-primary/5 text-primary"
+                : "border-transparent",
+              draggingId ? "border-border" : "hidden",
+            )}
+          >
+            Drop here to move to the top level
+          </div>
+
+          {rows.map(({ group: g, depth, hasChildren }) => {
+            const invalid = draggingId ? isInvalidDrop(g.id) : false;
+            return (
+              <div
+                key={g.id}
+                draggable
+                onDragStart={() => setDraggingId(g.id)}
+                onDragEnd={() => {
+                  setDraggingId(null);
+                  setDropTarget(null);
+                }}
+                onDragOver={(e) => {
+                  if (draggingId && !invalid) {
+                    e.preventDefault();
+                    setDropTarget(g.id);
+                  }
+                }}
+                onDragLeave={() =>
+                  setDropTarget((t) => (t === g.id ? null : t))
+                }
+                onDrop={() => {
+                  if (draggingId && !invalid) reparent(draggingId, g.id);
+                  setDraggingId(null);
+                  setDropTarget(null);
+                }}
+                style={{ marginLeft: depth * 20 }}
+                className={cn(
+                  "group flex items-center gap-2 rounded-md border bg-card px-3 py-2 transition-colors",
+                  depth > 0 && "border-l-2",
+                  dropTarget === g.id && "border-primary bg-primary/5",
+                  draggingId === g.id && "opacity-50",
+                  g.pending_delete_at && "opacity-60",
+                )}
+              >
+                <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground" />
+                {hasChildren ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleCollapse(g.id)}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label={collapsed.has(g.id) ? "Expand" : "Collapse"}
+                  >
+                    {collapsed.has(g.id) ? (
+                      <ChevronRight className="h-4 w-4" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4" />
+                    )}
+                  </button>
+                ) : (
+                  <span className="w-4 shrink-0" />
+                )}
+                <ColorDot color={g.color} className="h-3.5 w-3.5 shrink-0" />
+                <button
+                  type="button"
+                  onClick={() => openEdit(g)}
+                  className="min-w-0 flex-1 truncate text-left font-medium hover:underline"
+                >
+                  {g.name}
+                </button>
+                <PendingDeleteBadge finalizeAt={g.pending_delete_at} />
+              </div>
+            );
+          })}
         </div>
       ) : (
         <p className="text-muted-foreground">
-          No groups yet. Groups let you organize members.
+          No groups yet. Groups let you organize members, and can be nested.
         </p>
       )}
 
@@ -168,6 +323,16 @@ export function GroupsPage() {
             <div className="space-y-2">
               <Label htmlFor="group-create-name">Name</Label>
               <Input id="group-create-name" value={name} onChange={(e) => setName(e.target.value)} required />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="group-create-parent">Parent group</Label>
+              <ParentSelect
+                id="group-create-parent"
+                groups={allGroups}
+                exclude={new Set()}
+                value={parentId}
+                onChange={setParentId}
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="group-create-color">Color</Label>
@@ -205,6 +370,23 @@ export function GroupsPage() {
             <div className="space-y-2">
               <Label htmlFor="group-edit-name">Name</Label>
               <Input id="group-edit-name" value={name} onChange={(e) => setName(e.target.value)} required />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="group-edit-parent">Parent group</Label>
+              <ParentSelect
+                id="group-edit-parent"
+                groups={allGroups}
+                exclude={
+                  editing
+                    ? new Set([
+                        editing.id,
+                        ...getDescendantIds(editing.id, allGroups),
+                      ])
+                    : new Set()
+                }
+                value={parentId}
+                onChange={setParentId}
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="group-edit-color">Color</Label>
@@ -251,7 +433,7 @@ export function GroupsPage() {
         open={!!deleting}
         onOpenChange={(open) => !open && setDeleting(null)}
         title="Delete group"
-        description={`Are you sure you want to delete "${deleting?.name}"?`}
+        description={`Are you sure you want to delete "${deleting?.name}"? Any subgroups move up to its parent.`}
         tier={system?.delete_confirmation ?? "none"}
         onConfirm={(confirm) =>
           deleting &&

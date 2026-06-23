@@ -25,6 +25,35 @@ def test_nested_groups(auth_client: httpx.Client):
     assert child.json()["parent_id"] == parent_id
 
 
+def test_group_depth_cap(auth_client: httpx.Client):
+    # 8 nested levels are allowed; the 9th is rejected.
+    parent_id: str | None = None
+    for i in range(8):
+        body: dict = {"name": f"Depth{i}"}
+        if parent_id:
+            body["parent_id"] = parent_id
+        resp = auth_client.post("/v1/groups", json=body)
+        assert resp.status_code == 201, resp.text
+        parent_id = resp.json()["id"]
+
+    resp = auth_client.post(
+        "/v1/groups", json={"name": "TooDeep", "parent_id": parent_id}
+    )
+    assert resp.status_code == 400
+    assert "levels" in resp.json()["detail"].lower()
+
+
+def test_group_reparent_cycle_rejected(auth_client: httpx.Client):
+    a = auth_client.post("/v1/groups", json={"name": "CycA"}).json()["id"]
+    b = auth_client.post(
+        "/v1/groups", json={"name": "CycB", "parent_id": a}
+    ).json()["id"]
+    # Making A a child of its own descendant B would form a cycle.
+    resp = auth_client.patch(f"/v1/groups/{a}", json={"parent_id": b})
+    assert resp.status_code == 400
+    assert "circular" in resp.json()["detail"].lower()
+
+
 def test_group_members(auth_client: httpx.Client):
     m1 = _create_member(auth_client, "GroupMem1")
     m2 = _create_member(auth_client, "GroupMem2")

@@ -25,6 +25,34 @@ from sheaf.services.system_safety import (
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
+# Hard cap on nesting depth. The cycle check already keeps the graph a DAG;
+# this stops a pathologically deep chain (root -> ... -> leaf) from being
+# built. 8 levels is far more than any real system needs.
+MAX_GROUP_DEPTH = 8
+
+
+async def _depth_to_root(
+    start_id: uuid.UUID, system: System, db: AsyncSession
+) -> int:
+    """Number of groups from `start_id` up to a root, inclusive.
+
+    A root (parent_id is None) returns 1. Defensive against a malformed
+    cycle (bounded by `seen`) even though the write paths prevent them.
+    """
+    depth = 0
+    current: uuid.UUID | None = start_id
+    seen: set[uuid.UUID] = set()
+    while current is not None and current not in seen:
+        seen.add(current)
+        depth += 1
+        result = await db.execute(
+            select(Group.parent_id).where(
+                Group.id == current, Group.system_id == system.id
+            )
+        )
+        current = result.scalar_one_or_none()
+    return depth
+
 
 async def _get_user_system(user: User, db: AsyncSession) -> System:
     result = await db.execute(select(System).where(System.user_id == user.id))
@@ -80,6 +108,11 @@ async def create_group(
 
     if body.parent_id is not None:
         await _get_own_group(body.parent_id, system, db)
+        if await _depth_to_root(body.parent_id, system, db) >= MAX_GROUP_DEPTH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Group nesting cannot exceed {MAX_GROUP_DEPTH} levels",
+            )
 
     group = Group(system_id=system.id, **body.model_dump())
     db.add(group)
@@ -145,6 +178,15 @@ async def update_group(
                 )
                 parent = parent_result.scalar_one_or_none()
                 current = parent.parent_id if parent else None
+            # `visited` now holds this group plus the new parent's full
+            # ancestor chain, so its size is the depth this group would sit
+            # at. (Does not account for the moved subtree's own height; the
+            # cap is a guard against abuse, not an exact invariant.)
+            if len(visited) > MAX_GROUP_DEPTH:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Group nesting cannot exceed {MAX_GROUP_DEPTH} levels",
+                )
 
     for key, value in update_data.items():
         setattr(group, key, value)
