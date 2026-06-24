@@ -6,19 +6,11 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-24
+
 ### Added
 
 - **Server announcements support links and a settable expiry.** An announcement body now renders inline markdown, so an admin can include a link (e.g. to a full incident write-up); it stays a one-line banner, with any block markdown degrading to plain text and links opening in a new tab. The admin form also gains an optional "Expires" datetime, after which the announcement stops showing to users (the field already existed on the backend but was not settable in the UI).
-
-### Fixed
-
-- **Member birthdays now honour the date format setting.** A member's birthday was always shown as `YYYY-MM-DD`, ignoring the system's configured date format. It now renders in the chosen order (e.g. `DD/MM/YYYY`), and year-less birthdays (the "no birth year" option) format as month and day in the same order rather than as a raw string.
-
-### Changed
-
-- **Import previews parse off the event loop.** The synchronous import preview endpoints (PluralKit, Tupperbox, SimplyPlural, Sheaf native JSON, OpenPlural JSON) now decode the uploaded file on a worker thread under a small concurrency cap, instead of parsing it on the asyncio event loop. A large export no longer makes the server briefly unresponsive to other requests while it parses. The zip-based previews already did this; this brings the plain-JSON ones in line. As part of the move, the PluralKit/Tupperbox/SimplyPlural previews now also apply the same JSON element-count guard the importers themselves use, so a preview is not a cheaper way to stress the server than the real import. No API change: request and response shapes are identical.
-
-### Added
 
 - **Markdown formatting help.** The markdown editor (member bios and notes, journal entries) gains a help button next to the Write/Preview tabs that opens a reference of the supported syntax. It leads with the common gotcha that a single newline does not break a line: end a line with a backslash (or two trailing spaces) for a line break without a new paragraph, and leave a blank line to start a new paragraph. The reference only lists what this editor actually renders (CommonMark plus GitHub-flavoured extras: tables, strikethrough, task lists), so it stays accurate to the preview.
 - **Archive members.** A member can now be archived: a soft-hide visibility state that drops them out of the members list, the front switcher, top-fronters, and the member pickers, without deleting anything. Archived members still render everywhere they appear in history (past fronts, journals, board messages, revisions) so a name is never lost. Archive and unarchive live on the member's actions; settings > system gains a "View archived members" card to see and restore them. Archiving can be put behind an optional new System Safety category ("Archive members") that requires re-auth, in case an accidental archive is more than an inconvenience; unlike the other safety categories it is a re-auth speed-bump only, with no grace period. The archived flag round-trips through both the native export/import and OpenPlural (mapped to the core `Member.archived` boolean).
@@ -27,8 +19,13 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 - **Custom Support-page text.** Self-hosters can point `CUSTOM_SUPPORT_TEXT_FILE` at a markdown file whose contents render in their own card on the in-app Support page - for an FAQ, onboarding notes, or house rules - alongside the existing `SUPPORT_*` contact vars. Basic markdown (headings, lists, links, emphasis) is supported; any HTML in the file is stripped server-side when it is loaded, so the API only ever emits tag-free markdown and no client is trusted to sanitise it. The file is re-read whenever its modification time or size changes, so edits land without a restart, and the content is capped at 20,000 characters. A path that can't be read logs a warning at startup and the card is simply omitted.
 
+### Changed
+
+- **Import previews parse off the event loop.** The synchronous import preview endpoints (PluralKit, Tupperbox, SimplyPlural, Sheaf native JSON, OpenPlural JSON) now decode the uploaded file on a worker thread under a small concurrency cap, instead of parsing it on the asyncio event loop. A large export no longer makes the server briefly unresponsive to other requests while it parses. The zip-based previews already did this; this brings the plain-JSON ones in line. As part of the move, the PluralKit/Tupperbox/SimplyPlural previews now also apply the same JSON element-count guard the importers themselves use, so a preview is not a cheaper way to stress the server than the real import. No API change: request and response shapes are identical.
+
 ### Fixed
 
+- **Member birthdays now honour the date format setting.** A member's birthday was always shown as `YYYY-MM-DD`, ignoring the system's configured date format. It now renders in the chosen order (e.g. `DD/MM/YYYY`), and year-less birthdays (the "no birth year" option) format as month and day in the same order rather than as a raw string.
 - **Clearer error when an authenticator code is reused.** Re-submitting an already-spent TOTP code (the replay guard makes every accepted code single-use across the whole API) previously failed with the same generic "Invalid TOTP code" as a genuinely wrong code - and on the admin dashboard step-up screen it surfaced only as "You don't have permission to do that". The backend now tells a replayed code apart from a wrong one and returns "That code has already been used. Wait for your authenticator app to show the next code, then try again." consistently across every TOTP-gated action (login, admin step-up, account/email/password changes, data export, destructive System Safety actions, and 2FA enable/disable/recovery-code regeneration). The admin step-up form now shows the backend's specific message inline instead of masking it with a generic toast.
 
 ## [1.0.3] - 2026-06-19
