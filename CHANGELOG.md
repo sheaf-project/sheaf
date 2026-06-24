@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Server announcements support links and a settable expiry.** An announcement body now renders inline markdown, so an admin can include a link (e.g. to a full incident write-up); it stays a one-line banner, with any block markdown degrading to plain text and links opening in a new tab. The admin form also gains an optional "Expires" datetime, after which the announcement stops showing to users (the field already existed on the backend but was not settable in the UI).
+
 ### Fixed
 
 - **Member birthdays now honour the date format setting.** A member's birthday was always shown as `YYYY-MM-DD`, ignoring the system's configured date format. It now renders in the chosen order (e.g. `DD/MM/YYYY`), and year-less birthdays (the "no birth year" option) format as month and day in the same order rather than as a raw string.

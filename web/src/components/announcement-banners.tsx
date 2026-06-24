@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   getActiveAnnouncements,
   getLoggedOutAnnouncements,
@@ -122,6 +124,37 @@ export function LoggedOutAnnouncementBanners() {
   );
 }
 
+// Announcement bodies support inline markdown, mainly so an admin can
+// include a link (e.g. to a full incident write-up). This is a one-line
+// banner, so only inline elements are allowed - any block markdown
+// (headings, images, lists, code blocks) is unwrapped to its plain text so
+// it can never break the banner layout. react-markdown sanitises link URLs
+// by default (javascript:/data: are dropped); links open in a new tab.
+function AnnouncementBody({ body }: { body: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      allowedElements={["p", "a", "em", "strong", "del", "code", "br"]}
+      unwrapDisallowed
+      components={{
+        p: ({ children }) => <>{children}</>,
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2 hover:opacity-80"
+          >
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {body}
+    </ReactMarkdown>
+  );
+}
+
 function AnnouncementBanner({
   announcement,
   onDismiss,
@@ -152,7 +185,9 @@ function AnnouncementBanner({
             <span className="mx-2 opacity-50" aria-hidden="true">
               ·
             </span>
-            <span className="opacity-90">{announcement.body}</span>
+            <span className="opacity-90">
+              <AnnouncementBody body={announcement.body} />
+            </span>
           </>
         )}
       </div>
