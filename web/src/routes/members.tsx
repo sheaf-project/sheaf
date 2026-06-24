@@ -11,6 +11,7 @@ import {
 } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
+import { formatBirthday } from "@/lib/date-format";
 import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
@@ -1031,7 +1032,9 @@ function MemberView({
                 <p className="text-sm text-muted-foreground">{member.pronouns}</p>
               )}
               {member.birthday && (
-                <p className="text-sm text-muted-foreground">{member.birthday}</p>
+                <p className="text-sm text-muted-foreground">
+                  {formatBirthday(member.birthday, dateFormat)}
+                </p>
               )}
               {member.pluralkit_id && (
                 <p className="text-xs text-muted-foreground font-mono">

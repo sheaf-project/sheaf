@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Member birthdays now honour the date format setting.** A member's birthday was always shown as `YYYY-MM-DD`, ignoring the system's configured date format. It now renders in the chosen order (e.g. `DD/MM/YYYY`), and year-less birthdays (the "no birth year" option) format as month and day in the same order rather than as a raw string.
+
 ### Changed
 
 - **Import previews parse off the event loop.** The synchronous import preview endpoints (PluralKit, Tupperbox, SimplyPlural, Sheaf native JSON, OpenPlural JSON) now decode the uploaded file on a worker thread under a small concurrency cap, instead of parsing it on the asyncio event loop. A large export no longer makes the server briefly unresponsive to other requests while it parses. The zip-based previews already did this; this brings the plain-JSON ones in line. As part of the move, the PluralKit/Tupperbox/SimplyPlural previews now also apply the same JSON element-count guard the importers themselves use, so a preview is not a cheaper way to stress the server than the real import. No API change: request and response shapes are identical.
