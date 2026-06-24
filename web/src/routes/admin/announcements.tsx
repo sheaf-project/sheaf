@@ -34,6 +34,25 @@ import {
   AlertOctagon,
 } from "lucide-react";
 
+// A datetime-local <input> works in the browser's local zone; the API
+// stores/returns ISO (UTC) strings. Convert between the two.
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
+}
+
+function localInputToIso(local: string): string | null {
+  if (!local) return null;
+  const d = new Date(local);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 const severityIcons = {
   info: Info,
   warning: AlertTriangle,
@@ -119,7 +138,7 @@ function AnnouncementRow({ announcement }: { announcement: Announcement }) {
           )}
           {announcement.expires_at && (
             <span>
-              Expires: {new Date(announcement.expires_at).toLocaleDateString()}
+              Expires: {new Date(announcement.expires_at).toLocaleString()}
             </span>
           )}
         </div>
@@ -199,6 +218,9 @@ function EditAnnouncementForm({
   const [visibleWhileLoggedOut, setVisibleWhileLoggedOut] = useState(
     announcement.visible_while_logged_out,
   );
+  const [expiresAt, setExpiresAt] = useState(
+    isoToLocalInput(announcement.expires_at),
+  );
 
   const save = useMutation({
     mutationFn: () =>
@@ -208,6 +230,9 @@ function EditAnnouncementForm({
         severity,
         dismissible,
         visible_while_logged_out: visibleWhileLoggedOut,
+        ...(expiresAt
+          ? { expires_at: localInputToIso(expiresAt) }
+          : { clear_expires_at: true }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "announcements"] });
@@ -250,6 +275,25 @@ function EditAnnouncementForm({
           onChange={(e) => setBody(e.target.value)}
           maxLength={2000}
         />
+        <p className="text-xs text-muted-foreground">
+          Supports markdown links, e.g. [read more](https://example.com)
+        </p>
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="edit-expires" className="text-xs">
+          Expires (optional)
+        </Label>
+        <Input
+          id="edit-expires"
+          type="datetime-local"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+          className="w-60"
+        />
+        <p className="text-xs text-muted-foreground">
+          Stops showing to users after this time. Leave blank to show until
+          manually deactivated.
+        </p>
       </div>
       <div className="flex items-center gap-2">
         <Checkbox
@@ -293,6 +337,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
   const [severity, setSeverity] = useState("info");
   const [dismissible, setDismissible] = useState(true);
   const [visibleWhileLoggedOut, setVisibleWhileLoggedOut] = useState(false);
+  const [expiresAt, setExpiresAt] = useState("");
 
   const create = useMutation({
     mutationFn: () =>
@@ -302,6 +347,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
         severity,
         dismissible,
         visible_while_logged_out: visibleWhileLoggedOut,
+        expires_at: localInputToIso(expiresAt),
       }),
     onSuccess: () => {
       setTitle("");
@@ -309,6 +355,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
       setSeverity("info");
       setDismissible(true);
       setVisibleWhileLoggedOut(false);
+      setExpiresAt("");
       onCreated();
       toast.success("Announcement created");
     },
@@ -357,6 +404,25 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
             onChange={(e) => setBody(e.target.value)}
             maxLength={2000}
           />
+          <p className="text-xs text-muted-foreground">
+            Supports markdown links, e.g. [read more](https://example.com)
+          </p>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="ann-expires" className="text-xs">
+            Expires (optional)
+          </Label>
+          <Input
+            id="ann-expires"
+            type="datetime-local"
+            value={expiresAt}
+            onChange={(e) => setExpiresAt(e.target.value)}
+            className="w-60"
+          />
+          <p className="text-xs text-muted-foreground">
+            Stops showing to users after this time. Leave blank to show until
+            manually deactivated.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Checkbox
