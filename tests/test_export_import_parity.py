@@ -114,6 +114,10 @@ CLASSIFICATION: dict[type, dict] = {
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
+            # created_at is local row-provenance: a re-imported front is a new
+            # row and gets a fresh created_at (the server default), so it is
+            # deliberately not carried in the export.
+            "created_at": _ROW_CREATED,
             # member_ids ride the front_members association, exported as a list.
         },
     },

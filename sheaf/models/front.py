@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,6 +32,18 @@ class Front(UUIDMixin, Base):
     # encryption model is meant to protect, matching the precedent set by
     # bios and journal entries.
     custom_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Row-creation timestamp, distinct from the front's real-world `started_at`.
+    # This is *when the row landed in this database* (created or imported), so
+    # it is the correct key for any age-based handling: an imported historical
+    # front gets a fresh created_at, not its old start date. The prior retention
+    # job keyed off `started_at` and so deleted just-imported history; see
+    # ../sheaf-design-docs/front-history-retention-and-limits.md.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 
     # Relationships
     system: Mapped["System"] = relationship(back_populates="fronts")
