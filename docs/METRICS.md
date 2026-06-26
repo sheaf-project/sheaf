@@ -309,6 +309,22 @@ detect non-zero from the first scrape.
 | `sheaf_systems_total` | gauge | - |
 | `sheaf_members_total` | gauge | - |
 | `sheaf_members_custom_front` | gauge | - |
+| `sheaf_fronts_total` | gauge | - |
+| `sheaf_systems_by_front_count` | gauge | `le` (front-count threshold; `+Inf` = all systems) |
+| `sheaf_system_front_count_max` | gauge | - |
+| `sheaf_fronts_created_total` | counter | - |
+
+`sheaf_systems_by_front_count` is a point-in-time cumulative distribution of
+per-system front-history size, re-set each gauge refresh: each `le` series is
+the number of systems whose front count is at or below that threshold. It
+carries no system id by design. Read it to answer "what does a typical
+system's front history look like, and is anyone an outlier?" - e.g. the gap
+between the `le="1000"` series and `le="+Inf"` is how many systems have more
+than 1000 fronts, and `sheaf_system_front_count_max` is the single largest.
+`sheaf_fronts_created_total` is switch velocity (rows created), distinct from
+the HTTP request counter on `POST /v1/fronts`. These exist to ground the
+front-history retention decision in real usage data (see
+`../sheaf-design-docs/front-history-retention-and-limits.md`).
 
 ### Infra
 

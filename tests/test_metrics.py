@@ -211,6 +211,22 @@ def test_webhook_signature_failures_total_prewarmed():
         assert val is not None, f"missing prewarmed series for endpoint={endpoint}"
 
 
+def test_front_volume_metrics_present():
+    """The front-history volume metrics (for the retention decision) are
+    label-less and so are exposed from the first scrape: fronts_total and
+    system_front_count_max as gauges, fronts_created_total as a counter.
+    The per-system distribution gauge (sheaf_systems_by_front_count) is
+    labelled by `le` and only appears once the gauge refresher has run, so
+    it is not asserted here."""
+    body = _scrape()
+    for name in (
+        "sheaf_fronts_total",
+        "sheaf_system_front_count_max",
+        "sheaf_fronts_created_total",
+    ):
+        assert _series_value(body, name) is not None, f"missing series: {name}"
+
+
 # ---------------------------------------------------------------------------
 # Leader election
 # ---------------------------------------------------------------------------

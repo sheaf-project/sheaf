@@ -16,6 +16,7 @@ from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.observability.metrics import fronts_created_total
 from sheaf.schemas.front import (
     FrontAuditEventRead,
     FrontCreate,
@@ -430,6 +431,7 @@ async def create_front(
     )
 
     await db.commit()
+    fronts_created_total.inc()
     await db.refresh(front, ["members"])
     return _front_to_read(front)
 
