@@ -666,6 +666,21 @@ async def _cleanup_security_events(db: AsyncSession) -> dict:
     return {"items_processed": result.rowcount or 0}
 
 
+async def _cleanup_activity_events(db: AsyncSession) -> dict:
+    """Delete account-activity rows past the retention window so the log
+    stays bounded. Generous window (no IP, it is the user's own record)."""
+    from sheaf.models.activity_event import ActivityEvent
+
+    cutoff = datetime.now(UTC) - timedelta(
+        days=settings.activity_event_retention_days
+    )
+    result = await db.execute(
+        delete(ActivityEvent).where(ActivityEvent.created_at < cutoff)
+    )
+    await db.commit()
+    return {"items_processed": result.rowcount or 0}
+
+
 # ---------------------------------------------------------------------------
 # System Safety — finalize pending destructive actions + safety-setting changes
 # ---------------------------------------------------------------------------
@@ -1060,6 +1075,13 @@ def _register_all_jobs() -> None:
         name="cleanup_security_events",
         description="Delete security-event rows past the retention window",
         func=_cleanup_security_events,
+        interval_seconds=lambda: 86400,  # daily
+    )
+
+    register_job(
+        name="cleanup_activity_events",
+        description="Delete account-activity rows past the retention window",
+        func=_cleanup_activity_events,
         interval_seconds=lambda: 86400,  # daily
     )
 

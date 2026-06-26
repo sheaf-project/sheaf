@@ -29,6 +29,7 @@ from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.models.activity_event import ActivityAction
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.export_job import ExportJob, ExportJobStatus
@@ -43,6 +44,7 @@ from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 from sheaf.services import export_storage
+from sheaf.services.activity_log import log_activity
 from sheaf.services.custom_fields import field_value_plaintext
 from sheaf.services.journals import entry_plaintext, revision_plaintext
 from sheaf.services.members import member_plaintext
@@ -735,6 +737,12 @@ async def create_export_job(
         requested_at=datetime.now(UTC),
     )
     db.add(job)
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.DATA_EXPORT_REQUESTED,
+        target_label=body.format,
+    )
     await db.commit()
     await db.refresh(job)
     return _job_to_dict(job)

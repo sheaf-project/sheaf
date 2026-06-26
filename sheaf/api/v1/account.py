@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
@@ -23,6 +23,7 @@ from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import blind_index, decrypt
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.models.activity_event import ActivityEvent
 from sheaf.models.api_key import ApiKey
 from sheaf.models.client_settings import ClientSettings
 from sheaf.models.email_suppression import EmailSuppression
@@ -37,9 +38,34 @@ from sheaf.models.system import System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.schemas.activity import ActivityEventRead
 from sheaf.services.security_events import events_for_user
 
 router = APIRouter(prefix="/account", tags=["account"])
+
+
+@router.get("/activity", response_model=list[ActivityEventRead])
+async def list_account_activity(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ActivityEvent]:
+    """The caller's own account activity log, newest first.
+
+    Self-only (rows where `user_id == self.id`); no admin gate. This is the
+    transparency surface for consequential and automated actions on the
+    account, distinct from the admin-activity view (admin actions) and the
+    operator-facing security-event log.
+    """
+    stmt = (
+        select(ActivityEvent)
+        .where(ActivityEvent.user_id == user.id)
+        .order_by(desc(ActivityEvent.created_at), desc(ActivityEvent.id))
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    return list((await db.execute(stmt)).scalars().all())
 
 
 class AccountDataRequest(BaseModel):

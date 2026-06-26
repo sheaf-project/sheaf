@@ -67,6 +67,7 @@ from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
 from sheaf.image_processing import animation_allowed
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.models.activity_event import ActivityAction
 from sheaf.models.api_key import ApiKey
 from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import DeleteConfirmation, System
@@ -92,6 +93,7 @@ from sheaf.schemas.user import (
     UserUpdate,
 )
 from sheaf.services import captcha
+from sheaf.services.activity_log import log_activity
 from sheaf.services.security_events import record_security_event
 
 _VALID_SCOPES = {
@@ -843,6 +845,7 @@ async def change_password(
     # Revoke every trusted device — a password change is the canonical
     # "kick everything off" event.
     await revoke_all_trusted_devices(db, user.id)
+    await log_activity(db, user_id=user.id, action=ActivityAction.PASSWORD_CHANGED)
     await db.commit()
 
     # Revoke every other session for this user so any lingering copy of a
@@ -941,6 +944,12 @@ async def change_email(
         await _send_verification_email(db, user, new_email)
         verification_sent = True
 
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.EMAIL_CHANGED,
+        target_label=new_email,
+    )
     await db.commit()
 
     revoked = 0
@@ -1278,6 +1287,7 @@ async def revoke_session(
     request: Request,
     target_session_handle: str,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Revoke a session, addressed by its opaque handle from /sessions.
 
@@ -1295,11 +1305,14 @@ async def revoke_session(
             detail="Cannot revoke current session. Use /logout instead.",
         )
     await delete_session(sid)
+    await log_activity(db, user_id=user.id, action=ActivityAction.SESSION_REVOKED)
+    await db.commit()
 
 
 @router.post("/sessions/revoke-others")
 async def revoke_other_sessions(
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
     session_id: str | None = Cookie(default=None, alias="sheaf_session"),
 ):
     """Revoke all sessions except the current one."""
@@ -1309,6 +1322,13 @@ async def revoke_other_sessions(
             detail="No current session",
         )
     revoked = await delete_other_sessions(user.id, session_id)
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.SESSION_REVOKED,
+        detail={"revoked": revoked},
+    )
+    await db.commit()
     return {"revoked": revoked}
 
 
@@ -1473,7 +1493,14 @@ async def revoke_trusted_device_endpoint(
         from sheaf.auth.trusted_devices import _hash_token
 
         revoked_self = _hash_token(trusted_cookie) == device.token_hash
+    device_label = device.nickname or None
     await revoke_trusted_device(db, user.id, device_id)
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.TRUSTED_DEVICE_REVOKED,
+        target_label=device_label,
+    )
     await db.commit()
     if revoked_self:
         response.delete_cookie(TRUSTED_DEVICE_COOKIE, path="/v1/auth")
@@ -1488,6 +1515,12 @@ async def revoke_all_trusted_devices_endpoint(
     """Revoke every trusted device for the user. Clears this browser's
     cookie too."""
     revoked = await revoke_all_trusted_devices(db, user.id)
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.TRUSTED_DEVICE_REVOKED,
+        detail={"revoked": revoked},
+    )
     await db.commit()
     response.delete_cookie(TRUSTED_DEVICE_COOKIE, path="/v1/auth")
     return {"revoked": revoked}
@@ -1753,6 +1786,7 @@ async def totp_verify(
         )
 
     user.totp_enabled = True
+    await log_activity(db, user_id=user.id, action=ActivityAction.TOTP_ENABLED)
     await db.commit()
 
 
@@ -1824,6 +1858,7 @@ async def totp_disable(
     # Trusted devices were minted under the old TOTP relationship; wipe
     # them so a stale cookie can't bypass anything if TOTP is re-enabled.
     await revoke_all_trusted_devices(db, user.id)
+    await log_activity(db, user_id=user.id, action=ActivityAction.TOTP_DISABLED)
     await db.commit()
 
 
@@ -1858,6 +1893,9 @@ async def regenerate_recovery_codes(
     _store_recovery_codes(user, codes)
     user.failed_login_count = 0
     user.locked_until = None
+    await log_activity(
+        db, user_id=user.id, action=ActivityAction.RECOVERY_CODES_REGENERATED
+    )
     await db.commit()
     return {"recovery_codes": codes}
 
@@ -1939,6 +1977,12 @@ async def create_api_key(
         expires_at=body.expires_at,
     )
     db.add(api_key)
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.API_KEY_CREATED,
+        target_label=api_key.name,
+    )
     await db.commit()
     await db.refresh(api_key)
 
@@ -1968,7 +2012,14 @@ async def revoke_api_key(
     api_key = result.scalar_one_or_none()
     if api_key is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    key_name = api_key.name
     await db.delete(api_key)
+    await log_activity(
+        db,
+        user_id=user.id,
+        action=ActivityAction.API_KEY_REVOKED,
+        target_label=key_name,
+    )
     await db.commit()
 
 
@@ -2048,6 +2099,9 @@ async def request_account_deletion(
         except Exception:
             logger.exception("Failed to send deletion confirmation email")
 
+    await log_activity(
+        db, user_id=user.id, action=ActivityAction.ACCOUNT_DELETION_SCHEDULED
+    )
     await db.commit()
 
     return {
@@ -2071,6 +2125,9 @@ async def cancel_account_deletion(
     user.account_status = AccountStatus.ACTIVE
     user.deletion_requested_at = None
     user.deletion_reminders_sent = None
+    await log_activity(
+        db, user_id=user.id, action=ActivityAction.ACCOUNT_DELETION_CANCELLED
+    )
     await db.commit()
 
     return {"cancelled": True}

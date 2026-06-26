@@ -419,6 +419,12 @@ class Settings(BaseSettings):
     # with a longer legal basis can raise it; self-hosters set their own.
     security_event_retention_days: int = 30
 
+    # Account activity log (activity_events) retention. Generous default: it
+    # is the user's own record of consequential/automated actions and carries
+    # no IP, so the minimisation pressure is lower than security_events.
+    # Bounded only so the table doesn't grow forever.
+    activity_event_retention_days: int = 365
+
     # A job stuck in `running` longer than this is presumed orphaned by
     # a crashed worker; the recovery sweep resets it to `pending` for a
     # retry. Generous — a large PluralKit API import paginating switch

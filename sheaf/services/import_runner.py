@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from sheaf.config import settings
+from sheaf.models.activity_event import ActivityAction, ActivityActorType
 from sheaf.models.import_job import ImportJob, ImportJobStatus
 from sheaf.models.system import System
 from sheaf.observability.metrics import (
@@ -204,6 +205,20 @@ async def _finalize(
         flag_modified(job, "payload_metadata")
     storage_key = job.payload_storage_key
     job.payload_storage_key = None
+    if status is ImportJobStatus.COMPLETE:
+        # Automated event: the user's data changed without a request the
+        # account-activity surface would otherwise record. Lands in the
+        # same commit as the terminal job row.
+        from sheaf.services.activity_log import log_activity
+
+        await log_activity(
+            db,
+            user_id=job.user_id,
+            action=ActivityAction.IMPORT_COMPLETED,
+            actor_type=ActivityActorType.SYSTEM,
+            target_label=job.source,
+            detail=dict(job.counts) if job.counts else None,
+        )
     await db.commit()
     if storage_key:
         await delete_payload(storage_key)
