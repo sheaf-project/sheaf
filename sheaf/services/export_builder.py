@@ -130,9 +130,18 @@ async def _build(job_id: uuid.UUID) -> None:
         tmp_path: str | None = None
         try:
             try:
-                tmp_path, size_bytes = await _assemble_zip_to_tempfile(
-                    db, user, include_images=job.include_images, fmt=job.format
+                from sheaf.services.front_history_export import (
+                    FRONT_HISTORY_FORMATS,
                 )
+
+                if job.format in FRONT_HISTORY_FORMATS:
+                    tmp_path, size_bytes = await _assemble_fronts_to_tempfile(
+                        db, user, fmt=job.format
+                    )
+                else:
+                    tmp_path, size_bytes = await _assemble_zip_to_tempfile(
+                        db, user, include_images=job.include_images, fmt=job.format
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Export build failed for job %s", job_id)
                 await _mark_failed(db, job, f"build failed: {exc}")
@@ -258,6 +267,47 @@ async def _assemble_zip_to_tempfile(
                 zf.writestr("README.txt", _README)
                 if include_images:
                     await _add_images(zf, db, user)
+        size_bytes = os.path.getsize(tmp_path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_path)
+        raise
+    return tmp_path, size_bytes
+
+
+async def _assemble_fronts_to_tempfile(
+    db: AsyncSession, user: User, *, fmt: str
+) -> tuple[str, int]:
+    """Build a standalone front-history file (CSV / JSON / ICS) on disk and
+    return (path, size_bytes). Unlike the account export this is a single
+    file, not a zip - the front history is small relative to a full
+    account dump and the formats are flat.
+    """
+    from sqlalchemy import select
+
+    from sheaf.models.system import System
+    from sheaf.services.front_history_export import (
+        format_extension,
+        load_front_history,
+        serialize_front_history,
+    )
+
+    system = (
+        await db.execute(select(System).where(System.user_id == user.id))
+    ).scalar_one_or_none()
+    exported_at = datetime.now(UTC)
+    rows = await load_front_history(db, system) if system is not None else []
+    data = serialize_front_history(
+        rows, system.name if system is not None else None, fmt, exported_at
+    )
+
+    tmp_dir = settings.export_build_tmp_dir or None
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=f".{format_extension(fmt)}", prefix="sheaf-fronts-", dir=tmp_dir
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         size_bytes = os.path.getsize(tmp_path)
     except Exception:
         with contextlib.suppress(FileNotFoundError):

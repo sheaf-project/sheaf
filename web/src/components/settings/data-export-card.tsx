@@ -12,6 +12,7 @@ import {
   listExportJobs,
   requestAccountData,
   type ExportJob,
+  type ExportJobFormat,
 } from "@/lib/systems";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,9 +26,32 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
-type ExportMode = "with_images" | "account_data";
+type ExportMode = "with_images" | "account_data" | "front_history";
 type ExportFormat = "sheaf_native" | "openplural";
+type FrontHistoryFormat = "fronts_csv" | "fronts_json" | "fronts_ics";
+
+// Friendly labels for every artefact format a job row can carry.
+const FORMAT_LABELS: Record<ExportJobFormat, string> = {
+  sheaf_native: "Sheaf native",
+  openplural: "OpenPlural",
+  fronts_csv: "Front history (CSV)",
+  fronts_json: "Front history (JSON)",
+  fronts_ics: "Front history (Calendar)",
+};
+
+const FRONT_HISTORY_OPTIONS: { value: FrontHistoryFormat; label: string }[] = [
+  { value: "fronts_csv", label: "CSV" },
+  { value: "fronts_json", label: "JSON" },
+  { value: "fronts_ics", label: "Calendar (.ics)" },
+];
 
 function formatBytes(n: number | null): string {
   if (n === null) return "—";
@@ -140,6 +164,7 @@ export function DataExportCard() {
   const [syncing, setSyncing] = useState(false);
   const [mode, setMode] = useState<ExportMode | null>(null);
   const [format, setFormat] = useState<ExportFormat>("sheaf_native");
+  const [frontFormat, setFrontFormat] = useState<FrontHistoryFormat>("fronts_csv");
   const [searchParams, setSearchParams] = useSearchParams();
   const highlightJobId = searchParams.get("job");
   // Row refs so we can scroll the highlighted backup into view once
@@ -241,6 +266,14 @@ export function DataExportCard() {
       createJob.mutate({
         include_images: true,
         format,
+        password,
+        totp_code: totp || undefined,
+      });
+    } else if (mode === "front_history") {
+      createJob.mutate({
+        // include_images is ignored server-side for the fronts_* formats.
+        include_images: false,
+        format: frontFormat,
         password,
         totp_code: totp || undefined,
       });
@@ -354,6 +387,43 @@ export function DataExportCard() {
             </Button>
           </div>
 
+          <div className="border-t pt-4">
+            <p className="text-sm text-muted-foreground mb-1 max-w-prose">
+              <strong>Export front history.</strong> Just your fronting
+              history (CSV for spreadsheets, JSON, or a calendar file). Member
+              names and notes are included. Builds in the background and shows
+              up in the list below, same as a full backup.
+            </p>
+            <div className="flex items-end gap-2 mt-3">
+              <div className="space-y-1">
+                <Label htmlFor="front-history-format" className="text-xs">
+                  Format
+                </Label>
+                <Select
+                  value={frontFormat}
+                  onValueChange={(v) => setFrontFormat(v as FrontHistoryFormat)}
+                >
+                  <SelectTrigger id="front-history-format" className="w-44">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FRONT_HISTORY_OPTIONS.map(({ value, label }) => (
+                      <SelectItem key={value} value={value}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                onClick={() => setMode("front_history")}
+                variant="outline"
+              >
+                Export front history
+              </Button>
+            </div>
+          </div>
+
           {jobs && jobs.length > 0 && (
             <div className="border-t pt-4">
               <p className="text-sm font-medium mb-2">Recent backups</p>
@@ -372,6 +442,8 @@ export function DataExportCard() {
                   >
                     <div className="flex flex-col">
                       <span className="text-xs text-muted-foreground">
+                        {FORMAT_LABELS[j.format] ?? j.format}
+                        {" · "}
                         {new Date(j.requested_at).toLocaleString()}
                       </span>
                       <span className="text-xs">
@@ -408,6 +480,16 @@ export function DataExportCard() {
         onOpenChange={(o) => !o && setMode(null)}
         title="Confirm full backup"
         description="Re-enter your password to queue a full backup including all your image bytes. This is the highest-value export, so we always require step-up auth."
+        totpEnabled={totpEnabled}
+        busy={busy}
+        onConfirm={handleStepUpConfirm}
+        confirmLabel="Queue export"
+      />
+      <StepUpDialog
+        open={mode === "front_history"}
+        onOpenChange={(o) => !o && setMode(null)}
+        title="Confirm front-history export"
+        description="Re-enter your password to queue an export of your fronting history (member names and notes included). Step-up gated like the other exports."
         totpEnabled={totpEnabled}
         busy={busy}
         onConfirm={handleStepUpConfirm}

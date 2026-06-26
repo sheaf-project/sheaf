@@ -202,6 +202,23 @@ def test_export_job_refuses_api_key_auth(auth_client: httpx.Client):
     assert r.status_code == 403
 
 
+def test_export_job_accepts_fronts_format(auth_client: httpx.Client):
+    """The standalone front-history formats are accepted by the same
+    enqueue endpoint and round-trip through the job record. Building is the
+    60s-interval worker's job; the serializers are unit-tested in
+    test_front_history_export.py, so this just covers the format plumbing."""
+    r = auth_client.post(
+        "/v1/export/jobs",
+        json={"format": "fronts_csv", "password": "testpassword123"},
+    )
+    assert r.status_code == 202, r.text
+    job = r.json()
+    assert job["format"] == "fronts_csv"
+    assert job["status"] == "pending"
+    listed = auth_client.get("/v1/export/jobs").json()
+    assert any(j["id"] == job["id"] and j["format"] == "fronts_csv" for j in listed)
+
+
 # ---------------------------------------------------------------------------
 # Builder unit-style — assemble the zip directly
 # ---------------------------------------------------------------------------
