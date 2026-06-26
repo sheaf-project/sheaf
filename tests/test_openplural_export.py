@@ -101,7 +101,8 @@ def test_envelope_producer_and_version_stamp():
 def test_core_records_mapped():
     env = build_envelope(_native(), exported_at=_EXPORTED_AT)
     assert env["systems"][0]["name"] == "Sys"
-    assert env["systems"][0]["privacy"] == "public"
+    # privacy is the OpenPlural Privacy object, not a bare string.
+    assert env["systems"][0]["privacy"] == {"visibility": "public"}
     # pluralkit_id becomes a source_ref, not a core member field.
     m1 = next(m for m in env["members"] if m["id"] == "m1")
     assert {"app": "pluralkit", "collection": "members", "id": "abcde"} in m1["source_refs"]
@@ -268,4 +269,47 @@ def test_privacy_buckets_round_to_known():
     native["members"][0]["privacy"] = "weird-value"
     env = build_envelope(native, exported_at=_EXPORTED_AT)
     m1 = next(m for m in env["members"] if m["id"] == "m1")
-    assert m1["privacy"] == "unknown"
+    assert m1["privacy"] == {"visibility": "unknown"}
+
+
+def test_privacy_object_extracted_on_import():
+    """Spec-conformant OpenPlural privacy is an object {visibility, source};
+    to_native must extract the visibility string rather than pass the dict
+    through (which crashed the native importer: unhashable type 'dict').
+    Repro of the reported PluralSpace-via-OpenPlural import failure."""
+    env = {
+        "openplural_version": "0.1",
+        "systems": [
+            {
+                "id": "s1",
+                "name": "S",
+                "privacy": {"visibility": "public", "source": {"pluralspace": "public"}},
+            }
+        ],
+        "members": [
+            {"id": "m1", "name": "M", "privacy": {"visibility": "private", "source": {}}}
+        ],
+        "custom_fields": [
+            {"id": "f1", "name": "F", "privacy": {"visibility": "friends"}}
+        ],
+    }
+    native = to_native(env)
+    assert native["system"]["privacy"] == "public"
+    assert native["members"][0]["privacy"] == "private"
+    assert native["custom_fields"][0]["privacy"] == "friends"
+
+
+def test_privacy_bare_string_still_accepted_on_import():
+    """Older / lenient files with a bare-string privacy still read."""
+    env = {
+        "openplural_version": "0.1",
+        "systems": [{"id": "s1", "name": "S", "privacy": "public"}],
+    }
+    assert to_native(env)["system"]["privacy"] == "public"
+
+
+def test_privacy_round_trips_object_to_string():
+    """Export emits the privacy object; import reads it back to a string."""
+    env = build_envelope(_native(), exported_at=_EXPORTED_AT)
+    assert env["systems"][0]["privacy"] == {"visibility": "public"}
+    assert to_native(env)["system"]["privacy"] == "public"

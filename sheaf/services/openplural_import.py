@@ -69,6 +69,25 @@ def _ext(obj: dict) -> dict:
     return sheaf if isinstance(sheaf, dict) else {}
 
 
+def _op_privacy(val: object) -> str | None:
+    """Extract the visibility bucket from an OpenPlural privacy value.
+
+    Per the spec, `privacy` is an object: ``{"visibility": "...", "source":
+    {...}}`` (on systems, members, and custom fields). We carry just the
+    `visibility` string into the native shape. Older / lenient files that put
+    a bare string there are accepted as-is; anything else becomes None and
+    the native importer applies its default. This is the conformant inverse
+    of the wrapping the exporter does - and it stops a spec-conformant file's
+    privacy object reaching the native importer as an unhashable dict.
+    """
+    if isinstance(val, dict):
+        v = val.get("visibility")
+        return v if isinstance(v, str) else None
+    if isinstance(val, str):
+        return val
+    return None
+
+
 def _birthday_to_native(b: object) -> str | None:
     """OpenPlural Birthday sub-record -> Sheaf's flat ``MM-DD`` / ``YYYY-MM-DD``."""
     if isinstance(b, str):
@@ -134,7 +153,7 @@ def to_native(envelope: dict) -> dict:
             "tag": sys_in.get("tag"),
             "avatar_url": assets.url(sys_in.get("avatar_asset_id")),
             "color": sys_in.get("color"),
-            "privacy": sys_in.get("privacy"),
+            "privacy": _op_privacy(sys_in.get("privacy")),
             "date_format": ext.get("date_format"),
             "replace_fronts_default": ext.get("replace_fronts_default"),
             "coalesce_contiguous_fronts": ext.get("coalesce_contiguous_fronts"),
@@ -171,7 +190,7 @@ def to_native(envelope: dict) -> dict:
                 "archived_at": (
                     envelope.get("exported_at") if m.get("archived") else None
                 ),
-                "privacy": m.get("privacy"),
+                "privacy": _op_privacy(m.get("privacy")),
                 "note": ext.get("note"),
                 "quick_switch_pin": ext.get("quick_switch_pin"),
                 "notify_on_front_global": ext.get("notify_on_front_global"),
@@ -229,7 +248,7 @@ def to_native(envelope: dict) -> dict:
                 "field_type": fd.get("field_type"),
                 "options": fd.get("options"),
                 "order": fd.get("sort_order"),
-                "privacy": fd.get("privacy"),
+                "privacy": _op_privacy(fd.get("privacy")),
                 "values": field_values.get(fd.get("id"), []),
             }
         )

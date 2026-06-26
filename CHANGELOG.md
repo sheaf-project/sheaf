@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenPlural import crash on spec-conformant privacy.** Importing an OpenPlural file whose `privacy` is the spec object (`{"visibility": ..., "source": ...}`) - as produced by, for example, a PluralSpace export routed through OpenPlural - failed with `unhashable type: 'dict'`. The importer now extracts the `visibility` string from the privacy object (on systems, members, and custom fields), and still accepts a bare-string privacy from older files. Sheaf's own OpenPlural export was also emitting privacy as a bare string instead of the spec object, so it was non-conformant; it now emits `{"visibility": ...}` so other apps read it correctly. The native importer's privacy and field-type helpers are additionally hardened to fall back to a safe default rather than raise on an unexpected value type.
+
 ### Added
 
 - **Front-history volume metrics.** New Prometheus metrics to ground the front-history retention decision in real usage: `sheaf_fronts_total` (global count), `sheaf_systems_by_front_count` (a per-system distribution, exposed as a label-less snapshot of "systems with at most N fronts" so it carries no system id), `sheaf_system_front_count_max` (the single largest system, the direct outlier signal), and `sheaf_fronts_created_total` (switch velocity). Operator-facing only; documented in `docs/METRICS.md`.

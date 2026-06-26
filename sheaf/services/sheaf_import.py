@@ -111,14 +111,18 @@ _VALID_PRIVACY = {e.value for e in PrivacyLevel}
 _VALID_FIELD_TYPE = {e.value for e in FieldType}
 
 
-def _privacy(val: str | None) -> str:
-    if val and val in _VALID_PRIVACY:
+def _privacy(val: object) -> str:
+    # `val` is untrusted/translated import data: guard the type before the
+    # set membership test. A non-string (e.g. an OpenPlural `{visibility:
+    # ...}` privacy object that reached here un-extracted) must default
+    # rather than raise `TypeError: unhashable type` mid-import.
+    if isinstance(val, str) and val in _VALID_PRIVACY:
         return val
     return PrivacyLevel.PRIVATE
 
 
-def _field_type(val: str | None) -> FieldType:
-    if val and val in _VALID_FIELD_TYPE:
+def _field_type(val: object) -> FieldType:
+    if isinstance(val, str) and val in _VALID_FIELD_TYPE:
         return FieldType(val)
     return FieldType.TEXT
 
