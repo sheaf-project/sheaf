@@ -484,6 +484,42 @@ members_custom_front = _G(
     "sheaf_members_custom_front",
     "Members flagged as custom-front entities (non-counting fronters).",
 )
+fronts_total = _G(
+    "sheaf_fronts_total",
+    "All front-history rows across all systems (global volume baseline).",
+)
+
+# Per-system front counts as a point-in-time DISTRIBUTION, without ever
+# labelling by system_id (that would blow up cardinality and leak which
+# system is which). `systems_by_front_count` is a snapshot cumulative
+# histogram expressed as a gauge: each refresh sets, per `le` threshold, the
+# number of systems whose front-history row count is <= that threshold.
+# Read across the buckets to see the distribution; `system_front_count_max`
+# is the single biggest system, the direct "is anyone an outlier?" signal.
+# A gauge (re-set each refresh) rather than a real Histogram because the
+# quantity changes slowly and we want a current snapshot, not an all-time
+# accumulation. Thresholds are front *counts*, not seconds.
+FRONT_COUNT_BUCKETS = (
+    1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000,
+    100000,
+)
+systems_by_front_count = _G(
+    "sheaf_systems_by_front_count",
+    "Number of systems whose front-history row count is <= the `le` bucket "
+    "(a point-in-time cumulative distribution, re-set each refresh). Read "
+    "across buckets to see the per-system distribution. See docs/METRICS.md.",
+    ["le"],
+)
+system_front_count_max = _G(
+    "sheaf_system_front_count_max",
+    "Largest single system's front-history row count - the direct outlier "
+    "signal for the retention decision.",
+)
+fronts_created_total = _C(
+    "sheaf_fronts_created_total",
+    "Front-history rows created via the API. Switch velocity: counts row "
+    "creation, distinct from the HTTP request counter on POST /v1/fronts.",
+)
 
 # ---------------------------------------------------------------------------
 # Infra

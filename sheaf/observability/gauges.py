@@ -21,12 +21,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.observability.metrics import (
+    FRONT_COUNT_BUCKETS,
     auth_lockouts_active,
     auth_sessions_active,
     auth_totp_enabled,
     auth_trusted_devices_active,
     cf_shield_active,
     db_pool_connections,
+    fronts_total,
     imports_in_progress,
     imports_oldest_pending_seconds,
     members_custom_front,
@@ -38,6 +40,8 @@ from sheaf.observability.metrics import (
     redis_up,
     requests_per_account_per_minute,
     requests_per_ip_per_minute,
+    system_front_count_max,
+    systems_by_front_count,
     systems_total,
     users_pending_delete,
     users_total,
@@ -131,6 +135,36 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
         select(func.count(Member.id)).where(Member.is_custom_front.is_(True))
     )
     members_custom_front.set(int(custom_fronts or 0))
+
+    from sheaf.models.front import Front
+
+    total_fronts = await db.scalar(select(func.count(Front.id)))
+    fronts_total.set(int(total_fronts or 0))
+
+    # Per-system front-count distribution. One grouped query; the outer join
+    # keeps systems with zero fronts in the picture so the distribution
+    # covers every system. We never label by system_id - we set a snapshot
+    # cumulative gauge (count of systems at/under each threshold) plus the
+    # single max, which is enough to spot an outlier without naming it.
+    per_system = (
+        (
+            await db.execute(
+                select(func.count(Front.id))
+                .select_from(System)
+                .outerjoin(Front, Front.system_id == System.id)
+                .group_by(System.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    counts = [int(c or 0) for c in per_system]
+    system_front_count_max.set(max(counts) if counts else 0)
+    for threshold in FRONT_COUNT_BUCKETS:
+        systems_by_front_count.labels(le=str(threshold)).set(
+            sum(1 for c in counts if c <= threshold)
+        )
+    systems_by_front_count.labels(le="+Inf").set(len(counts))
 
 
 async def _refresh_outbox(db: AsyncSession) -> None:
