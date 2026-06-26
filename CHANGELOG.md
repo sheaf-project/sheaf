@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Standalone front-history export.** You can now export just your fronting history, separate from the full account export, in the format that suits what you want to do with it: **CSV** (one row per front, with duration and co-fronting members, for spreadsheets and analysis), **JSON** (structured and self-describing), or **ICS** (an iCalendar file, one event per front, to drop into a calendar app and see your history on a timeline). It runs through the same async export-job flow as the full export (same step-up auth, the same "your export is ready" email, and the same expiring download), and produces a single file rather than a zip. Member names and per-front notes are decrypted on the way out exactly as the account export does.
+
 ## [1.1.0] - 2026-06-24
 
 ### Added

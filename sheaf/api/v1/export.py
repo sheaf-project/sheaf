@@ -628,8 +628,17 @@ def _poll_dict(poll) -> dict:
 class ExportJobRequest(BaseModel):
     include_images: bool = False
     # Artefact format: "sheaf_native" (export.json + images/) or
-    # "openplural" (openplural.json + assets/, an .openplural.zip bundle).
-    format: Literal["sheaf_native", "openplural"] = "sheaf_native"
+    # "openplural" (openplural.json + assets/, an .openplural.zip bundle), or
+    # a standalone front-history file ("fronts_csv" / "fronts_json" /
+    # "fronts_ics") - a single file of just the fronting history, no zip.
+    # include_images is ignored for the fronts_* formats.
+    format: Literal[
+        "sheaf_native",
+        "openplural",
+        "fronts_csv",
+        "fronts_json",
+        "fronts_ics",
+    ] = "sheaf_native"
     # Step-up auth: same shape and rules as POST /v1/account/data. Always
     # required; mirrors the Article 15 lock since this is the broader read
     # (everything the user has, including binary blobs).
@@ -780,8 +789,17 @@ async def download_export_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Export file no longer available",
         )
+    from sheaf.services.front_history_export import (
+        FRONT_HISTORY_FORMATS,
+        format_extension,
+    )
+
     if job.format == "openplural":
         filename = f"sheaf-export-{job.id}.openplural.zip"
+    elif job.format in FRONT_HISTORY_FORMATS:
+        filename = (
+            f"sheaf-front-history-{job.id}.{format_extension(job.format)}"
+        )
     else:
         filename = f"sheaf-export-{job.id}.zip"
     return await export_storage.download_response(job.file_location, filename)

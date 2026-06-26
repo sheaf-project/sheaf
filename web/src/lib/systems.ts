@@ -19,9 +19,20 @@ export function exportData(format: "sheaf_native" | "openplural" = "sheaf_native
 
 // --- Article 15 + async export jobs ---------------------------------------
 
+// Artefact format for an export job. "sheaf_native" / "openplural" are the
+// full-system exports; the fronts_* values are standalone front-history files
+// (a single CSV / JSON / iCalendar file, no zip).
+export type ExportJobFormat =
+  | "sheaf_native"
+  | "openplural"
+  | "fronts_csv"
+  | "fronts_json"
+  | "fronts_ics";
+
 export interface ExportJob {
   id: string;
   include_images: boolean;
+  format: ExportJobFormat;
   status: "pending" | "running" | "done" | "failed" | "expired";
   requested_at: string;
   started_at: string | null;
@@ -37,10 +48,11 @@ export function listExportJobs() {
 
 export function createExportJob(body: {
   include_images: boolean;
-  // Artefact format: "sheaf_native" (export.json + images/) or
-  // "openplural" (an .openplural.zip bundle). Defaults server-side to
-  // "sheaf_native" when omitted.
-  format?: "sheaf_native" | "openplural";
+  // Artefact format: "sheaf_native" (export.json + images/), "openplural"
+  // (an .openplural.zip bundle), or a standalone front-history file
+  // (fronts_csv / fronts_json / fronts_ics). Defaults server-side to
+  // "sheaf_native" when omitted. include_images is ignored for fronts_*.
+  format?: ExportJobFormat;
   password: string;
   totp_code?: string;
 }) {
