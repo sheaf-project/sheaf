@@ -165,6 +165,22 @@ async def get_account_data(
         db, user.id, limit=_SECURITY_EVENT_CAP
     )
 
+    # Account activity log (the user's own + automated actions). Capped
+    # newest-first like the security events, with the cap surfaced.
+    _ACTIVITY_EVENT_CAP = 2000
+    activity_events = list(
+        (
+            await db.execute(
+                select(ActivityEvent)
+                .where(ActivityEvent.user_id == user.id)
+                .order_by(desc(ActivityEvent.created_at), desc(ActivityEvent.id))
+                .limit(_ACTIVITY_EVENT_CAP)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     client_settings_result = await db.execute(
         select(ClientSettings).where(ClientSettings.user_id == user.id)
     )
@@ -317,6 +333,19 @@ async def get_account_data(
                 "user_agent": e.user_agent,
             }
             for e in security_events
+        ],
+        # The account activity log: consequential and automated actions on
+        # this account, the same rows shown on the account-activity page.
+        "activity_events_truncated": len(activity_events) >= _ACTIVITY_EVENT_CAP,
+        "activity_events": [
+            {
+                "created_at": _iso(e.created_at),
+                "actor_type": str(e.actor_type),
+                "action": str(e.action),
+                "target_label": e.target_label,
+                "detail": e.detail,
+            }
+            for e in activity_events
         ],
         "email_suppression": (
             {

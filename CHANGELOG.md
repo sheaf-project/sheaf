@@ -8,7 +8,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Added
 
-- **Account activity log.** Settings > Account gains an "Account activity" card recording the consequential and automated actions on your account, so nothing happens silently: account/security changes (password, email, two-factor, API keys, sessions, trusted devices, scheduled account deletion, data-export requests) and system actions that touch your data (an import completing, an export becoming ready). It is deliberately curated, not a mirror of every edit you already see in the app, and is separate from both the admin-activity view (admin actions on your account) and the operator-only security-event log. It carries no member content and no IP, and rows age out after a generous window (`activity_event_retention_days`).
+- **Account activity log.** Settings > Account gains an "Account activity" card recording the consequential and automated actions on your account, so nothing happens silently: account/security changes (password, email, two-factor, API keys, sessions, trusted devices, scheduled account deletion, data-export requests) and system actions that touch your data (an import completing, an export becoming ready). It is deliberately curated, not a mirror of every edit you already see in the app, and is separate from both the admin-activity view (admin actions on your account) and the operator-only security-event log. It carries no member content and no IP, and rows age out after a generous window (`activity_event_retention_days`). The log is also included in the Article 15 account-data access export (`POST /v1/account/data`) so a data-access request is complete.
 
 ### Fixed
 

@@ -34,3 +34,22 @@ def test_activity_records_api_key_creation(auth_client: httpx.Client):
     assert e["target_label"] == "ci-activity-key"
     # The endpoint is self-only by construction (WHERE user_id == self.id),
     # the same scoping as the admin-activity surface.
+
+
+def test_activity_included_in_account_data_export(auth_client: httpx.Client):
+    """The activity log is part of the Article 15 access data, so a DSAR is
+    complete (it is also live on the account-activity endpoint)."""
+    auth_client.post(
+        "/v1/auth/keys",
+        json={"name": "dsar-key", "scopes": ["system:read"]},
+    )
+    resp = auth_client.post(
+        "/v1/account/data", json={"password": "testpassword123"}
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "activity_events" in data
+    assert any(
+        e["action"] == "api_key_created" and e["target_label"] == "dsar-key"
+        for e in data["activity_events"]
+    )
