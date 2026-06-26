@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import async_session_factory
+from sheaf.models.activity_event import ActivityAction, ActivityActorType
 from sheaf.models.export_job import ExportJob, ExportJobStatus
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
@@ -170,6 +171,17 @@ async def _build(job_id: uuid.UUID) -> None:
             job.completed_at = datetime.now(UTC)
             job.expires_at = job.completed_at + timedelta(
                 hours=settings.export_job_ttl_hours
+            )
+            # Automated event: the export the user asked for is now ready.
+            # Lands in the same commit as the DONE transition.
+            from sheaf.services.activity_log import log_activity
+
+            await log_activity(
+                db,
+                user_id=job.user_id,
+                action=ActivityAction.EXPORT_READY,
+                actor_type=ActivityActorType.SYSTEM,
+                target_label=job.format,
             )
             await db.commit()
             exports_built_total.labels(outcome="done").inc()

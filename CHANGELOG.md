@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Account activity log.** Settings > Account gains an "Account activity" card recording the consequential and automated actions on your account, so nothing happens silently: account/security changes (password, email, two-factor, API keys, sessions, trusted devices, scheduled account deletion, data-export requests) and system actions that touch your data (an import completing, an export becoming ready). It is deliberately curated, not a mirror of every edit you already see in the app, and is separate from both the admin-activity view (admin actions on your account) and the operator-only security-event log. It carries no member content and no IP, and rows age out after a generous window (`activity_event_retention_days`). The log is also included in the Article 15 account-data access export (`POST /v1/account/data`) so a data-access request is complete.
+
 ### Fixed
 
 - **OpenPlural import crash on spec-conformant privacy.** Importing an OpenPlural file whose `privacy` is the spec object (`{"visibility": ..., "source": ...}`) - as produced by, for example, a PluralSpace export routed through OpenPlural - failed with `unhashable type: 'dict'`. The importer now extracts the `visibility` string from the privacy object (on systems, members, and custom fields), and still accepts a bare-string privacy from older files. Sheaf's own OpenPlural export was also emitting privacy as a bare string instead of the spec object, so it was non-conformant; it now emits `{"visibility": ...}` so other apps read it correctly. The native importer's privacy and field-type helpers are additionally hardened to fall back to a safe default rather than raise on an unexpected value type.

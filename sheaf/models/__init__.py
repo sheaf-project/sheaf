@@ -1,3 +1,8 @@
+from sheaf.models.activity_event import (
+    ActivityAction,
+    ActivityActorType,
+    ActivityEvent,
+)
 from sheaf.models.announcement import AnnouncementSeverity, ServerAnnouncement
 from sheaf.models.api_key import ApiKey
 from sheaf.models.base import Base
@@ -54,6 +59,9 @@ from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.models.watch_token import WatchToken
 
 __all__ = [
+    "ActivityAction",
+    "ActivityActorType",
+    "ActivityEvent",
     "AccountStatus",
     "AnnouncementSeverity",
     "ApiKey",
