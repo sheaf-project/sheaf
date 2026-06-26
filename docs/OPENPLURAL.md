@@ -266,11 +266,17 @@ lifted directly into the native dict.
 
 - **Privacy / visibility buckets.** Sheaf's `PrivacyLevel`
   (`public` / `friends` / `private`) maps 1:1 onto the OpenPlural visibility
-  vocabulary. `_privacy` passes through any value in
-  `{public, friends, private, trusted, unknown}` and rounds anything
-  unrecognised to the strictest-safe `"unknown"` rather than guessing. This
-  applies uniformly to system, member, custom-field, and note (journal)
-  visibility.
+  vocabulary (`{public, friends, private, trusted, unknown}`), rounding
+  anything unrecognised to the strictest-safe `"unknown"` rather than
+  guessing. Note the *shape*: on **system / member / custom-field** the spec
+  models privacy as a Privacy **object** `{"visibility": ..., "source": ...}`,
+  so the exporter emits `{"visibility": <bucket>}` (Sheaf has no raw `source`
+  detail to carry) and the importer reads the `visibility` field back out. A
+  bare-string privacy is still accepted on import for older/lenient files.
+  **Note (journal) `visibility`** is a plain string in the spec, not the
+  object, and stays a string both directions. (Treating the privacy object as
+  a bare string was the cause of the `unhashable type: 'dict'` import crash on
+  spec-conformant files, e.g. a PluralSpace export routed through OpenPlural.)
 - **Front status is free text.** `fronts[].custom_status` becomes
   `FrontPeriod.status` verbatim; there is no controlled vocabulary on the Sheaf
   side, so none is imposed.

@@ -195,7 +195,7 @@ def build_envelope(
                 "tag": sys_data.get("tag"),
                 "color": sys_data.get("color"),
                 "avatar_asset_id": assets.ref(sys_data.get("avatar_url"), kind="avatar"),
-                "privacy": _privacy(sys_data.get("privacy")),
+                "privacy": _privacy_obj(sys_data.get("privacy")),
                 "extensions": {EXT_NS: _prune(sys_ext)},
             }
         )
@@ -230,7 +230,7 @@ def build_envelope(
                 "archived": bool(m.get("archived_at")),
                 "avatar_asset_id": assets.ref(m.get("avatar_url"), kind="avatar"),
                 "banner_asset_id": assets.ref(m.get("banner_url"), kind="banner"),
-                "privacy": _privacy(m.get("privacy")),
+                "privacy": _privacy_obj(m.get("privacy")),
                 "created_at": m.get("created_at"),
                 "source_refs": source_refs,
                 "extensions": {EXT_NS: _prune(m_ext)},
@@ -276,7 +276,7 @@ def build_envelope(
                 "field_type": fd.get("field_type"),
                 "options": fd.get("options"),
                 "sort_order": fd.get("order"),
-                "privacy": _privacy(fd.get("privacy")),
+                "privacy": _privacy_obj(fd.get("privacy")),
             }
         )
         for v in fd.get("values", []) or []:
@@ -478,6 +478,16 @@ def _privacy(val: str | None) -> str:
     if val in _VALID_VISIBILITY:
         return val
     return "unknown"
+
+
+def _privacy_obj(val: str | None) -> dict:
+    """Wrap a Sheaf privacy bucket in the OpenPlural Privacy *object*
+    (``{"visibility": ...}``), which is the spec shape for system / member /
+    custom-field privacy. Sheaf has no richer raw source detail to carry, so
+    the optional ``source`` key is omitted. (Note/journal ``visibility`` is a
+    plain string in the spec, not this object - those keep using ``_privacy``
+    directly.)"""
+    return {"visibility": _privacy(val)}
 
 
 def _prune(d: dict) -> dict:
