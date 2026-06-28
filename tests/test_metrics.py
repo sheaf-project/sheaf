@@ -227,6 +227,22 @@ def test_front_volume_metrics_present():
         assert _series_value(body, name) is not None, f"missing series: {name}"
 
 
+def test_journal_revision_volume_metrics_present():
+    """The journal-entry and content-revision volume metrics (for the
+    journal-revision cap decision) are label-less and exposed from the
+    first scrape. The per-system / per-target distribution gauges are `le`-
+    labelled and only appear once the refresher has run, so not asserted."""
+    body = _scrape()
+    for name in (
+        "sheaf_journal_entries_total",
+        "sheaf_system_journal_entry_count_max",
+        "sheaf_content_revisions_total",
+        "sheaf_target_revision_count_max",
+        "sheaf_content_revisions_created_total",
+    ):
+        assert _series_value(body, name) is not None, f"missing series: {name}"
+
+
 # ---------------------------------------------------------------------------
 # Leader election
 # ---------------------------------------------------------------------------

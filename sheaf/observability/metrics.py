@@ -521,6 +521,53 @@ fronts_created_total = _C(
     "creation, distinct from the HTTP request counter on POST /v1/fronts.",
 )
 
+# Journal entries + content-revision (edit-history) volume - the same
+# preserve-by-count lens as front history, feeding the journal-revision
+# count-cap decision (../sheaf-design-docs/usage-limits-and-tiers.md). The
+# generic FRONT_COUNT_BUCKETS thresholds are reused (they are plain counts).
+journal_entries_total = _G(
+    "sheaf_journal_entries_total",
+    "All journal entries across all systems (global volume baseline).",
+)
+systems_by_journal_entry_count = _G(
+    "sheaf_systems_by_journal_entry_count",
+    "Number of systems whose journal-entry count is <= the `le` bucket (a "
+    "point-in-time cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_journal_entry_count_max = _G(
+    "sheaf_system_journal_entry_count_max",
+    "Largest single system's journal-entry count.",
+)
+
+# Content revisions are the edit history for journal entries, member bios,
+# and messages (one polymorphic table). The pathological case is a single
+# target with a huge revision count (a save-spamming client / bug); these
+# answer "is any single target an outlier?" without naming it - the input to
+# shifting journal revisions from age-based to count-based retention.
+content_revisions_total = _G(
+    "sheaf_content_revisions_total",
+    "All content-revision (edit-history) rows across journal entries, member "
+    "bios, and messages.",
+)
+targets_by_revision_count = _G(
+    "sheaf_targets_by_revision_count",
+    "Number of revision targets (one journal entry / member bio / message) "
+    "whose revision count is <= the `le` bucket (point-in-time cumulative "
+    "distribution, re-set each refresh). See docs/METRICS.md.",
+    ["le"],
+)
+target_revision_count_max = _G(
+    "sheaf_target_revision_count_max",
+    "Most revisions on any single target - the direct outlier signal for the "
+    "journal-revision count-cap decision.",
+)
+content_revisions_created_total = _C(
+    "sheaf_content_revisions_created_total",
+    "Content revisions created via the live edit path (not imports). Edit "
+    "velocity; the save-spam signal.",
+)
+
 # ---------------------------------------------------------------------------
 # Infra
 # ---------------------------------------------------------------------------

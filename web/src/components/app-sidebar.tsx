@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useCurrentFronts } from "@/hooks/use-fronts";
 import { getUnread } from "@/lib/messages";
+import { listPolls } from "@/lib/polls";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/logo";
 import { ThemeModeToggle } from "@/components/theme-mode-toggle";
@@ -79,6 +80,18 @@ export function AppSidebar({
   });
   const messagesUnread = unread?.total ?? 0;
 
+  // Open-poll count for the Polls nav badge. Shares the ["polls"] cache with
+  // the polls page so it's free when that page is mounted and deduped
+  // otherwise. "Open" mirrors the polls page: the server-computed is_closed
+  // flag, not a local clock comparison. Everyone should notice an active poll,
+  // so it's worth a periodic refetch.
+  const { data: polls } = useQuery({
+    queryKey: ["polls"],
+    queryFn: listPolls,
+    refetchInterval: 60_000,
+  });
+  const openPolls = (polls ?? []).filter((p) => !p.is_closed).length;
+
   // Collapsed-icons-only is a desktop-only convenience. On mobile the
   // sidebar is shown as a drawer overlay where horizontal space is plentiful,
   // so always render the full label set there. Forcing isCollapsed=false
@@ -143,7 +156,13 @@ export function AppSidebar({
             icon={item.icon}
             collapsed={isCollapsed}
             onClick={onMobileClose}
-            badge={item.to === "/messages" ? messagesUnread : undefined}
+            badge={
+              item.to === "/messages"
+                ? messagesUnread
+                : item.to === "/polls"
+                  ? openPolls
+                  : undefined
+            }
           />
         ))}
         {user?.is_admin &&

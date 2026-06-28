@@ -20,6 +20,7 @@ from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
+from sheaf.observability.metrics import content_revisions_created_total
 from sheaf.services.markdown import extract_image_keys
 from sheaf.services.system_safety import snapshot_current_fronts
 
@@ -128,6 +129,7 @@ async def capture_revision(
         pinned_at=pinned_at,
     )
     db.add(revision)
+    content_revisions_created_total.inc()
     return revision
 
 
