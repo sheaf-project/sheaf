@@ -313,6 +313,13 @@ detect non-zero from the first scrape.
 | `sheaf_systems_by_front_count` | gauge | `le` (front-count threshold; `+Inf` = all systems) |
 | `sheaf_system_front_count_max` | gauge | - |
 | `sheaf_fronts_created_total` | counter | - |
+| `sheaf_journal_entries_total` | gauge | - |
+| `sheaf_systems_by_journal_entry_count` | gauge | `le` (entry-count threshold; `+Inf` = all systems) |
+| `sheaf_system_journal_entry_count_max` | gauge | - |
+| `sheaf_content_revisions_total` | gauge | - |
+| `sheaf_targets_by_revision_count` | gauge | `le` (revisions-per-target threshold; `+Inf` = all targets) |
+| `sheaf_target_revision_count_max` | gauge | - |
+| `sheaf_content_revisions_created_total` | counter | - |
 
 `sheaf_systems_by_front_count` is a point-in-time cumulative distribution of
 per-system front-history size, re-set each gauge refresh: each `le` series is
@@ -325,6 +332,18 @@ than 1000 fronts, and `sheaf_system_front_count_max` is the single largest.
 the HTTP request counter on `POST /v1/fronts`. These exist to ground the
 front-history retention decision in real usage data (see
 `../sheaf-design-docs/front-history-retention-and-limits.md`).
+
+The `sheaf_journal_entries_total` / `sheaf_systems_by_journal_entry_count` /
+`sheaf_system_journal_entry_count_max` set and the
+`sheaf_content_revisions_total` / `sheaf_targets_by_revision_count` /
+`sheaf_target_revision_count_max` / `sheaf_content_revisions_created_total`
+set apply the same lens to journal entries and to content-revision (edit
+history) volume. `sheaf_targets_by_revision_count` is the key one for the
+journal-revision cap decision: a "target" is one journal entry / member bio /
+message, and `sheaf_target_revision_count_max` is the most-revised single
+target (the save-spam outlier signal). `sheaf_content_revisions_created_total`
+is edit velocity on the live edit path (imports excluded). See
+`../sheaf-design-docs/usage-limits-and-tiers.md`.
 
 ### Infra
 

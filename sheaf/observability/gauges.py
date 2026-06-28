@@ -27,10 +27,12 @@ from sheaf.observability.metrics import (
     auth_totp_enabled,
     auth_trusted_devices_active,
     cf_shield_active,
+    content_revisions_total,
     db_pool_connections,
     fronts_total,
     imports_in_progress,
     imports_oldest_pending_seconds,
+    journal_entries_total,
     members_custom_front,
     members_total,
     notifications_outbox_depth,
@@ -41,8 +43,12 @@ from sheaf.observability.metrics import (
     requests_per_account_per_minute,
     requests_per_ip_per_minute,
     system_front_count_max,
+    system_journal_entry_count_max,
     systems_by_front_count,
+    systems_by_journal_entry_count,
     systems_total,
+    target_revision_count_max,
+    targets_by_revision_count,
     users_pending_delete,
     users_total,
 )
@@ -165,6 +171,60 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
             sum(1 for c in counts if c <= threshold)
         )
     systems_by_front_count.labels(le="+Inf").set(len(counts))
+
+    # Journal entries + content-revision (edit-history) volume, same
+    # preserve-by-count lens. One grouped query each; the snapshot CDF +
+    # max are set the same way as the front distribution above.
+    from sheaf.models.content_revision import ContentRevision
+    from sheaf.models.journal_entry import JournalEntry
+
+    def _set_distribution(cdf_gauge, max_gauge, values: list[int]) -> None:
+        max_gauge.set(max(values) if values else 0)
+        for threshold in FRONT_COUNT_BUCKETS:
+            cdf_gauge.labels(le=str(threshold)).set(
+                sum(1 for v in values if v <= threshold)
+            )
+        cdf_gauge.labels(le="+Inf").set(len(values))
+
+    je_total = await db.scalar(select(func.count(JournalEntry.id)))
+    journal_entries_total.set(int(je_total or 0))
+    je_per_system = [
+        int(c or 0)
+        for c in (
+            await db.execute(
+                select(func.count(JournalEntry.id))
+                .select_from(System)
+                .outerjoin(JournalEntry, JournalEntry.system_id == System.id)
+                .group_by(System.id)
+            )
+        )
+        .scalars()
+        .all()
+    ]
+    _set_distribution(
+        systems_by_journal_entry_count,
+        system_journal_entry_count_max,
+        je_per_system,
+    )
+
+    cr_total = await db.scalar(select(func.count(ContentRevision.id)))
+    content_revisions_total.set(int(cr_total or 0))
+    # Revisions per target (one journal entry / member bio / message).
+    rev_per_target = [
+        int(c or 0)
+        for c in (
+            await db.execute(
+                select(func.count(ContentRevision.id)).group_by(
+                    ContentRevision.target_type, ContentRevision.target_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    ]
+    _set_distribution(
+        targets_by_revision_count, target_revision_count_max, rev_per_target
+    )
 
 
 async def _refresh_outbox(db: AsyncSession) -> None:
