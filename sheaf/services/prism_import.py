@@ -100,6 +100,7 @@ from sheaf.schemas.prism_import import (
     PrismPreviewMember,
     PrismPreviewSummary,
 )
+from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
@@ -120,6 +121,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_media import (
     ImportImageError,
     store_imported_image,
@@ -190,6 +192,45 @@ async def parse_envelope_bytes_async(blob: bytes, passphrase: str) -> ParsedPris
 # --- Preview ---------------------------------------------------------------
 
 
+def _measure_prism_payload(data: dict, report: ClampReport) -> None:
+    """Tally which Prism fields/lists exceed the schema caps, into ``report``.
+
+    Reads the same Prism keys ``run_import`` clamps, calling the same helpers,
+    so the preview's warnings match what the import would shorten. Defensive:
+    only string values are measured and only list shapes are counted, so a
+    malformed upload can't raise here.
+    """
+
+    def s(value: object, cap: il.Cap) -> None:
+        if isinstance(value, str):
+            clamp_str(value, cap, report=report)
+
+    settings_arr = _list(data.get("systemSettings"))
+    if settings_arr and isinstance(settings_arr[0], dict):
+        s(settings_arr[0].get("systemName"), il.SYS_NAME)
+
+    for m in _list(data.get("headmates")):
+        if not isinstance(m, dict):
+            continue
+        s(m.get("name"), il.M_NAME)
+        s(m.get("displayName"), il.M_DISPLAY_NAME)
+        s(m.get("pluralkitDisplayName"), il.M_DISPLAY_NAME)
+        s(m.get("pronouns"), il.M_PRONOUNS)
+        s(m.get("birthday"), il.M_BIRTHDAY)
+        s(m.get("pluralkitId"), il.M_PLURALKIT_ID)
+        s(m.get("emoji"), il.M_EMOJI)
+
+    for g in _list(data.get("memberGroups")):
+        if not isinstance(g, dict):
+            continue
+        s(g.get("name"), il.GROUP_NAME)
+
+    for f in _list(data.get("customFields")):
+        if not isinstance(f, dict):
+            continue
+        s(f.get("name"), il.CF_NAME)
+
+
 def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
     """Walk the decrypted JSON and return counts + member list summary.
 
@@ -219,6 +260,9 @@ def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
     sys_block = sys_block[0] if sys_block and isinstance(sys_block[0], dict) else {}
     sys_name = _clean_str(sys_block.get("systemName"))
 
+    report = ClampReport()
+    _measure_prism_payload(data, report)
+
     return PrismPreviewSummary(
         system_name=sys_name,
         format_version=_clean_str(data.get("formatVersion")),
@@ -240,6 +284,7 @@ def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
         member_board_post_count=len(_list(data.get("memberBoardPosts"))),
         media_attachment_count=len(_list(data.get("mediaAttachments"))),
         media_blob_count=len(parsed.media_blobs),
+        limit_warnings=report.to_warnings(),
     )
 
 
@@ -288,10 +333,11 @@ async def run_import(
     `level=warning, stage=import` event.
     """
     result = PrismImportResult()
+    report = ClampReport()
     data = parsed.data
 
     if system_profile:
-        _apply_system_profile(data, system)
+        _apply_system_profile(data, system, report)
 
     selected = set(member_ids) if member_ids is not None else None
 
@@ -315,7 +361,9 @@ async def run_import(
     candidates: list[tuple[Member, str, str, dict]] = []
     for m in eligible:
         ps_id = _clean_str(m.get("id"))
-        plaintext_name = (_clean_str(m.get("name")) or "unnamed")[:100]
+        plaintext_name = clamp_str(
+            _clean_str(m.get("name")) or "unnamed", il.M_NAME, report=report
+        )
         plaintext_description = _clean_str(m.get("notes"))
         custom_color = _normalize_color(m.get("customColorHex")) if m.get(
             "customColorEnabled"
@@ -328,15 +376,21 @@ async def run_import(
             system_id=system.id,
             name=encrypt(plaintext_name),
             name_hash=blind_index(plaintext_name),
-            display_name=_truncate(display_name, 100),
+            display_name=clamp_str(display_name, il.M_DISPLAY_NAME, report=report),
             description=(
                 encrypt(plaintext_description) if plaintext_description else None
             ),
-            pronouns=_truncate(_clean_str(m.get("pronouns")), 100),
+            pronouns=clamp_str(
+                _clean_str(m.get("pronouns")), il.M_PRONOUNS, report=report
+            ),
             color=custom_color,
-            birthday=_clean_str(m.get("birthday")),
-            pluralkit_id=_truncate(_clean_str(m.get("pluralkitId")), 8),
-            emoji=_truncate(_clean_str(m.get("emoji")), 8),
+            birthday=clamp_str(
+                _clean_str(m.get("birthday")), il.M_BIRTHDAY, report=report
+            ),
+            pluralkit_id=clamp_str(
+                _clean_str(m.get("pluralkitId")), il.M_PLURALKIT_ID, report=report
+            ),
+            emoji=clamp_str(_clean_str(m.get("emoji")), il.M_EMOJI, report=report),
             is_custom_front=False,
             privacy=PrivacyLevel.PRIVATE,
         )
@@ -372,6 +426,7 @@ async def run_import(
         )
 
     if not ps_id_to_handle:
+        result.warnings = result.warnings + report.to_warnings()
         return result
 
     await db.flush()
@@ -419,6 +474,7 @@ async def run_import(
             system.id,
             db,
             result.warnings,
+            report,
         )
 
     if custom_fields:
@@ -429,6 +485,7 @@ async def run_import(
             system.id,
             db,
             result.warnings,
+            report,
         )
         result.custom_fields_imported += cf_imported
         result.custom_field_values_imported += cfv_imported
@@ -545,13 +602,16 @@ async def run_import(
             "equivalent and is preserved when present)."
         )
 
+    result.warnings = result.warnings + report.to_warnings()
     return result
 
 
 # --- Section helpers -------------------------------------------------------
 
 
-def _apply_system_profile(data: dict, system: System) -> None:
+def _apply_system_profile(
+    data: dict, system: System, report: ClampReport
+) -> None:
     """Pull the systemSettings[0] block onto the importing system.
 
     Only fills empty Sheaf fields; never overwrites a name the user
@@ -563,7 +623,7 @@ def _apply_system_profile(data: dict, system: System) -> None:
     block = settings_arr[0]
     name = _clean_str(block.get("systemName"))
     if name and not system.name:
-        system.name = name[:100]
+        system.name = clamp_str(name, il.SYS_NAME, report=report)
     description = _clean_str(block.get("systemDescription"))
     if description and not system.description:
         system.description = description
@@ -581,6 +641,7 @@ async def _import_groups(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
+    report: ClampReport,
 ) -> int:
     """Create Sheaf Groups + group_members from Prism's two-table model.
 
@@ -603,7 +664,7 @@ async def _import_groups(
             group = Group(
                 id=uuid.uuid4(),
                 system_id=system_id,
-                name=name[:100],
+                name=clamp_str(name, il.GROUP_NAME, report=report),
                 description=_clean_str(g.get("description")),
                 color=_normalize_color(g.get("colorHex")),
             )
@@ -669,6 +730,7 @@ async def _import_custom_fields(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
+    report: ClampReport,
 ) -> tuple[int, int]:
     """Create Sheaf CustomFieldDefinitions + per-member values.
 
@@ -703,7 +765,7 @@ async def _import_custom_fields(
             field_def = CustomFieldDefinition(
                 id=uuid.uuid4(),
                 system_id=system_id,
-                name=name[:100],
+                name=clamp_str(name, il.CF_NAME, report=report),
                 field_type=ftype,
                 privacy=PrivacyLevel.PRIVATE,
             )
@@ -1373,12 +1435,6 @@ def _clean_str(value: Any) -> str | None:
         value = str(value)
     value = value.strip()
     return value or None
-
-
-def _truncate(value: str | None, max_len: int) -> str | None:
-    if value is None:
-        return None
-    return value[:max_len]
 
 
 def _normalize_color(value: Any) -> str | None:

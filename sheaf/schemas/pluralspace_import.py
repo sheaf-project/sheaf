@@ -75,6 +75,10 @@ class PluralspacePreviewSummary(BaseModel):
     thought_count: int = 0
     media_file_count: int = 0
 
+    # Business-cap predictions: fields the import would shorten/trim to the
+    # schema limits, surfaced so the user can decide before enqueueing.
+    limit_warnings: list[str] = Field(default_factory=list)
+
 
 class PluralspaceImportResult(BaseModel):
     model_config = ConfigDict(extra="forbid")

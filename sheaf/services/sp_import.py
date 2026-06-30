@@ -35,6 +35,7 @@ from sheaf.schemas.sp_import import (
     SPPreviewMember,
     SPPreviewSummary,
 )
+from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
@@ -56,6 +57,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
 
@@ -269,6 +271,49 @@ def _sp_chat_rows(data: dict) -> list[tuple[str, dict]]:
     return rows
 
 
+def measure_sp_payload(data: dict, report: ClampReport) -> None:
+    """Tally which SP fields exceed the schema caps, into ``report`` - the
+    warn-before-import prediction.
+
+    Walks the same SP keys ``run_import`` clamps, with the same caps, so the
+    preview's warnings match what the import would shorten. Only string values
+    are measured (guarded by ``_coerce_str``) so a malformed upload can't raise.
+    SP custom fields only ever map to TEXT/DATE types, never a SELECT with a
+    choice list, so there is no choice-count cap to measure here (unlike the
+    native importer's ``custom_fields[].options.choices``)."""
+
+    def s(value: object, cap: il.Cap) -> None:
+        text = _coerce_str(value)
+        if text is not None:
+            clamp_str(text, cap, report=report)
+
+    # System name: settings.systemName (newer) or users[0].username/name (older).
+    sp_settings = data.get("settings")
+    sp_settings = sp_settings if isinstance(sp_settings, dict) else {}
+    sp_users = _get_collection(data, "users")
+    sp_user = sp_users[0] if sp_users else {}
+    s(
+        sp_settings.get("systemName")
+        or sp_user.get("username")
+        or sp_user.get("name"),
+        il.SYS_NAME,
+    )
+
+    for m in _get_collection(data, "members"):
+        s(m.get("name"), il.M_NAME)
+        s(m.get("displayName"), il.M_DISPLAY_NAME)
+        s(m.get("pronouns"), il.M_PRONOUNS)
+
+    for cf in _get_collection_alt(data, "frontStatuses", "customFronts"):
+        s(cf.get("name"), il.M_NAME)
+
+    for f in _get_collection(data, "customFields"):
+        s(f.get("name"), il.CF_NAME)
+
+    for g in _get_collection(data, "groups"):
+        s(g.get("name"), il.GROUP_NAME)
+
+
 def preview(data: dict) -> SPPreviewSummary:
     """Parse SP export JSON and return a summary for the user to review."""
     members = _get_collection(data, "members")
@@ -282,7 +327,7 @@ def preview(data: dict) -> SPPreviewSummary:
     users = _get_collection(data, "users")
     system_name = _coerce_str(users[0].get("username")) if users else None
 
-    return SPPreviewSummary(
+    summary = SPPreviewSummary(
         system_name=system_name,
         member_count=len(members),
         members=[
@@ -305,6 +350,13 @@ def preview(data: dict) -> SPPreviewSummary:
         message_count=len(_sp_chat_rows(data)),
     )
 
+    # Predict which over-cap fields the real import would shorten, so the user
+    # sees the warning before committing. Same caps as run_import.
+    report = ClampReport()
+    measure_sp_payload(data, report)
+    summary.limit_warnings = report.to_warnings()
+    return summary
+
 
 async def run_import(
     data: dict,
@@ -315,6 +367,11 @@ async def run_import(
     """Import SP export data into the user's system."""
     result = SPImportResult()
     warnings: list[str] = []
+    # Tally every cap a user-content write actually hit so the same numbers the
+    # preview predicted land in the job's warning log. SP's String(N) columns
+    # (display_name, pronouns, names) reject overflow at the DB, so these clamps
+    # are a correctness backstop as well as a courtesy.
+    report = ClampReport()
 
     # SP system-owner id, used to construct member / custom-front avatar URLs
     # from an avatarUuid (their avatars are served from the owner's namespace).
@@ -340,7 +397,7 @@ async def run_import(
             or _coerce_str(sp_user.get("name"))
         )
         if sp_name and not system.name:
-            system.name = sp_name[:100]
+            system.name = clamp_str(sp_name, il.SYS_NAME, report=report)
         sp_desc = _coerce_str(sp_user.get("desc")) or _coerce_str(
             sp_settings.get("desc")
         )
@@ -367,7 +424,9 @@ async def run_import(
     sp_id_to_name: dict[str, str] = {}
     for sp_m in sp_members:
         sp_id = sp_m.get("_id", "")
-        plaintext_name = (_coerce_str(sp_m.get("name")) or "unnamed")[:100]
+        plaintext_name = clamp_str(
+            _coerce_str(sp_m.get("name")) or "unnamed", il.M_NAME, report=report
+        )
         if sp_id:
             sp_id_to_name[sp_id] = plaintext_name
         plaintext_description = _coerce_str(sp_m.get("desc"))
@@ -376,13 +435,21 @@ async def run_import(
             system_id=system.id,
             name=encrypt(plaintext_name),
             name_hash=blind_index(plaintext_name),
-            display_name=_truncate(sp_m.get("displayName"), 100),
+            display_name=clamp_str(
+                _coerce_str(sp_m.get("displayName")) or None,
+                il.M_DISPLAY_NAME,
+                report=report,
+            ),
             description=(
                 encrypt(plaintext_description)
                 if plaintext_description is not None
                 else None
             ),
-            pronouns=_truncate(sp_m.get("pronouns"), 100),
+            pronouns=clamp_str(
+                _coerce_str(sp_m.get("pronouns")) or None,
+                il.M_PRONOUNS,
+                report=report,
+            ),
             avatar_url=_sp_avatar_url(sp_m, sp_owner_id),
             color=_normalize_color(sp_m.get("color")),
             privacy=_map_privacy(sp_m.get("private", True)),
@@ -398,7 +465,9 @@ async def run_import(
     if options.custom_fronts:
         for sp_cf in _get_collection_alt(data, "frontStatuses", "customFronts"):
             sp_id = sp_cf.get("_id", "")
-            plaintext_cf_name = (_coerce_str(sp_cf.get("name")) or "unnamed")[:100]
+            plaintext_cf_name = clamp_str(
+                _coerce_str(sp_cf.get("name")) or "unnamed", il.M_NAME, report=report
+            )
             if sp_id:
                 sp_id_to_name[sp_id] = plaintext_cf_name
             plaintext_cf_description = _coerce_str(sp_cf.get("desc"))
@@ -482,7 +551,11 @@ async def run_import(
             sp_fid = sp_f.get("_id", "")
             sp_type = sp_f.get("type", 0)
             sheaf_type = _SP_FIELD_TYPE_MAP.get(sp_type, FieldType.TEXT)
-            name = (sp_f.get("name") or f"field_{idx}")[:100]
+            name = clamp_str(
+                _coerce_str(sp_f.get("name")) or f"field_{idx}",
+                il.CF_NAME,
+                report=report,
+            )
             key = (name, sheaf_type.value)
 
             field_def = field_index.get(key)
@@ -554,7 +627,9 @@ async def run_import(
         # First pass: create groups without parent links
         for sp_g in sp_groups:
             sp_gid = sp_g.get("_id", "")
-            name = (sp_g.get("name") or "unnamed")[:100]
+            name = clamp_str(
+                _coerce_str(sp_g.get("name")) or "unnamed", il.GROUP_NAME, report=report
+            )
             existing_group = group_index.get(name) if dedupe else None
             if existing_group is not None:
                 sp_gid_to_group[sp_gid] = existing_group
@@ -723,7 +798,7 @@ async def run_import(
         result.messages_skipped = m_skipped
         result.messages_encrypted_skipped = m_encrypted
 
-    result.warnings = warnings
+    result.warnings = warnings + report.to_warnings()
     return result
 
 
@@ -884,13 +959,3 @@ def _map_privacy(private: object) -> str:
     """Map SP's boolean privacy to our enum value. Non-bool / missing -> private."""
     from sheaf.models.system import PrivacyLevel
     return PrivacyLevel.PUBLIC if private is False else PrivacyLevel.PRIVATE
-
-
-def _truncate(value: object, max_len: int) -> str | None:
-    """Truncate a string, or return None for empty / non-string values.
-
-    Type-guarded like `_coerce_str` so a number or object where SP expected a
-    string can't crash slicing."""
-    if not isinstance(value, str) or not value:
-        return None
-    return value[:max_len]

@@ -66,6 +66,7 @@ class PKPreviewSummary(BaseModel):
     switch_count: int = 0
     earliest_switch: datetime | None = None
     latest_switch: datetime | None = None
+    limit_warnings: list[str] = []
 
 
 class PKImportResult(BaseModel):

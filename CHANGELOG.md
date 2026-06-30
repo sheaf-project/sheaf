@@ -6,7 +6,13 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **Importers clamp imported data to the same limits the API enforces.** Importers build database rows directly and so used to bypass the length and count limits the normal create/update endpoints apply, letting a crafted (or just messy) export land an over-length member name, a 50k-character note, or a custom field with thousands of choices. Every importer (Sheaf native and the export-with-images archive, OpenPlural, PluralKit/Octocon, Tupperbox, SimplyPlural, PluralSpace, Prism) now routes user-content fields through one shared clamp that truncates to the schema cap and bounds list counts (poll options, custom-field choices). This also fixed a latent crash in the Prism importer, where a member birthday longer than 10 characters would error the whole import on the database write, and an uncapped poll-option list in the PluralSpace importer.
+
 ### Added
+
+- **Import preview warns before anything is shortened.** The import preview now tells you up front when imported data exceeds Sheaf's limits (for example "3 member names will be shortened to 100 characters" or "1 poll's option list will be trimmed to 20 entries"), so you can continue or cancel and adjust the source first rather than discovering the truncation after the fact. The same shortening is also recorded in the import job's event log.
 
 - **Active-poll badge.** The Polls nav item now shows a count badge when one or more polls are open, so an active poll is something every headmate notices (it is a system decision worth seeing).
 

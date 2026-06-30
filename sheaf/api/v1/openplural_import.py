@@ -46,6 +46,7 @@ def _summary_dict(p: SheafPreviewSummary) -> dict:
         "poll_count": p.poll_count,
         "reminder_count": p.reminder_count,
         "channel_count": p.channel_count,
+        "limit_warnings": p.limit_warnings,
     }
 
 

@@ -33,6 +33,7 @@ export interface PluralspacePreviewSummary {
   poll_count: number;
   thought_count: number;
   media_file_count: number;
+  limit_warnings: string[];
 }
 
 export async function previewImport(file: File): Promise<PluralspacePreviewSummary> {

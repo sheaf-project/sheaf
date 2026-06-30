@@ -21,6 +21,7 @@ export interface SPPreviewSummary {
   group_count: number;
   custom_field_count: number;
   note_count: number;
+  limit_warnings: string[];
 }
 
 export async function previewImport(file: File): Promise<SPPreviewSummary> {

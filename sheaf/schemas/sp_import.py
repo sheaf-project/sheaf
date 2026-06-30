@@ -46,6 +46,7 @@ class SPPreviewSummary(BaseModel):
     custom_field_count: int = 0
     note_count: int = 0
     message_count: int = 0
+    limit_warnings: list[str] = []
 
 
 class SPImportResult(BaseModel):

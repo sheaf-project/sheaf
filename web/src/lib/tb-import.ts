@@ -15,6 +15,7 @@ export interface TBPreviewSummary {
   member_count: number;
   members: TBPreviewMember[];
   group_count: number;
+  limit_warnings: string[];
 }
 
 export async function previewImport(file: File): Promise<TBPreviewSummary> {

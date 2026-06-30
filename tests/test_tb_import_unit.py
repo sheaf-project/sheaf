@@ -78,3 +78,38 @@ def test_preview_skips_tuppers_without_id():
     # But the surfaced members list only contains rows with usable IDs.
     assert len(summary.members) == 1
     assert summary.members[0].id == "1"
+
+
+def test_preview_warns_when_member_name_over_cap():
+    """An over-cap tupper name surfaces a limit warning the user sees up front."""
+    data = {
+        "tuppers": [
+            {"id": 1, "name": "x" * 200},  # M_NAME cap is 100
+        ],
+    }
+    summary = preview(data)
+    assert summary.limit_warnings
+    assert any("member name" in w for w in summary.limit_warnings)
+
+
+def test_preview_warns_for_nick_and_group_name_over_cap():
+    """nick maps to display_name and group name each have their own cap."""
+    data = {
+        "tuppers": [
+            {"id": 1, "name": "Alpha", "nick": "n" * 150},  # M_DISPLAY_NAME 100
+        ],
+        "groups": [{"id": 10, "name": "g" * 150}],  # GROUP_NAME 100
+    }
+    summary = preview(data)
+    joined = " ".join(summary.limit_warnings)
+    assert "member display name" in joined
+    assert "group name" in joined
+
+
+def test_preview_no_warnings_when_all_within_caps():
+    data = {
+        "tuppers": [{"id": 1, "name": "Alpha", "nick": "Al"}],
+        "groups": [{"id": 10, "name": "Core"}],
+    }
+    summary = preview(data)
+    assert summary.limit_warnings == []

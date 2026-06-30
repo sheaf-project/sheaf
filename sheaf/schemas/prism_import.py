@@ -80,6 +80,8 @@ class PrismPreviewSummary(BaseModel):
     media_attachment_count: int = 0
     media_blob_count: int = 0
 
+    limit_warnings: list[str] = Field(default_factory=list)
+
 
 class PrismImportResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
