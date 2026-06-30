@@ -96,6 +96,7 @@ from sheaf.schemas.pluralspace_import import (
     PluralspacePreviewMember,
     PluralspacePreviewSummary,
 )
+from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
@@ -115,6 +116,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
 from sheaf.services.import_media import (
     ImportImageError,
     store_imported_image,
@@ -248,6 +250,59 @@ async def parse_export_async(blob: bytes) -> _ParsedExport:
 # --- Preview ---------------------------------------------------------------
 
 
+def measure_export(data: dict, report: ClampReport) -> None:
+    """Tally which PluralSpace fields exceed the business caps, into ``report``.
+
+    Reads the same keys ``run_import`` clamps, with PluralSpace's own key names,
+    calling the same helpers so the preview's warnings match what the import
+    would shorten. Defensive: only string values are measured, so a malformed
+    upload can't raise here.
+    """
+
+    def s(value: object, cap: il.Cap) -> None:
+        if isinstance(value, str):
+            clamp_str(value, cap, report=report)
+
+    sys_data = data.get("system")
+    if isinstance(sys_data, dict):
+        s(sys_data.get("name"), il.SYS_NAME)
+
+    for m in _list(data.get("members")):
+        if not isinstance(m, dict):
+            continue
+        s(m.get("name"), il.M_NAME)
+        s(m.get("display_name"), il.M_DISPLAY_NAME)
+        s(m.get("pronouns"), il.M_PRONOUNS)
+        for role in _list(m.get("role")):
+            s(role, il.TAG_NAME)
+
+    for g in _list(data.get("member_groups")):
+        if isinstance(g, dict):
+            s(g.get("name"), il.GROUP_NAME)
+
+    for fd in _list(data.get("custom_fields")):
+        if isinstance(fd, dict):
+            s(fd.get("name"), il.CF_NAME)
+
+    for p in _list(data.get("polls")):
+        if not isinstance(p, dict):
+            continue
+        s(p.get("title"), il.POLL_QUESTION)
+        s(p.get("description"), il.POLL_DESCRIPTION)
+        options = _list(p.get("options"))
+        clamp_list(options, il.POLL_OPTIONS_COUNT, report=report)
+        for o in options:
+            if isinstance(o, dict):
+                s(o.get("text"), il.POLL_OPTION)
+
+    for channel in _list(data.get("chat_channels")):
+        if not isinstance(channel, dict):
+            continue
+        for msg in _list(channel.get("messages")):
+            if isinstance(msg, dict):
+                s(msg.get("content"), il.MESSAGE_BODY)
+
+
 def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
     """Walk the parsed export and return a counts + member-list summary.
 
@@ -289,6 +344,9 @@ def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
     sys_block = data.get("system") if isinstance(data.get("system"), dict) else {}
     sys_name = _clean_str(sys_block.get("name")) or _clean_str(manifest.get("system_name"))
 
+    report = ClampReport()
+    measure_export(data, report)
+
     return PluralspacePreviewSummary(
         system_name=sys_name,
         format_version=_clean_str(manifest.get("format_version")),
@@ -305,6 +363,7 @@ def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
         poll_count=len(_list(data.get("polls"))),
         thought_count=len(_list(data.get("thoughts"))),
         media_file_count=len(parsed.media_paths),
+        limit_warnings=report.to_warnings(),
     )
 
 
@@ -338,10 +397,11 @@ async def run_import(
     """
     result = PluralspaceImportResult()
     data = parsed.data
+    report = ClampReport()
 
     # --- System profile ----
     if system_profile:
-        _apply_system_profile(data, system)
+        _apply_system_profile(data, system, report)
 
     # --- Members (regular + custom fronts) ----
     selected = set(member_ids) if member_ids is not None else None
@@ -372,18 +432,29 @@ async def run_import(
         ps_id = _clean_str(m_data.get("id"))
         is_cf = bool(m_data.get("is_custom_front"))
 
-        plaintext_name = (_clean_str(m_data.get("name")) or "unnamed")[:100]
+        plaintext_name = clamp_str(
+            _clean_str(m_data.get("name")) or "unnamed", il.M_NAME, report=report
+        )
+        # member `description` (the bio, encrypted Text) is intentionally
+        # uncapped, matching the create API; only `note` carries M_NOTE and
+        # PluralSpace exports have no note-equivalent field to map.
         plaintext_description = _clean_str(m_data.get("description"))
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
             name=encrypt(plaintext_name),
             name_hash=blind_index(plaintext_name),
-            display_name=_truncate(_clean_str(m_data.get("display_name")), 100),
+            display_name=clamp_str(
+                _clean_str(m_data.get("display_name")),
+                il.M_DISPLAY_NAME,
+                report=report,
+            ),
             description=(
                 encrypt(plaintext_description) if plaintext_description else None
             ),
-            pronouns=_truncate(_clean_str(m_data.get("pronouns")), 100),
+            pronouns=clamp_str(
+                _clean_str(m_data.get("pronouns")), il.M_PRONOUNS, report=report
+            ),
             color=_normalize_color(m_data.get("color")),
             is_custom_front=is_cf,
             privacy=PrivacyLevel.PRIVATE,
@@ -466,7 +537,7 @@ async def run_import(
     # --- Roles -> tags ----
     if roles_as_tags:
         result.tags_imported += await _import_roles_as_tags(
-            members_in, ps_id_to_member, system.id, db
+            members_in, ps_id_to_member, system.id, db, report
         )
 
     # --- Groups ----
@@ -478,6 +549,7 @@ async def run_import(
             system.id,
             db,
             result.warnings,
+            report,
         )
 
     # --- Custom fields ----
@@ -489,6 +561,7 @@ async def run_import(
             system.id,
             db,
             result.warnings,
+            report,
         )
 
     # Content dedup is active under skip/update; CREATE keeps the old
@@ -530,6 +603,7 @@ async def run_import(
             system.id,
             db,
             result.warnings,
+            report,
             dedupe=content_dedupe,
         )
         result.messages_imported += m_imported
@@ -544,6 +618,7 @@ async def run_import(
             system.id,
             db,
             result.warnings,
+            report,
             dedupe=content_dedupe,
         )
         result.polls_imported += p_imported
@@ -557,13 +632,14 @@ async def run_import(
             "thoughts-feature equivalent yet."
         )
 
+    result.warnings = result.warnings + report.to_warnings()
     return result
 
 
 # --- Section helpers -------------------------------------------------------
 
 
-def _apply_system_profile(data: dict, system: System) -> None:
+def _apply_system_profile(data: dict, system: System, report: ClampReport) -> None:
     """Copy non-destructive system fields onto Sheaf's system.
 
     Only fills empty Sheaf fields. Never overwrites a user-set name.
@@ -573,9 +649,12 @@ def _apply_system_profile(data: dict, system: System) -> None:
         return
     name = _clean_str(sys_data.get("name"))
     if name and not system.name:
-        system.name = name[:100]
+        system.name = clamp_str(name, il.SYS_NAME, report=report)
     description = _clean_str(sys_data.get("description"))
     if description and not system.description:
+        # System description (the long bio) is intentionally uncapped, like the
+        # create API; only `note` carries the SYS_NOTE business cap and
+        # PluralSpace has no note-equivalent to map here.
         system.description = description
     color = _normalize_color(sys_data.get("color"))
     if color and not system.color:
@@ -587,6 +666,7 @@ async def _import_roles_as_tags(
     ps_id_to_member: dict[str, Member],
     system_id: uuid.UUID,
     db: AsyncSession,
+    report: ClampReport,
 ) -> int:
     """Create one Tag per distinct PluralSpace role and wire memberships.
 
@@ -618,7 +698,7 @@ async def _import_roles_as_tags(
                 tag = Tag(
                     id=uuid.uuid4(),
                     system_id=system_id,
-                    name=role_str[:50],
+                    name=clamp_str(role_str, il.TAG_NAME, report=report),
                 )
                 db.add(tag)
                 tag_by_name[key] = tag
@@ -653,6 +733,7 @@ async def _import_groups(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
+    report: ClampReport,
 ) -> int:
     """Create Sheaf Groups from PluralSpace member_groups + members[].groups[].
 
@@ -684,7 +765,7 @@ async def _import_groups(
             group = Group(
                 id=uuid.uuid4(),
                 system_id=system_id,
-                name=name[:100],
+                name=clamp_str(name, il.GROUP_NAME, report=report),
                 description=_clean_str(g_data.get("description")),
                 color=_normalize_color(g_data.get("color")),
             )
@@ -718,7 +799,7 @@ async def _import_groups(
                 group = Group(
                     id=uuid.uuid4(),
                     system_id=system_id,
-                    name=name[:100],
+                    name=clamp_str(name, il.GROUP_NAME, report=report),
                 )
                 db.add(group)
                 name_to_group[key] = group
@@ -777,6 +858,7 @@ async def _import_custom_fields(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
+    report: ClampReport,
 ) -> int:
     """Create Sheaf custom-field definitions + per-member values.
 
@@ -814,7 +896,7 @@ async def _import_custom_fields(
             field_def = CustomFieldDefinition(
                 id=uuid.uuid4(),
                 system_id=system_id,
-                name=name[:100],
+                name=clamp_str(name, il.CF_NAME, report=report),
                 field_type=ftype,
                 privacy=PrivacyLevel.PRIVATE,
             )
@@ -1063,6 +1145,7 @@ async def _import_chat(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
+    report: ClampReport,
     *,
     dedupe: bool = False,
 ) -> tuple[int, int]:
@@ -1109,6 +1192,7 @@ async def _import_chat(
             body = _clean_str(msg.get("content")) or ""
             if multi_channel:
                 body = f"[{channel_name}] {body}".rstrip()
+            body = clamp_str(body, il.MESSAGE_BODY, report=report)
             author_name = _clean_str(msg.get("member_name"))
             author = member_name_to_member.get(author_name) if author_name else None
             if author_name and author is None:
@@ -1140,6 +1224,7 @@ async def _import_polls(
     system_id: uuid.UUID,
     db: AsyncSession,
     warnings: list[str],
+    report: ClampReport,
     *,
     dedupe: bool = False,
 ) -> tuple[int, int]:
@@ -1164,8 +1249,12 @@ async def _import_polls(
     for p_data in polls_in:
         if not isinstance(p_data, dict):
             continue
-        question = _clean_str(p_data.get("title")) or ""
-        description = _clean_str(p_data.get("description"))
+        question = clamp_str(
+            _clean_str(p_data.get("title")) or "", il.POLL_QUESTION, report=report
+        )
+        description = clamp_str(
+            _clean_str(p_data.get("description")), il.POLL_DESCRIPTION, report=report
+        )
         allow_multi = bool(p_data.get("allows_multiple_votes"))
         created_at = _parse_iso(p_data.get("created_at"))
         if dedupe and created_at is not None:
@@ -1200,13 +1289,22 @@ async def _import_polls(
         # Build options + invert option-keyed votes into voter-keyed.
         option_rows: list[tuple[str, PollOption]] = []
         voter_to_options: dict[uuid.UUID, list[uuid.UUID]] = {}
-        for position, o_data in enumerate(_list(p_data.get("options"))):
+        options_in = clamp_list(
+            _list(p_data.get("options")), il.POLL_OPTIONS_COUNT, report=report
+        )
+        for position, o_data in enumerate(options_in):
             if not isinstance(o_data, dict):
                 continue
             option = PollOption(
                 id=uuid.uuid4(),
                 poll_id=poll.id,
-                text=encrypt(_clean_str(o_data.get("text")) or ""),
+                text=encrypt(
+                    clamp_str(
+                        _clean_str(o_data.get("text")) or "",
+                        il.POLL_OPTION,
+                        report=report,
+                    )
+                ),
                 position=position,
             )
             db.add(option)
@@ -1325,12 +1423,6 @@ def _clean_str(value: Any) -> str | None:
         value = str(value)
     value = value.strip()
     return value or None
-
-
-def _truncate(value: str | None, max_len: int) -> str | None:
-    if value is None:
-        return None
-    return value[:max_len]
 
 
 def _normalize_color(value: Any) -> str | None:

@@ -43,6 +43,7 @@ from sheaf.schemas.tb_import import (
     TBPreviewMember,
     TBPreviewSummary,
 )
+from sheaf.services import import_limits as il
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
     PairGuard,
@@ -56,6 +57,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
 
@@ -76,10 +78,37 @@ def _tupper_id(tupper: dict) -> str | None:
     return str(tid)
 
 
+def _measure_payload(data: dict, report: ClampReport) -> None:
+    """Tally which Tupperbox fields exceed the schema caps, into ``report``.
+
+    Reads the same source keys ``run_import`` clamps (a tupper's name + nick,
+    a group's name), calling the same helper with the same caps, so the
+    preview's warnings match what the import would shorten. Defensive: only
+    string values are measured, so a malformed upload can't raise here.
+    """
+
+    def s(value: object, cap: il.Cap) -> None:
+        if isinstance(value, str):
+            clamp_str(value, cap, report=report)
+
+    for t in _list(data, "tuppers"):
+        if not isinstance(t, dict):
+            continue
+        s(t.get("name"), il.M_NAME)
+        s(t.get("nick"), il.M_DISPLAY_NAME)
+
+    for g in _list(data, "groups"):
+        if isinstance(g, dict):
+            s(g.get("name"), il.GROUP_NAME)
+
+
 def preview(data: dict) -> TBPreviewSummary:
     """Summarise a Tupperbox export for the user before they confirm."""
     tuppers = _list(data, "tuppers")
     groups = _list(data, "groups")
+
+    report = ClampReport()
+    _measure_payload(data, report)
 
     return TBPreviewSummary(
         member_count=len(tuppers),
@@ -92,6 +121,7 @@ def preview(data: dict) -> TBPreviewSummary:
             if _tupper_id(t) is not None
         ],
         group_count=len(groups),
+        limit_warnings=report.to_warnings(),
     )
 
 
@@ -104,6 +134,9 @@ async def run_import(
     """Import a parsed Tupperbox export into the user's system."""
     result = TBImportResult()
     warnings: list[str] = []
+    # Tally over-cap fields clamped during this run; surfaced as warnings at
+    # the end (the preview shows the same prediction up front).
+    report = ClampReport()
 
     tuppers = _list(data, "tuppers")
     if options.member_ids is not None:
@@ -115,7 +148,7 @@ async def run_import(
     candidates: list[tuple[Member, str | None]] = []
     tuppers_no_name = 0
     for tupper in tuppers:
-        member = _build_member(tupper, system.id)
+        member = _build_member(tupper, system.id, report)
         if member is None:
             tuppers_no_name += 1
             continue
@@ -159,6 +192,7 @@ async def run_import(
                 system.id,
                 id_to_member,
                 db,
+                report,
                 conflict_strategy=options.conflict_strategy,
             )
         )
@@ -174,7 +208,9 @@ async def run_import(
             f"Imported {tuppers_no_id} tuppers with no id; they came across "
             "as members but couldn't be wired into any group."
         )
-    result.warnings = warnings
+    # Clamp tally goes last so a "3 member names were shortened" note follows
+    # the per-record warnings in the job log.
+    result.warnings = warnings + report.to_warnings()
     # See pk_import.run_import for the full rationale: `get_db`'s
     # auto-commit runs after the response is sent, which races a
     # follow-up request on slow CI. Commit explicitly here so writes
@@ -186,7 +222,9 @@ async def run_import(
 # --- Members -----------------------------------------------------------------
 
 
-def _build_member(tupper: dict, system_id: uuid.UUID) -> Member | None:
+def _build_member(
+    tupper: dict, system_id: uuid.UUID, report: ClampReport
+) -> Member | None:
     """Construct a Sheaf Member from a Tupperbox tupper object.
 
     Returns None if the row lacks a usable name. Tupperbox has no privacy
@@ -196,7 +234,7 @@ def _build_member(tupper: dict, system_id: uuid.UUID) -> Member | None:
     plaintext_name = _clean_str(tupper.get("name"))
     if not plaintext_name:
         return None
-    plaintext_name = plaintext_name[:100]
+    plaintext_name = clamp_str(plaintext_name, il.M_NAME, report=report)
     plaintext_description = _clean_str(tupper.get("description"))
 
     return Member(
@@ -204,7 +242,9 @@ def _build_member(tupper: dict, system_id: uuid.UUID) -> Member | None:
         system_id=system_id,
         name=encrypt(plaintext_name),
         name_hash=blind_index(plaintext_name),
-        display_name=_truncate(_clean_str(tupper.get("nick")), 100),
+        display_name=clamp_str(
+            _clean_str(tupper.get("nick")), il.M_DISPLAY_NAME, report=report
+        ),
         description=encrypt(plaintext_description) if plaintext_description else None,
         pronouns=None,  # Tupperbox doesn't model pronouns.
         avatar_url=sanitize_external_avatar_url(_clean_str(tupper.get("avatar_url"))),
@@ -223,6 +263,7 @@ async def _import_groups(
     system_id: uuid.UUID,
     id_to_member: dict[str, Member],
     db: AsyncSession,
+    report: ClampReport,
     *,
     conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.CREATE,
 ) -> tuple[int, int, list[str]]:
@@ -256,7 +297,7 @@ async def _import_groups(
         if gid is None:
             groups_no_id += 1
             continue
-        name = name[:100]
+        name = clamp_str(name, il.GROUP_NAME, report=report)
         existing = group_index.get(name) if dedupe else None
         if existing is not None:
             sheaf_group_by_tbid[str(gid)] = existing
@@ -331,12 +372,6 @@ def _clean_str(value: Any) -> str | None:
         value = str(value)
     value = value.strip()
     return value or None
-
-
-def _truncate(value: str | None, max_len: int) -> str | None:
-    if value is None:
-        return None
-    return value[:max_len]
 
 
 def _normalize_birthday(value: Any) -> str | None:

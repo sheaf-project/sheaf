@@ -40,6 +40,10 @@ class TBPreviewSummary(BaseModel):
     member_count: int = 0
     members: list[TBPreviewMember] = []
     group_count: int = 0
+    # Fields that exceed the schema caps and would be shortened on import
+    # (so the user can cancel or continue). Mirrors what run_import's clamp
+    # pass would record.
+    limit_warnings: list[str] = []
 
 
 class TBImportResult(BaseModel):

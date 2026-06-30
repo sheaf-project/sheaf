@@ -42,6 +42,7 @@ from sheaf.schemas.pk_import import (
     PKPreviewMember,
     PKPreviewSummary,
 )
+from sheaf.services import import_limits as il
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
     PairGuard,
@@ -52,6 +53,7 @@ from sheaf.services.import_content_dedup import (
     normalize_front_interval,
 )
 from sheaf.services.import_dedup import ImportConflictStrategy
+from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 
 logger = logging.getLogger("sheaf.import.pk")
@@ -78,6 +80,39 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
+def measure_pk_payload(data: dict, report: ClampReport) -> None:
+    """Tally which PK-shaped fields exceed the schema caps, into ``report``.
+
+    Reads the same PK keys the import path clamps, calling the same
+    ``clamp_str`` helpers, so the preview's warnings match what the import
+    would shorten. Octocon exports route through this importer too, so they
+    inherit this prediction. Defensive: only string values are measured, so a
+    malformed upload can't raise here.
+    """
+
+    def s(value: object, cap: il.Cap) -> None:
+        if isinstance(value, str):
+            clamp_str(value, cap, report=report)
+
+    # System profile (only filled in when the Sheaf-side field is empty, but
+    # we measure unconditionally - the user can't tell from the preview which
+    # fields are already set, and over-measuring is harmless here).
+    s(data.get("name"), il.SYS_NAME)
+    s(data.get("tag"), il.SYS_TAG)
+
+    for m in get_list(data, "members"):
+        if not isinstance(m, dict):
+            continue
+        s(m.get("name"), il.M_NAME)
+        s(m.get("display_name"), il.M_DISPLAY_NAME)
+        s(m.get("pronouns"), il.M_PRONOUNS)
+        s(m.get("id"), il.M_PLURALKIT_ID)
+
+    for g in get_list(data, "groups"):
+        if isinstance(g, dict):
+            s(g.get("name"), il.GROUP_NAME)
+
+
 def preview(data: dict, *, switch_count_override: int | None = None) -> PKPreviewSummary:
     """Summarise a PK export for the user before they confirm the import.
 
@@ -91,6 +126,9 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
 
     timestamps = [_parse_iso(s.get("timestamp")) for s in switches]
     timestamps = [t for t in timestamps if t is not None]
+
+    report = ClampReport()
+    measure_pk_payload(data, report)
 
     return PKPreviewSummary(
         system_name=_clean_str(data.get("name")),
@@ -107,6 +145,7 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
         switch_count=switch_count_override if switch_count_override is not None else len(switches),
         earliest_switch=min(timestamps) if timestamps else None,
         latest_switch=max(timestamps) if timestamps else None,
+        limit_warnings=report.to_warnings(),
     )
 
 
@@ -120,7 +159,7 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
 # --- System profile ----------------------------------------------------------
 
 
-def apply_system_profile(data: dict, system: System) -> None:
+def apply_system_profile(data: dict, system: System, *, report: ClampReport) -> None:
     """Copy a few non-destructive fields from the PK system onto Sheaf's.
 
     We never overwrite a name the user has already set (their Sheaf system
@@ -133,10 +172,10 @@ def apply_system_profile(data: dict, system: System) -> None:
     """
     name = _clean_str(data.get("name"))
     if name and not system.name:
-        system.name = name[:100]
+        system.name = clamp_str(name, il.SYS_NAME, report=report)
     tag = _clean_str(data.get("tag"))
     if tag and not system.tag:
-        system.tag = tag[:8]
+        system.tag = clamp_str(tag, il.SYS_TAG, report=report)
     color = _normalize_color(data.get("color"))
     if color and not system.color:
         system.color = color
@@ -150,16 +189,18 @@ def apply_system_profile(data: dict, system: System) -> None:
 # --- Members -----------------------------------------------------------------
 
 
-def build_member(pk_m: dict, system_id: uuid.UUID) -> Member | None:
+def build_member(
+    pk_m: dict, system_id: uuid.UUID, *, report: ClampReport
+) -> Member | None:
     """Construct a Sheaf Member from a PK member object.
 
     Returns None if the source row lacks a usable name. Encryption,
-    blind-index, length truncation, and HID truncation all live here.
+    blind-index, length clamping, and HID clamping all live here.
     """
     plaintext_name = _clean_str(pk_m.get("name"))
     if not plaintext_name:
         return None
-    plaintext_name = plaintext_name[:100]
+    plaintext_name = clamp_str(plaintext_name, il.M_NAME, report=report)
     plaintext_description = _clean_str(pk_m.get("description"))
 
     pk_hid = _clean_str(pk_m.get("id"))
@@ -169,13 +210,17 @@ def build_member(pk_m: dict, system_id: uuid.UUID) -> Member | None:
         system_id=system_id,
         name=encrypt(plaintext_name),
         name_hash=blind_index(plaintext_name),
-        display_name=_truncate(_clean_str(pk_m.get("display_name")), 100),
+        display_name=clamp_str(
+            _clean_str(pk_m.get("display_name")), il.M_DISPLAY_NAME, report=report
+        ),
         description=encrypt(plaintext_description) if plaintext_description else None,
-        pronouns=_truncate(_clean_str(pk_m.get("pronouns")), 100),
+        pronouns=clamp_str(
+            _clean_str(pk_m.get("pronouns")), il.M_PRONOUNS, report=report
+        ),
         avatar_url=sanitize_external_avatar_url(_clean_str(pk_m.get("avatar_url"))),
         color=_normalize_color(pk_m.get("color")),
         birthday=_normalize_birthday(pk_m.get("birthday")),
-        pluralkit_id=_truncate(pk_hid, _PKID_MAX_LEN),
+        pluralkit_id=clamp_str(pk_hid, il.M_PLURALKIT_ID, report=report),
         privacy=_map_privacy(pk_m.get("privacy")),
     )
 
@@ -190,6 +235,7 @@ async def import_groups(
     db: AsyncSession,
     *,
     conflict_strategy: ImportConflictStrategy = ImportConflictStrategy.CREATE,
+    report: ClampReport,
 ) -> tuple[int, int]:
     """Create Sheaf Groups from PK groups and wire member associations.
 
@@ -213,7 +259,7 @@ async def import_groups(
         name = _clean_str(pk_g.get("name"))
         if not name:
             continue
-        name = name[:100]
+        name = clamp_str(name, il.GROUP_NAME, report=report)
         existing = group_index.get(name) if dedupe else None
         if existing is not None:
             sheaf_groups.append((pk_g, existing))
@@ -392,12 +438,6 @@ def _clean_str(value: Any) -> str | None:
         value = str(value)
     value = value.strip()
     return value or None
-
-
-def _truncate(value: str | None, max_len: int) -> str | None:
-    if value is None:
-        return None
-    return value[:max_len]
 
 
 def _normalize_color(value: Any) -> str | None:

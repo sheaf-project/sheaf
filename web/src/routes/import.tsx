@@ -444,6 +444,8 @@ function SheafImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
@@ -624,6 +626,8 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
                 selectedMembers={selectedMembers}
                 toggleMember={toggleMember}
               />
+
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
 
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
@@ -941,6 +945,8 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
@@ -1087,6 +1093,8 @@ function TBImportFlow({ onBack }: { onBack: () => void }) {
                 selectedMembers={selectedMembers}
                 toggleMember={toggleMember}
               />
+
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
 
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
@@ -1321,6 +1329,8 @@ function PSImportFlow({ onBack }: { onBack: () => void }) {
                 selectedMembers={selectedMembers}
                 toggleMember={toggleMember}
               />
+
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
 
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
@@ -1606,6 +1616,8 @@ function PrismImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
@@ -1870,6 +1882,8 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
                 toggleMember={toggleMember}
               />
 
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
               <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
@@ -1884,6 +1898,28 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
 // ---------------------------------------------------------------------------
 // Shared components
 // ---------------------------------------------------------------------------
+
+// Caution callout shown on a preview when the backend flags fields that
+// exceed Sheaf's business caps and would be shortened on import. Amber
+// (not destructive) tone: the import still succeeds, data is just
+// clamped. Renders nothing when there's nothing to warn about.
+function ImportLimitWarnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+      <p className="font-medium">Some data will be shortened</p>
+      <p className="mt-1">
+        These exceed Sheaf&apos;s limits and will be shortened when imported.
+        You can continue, or cancel and adjust the source.
+      </p>
+      <ul className="mt-2 list-disc space-y-0.5 pl-5">
+        {warnings.map((w, i) => (
+          <li key={i}>{w}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function ErrorBanner({ message }: { message: string }) {
   return (

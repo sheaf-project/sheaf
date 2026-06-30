@@ -8,6 +8,7 @@ tests in test_pk_import.py cover the full end-to-end path.
 from datetime import UTC, datetime
 
 from sheaf.models.system import PrivacyLevel
+from sheaf.services.import_limits import ClampReport
 from sheaf.services.pk_import import (
     _map_privacy,
     _normalize_birthday,
@@ -134,11 +135,54 @@ def test_build_member_drops_non_http_avatar_scheme():
     import uuid as _uuid
 
     sys_id = _uuid.uuid4()
-    bad = build_member({"name": "X", "avatar_url": "javascript:alert(1)"}, sys_id)
+    report = ClampReport()
+    bad = build_member(
+        {"name": "X", "avatar_url": "javascript:alert(1)"}, sys_id, report=report
+    )
     assert bad is not None and bad.avatar_url is None
 
     good = build_member(
-        {"name": "Y", "avatar_url": "https://cdn.example.com/a.png"}, sys_id
+        {"name": "Y", "avatar_url": "https://cdn.example.com/a.png"},
+        sys_id,
+        report=report,
     )
     assert good is not None
     assert good.avatar_url == "https://cdn.example.com/a.png"
+
+
+def test_preview_flags_over_cap_member_name():
+    """A member name past the 100-char cap shows up in limit_warnings so the
+    user is warned it will be shortened before they confirm the import."""
+    data = {
+        "name": "Sys",
+        "members": [
+            {"id": "alpha", "name": "A" * 200},
+            {"id": "beta", "name": "Fine"},
+        ],
+    }
+    summary = preview(data)
+    assert summary.limit_warnings
+    assert any("member name" in w for w in summary.limit_warnings)
+
+
+def test_preview_flags_over_cap_group_name_and_pk_id():
+    """Group name and PK HID over their caps both surface as warnings."""
+    data = {
+        "members": [{"id": "x" * 30, "name": "ok", "display_name": "d" * 150}],
+        "groups": [{"name": "g" * 150}],
+    }
+    summary = preview(data)
+    joined = " ".join(summary.limit_warnings)
+    assert "group name" in joined
+    assert "member PluralKit ID" in joined
+    assert "member display name" in joined
+
+
+def test_preview_clean_export_has_no_limit_warnings():
+    data = {
+        "name": "Sys",
+        "members": [{"id": "alpha", "name": "Alpha", "pronouns": "they/them"}],
+        "groups": [{"name": "Group"}],
+    }
+    summary = preview(data)
+    assert summary.limit_warnings == []

@@ -29,6 +29,7 @@ export interface SheafPreviewSummary {
   // bundled images.
   archive: boolean;
   image_count: number;
+  limit_warnings: string[];
 }
 
 export async function previewSheafImport(file: File): Promise<SheafPreviewSummary> {

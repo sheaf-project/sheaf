@@ -30,6 +30,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_limits import ClampReport
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     expect_dict,
@@ -76,8 +77,14 @@ async def _process_pk_export(
     """
     system = await load_user_system(db, job.user_id)
 
+    # Tally any field/list the import clamps to its schema cap, so the user
+    # gets a "N member names were shortened" warning in the job event log
+    # (matching the warn-before-import preview prediction). Threaded through
+    # every section helper that constructs a row.
+    report = ClampReport()
+
     if options.system_profile:
-        apply_system_profile(parsed, system)
+        apply_system_profile(parsed, system, report=report)
         append_event(
             job,
             level="info",
@@ -103,7 +110,7 @@ async def _process_pk_export(
         # with the HID so the user can see what got skipped.
         hid_for_event = pk_m.get("id") if isinstance(pk_m, dict) else None
         try:
-            member = build_member(pk_m, system.id)
+            member = build_member(pk_m, system.id, report=report)
         except Exception as exc:
             update_counts(job, members_failed=1)
             append_event(
@@ -167,6 +174,7 @@ async def _process_pk_export(
                 hid_to_member,
                 db,
                 conflict_strategy=options.conflict_strategy,
+                report=report,
             )
             update_counts(job, groups_imported=count, groups_skipped=group_skipped)
             append_event(
@@ -216,6 +224,13 @@ async def _process_pk_export(
                 message=f"switch import failed: {exc!s}"[:500],
             )
             raise
+
+    # --- Clamp warnings --------------------------------------------------
+
+    # Surface any field/list that hit a schema cap during this run. One event
+    # per distinct clamped field, e.g. "3 member names will be shortened ...".
+    for warning in report.to_warnings():
+        append_event(job, level="warning", stage="limits", message=warning)
 
 
 async def handle_pluralkit_file(job: ImportJob, db: AsyncSession) -> None:

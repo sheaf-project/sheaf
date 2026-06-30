@@ -20,6 +20,7 @@ export interface PKPreviewSummary {
   switch_count: number;
   earliest_switch: string | null;
   latest_switch: string | null;
+  limit_warnings: string[];
 }
 
 export async function previewImportFromFile(file: File): Promise<PKPreviewSummary> {

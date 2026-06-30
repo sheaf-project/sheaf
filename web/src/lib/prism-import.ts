@@ -38,6 +38,7 @@ export interface PrismPreviewSummary {
   member_board_post_count: number;
   media_attachment_count: number;
   media_blob_count: number;
+  limit_warnings: string[];
 }
 
 export async function previewImport(

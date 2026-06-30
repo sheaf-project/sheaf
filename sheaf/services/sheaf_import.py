@@ -66,6 +66,7 @@ from sheaf.models.reminder import Reminder, reminder_scope_members
 from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.watch_token import WatchToken
+from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
@@ -102,6 +103,7 @@ from sheaf.services.import_image_strip import (
     rewrite_internal_image_refs_md,
     rewrite_internal_image_refs_md_to_none,
 )
+from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
 from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -181,6 +183,10 @@ class SheafPreviewSummary:
         self.poll_count: int = 0
         self.reminder_count: int = 0
         self.channel_count: int = 0
+        # Fields/lists that exceed the schema caps and would be shortened on
+        # import (so the user can cancel or continue). Mirrors what
+        # run_import's clamp pass would record.
+        self.limit_warnings: list[str] = []
 
 
 class SheafImportResult:
@@ -211,6 +217,99 @@ class SheafImportResult:
         self.warnings: list[str] = []
 
 
+def _as_list(val: object) -> list:
+    return val if isinstance(val, list) else []
+
+
+def measure_native_payload(data: dict, report: ClampReport) -> None:
+    """Tally which fields/lists in a native-shaped payload exceed the schema
+    caps, into ``report`` - the warn-before-import prediction.
+
+    Reads the same keys ``run_import`` clamps, calling the same helpers, so the
+    preview's warnings match what the import would shorten. The archive and
+    OpenPlural importers translate to this shape, so they reuse this for their
+    previews too. Defensive: only string values are measured and only list
+    shapes are counted, so a malformed upload can't raise here.
+    """
+
+    def s(value: object, cap: il.Cap) -> None:
+        if isinstance(value, str):
+            clamp_str(value, cap, report=report)
+
+    sys_data = data.get("system")
+    if isinstance(sys_data, dict):
+        s(sys_data.get("name"), il.SYS_NAME)
+        s(sys_data.get("tag"), il.SYS_TAG)
+        s(sys_data.get("color"), il.SYS_COLOR)
+        s(sys_data.get("avatar_url"), il.SYS_AVATAR_URL)
+        s(sys_data.get("note"), il.SYS_NOTE)
+
+    for m in _as_list(data.get("members")):
+        if not isinstance(m, dict):
+            continue
+        s(m.get("name"), il.M_NAME)
+        s(m.get("display_name"), il.M_DISPLAY_NAME)
+        s(m.get("pronouns"), il.M_PRONOUNS)
+        s(m.get("note"), il.M_NOTE)
+        s(m.get("avatar_url"), il.M_AVATAR_URL)
+        s(m.get("banner_url"), il.M_BANNER_URL)
+        s(m.get("color"), il.M_COLOR)
+        s(m.get("birthday"), il.M_BIRTHDAY)
+        s(m.get("pluralkit_id"), il.M_PLURALKIT_ID)
+        s(m.get("emoji"), il.M_EMOJI)
+
+    for t in _as_list(data.get("tags")):
+        if isinstance(t, dict):
+            s(t.get("name"), il.TAG_NAME)
+            s(t.get("color"), il.TAG_COLOR)
+
+    for g in _as_list(data.get("groups")):
+        if isinstance(g, dict):
+            s(g.get("name"), il.GROUP_NAME)
+            s(g.get("color"), il.GROUP_COLOR)
+
+    for fd in _as_list(data.get("custom_fields")):
+        if not isinstance(fd, dict):
+            continue
+        s(fd.get("name"), il.CF_NAME)
+        options = fd.get("options")
+        if isinstance(options, dict) and isinstance(options.get("choices"), list):
+            choices = options["choices"]
+            clamp_list(choices, il.CF_CHOICES_COUNT, report=report)
+            for c in choices:
+                s(c, il.CF_CHOICE)
+
+    for j in _as_list(data.get("journals")):
+        if isinstance(j, dict):
+            s(j.get("title"), il.JOURNAL_TITLE)
+
+    for r in _as_list(data.get("revisions")):
+        if isinstance(r, dict):
+            s(r.get("title"), il.JOURNAL_TITLE)
+
+    for msg in _as_list(data.get("messages")):
+        if isinstance(msg, dict):
+            s(msg.get("body"), il.MESSAGE_BODY)
+
+    for p in _as_list(data.get("polls")):
+        if not isinstance(p, dict):
+            continue
+        s(p.get("question"), il.POLL_QUESTION)
+        s(p.get("description"), il.POLL_DESCRIPTION)
+        options = p.get("options")
+        if isinstance(options, list):
+            clamp_list(options, il.POLL_OPTIONS_COUNT, report=report)
+            for o in options:
+                if isinstance(o, dict):
+                    s(o.get("text"), il.POLL_OPTION)
+
+    for rm in _as_list(data.get("reminders")):
+        if isinstance(rm, dict):
+            s(rm.get("name"), il.REMINDER_NAME)
+            s(rm.get("title"), il.REMINDER_TITLE)
+            s(rm.get("body"), il.REMINDER_BODY)
+
+
 def preview(data: dict) -> SheafPreviewSummary:
     """Parse Sheaf export JSON and return a summary for user review."""
     summary = SheafPreviewSummary()
@@ -237,6 +336,10 @@ def preview(data: dict) -> SheafPreviewSummary:
     summary.channel_count = sum(
         len(t.get("channels", [])) for t in data.get("watch_tokens", [])
     )
+
+    report = ClampReport()
+    measure_native_payload(data, report)
+    summary.limit_warnings = report.to_warnings()
 
     return summary
 
@@ -306,6 +409,9 @@ async def run_import(
     """
     result = SheafImportResult()
     warnings: list[str] = []
+    # Tally over-cap fields/lists clamped during this run; surfaced as
+    # warnings at the end (the preview shows the same prediction up front).
+    report = ClampReport()
 
     # Image-reference handling, bound once so the call sites below stay
     # one-liners. Empty map == strip mode.
@@ -343,7 +449,7 @@ async def run_import(
         sys_data = data.get("system")
         if sys_data:
             if sys_data.get("name"):
-                system.name = sys_data["name"][:100]
+                system.name = clamp_str(sys_data["name"], il.SYS_NAME, report=report)
             if sys_data.get("description") is not None:
                 # Strip any /v1/files/... image embeds — those keys belong
                 # to the exporting account, not this one.
@@ -351,16 +457,26 @@ async def run_import(
                     sys_data["description"]
                 )
             if sys_data.get("tag") is not None:
-                system.tag = sys_data["tag"][:8] if sys_data["tag"] else None
+                system.tag = (
+                    clamp_str(sys_data["tag"], il.SYS_TAG, report=report)
+                    if sys_data["tag"]
+                    else None
+                )
             if sys_data.get("color") is not None:
-                system.color = sys_data["color"][:7] if sys_data["color"] else None
+                system.color = (
+                    clamp_str(sys_data["color"], il.SYS_COLOR, report=report)
+                    if sys_data["color"]
+                    else None
+                )
             if sys_data.get("privacy"):
                 system.privacy = _privacy(sys_data["privacy"])
             # Notes are encrypted at rest. Empty-string clears (matches the
             # PATCH /systems/me semantics).
             if "note" in sys_data:
-                note_val = _resolve_md_to_none(
-                    sys_data.get("note")
+                note_val = clamp_str(
+                    _resolve_md_to_none(sys_data.get("note")),
+                    il.SYS_NOTE,
+                    report=report,
                 )
                 system.note = encrypt(note_val) if note_val else None
             if sys_data.get("avatar_url") is not None:
@@ -368,8 +484,10 @@ async def run_import(
                 # at the original account's storage; we can't fetch the
                 # bytes, so drop the reference. External URLs (gravatar
                 # etc.) pass through unchanged.
-                system.avatar_url = _trunc(
-                    _resolve_avatar_url(sys_data["avatar_url"]), 500
+                system.avatar_url = clamp_str(
+                    _resolve_avatar_url(sys_data["avatar_url"]),
+                    il.SYS_AVATAR_URL,
+                    report=report,
                 )
             if "replace_fronts_default" in sys_data:
                 system.replace_fronts_default = bool(
@@ -456,7 +574,9 @@ async def run_import(
     candidates: list[tuple[Member, str, set[str]]] = []
     for m_data in export_members:
         old_id = m_data.get("id", "")
-        plaintext_name = (m_data.get("name") or "unnamed")[:100]
+        plaintext_name = clamp_str(
+            m_data.get("name") or "unnamed", il.M_NAME, report=report
+        )
         # Rewrite (or drop) /v1/files/... image refs in the bio + note +
         # avatar. Usage is tracked per-candidate rather than into the
         # shared set: a candidate the dedup pass skips below never
@@ -466,15 +586,21 @@ async def run_import(
         plaintext_description = rewrite_internal_image_refs_md(
             m_data.get("description"), _ikm, member_used
         )
-        plaintext_note = rewrite_internal_image_refs_md_to_none(
-            m_data.get("note"), _ikm, member_used
+        plaintext_note = clamp_str(
+            rewrite_internal_image_refs_md_to_none(
+                m_data.get("note"), _ikm, member_used
+            ),
+            il.M_NOTE,
+            report=report,
         )
         member = Member(
             id=uuid.uuid4(),
             system_id=system.id,
             name=encrypt(plaintext_name),
             name_hash=blind_index(plaintext_name),
-            display_name=_trunc(m_data.get("display_name"), 100),
+            display_name=clamp_str(
+                m_data.get("display_name"), il.M_DISPLAY_NAME, report=report
+            ),
             description=(
                 encrypt(plaintext_description)
                 if plaintext_description is not None
@@ -485,23 +611,31 @@ async def run_import(
                 if plaintext_note
                 else None
             ),
-            pronouns=_trunc(m_data.get("pronouns"), 100),
-            avatar_url=_trunc(
+            pronouns=clamp_str(
+                m_data.get("pronouns"), il.M_PRONOUNS, report=report
+            ),
+            avatar_url=clamp_str(
                 rewrite_internal_avatar_url(
                     m_data.get("avatar_url"), _ikm, member_used
                 ),
-                500,
+                il.M_AVATAR_URL,
+                report=report,
             ),
-            banner_url=_trunc(
+            banner_url=clamp_str(
                 rewrite_internal_avatar_url(
                     m_data.get("banner_url"), _ikm, member_used
                 ),
-                500,
+                il.M_BANNER_URL,
+                report=report,
             ),
-            color=_trunc(m_data.get("color"), 7),
-            birthday=_trunc(m_data.get("birthday"), 10),
-            pluralkit_id=_trunc(m_data.get("pluralkit_id"), 8),
-            emoji=_trunc(m_data.get("emoji"), 8),
+            color=clamp_str(m_data.get("color"), il.M_COLOR, report=report),
+            birthday=clamp_str(
+                m_data.get("birthday"), il.M_BIRTHDAY, report=report
+            ),
+            pluralkit_id=clamp_str(
+                m_data.get("pluralkit_id"), il.M_PLURALKIT_ID, report=report
+            ),
+            emoji=clamp_str(m_data.get("emoji"), il.M_EMOJI, report=report),
             is_custom_front=bool(m_data.get("is_custom_front", False)),
             privacy=_privacy(m_data.get("privacy")),
             quick_switch_pin=_coerce_pin(m_data.get("quick_switch_pin")),
@@ -576,7 +710,7 @@ async def run_import(
         )
         for t_data in data.get("tags", []):
             old_tid = t_data.get("id", "")
-            name = (t_data.get("name") or "unnamed")[:50]
+            name = clamp_str(t_data.get("name") or "unnamed", il.TAG_NAME, report=report)
             existing_tag = tag_index.get(name) if dedupe else None
             if existing_tag is not None:
                 # Same-named tag already in the system: reuse it so the
@@ -588,7 +722,7 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
-                color=_trunc(t_data.get("color"), 7),
+                color=clamp_str(t_data.get("color"), il.TAG_COLOR, report=report),
             )
             db.add(tag)
             tag_index.register(name, tag)
@@ -627,7 +761,7 @@ async def run_import(
         field_index = await load_field_def_index(db, system.id)
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
-            name = (fd_data.get("name") or "field")[:100]
+            name = clamp_str(fd_data.get("name") or "field", il.CF_NAME, report=report)
             ftype = _field_type(fd_data.get("field_type"))
             key = (name, ftype.value)
             field_def = field_index.get(key)
@@ -637,7 +771,7 @@ async def run_import(
                     system_id=system.id,
                     name=name,
                     field_type=ftype,
-                    options=fd_data.get("options"),
+                    options=_clamp_field_options(fd_data.get("options"), report),
                     order=fd_data.get("order", 0),
                     privacy=_privacy(fd_data.get("privacy")),
                 )
@@ -686,7 +820,7 @@ async def run_import(
         # First pass: create groups without parent links
         for g_data in export_groups:
             old_gid = g_data.get("id", "")
-            name = (g_data.get("name") or "unnamed")[:100]
+            name = clamp_str(g_data.get("name") or "unnamed", il.GROUP_NAME, report=report)
             existing_group = group_index.get(name) if dedupe else None
             if existing_group is not None:
                 # Reuse the existing same-named group so membership and
@@ -699,7 +833,7 @@ async def run_import(
                 system_id=system.id,
                 name=name,
                 description=_resolve_md(g_data.get("description")),
-                color=_trunc(g_data.get("color"), 7),
+                color=clamp_str(g_data.get("color"), il.GROUP_COLOR, report=report),
             )
             db.add(group)
             group_index.register(name, group)
@@ -839,7 +973,9 @@ async def run_import(
                     old_journal_to_entry[old_jid] = existing_entry
                     result.journals_skipped += 1
                     continue
-            title = j_data.get("title")
+            title = clamp_str(
+                j_data.get("title"), il.JOURNAL_TITLE, report=report
+            )
             entry = JournalEntry(
                 id=uuid.uuid4(),
                 system_id=system.id,
@@ -910,7 +1046,7 @@ async def run_import(
                 result.revisions_skipped += 1
                 continue
             revision_index.register(rkey)
-        title = r_data.get("title")
+        title = clamp_str(r_data.get("title"), il.JOURNAL_TITLE, report=report)
         revision = ContentRevision(
             id=uuid.uuid4(),
             target_type=target_type,
@@ -985,7 +1121,12 @@ async def run_import(
                 board_member_id=board_member.id if board_member else None,
                 author_member_id=author.id if author else None,
                 body=encrypt(
-                    _resolve_md(msg_data.get("body")) or ""
+                    clamp_str(
+                        _resolve_md(msg_data.get("body")),
+                        il.MESSAGE_BODY,
+                        report=report,
+                    )
+                    or ""
                 ),
             )
             if created:
@@ -1038,11 +1179,18 @@ async def run_import(
                     result.polls_skipped += 1
                     continue
                 poll_index.register(pcreated)
-            description = p_data.get("description")
+            description = clamp_str(
+                p_data.get("description"), il.POLL_DESCRIPTION, report=report
+            )
             poll = Poll(
                 id=uuid.uuid4(),
                 system_id=system.id,
-                question=encrypt(p_data.get("question") or ""),
+                question=encrypt(
+                    clamp_str(
+                        p_data.get("question"), il.POLL_QUESTION, report=report
+                    )
+                    or ""
+                ),
                 description=encrypt(description) if description else None,
                 kind=p_data.get("kind") or PollKind.SINGLE_CHOICE.value,
                 results_visibility=(
@@ -1066,11 +1214,16 @@ async def run_import(
 
             # Options first; vote/event option references resolve through this.
             old_option_to_new: dict[str, PollOption] = {}
-            for o_data in p_data.get("options", []):
+            for o_data in clamp_list(
+                p_data.get("options", []), il.POLL_OPTIONS_COUNT, report=report
+            ):
                 option = PollOption(
                     id=uuid.uuid4(),
                     poll_id=poll.id,
-                    text=encrypt(o_data.get("text") or ""),
+                    text=encrypt(
+                        clamp_str(o_data.get("text"), il.POLL_OPTION, report=report)
+                        or ""
+                    ),
                     position=_coerce_int(
                         o_data.get("position"), default=0, minimum=0
                     ),
@@ -1317,13 +1470,26 @@ async def run_import(
                     f"Reminder '{rm_data.get('name', '?')}' trigger member "
                     "was not imported; kept without a member trigger"
                 )
-            body = _resolve_md_to_none(rm_data.get("body"))
+            body = clamp_str(
+                _resolve_md_to_none(rm_data.get("body")),
+                il.REMINDER_BODY,
+                report=report,
+            )
             reminder = Reminder(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 channel_id=channel.id,
-                name=(rm_data.get("name") or "reminder")[:120],
-                title=encrypt(rm_data.get("title") or ""),
+                name=clamp_str(
+                    rm_data.get("name") or "reminder",
+                    il.REMINDER_NAME,
+                    report=report,
+                ),
+                title=encrypt(
+                    clamp_str(
+                        rm_data.get("title"), il.REMINDER_TITLE, report=report
+                    )
+                    or ""
+                ),
                 body=encrypt(body) if body else None,
                 enabled=bool(rm_data.get("enabled", True)),
                 trigger_type=rm_data.get("trigger_type") or "repeated",
@@ -1368,7 +1534,9 @@ async def run_import(
                     )
             result.reminders_imported += 1
 
-    result.warnings = warnings
+    # Clamp tally goes last so a "3 member names were shortened" note follows
+    # the per-record warnings in the job log.
+    result.warnings = warnings + report.to_warnings()
     return result
 
 
@@ -1376,6 +1544,25 @@ def _trunc(val: str | None, max_len: int) -> str | None:
     if not val:
         return None
     return val[:max_len]
+
+
+def _clamp_field_options(options: object, report: ClampReport) -> object:
+    """Cap a custom field's choice list to the schema limits (count +
+    per-choice length), mirroring sheaf/schemas/custom_field.py. Non-dict /
+    non-list shapes pass through untouched - the field-type validator owns
+    those - so this only ever trims an oversized SELECT/MULTISELECT choice set.
+    """
+    if not isinstance(options, dict):
+        return options
+    choices = options.get("choices")
+    if not isinstance(choices, list):
+        return options
+    capped = clamp_list(choices, il.CF_CHOICES_COUNT, report=report)
+    capped = [
+        clamp_str(c, il.CF_CHOICE, report=report) if isinstance(c, str) else c
+        for c in capped
+    ]
+    return {**options, "choices": capped}
 
 
 def _coerce_pin(val: object) -> int | None:
