@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-30
+
 ### Security
 
 - **Importers clamp imported data to the same limits the API enforces.** Importers build database rows directly and so used to bypass the length and count limits the normal create/update endpoints apply, letting a crafted (or just messy) export land an over-length member name, a 50k-character note, or a custom field with thousands of choices. Every importer (Sheaf native and the export-with-images archive, OpenPlural, PluralKit/Octocon, Tupperbox, SimplyPlural, PluralSpace, Prism) now routes user-content fields through one shared clamp that truncates to the schema cap and bounds list counts (poll options, custom-field choices). This also fixed a latent crash in the Prism importer, where a member birthday longer than 10 characters would error the whole import on the database write, and an uncapped poll-option list in the PluralSpace importer.
