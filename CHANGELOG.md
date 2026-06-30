@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Free-tier front retention no longer deletes a long front the moment it ends.** The aaS free-tier history sweep keyed its cutoff off each front's *start* time, so a single long-running front (someone fronting for months, or a years-long continuous front) was eligible for deletion the instant it closed, even though it was the most recently active period - and any closed front that started before the window but ended inside it was pruned despite recent activity. The sweep now keys off *end* time, so a front is kept for the full retention window after it ends, matching the "history active in the last N days" intent. Still aaS-free-tier only (self-hosted never prunes), and open fronts are still never touched while ongoing.
+
 ## [1.1.1] - 2026-06-30
 
 ### Security
