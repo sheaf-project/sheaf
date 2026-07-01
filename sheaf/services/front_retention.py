@@ -21,12 +21,19 @@ logger = logging.getLogger("sheaf.retention")
 
 
 async def prune_free_tier_fronts(db: AsyncSession) -> dict:
-    """Delete front history older than the retention window for free-tier users.
+    """Delete front history that ended outside the retention window for
+    free-tier users.
+
+    The cutoff is applied to ``ended_at``, not ``started_at``: the window is
+    "history active in the last N days", so a single long-running front
+    (months, years) is kept for the full window *after it ends* rather than
+    vanishing the instant it closes just because it started long ago. Open
+    fronts have no ``ended_at`` and so are never pruned while ongoing.
 
     Returns dict with items_processed count and per-user detail.
     """
     if settings.sheaf_mode != SheafMode.SAAS:
-        logger.debug("Skipping pruning — not in aaS mode")
+        logger.debug("Skipping pruning - not in aaS mode")
         return {"items_processed": 0}
 
     cutoff = datetime.now(UTC) - timedelta(days=settings.free_tier_front_retention_days)
@@ -45,8 +52,8 @@ async def prune_free_tier_fronts(db: AsyncSession) -> dict:
         .join(System, Front.system_id == System.id)
         .where(
             Front.system_id.in_(free_system_ids),
-            Front.started_at < cutoff,
-            Front.ended_at.is_not(None),
+            Front.ended_at.is_not(None),  # Never prune open fronts
+            Front.ended_at < cutoff,
         )
         .group_by(System.user_id)
     )
@@ -57,8 +64,8 @@ async def prune_free_tier_fronts(db: AsyncSession) -> dict:
         select(Front.id)
         .where(
             Front.system_id.in_(free_system_ids),
-            Front.started_at < cutoff,
             Front.ended_at.is_not(None),  # Never prune open fronts
+            Front.ended_at < cutoff,
         )
         .scalar_subquery()
     )
