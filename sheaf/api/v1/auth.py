@@ -17,7 +17,7 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -384,9 +384,31 @@ async def register(
             status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
         ) from exc
 
-    # Track invite code usage
+    # Track invite code usage. Claim the use atomically: a conditional UPDATE
+    # that only increments while the code is under its cap, guarded by
+    # rowcount. The earlier _validate_invite_code check is a fast pre-reject,
+    # but two concurrent registrations can both pass it on a stale read and a
+    # plain use_count += 1 would lose one of the increments, over-redeeming a
+    # single-use code. max_uses = 0 means unlimited.
     if invite is not None:
-        invite.use_count += 1
+        from sheaf.models.invite_code import InviteCode
+
+        claim = await db.execute(
+            update(InviteCode)
+            .where(
+                InviteCode.id == invite.id,
+                or_(
+                    InviteCode.max_uses == 0,
+                    InviteCode.use_count < InviteCode.max_uses,
+                ),
+            )
+            .values(use_count=InviteCode.use_count + 1)
+        )
+        if claim.rowcount == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invite code has reached maximum uses",
+            )
         user.invite_code_id = invite.id
 
     # Auto-create a system for the user
