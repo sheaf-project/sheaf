@@ -539,3 +539,51 @@ def test_member_pending_delete_at_null_when_not_queued(client: httpx.Client):
     assert client.get(f"/v1/members/{member['id']}").json()["pending_delete_at"] is None
     listed = client.get("/v1/members").json()
     assert next(m for m in listed if m["id"] == member["id"])["pending_delete_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Retention-cap loosening: 0 = unlimited (pure unit test of split_safety_changes)
+# ---------------------------------------------------------------------------
+
+
+def test_split_safety_treats_zero_retention_cap_as_unlimited():
+    """0 = unlimited for a revision-retention cap, exactly like None.
+
+    Moving from unlimited (0 or None) to a finite cap is the data-destroying
+    direction - it turns "keep everything" into "delete all but the newest N" -
+    so it must take the deferred/guarded path (grace + re-auth), never apply
+    silently.
+
+    Regression guard: the prior code treated a stored 0 as the literal integer
+    zero (the smallest cap), so a 0 -> 5 change passed `5 < 0` == False and was
+    applied immediately with no grace and no re-auth.
+    """
+    from sheaf.models.system import System
+    from sheaf.services.system_safety import split_safety_changes
+
+    # current = 0 (unlimited) -> finite cap 5: destructive, must defer.
+    split = split_safety_changes(
+        System(journal_max_revisions=0), {"journal_max_revisions": 5}
+    )
+    assert split.deferred == {"journal_max_revisions": 5}
+    assert split.applied == {}
+
+    # current = None (use tier default) -> finite cap 5: same, must defer.
+    split_none = split_safety_changes(
+        System(journal_max_revisions=None), {"journal_max_revisions": 5}
+    )
+    assert split_none.deferred == {"journal_max_revisions": 5}
+
+    # Safe direction: finite cap 5 -> 0 (unlimited) keeps more, applies now.
+    split_loosen = split_safety_changes(
+        System(journal_max_revisions=5), {"journal_max_revisions": 0}
+    )
+    assert split_loosen.applied == {"journal_max_revisions": 0}
+    assert split_loosen.deferred == {}
+
+    # Tightening between two finite caps still defers (10 -> 5).
+    split_tighten = split_safety_changes(
+        System(journal_max_revisions=10), {"journal_max_revisions": 5}
+    )
+    assert split_tighten.deferred == {"journal_max_revisions": 5}
+    assert split_tighten.applied == {}

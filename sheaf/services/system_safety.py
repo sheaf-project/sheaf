@@ -254,12 +254,22 @@ def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChang
             else:
                 applied[field] = new_value
         elif field in _RETENTION_FIELDS:
-            # None = "use tier default" — treat as +infinity so going from a
-            # concrete cap to None is loosening; setting from None to a cap
-            # is tightening (unless tier max is lower, which is enforced
-            # separately at the router).
-            new_eff = float("inf") if new_value is None else new_value
-            cur_eff = float("inf") if current is None else current
+            # For a revision-retention cap, BOTH None ("use tier default") and
+            # 0 ("unlimited") mean the loosest possible cap - keep everything -
+            # so both map to +infinity. The deferred/guarded path is the
+            # data-destroying direction: the effective cap getting *smaller*
+            # (unlimited -> a finite N, or N -> M with M<N), because a smaller
+            # cap widens what the GC sweep deletes. Raising the cap, or moving
+            # to unlimited, keeps more and applies immediately.
+            #
+            # Treating a stored 0 as the literal integer zero (the prior bug)
+            # made 0 sort as the *smallest* cap, so a 0 -> 5 change - the most
+            # destructive transition, since it turns "keep everything" into
+            # "delete all but the newest 5" - passed `5 < 0` == False and was
+            # applied immediately with no grace and no re-auth. Mapping 0 to
+            # +infinity puts it back on the deferred path.
+            new_eff = float("inf") if new_value is None or new_value == 0 else new_value
+            cur_eff = float("inf") if current is None or current == 0 else current
             if new_eff < cur_eff:
                 deferred[field] = new_value
             else:

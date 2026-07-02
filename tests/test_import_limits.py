@@ -102,3 +102,35 @@ def test_caps_match_schema_limits():
     assert il.MESSAGE_BODY.limit == 5000
     assert il.JOURNAL_TITLE.limit == 200
     assert il.REMINDER_BODY.limit == 2000
+
+
+# ---------------------------------------------------------------------------
+# Poll retention import clamp (per-tier ceiling; importer must not bypass it)
+# ---------------------------------------------------------------------------
+
+
+def test_clamp_poll_retention_over_cap_is_pinned():
+    from sheaf.services.sheaf_import import _clamp_poll_retention_days
+
+    # Value above the tier ceiling is pulled down to the ceiling.
+    assert _clamp_poll_retention_days(90, 30) == 30
+    # At or under the ceiling passes through untouched.
+    assert _clamp_poll_retention_days(30, 30) == 30
+    assert _clamp_poll_retention_days(7, 30) == 7
+
+
+def test_clamp_poll_retention_imported_zero_becomes_cap_on_capped_tier():
+    from sheaf.services.sheaf_import import _clamp_poll_retention_days
+
+    # 0 = "unlimited" in the file, which a capped tier can't grant - pin to
+    # the ceiling rather than let it bypass the cap.
+    assert _clamp_poll_retention_days(0, 30) == 30
+
+
+def test_clamp_poll_retention_unlimited_tier_keeps_value():
+    from sheaf.services.sheaf_import import _clamp_poll_retention_days
+
+    # cap == 0 means the tier has no ceiling: keep whatever was imported,
+    # including an imported 0 (unlimited).
+    assert _clamp_poll_retention_days(365, 0) == 365
+    assert _clamp_poll_retention_days(0, 0) == 0

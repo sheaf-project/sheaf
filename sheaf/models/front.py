@@ -57,6 +57,13 @@ class Front(UUIDMixin, Base):
         Index("ix_fronts_system_started", "system_id", "started_at"),
         # Fast lookup for "who is currently fronting" (ended_at IS NULL)
         Index("ix_fronts_system_current", "system_id", "ended_at"),
+        # Free-tier retention sweep: system_id IN (...) AND created_at < cutoff
+        # AND ended_at IS NOT NULL AND ended_at < cutoff. Neither index above
+        # covers created_at, so the predicate seq-scanned; this composite lets
+        # it index-scan the closed-and-old rows.
+        Index(
+            "ix_fronts_system_ended_created", "system_id", "ended_at", "created_at"
+        ),
         # A closed front can't end before it starts. The edit endpoint already
         # checks this, but creation/import paths build Front rows directly and
         # bypassed it - this is the mechanical backstop so a mis-ordered front

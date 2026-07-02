@@ -65,6 +65,7 @@ from sheaf.models.poll import (
 from sheaf.models.reminder import Reminder, reminder_scope_members
 from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
+from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
@@ -105,6 +106,7 @@ from sheaf.services.import_image_strip import (
 )
 from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
 from sheaf.services.member_limits import enforce_import_member_cap
+from sheaf.services.polls import max_retention_days_for_tier
 
 logger = logging.getLogger("sheaf.import.sheaf")
 
@@ -167,6 +169,26 @@ def _coerce_int(val: object, *, default: int, minimum: int | None = None) -> int
     if minimum is not None and val < minimum:
         return default
     return val
+
+
+def _clamp_poll_retention_days(value: int, cap: int) -> int:
+    """Clamp an imported poll retention to the importing user's tier ceiling.
+
+    `value` is the already-coerced retention_days from the file (>= 0, where
+    0 means unlimited). `cap` is ``max_retention_days_for_tier`` (0 = unlimited).
+    The native API enforces this ceiling via ``validate_retention_days``; the
+    importer read the value straight from the file and bypassed it, so an
+    import could set unlimited or over-cap retention. Clamp (never reject),
+    matching the importer's business-caps pattern.
+    """
+    if cap <= 0:
+        # Tier has no retention ceiling - keep the imported value as-is.
+        return value
+    if value == 0:
+        # Imported "unlimited", which a capped tier can't grant - pin to the
+        # ceiling rather than letting 0 slip past the cap.
+        return cap
+    return min(value, cap)
 
 
 class SheafPreviewSummary:
@@ -1161,6 +1183,15 @@ async def run_import(
 
     # --- Polls (config + current votes + audit log) ---
     if polls:
+        # Imported poll retention is clamped to the importing user's tier cap -
+        # the API enforces this via validate_retention_days, so the importer
+        # must not be a bypass. Resolve the ceiling once for the whole section.
+        importing_user = await db.get(User, system.user_id)
+        poll_retention_cap = (
+            max_retention_days_for_tier(importing_user.tier)
+            if importing_user is not None
+            else 0
+        )
         poll_index = (
             await load_poll_index(db, system.id) if dedupe else ContentMatchIndex()
         )
@@ -1198,8 +1229,11 @@ async def run_import(
                     or PollResultsVisibility.LIVE.value
                 ),
                 closes_at=closes_at,
-                retention_days=_coerce_int(
-                    p_data.get("retention_days"), default=30, minimum=0
+                retention_days=_clamp_poll_retention_days(
+                    _coerce_int(
+                        p_data.get("retention_days"), default=30, minimum=0
+                    ),
+                    poll_retention_cap,
                 ),
                 include_custom_fronts=bool(
                     p_data.get("include_custom_fronts", False)

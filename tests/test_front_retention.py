@@ -1,15 +1,25 @@
 """Front-history retention pruning (aaS free tier).
 
-Retention keys off a front's END time, not its start: a long-running front
-(months/years) is kept for the full window after it closes, and is never
-pruned while still open. These tests pin that, since keying off start time
-(the old behaviour) would silently delete a months-long front the instant
-it ended, even though it was the most recently active period.
+A front is pruned only when ALL of these hold: it was *inserted* long ago
+(``created_at`` < cutoff), it is closed (``ended_at`` IS NOT NULL), and it
+also ended long ago (``ended_at`` < cutoff). These tests pin that rule:
+
+  - ``created_at`` (row-insertion time) guards freshly-imported history. This
+    is the 2026-06-23 incident: an import carries an old real-world
+    ``started_at`` / ``ended_at`` but lands with ``created_at`` = now, so it
+    must never be pruned just for being historically old. Keying off
+    ``started_at`` (original bug) OR ``ended_at`` alone (the interim fix) both
+    delete just-imported history, because imports carry old values for both.
+  - ``ended_at`` < cutoff guards a genuinely long-running native front that
+    was created long ago but only just closed - its most recent activity is
+    recent, so it survives the window after ending.
+  - open fronts (``ended_at`` IS NULL) are never pruned while ongoing.
 
 The prune is mode-gated (aaS only), so the service is driven in-process with
 sheaf_mode monkeypatched to SAAS and the user forced to the free tier in the
-DB. Fronts are seeded directly with explicit timestamps because the API only
-ever stamps "now".
+DB. Fronts are seeded directly with explicit timestamps - including
+``created_at`` - because the API / import paths only ever stamp "now" for the
+insert time.
 """
 
 import asyncio
@@ -46,7 +56,10 @@ def _engine_session():
 def _set_tier_free_and_seed(email: str, specs: list[tuple]) -> list:
     """Force the user to the free tier and insert one Front per spec.
 
-    specs is a list of (started_at, ended_at|None); returns the new front
+    specs is a list of (created_at, started_at, ended_at|None). ``created_at``
+    is set explicitly: it is the row-insertion time the retention rule keys
+    off, and the real API / import paths only ever stamp it "now", so a test
+    has to backdate it directly to exercise the rule. Returns the new front
     ids in the same order.
     """
 
@@ -70,8 +83,13 @@ def _set_tier_free_and_seed(email: str, specs: list[tuple]) -> list:
             system = (
                 await db.execute(select(System).where(System.user_id == user.id))
             ).scalar_one()
-            for started, ended in specs:
-                front = Front(system_id=system.id, started_at=started, ended_at=ended)
+            for created, started, ended in specs:
+                front = Front(
+                    system_id=system.id,
+                    started_at=started,
+                    ended_at=ended,
+                    created_at=created,
+                )
                 db.add(front)
                 await db.flush()
                 ids.append(front.id)
@@ -125,9 +143,10 @@ def _run_prune() -> dict:
     return asyncio.run(_run())
 
 
-def test_prune_keys_off_end_time_not_start(client: httpx.Client, monkeypatch):
-    """A months-long front that only just ended survives the window; one
-    that ended outside it is pruned; an open one is never touched."""
+def test_prune_keys_off_insert_and_end_time(client: httpx.Client, monkeypatch):
+    """Prune only a front that was inserted long ago AND ended long ago AND is
+    closed. Five scenarios pin every arm of the rule; case (1) is the
+    regression guard for the 2026-06-23 imported-history incident."""
     from sheaf.config import SheafMode, settings
 
     monkeypatch.setattr(settings, "sheaf_mode", SheafMode.SAAS)
@@ -135,28 +154,57 @@ def test_prune_keys_off_end_time_not_start(client: httpx.Client, monkeypatch):
 
     email = _register(client)
     now = datetime.now(UTC)
-    six_months_ago = now - timedelta(days=180)
 
-    recent_long, stale_long, still_open = _set_tier_free_and_seed(
+    imported, old_native, long_recent, still_open, recent = _set_tier_free_and_seed(
         email,
         [
-            # Started 6 months ago, ended yesterday: active within the
-            # window, must survive (the old started_at logic deleted this).
-            (six_months_ago, now - timedelta(days=1)),
-            # Started 6 months ago, ended 60 days ago: outside the window.
-            (six_months_ago, now - timedelta(days=60)),
-            # Started 6 months ago, still open: never pruned while ongoing.
-            (six_months_ago, None),
+            # (1) INCIDENT REGRESSION GUARD - imported historical front.
+            # Inserted now (created_at = now), but carries a ~2-year-old
+            # real-world start/end. It ended long ago yet was inserted just
+            # now, so it MUST SURVIVE. Keying off started_at or ended_at alone
+            # deletes this; the created_at clause is the whole point.
+            (now, now - timedelta(days=730), now - timedelta(days=700)),
+            # (2) Genuinely old native front: inserted ~200d ago, ended ~190d
+            # ago. Old on every axis -> pruned.
+            (
+                now - timedelta(days=200),
+                now - timedelta(days=200),
+                now - timedelta(days=190),
+            ),
+            # (3) Long native front that only just ended: inserted ~200d ago
+            # but ended yesterday (inside the window). Recent activity -> MUST
+            # SURVIVE.
+            (
+                now - timedelta(days=200),
+                now - timedelta(days=200),
+                now - timedelta(days=1),
+            ),
+            # (4) Open front (ended_at NULL): never pruned while ongoing, even
+            # though it was inserted long ago.
+            (now - timedelta(days=200), now - timedelta(days=200), None),
+            # (5) Recently created and recently ended: inside the window on
+            # every axis -> survives.
+            (now, now - timedelta(days=5), now - timedelta(days=3)),
         ],
     )
 
     result = _run_prune()
+    # At least our one genuinely-old front (case 2) is removed. items_processed
+    # is a global count across all free-tier users, so only assert it ran;
+    # per-user survival is checked against this account's fronts below.
     assert result["items_processed"] >= 1
 
     surviving = _surviving_front_ids(email)
-    assert recent_long in surviving, "front that ended yesterday was wrongly pruned"
+    assert imported in surviving, (
+        "REGRESSION: freshly-imported historical front was pruned - this is the "
+        "2026-06-23 incident. created_at (insert time) must protect it."
+    )
+    assert long_recent in surviving, "long front that ended yesterday was wrongly pruned"
     assert still_open in surviving, "open front must never be pruned"
-    assert stale_long not in surviving, "front that ended 60 days ago should be pruned"
+    assert recent in surviving, "recently created + ended front was wrongly pruned"
+    assert old_native not in surviving, (
+        "front inserted and ended long ago (all axes old) should be pruned"
+    )
 
 
 @pytest.mark.selfhosted

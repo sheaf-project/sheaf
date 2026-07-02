@@ -64,6 +64,7 @@ class ActivityAction(enum.StrEnum):
     # Automated / system (actor = system)
     IMPORT_COMPLETED = "import_completed"
     EXPORT_READY = "export_ready"
+    RETENTION_PRUNED = "retention_pruned"
 
 
 class ActivityEvent(UUIDMixin, Base):
