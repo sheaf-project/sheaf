@@ -2,11 +2,34 @@
 and a representative end-to-end record (creating an API key logs an
 `api_key_created` event)."""
 
+from types import SimpleNamespace
+
 import httpx
+import pytest
+from fastapi import HTTPException
+
+from sheaf.api.v1.account import list_account_activity
 
 
 def test_activity_requires_auth(client: httpx.Client):
     assert client.get("/v1/account/activity").status_code in (401, 403)
+
+
+async def test_activity_refuses_api_key_auth():
+    """A leaked API key of any scope must not read the account's security /
+    2FA / session timeline. This account router sits outside scope-gating on
+    the assumption each endpoint refuses keys inline, mirroring
+    get_account_data. Driven directly (no stack) so the inline guard is
+    covered without the full HTTP round-trip."""
+    request = SimpleNamespace(state=SimpleNamespace(auth_method="api_key"))
+    with pytest.raises(HTTPException) as exc:
+        await list_account_activity(
+            request=request,
+            user=SimpleNamespace(id="unused"),
+            db=None,
+        )
+    assert exc.value.status_code == 403
+    assert "API key" in exc.value.detail
 
 
 def test_activity_starts_empty_and_is_a_list(auth_client: httpx.Client):

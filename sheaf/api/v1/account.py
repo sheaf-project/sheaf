@@ -46,6 +46,7 @@ router = APIRouter(prefix="/account", tags=["account"])
 
 @router.get("/activity", response_model=list[ActivityEventRead])
 async def list_account_activity(
+    request: Request,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
@@ -58,6 +59,21 @@ async def list_account_activity(
     account, distinct from the admin-activity view (admin actions) and the
     operator-facing security-event log.
     """
+    # This account router is deliberately left outside the scope-gating
+    # middleware on the assumption that every endpoint refuses API keys
+    # inline (see get_account_data below). A leaked key of any scope must
+    # not be able to read the account's security / 2FA / session timeline,
+    # so refuse it here too. Any new endpoint added to this router MUST
+    # repeat this guard.
+    if getattr(request.state, "auth_method", None) == "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "API keys cannot access account activity. Sign in with a "
+                "session or JWT to view your account activity."
+            ),
+        )
+
     stmt = (
         select(ActivityEvent)
         .where(ActivityEvent.user_id == user.id)

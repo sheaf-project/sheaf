@@ -186,9 +186,19 @@ def _build_json(
 
 
 def _ics_escape(text: str) -> str:
-    """Escape a TEXT value per RFC 5545 (backslash, newline, comma, semicolon)."""
+    """Escape a TEXT value per RFC 5545 (backslash, newline, comma, semicolon).
+
+    Carriage returns are normalised to the escaped newline: a bare or CRLF
+    CR embedded in user content (a member name, custom_status, or the system
+    name) would otherwise terminate the content line and let the value
+    inject its own calendar properties or a whole VEVENT into anyone's
+    calendar that imports the feed. CRLF is collapsed first so it yields a
+    single escaped newline, matching how a lone newline is handled.
+    """
     return (
         text.replace("\\", "\\\\")
+        .replace("\r\n", "\\n")
+        .replace("\r", "\\n")
         .replace("\n", "\\n")
         .replace(",", "\\,")
         .replace(";", "\\;")

@@ -113,6 +113,36 @@ def test_ics_structure_and_escaping():
     assert "X-WR-CALNAME:Test\\; System front history" in text
 
 
+def test_ics_neutralises_carriage_return_injection():
+    # A member name / custom_status / system name carrying a CR (bare or as
+    # CRLF) must not be able to terminate its content line and inject its own
+    # calendar properties or a sibling VEVENT into whoever imports the feed.
+    rows = [
+        {
+            "id": "44444444-4444-4444-4444-444444444444",
+            "started_at": datetime(2026, 6, 4, 8, 0, 0, tzinfo=UTC),
+            "ended_at": datetime(2026, 6, 4, 9, 0, 0, tzinfo=UTC),
+            "members": ["Mallory\r\nATTENDEE:mailto:evil@example.com"],
+            "custom_status": "line1\rline2",  # bare CR
+        },
+    ]
+    raw = serialize_front_history(
+        rows, "Sys\r\nX-WR-CALDESC:pwned", "fronts_ics", _EXPORTED_AT
+    )
+    text = raw.decode("utf-8")
+    # Still exactly one event: the CR did not open a second VEVENT.
+    assert text.count("BEGIN:VEVENT") == 1
+    # The injected ATTENDEE stays inside SUMMARY as an escaped newline, never
+    # a content line of its own.
+    assert "\r\nATTENDEE:" not in text
+    assert "SUMMARY:Mallory\\nATTENDEE:mailto:evil@example.com" in text
+    # A bare CR in the DESCRIPTION is escaped too, not a line break.
+    assert "DESCRIPTION:line1\\nline2" in text
+    # The calendar name likewise cannot inject a sibling property.
+    assert "\r\nX-WR-CALDESC:" not in text
+    assert "X-WR-CALNAME:Sys\\nX-WR-CALDESC:pwned front history" in text
+
+
 def test_unknown_format_raises():
     try:
         serialize_front_history([], None, "fronts_xml", _EXPORTED_AT)

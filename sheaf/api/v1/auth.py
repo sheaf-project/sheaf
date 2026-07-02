@@ -78,6 +78,7 @@ from sheaf.observability.metrics import (
     auth_password_reset_total,
     auth_recovery_codes_used_total,
 )
+from sheaf.redact import redact_email
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
     SecondarySessionRequest,
@@ -944,11 +945,15 @@ async def change_email(
         await _send_verification_email(db, user, new_email)
         verification_sent = True
 
+    # target_label lands in the unencrypted activity-log column (retained
+    # ~a year); the address itself is encrypted at rest two lines up, so
+    # store only a redacted form here rather than reintroducing plaintext
+    # PII into DB dumps / backups / replicas.
     await log_activity(
         db,
         user_id=user.id,
         action=ActivityAction.EMAIL_CHANGED,
-        target_label=new_email,
+        target_label=redact_email(new_email),
     )
     await db.commit()
 
