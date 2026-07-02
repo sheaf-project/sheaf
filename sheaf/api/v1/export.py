@@ -12,13 +12,14 @@ delivered as a zip via S3-presigned download or filesystem stream.
 """
 
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,6 +27,7 @@ from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
+from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
@@ -53,7 +55,73 @@ from sheaf.services.openplural_archive import unpack_residual
 router = APIRouter(prefix="/export", tags=["export"])
 
 
-@router.get("")
+# asyncpg caps a single statement at 32767 bind parameters. Any `.in_(ids)`
+# over a user-scaled id list can blow past that on a large account (a hard
+# 500), so we batch such lists into chunks well under the limit and merge.
+_BIND_PARAM_CHUNK = 1000
+
+
+def _chunked(items: list, size: int = _BIND_PARAM_CHUNK) -> Iterator[list]:
+    """Yield `items` in slices of at most `size`. Empty input yields nothing."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+async def _count_where(db: AsyncSession, model, condition) -> int:
+    """Cheap COUNT(*) for `model` rows matching `condition`."""
+    return int(
+        (
+            await db.execute(select(func.count()).select_from(model).where(condition))
+        ).scalar_one()
+    )
+
+
+async def _enforce_sync_export_size(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Refuse the sync export path for accounts too large to assemble in
+    memory on the event loop, pointing the caller at the async job flow.
+
+    A FastAPI route dependency rather than an inline check: it must guard the
+    HTTP endpoint only. The async export builder calls export_all() directly
+    as a function (not over HTTP), so it deliberately bypasses this guard -
+    the whole point is that oversized accounts go through that streaming
+    path instead.
+
+    Cheap COUNTs first (do not load-then-check). Counts the system-scoped
+    tables that dominate the in-memory payload; revisions/files/etc. scale
+    with these, so bounding them bounds the whole dump. get_current_user /
+    get_db are cached within the request, so this shares the handler's
+    session and user - no duplicate auth or connection.
+    """
+    threshold = settings.export_sync_max_rows
+    if threshold <= 0:
+        return  # guard disabled
+
+    system_id = (
+        await db.execute(select(System.id).where(System.user_id == user.id))
+    ).scalar_one_or_none()
+    if system_id is None:
+        return  # nothing to export
+
+    from sheaf.models.message import Message
+
+    total = 0
+    for model in (Member, Front, JournalEntry, Message):
+        total += await _count_where(db, model, model.system_id == system_id)
+        if total > threshold:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    "Your account is too large to export synchronously. Use "
+                    "the async export instead: POST /v1/export/jobs, which "
+                    "streams the result to a downloadable file."
+                ),
+            )
+
+
+@router.get("", dependencies=[rate_limit(6, 3600, "user"), Depends(_enforce_sync_export_size)])
 async def export_all(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -136,10 +204,15 @@ async def export_all(
     member_id_set = {m.id for m, *_ in members_with_plaintext}
     journal_id_set = {e.id for e in journal_entries}
     targets = list(member_id_set | journal_id_set)
-    if targets:
+    # Batch the target-id IN() over chunks so a large account can't exceed
+    # asyncpg's 32767 bind-param ceiling (which would 500 the whole export).
+    # Chunking loses the single query's global ORDER BY, so re-sort the
+    # merged batches by created_at to preserve the export's ordering.
+    revisions = []
+    for chunk in _chunked(targets):
         revisions_result = await db.execute(
             select(ContentRevision)
-            .where(ContentRevision.target_id.in_(targets))
+            .where(ContentRevision.target_id.in_(chunk))
             .where(
                 ContentRevision.target_type.in_(
                     [
@@ -150,9 +223,8 @@ async def export_all(
             )
             .order_by(ContentRevision.created_at.asc())
         )
-        revisions = list(revisions_result.scalars().all())
-    else:
-        revisions = []
+        revisions.extend(revisions_result.scalars().all())
+    revisions.sort(key=lambda r: r.created_at)
 
     # Watch tokens + their channels - owner-side notification config the
     # user explicitly built up. Re-importable in the sense that the

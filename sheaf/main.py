@@ -296,7 +296,53 @@ app.include_router(v1_router)
 
 @app.get("/health")
 async def health():
+    # Liveness: is the process up and serving? Deliberately checks nothing
+    # else and always returns 200 - existing infra treats this as the
+    # liveness probe. Use /health/ready for dependency (readiness) checks.
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Readiness: can this replica actually serve traffic right now?
+
+    Fast SELECT 1 against Postgres and a Redis PING, each bounded by a tight
+    timeout so a wedged dependency surfaces to the load balancer instead of
+    hanging the probe. 200 when both pass, 503 otherwise with which one
+    failed. Infra must be pointed at this path for readiness; /health stays
+    the always-200 liveness probe.
+    """
+    from sqlalchemy import text
+
+    from sheaf.auth.sessions import get_redis
+    from sheaf.database import async_session_factory
+
+    timeout = settings.health_check_timeout_seconds
+    checks: dict[str, str] = {}
+    ok = True
+
+    try:
+        async with async_session_factory() as db:
+            await asyncio.wait_for(db.execute(text("SELECT 1")), timeout=timeout)
+        checks["database"] = "ok"
+    except Exception:
+        logger.warning("Readiness check: database unavailable", exc_info=True)
+        checks["database"] = "error"
+        ok = False
+
+    try:
+        redis = await get_redis()
+        await asyncio.wait_for(redis.ping(), timeout=timeout)
+        checks["redis"] = "ok"
+    except Exception:
+        logger.warning("Readiness check: redis unavailable", exc_info=True)
+        checks["redis"] = "error"
+        ok = False
+
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ok" if ok else "unavailable", "checks": checks},
+    )
 
 
 # RFC 9116 security.txt. The contact and policy point at the upstream project
