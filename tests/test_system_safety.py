@@ -138,6 +138,72 @@ def test_delete_queues_when_safety_on(client: httpx.Client):
     assert listing["pending_actions"][0]["target_label"] == "Beta"
 
 
+def _read_pending_row_raw(pending_id: str) -> tuple[str, str]:
+    """Return the raw at-rest (target_label, fronting_member_names) strings
+    straight from the DB, bypassing the API's decrypt-on-read."""
+    result: dict = {}
+
+    async def _run() -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.models.pending_action import PendingAction
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            pending = await db.get(PendingAction, uuid.UUID(pending_id))
+            assert pending is not None
+            result["target_label"] = pending.target_label
+            result["fronting_member_names"] = pending.fronting_member_names
+        await engine.dispose()
+
+    asyncio.run(_run())
+    return result["target_label"], result["fronting_member_names"]
+
+
+def test_pending_action_content_encrypted_at_rest(client: httpx.Client):
+    """target_label and fronting_member_names are ciphertext in the DB, but the
+    read endpoint returns the plaintext."""
+    import json
+
+    from sheaf.crypto import decrypt
+
+    email, _ = _register(client)
+    _set_system_safety_via_db(
+        email,
+        safety_grace_period_days=7,
+        safety_applies_to_members=True,
+        safety_applies_to_fronts=True,
+    )
+    alice = client.post("/v1/members", json={"name": "Alice"}).json()
+    victim = client.post("/v1/members", json={"name": "Victim Member"}).json()
+
+    # Alice is fronting when the destructive action is queued.
+    client.post("/v1/fronts", json={"member_ids": [alice["id"]]})
+
+    resp = client.delete(f"/v1/members/{victim['id']}")
+    assert resp.status_code == 202, resp.text
+    pending_id = resp.json()["pending_action_id"]
+
+    # At rest: neither column contains the plaintext, and both decrypt back.
+    raw_label, raw_names = _read_pending_row_raw(pending_id)
+    assert raw_label != "Victim Member"
+    assert "Victim Member" not in raw_label
+    assert decrypt(raw_label) == "Victim Member"
+
+    assert raw_names != "Alice"
+    assert "Alice" not in raw_names
+    assert json.loads(decrypt(raw_names)) == ["Alice"]
+
+    # Read endpoint returns the decrypted plaintext.
+    pending = client.get("/v1/system/safety").json()["pending_actions"][0]
+    assert pending["target_label"] == "Victim Member"
+    assert pending["fronting_member_names"] == ["Alice"]
+
+
 def test_delete_queues_captures_fronting_snapshot(client: httpx.Client):
     email, _ = _register(client)
     _set_system_safety_via_db(

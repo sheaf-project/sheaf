@@ -8,6 +8,7 @@ mapped to the internal column names (`safety_grace_period_days`,
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.api.v1.members import _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.crypto import decrypt
 from sheaf.database import get_db
 from sheaf.models.pending_action import PendingAction, PendingActionStatus
 from sheaf.models.safety_change_request import (
@@ -86,6 +88,45 @@ def _settings_from_system(system: System) -> SystemSafetySettings:
     )
 
 
+def _pending_action_to_read(a: PendingAction) -> PendingActionRead:
+    """Build a PendingActionRead, decrypting the at-rest content columns.
+
+    `target_label` and `fronting_member_names` are encrypted at rest (see
+    queue_pending_action). Decrypt defensively: a row written by the old code
+    during the deploy transition (before the encrypting migration and new
+    write path both landed) is still plaintext, so fall back to treating the
+    stored value as plaintext rather than 500ing. Mirrors the tolerant
+    pattern of `decrypt_text` in sheaf/services/polls.py.
+    """
+    try:
+        target_label = decrypt(a.target_label)
+    except Exception:
+        target_label = a.target_label
+
+    try:
+        fronting_member_names = json.loads(decrypt(a.fronting_member_names))
+    except Exception:
+        # Legacy plaintext row: the pre-migration JSONB list, now stored as a
+        # JSON-array string in the Text column. Parse it if we can, else [].
+        try:
+            fronting_member_names = json.loads(a.fronting_member_names)
+        except Exception:
+            fronting_member_names = []
+
+    return PendingActionRead(
+        id=a.id,
+        action_type=a.action_type,
+        target_id=a.target_id,
+        target_label=target_label,
+        requested_at=a.requested_at,
+        requested_by_user_id=a.requested_by_user_id,
+        finalize_after=a.finalize_after,
+        fronting_member_ids=a.fronting_member_ids,
+        fronting_member_names=fronting_member_names,
+        status=a.status,
+    )
+
+
 async def _load_pending(
     system_id: uuid.UUID, db: AsyncSession
 ) -> tuple[list[PendingAction], list[SafetyChangeRequest]]:
@@ -117,7 +158,7 @@ async def get_system_safety(
     actions, changes = await _load_pending(system.id, db)
     return SystemSafetyResponse(
         settings=_settings_from_system(system),
-        pending_actions=[PendingActionRead.model_validate(a) for a in actions],
+        pending_actions=[_pending_action_to_read(a) for a in actions],
         pending_changes=[SafetyChangeRequestRead.model_validate(c) for c in changes],
     )
 

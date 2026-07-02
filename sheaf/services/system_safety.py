@@ -9,6 +9,7 @@ Contains:
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
-from sheaf.crypto import decrypt
+from sheaf.crypto import decrypt, encrypt
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.front import Front
@@ -334,16 +335,19 @@ async def queue_pending_action(
     """Create a PendingAction row with a fronting snapshot. Caller commits."""
     fronting_ids, fronting_names = await snapshot_current_fronts(system.id, db)
     now = datetime.now(UTC)
+    # target_label and fronting_member_names hold decrypted user content, so
+    # they are encrypted at rest here (the row is transient but lands in any
+    # DB dump taken during the grace window). Read sites decrypt defensively.
     pending = PendingAction(
         system_id=system.id,
         action_type=action_type,
         target_id=target_id,
-        target_label=target_label,
+        target_label=encrypt(target_label),
         requested_at=now,
         requested_by_user_id=user.id,
         finalize_after=now + timedelta(days=system.safety_grace_period_days),
         fronting_member_ids=fronting_ids,
-        fronting_member_names=fronting_names,
+        fronting_member_names=encrypt(json.dumps(fronting_names)),
         status=PendingActionStatus.PENDING,
     )
     db.add(pending)

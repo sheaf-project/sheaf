@@ -370,7 +370,7 @@ async def get_account_data(
                 "id": str(a.id),
                 "action_type": a.action_type,
                 "target_id": str(a.target_id),
-                "target_label": a.target_label,
+                "target_label": _decrypt_pending_label(a.target_label),
                 "requested_at": _iso(a.requested_at),
                 "finalize_after": _iso(a.finalize_after),
                 "status": a.status,
@@ -419,3 +419,17 @@ async def get_account_data(
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _decrypt_pending_label(value: str) -> str:
+    """Defensively decrypt a PendingAction.target_label for the data export.
+
+    The column is encrypted at rest (see queue_pending_action). A row written
+    by the old code during the deploy transition is still plaintext, so fall
+    back to the stored value on any decrypt failure rather than exporting
+    ciphertext or 500ing. Mirrors decrypt_text in sheaf/services/polls.py.
+    """
+    try:
+        return decrypt(value)
+    except Exception:
+        return value

@@ -710,7 +710,11 @@ async def _finalize_pending_actions(db: AsyncSession) -> dict:
     for row in pending:
         try:
             await finalize_pending_action(row, db)
-            detail_lines.append(f"{row.action_type} {row.target_label}")
+            # Log the (non-sensitive) target id, not target_label: the label is
+            # encrypted at rest, and job_runs.details is itself a retained
+            # unencrypted column, so logging the decrypted label there would
+            # reopen the same content leak this change closes.
+            detail_lines.append(f"{row.action_type} {row.target_id}")
             pending_actions_finalized_total.labels(
                 category=row.action_type, outcome="completed",
             ).inc()
