@@ -175,25 +175,57 @@ async def mark_seen(
 # Replaces what was previously a full-table message scan into Python
 # dicts. Called 3x around front-start, so cutting it cold pays back
 # fast on systems with thousands of messages.
+#
+# The `agg` CTE never touches m.body: COUNT / MAX / the unread FILTER read
+# only indexed columns + created_at. The newest body is fetched separately
+# by `latest` via DISTINCT ON, which returns exactly one row (one body) per
+# board. The old form used (array_agg(m.body ORDER BY created_at DESC))[1],
+# which materialised every message body on the board just to keep the first
+# - ruinous on a busy wall, and this is a sidebar-frequency call. Both parts
+# ride ix_messages_board_created (system_id, board_kind, board_member_id,
+# created_at); DISTINCT ON on the same key/order is a plain index scan.
+# Tie on identical created_at is resolved arbitrarily, exactly as the
+# array_agg form was.
 _BOARD_AGG_SQL = text(
     """
-    SELECT m.board_kind,
-           m.board_member_id,
-           COUNT(*)::int AS total_count,
-           MAX(m.created_at) AS last_at,
-           (array_agg(m.body ORDER BY m.created_at DESC))[1] AS last_body,
-           COUNT(*) FILTER (
-             WHERE rs.last_seen_at IS NOT NULL
-               AND m.created_at > rs.last_seen_at
-           )::int AS unread_count,
-           rs.last_seen_at IS NOT NULL AS has_read_state
-    FROM messages m
-    LEFT JOIN message_read_state rs
-      ON rs.member_id = :caller_member_id
-      AND rs.board_kind = m.board_kind
-      AND rs.board_member_id IS NOT DISTINCT FROM m.board_member_id
-    WHERE m.system_id = :system_id AND m.deleted_at IS NULL
-    GROUP BY m.board_kind, m.board_member_id, rs.last_seen_at
+    WITH agg AS (
+        SELECT m.board_kind,
+               m.board_member_id,
+               COUNT(*)::int AS total_count,
+               MAX(m.created_at) AS last_at,
+               COUNT(*) FILTER (
+                 WHERE rs.last_seen_at IS NOT NULL
+                   AND m.created_at > rs.last_seen_at
+               )::int AS unread_count,
+               rs.last_seen_at IS NOT NULL AS has_read_state
+        FROM messages m
+        LEFT JOIN message_read_state rs
+          ON rs.member_id = :caller_member_id
+          AND rs.board_kind = m.board_kind
+          AND rs.board_member_id IS NOT DISTINCT FROM m.board_member_id
+        WHERE m.system_id = :system_id AND m.deleted_at IS NULL
+        GROUP BY m.board_kind, m.board_member_id, rs.last_seen_at
+    ),
+    latest AS (
+        SELECT DISTINCT ON (m.board_kind, m.board_member_id)
+               m.board_kind,
+               m.board_member_id,
+               m.body AS last_body
+        FROM messages m
+        WHERE m.system_id = :system_id AND m.deleted_at IS NULL
+        ORDER BY m.board_kind, m.board_member_id, m.created_at DESC
+    )
+    SELECT agg.board_kind,
+           agg.board_member_id,
+           agg.total_count,
+           agg.last_at,
+           latest.last_body,
+           agg.unread_count,
+           agg.has_read_state
+    FROM agg
+    JOIN latest
+      ON latest.board_kind = agg.board_kind
+      AND latest.board_member_id IS NOT DISTINCT FROM agg.board_member_id
     """
 )
 

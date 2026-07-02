@@ -300,3 +300,48 @@ def test_audit_ownership_other_systems_get_404(auth_client: httpx.Client):
         other.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
         resp = other.get(f"/v1/fronts/{front['id']}/audit")
     assert resp.status_code == 404
+
+
+# --- Audit pagination ------------------------------------------------------
+
+
+def test_audit_pagination_walks_all_rows(auth_client: httpx.Client):
+    """The audit list is keyset-paginated like GET /v1/fronts: a small
+    `limit` truncates the page and signals more via the headers, and
+    following X-Sheaf-Next-Cursor walks every row exactly once."""
+    m = _create_member(auth_client, "AuditPaged")
+    front = _open_front(auth_client, [m])
+    # Five distinct edits -> five audit rows.
+    for i in range(5):
+        auth_client.patch(
+            f"/v1/fronts/{front['id']}",
+            json={"custom_status": f"status {i}"},
+        )
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):  # generous loop bound
+        params: dict[str, str] = {"limit": "2"}
+        if cursor:
+            params["cursor"] = cursor
+        resp = auth_client.get(f"/v1/fronts/{front['id']}/audit", params=params)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert len(page) <= 2
+        seen.extend(row["id"] for row in page)
+        if resp.headers["X-Sheaf-Has-More"] != "true":
+            assert "X-Sheaf-Next-Cursor" not in resp.headers
+            break
+        cursor = resp.headers["X-Sheaf-Next-Cursor"]
+
+    assert len(seen) == 5, seen
+    assert len(seen) == len(set(seen)), "page boundary produced a duplicate"
+
+
+def test_audit_pagination_rejects_bad_cursor(auth_client: httpx.Client):
+    m = _create_member(auth_client, "AuditBadCursor")
+    front = _open_front(auth_client, [m])
+    resp = auth_client.get(
+        f"/v1/fronts/{front['id']}/audit", params={"cursor": "not-a-cursor"}
+    )
+    assert resp.status_code == 400, resp.text

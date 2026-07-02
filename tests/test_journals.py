@@ -499,3 +499,46 @@ def test_image_delete_queues_when_safeguarded(client: httpx.Client):
     # Still in /v1/files/list during grace
     listing2 = client.get("/v1/files/list").json()
     assert any(f["key"] == key for f in listing2)
+
+
+def test_revision_list_pagination_walks_all(auth_client: httpx.Client):
+    """The revision list is keyset-paginated: a small `limit` truncates
+    the page and signals more via X-Sheaf-Has-More / X-Sheaf-Next-Cursor,
+    and following the cursor walks every revision exactly once. Body stays
+    a plain array for backward compatibility."""
+    entry = auth_client.post("/v1/journals", json={"body": "v0"}).json()
+    # Five body edits -> five outgoing revisions.
+    for i in range(1, 6):
+        r = auth_client.patch(
+            f"/v1/journals/{entry['id']}", json={"body": f"v{i}"}
+        )
+        assert r.status_code == 200, r.text
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):  # generous loop bound
+        params: dict[str, str] = {"limit": "2"}
+        if cursor:
+            params["cursor"] = cursor
+        resp = auth_client.get(
+            f"/v1/journals/{entry['id']}/revisions", params=params
+        )
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert isinstance(page, list) and len(page) <= 2
+        seen.extend(row["id"] for row in page)
+        if resp.headers["X-Sheaf-Has-More"] != "true":
+            break
+        cursor = resp.headers["X-Sheaf-Next-Cursor"]
+
+    assert len(seen) == 5, seen
+    assert len(seen) == len(set(seen)), "page boundary produced a duplicate"
+
+
+def test_revision_list_rejects_bad_cursor(auth_client: httpx.Client):
+    entry = auth_client.post("/v1/journals", json={"body": "x"}).json()
+    resp = auth_client.get(
+        f"/v1/journals/{entry['id']}/revisions",
+        params={"cursor": "not-a-cursor"},
+    )
+    assert resp.status_code == 400, resp.text

@@ -12,9 +12,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
@@ -66,6 +66,7 @@ from sheaf.services.messages import (
 from sheaf.services.messages import (
     mark_seen as svc_mark_seen,
 )
+from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -653,22 +654,70 @@ async def delete_thread(
 )
 async def list_revisions(
     message_id: uuid.UUID,
+    response: Response,
+    # Same rationale as the journals revision list: the revision cap is 0
+    # (unlimited) on self-hosted and pinned rows are exempt from the sweep,
+    # so the history can grow without limit. Page it; default covers the
+    # hosted Plus rolling cap (100) with headroom, cursor covers the rest.
+    # Constants inline (no config knob).
+    limit: int = Query(default=200, ge=1, le=500),
+    cursor: str | None = Query(
+        default=None,
+        description=(
+            "Opaque pagination cursor. Pass the `X-Sheaf-Next-Cursor` value "
+            "from the previous response to fetch the next (older) page."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """List a message's revision history, newest first.
+
+    Keyset-paginated: the body stays a plain array, and `X-Sheaf-Has-More`
+    / `X-Sheaf-Next-Cursor` headers signal and drive the next page (same
+    shape as `GET /v1/fronts`)."""
     system = await _get_user_system(user, db)
     msg = await _get_owned_message(message_id, system, db)
-    result = await db.execute(
+    query = (
         select(ContentRevision)
         .where(
             ContentRevision.target_type == ContentRevisionTarget.MESSAGE.value,
             ContentRevision.target_id == msg.id,
         )
-        .order_by(ContentRevision.created_at.desc())
+        # created_at is a per-transaction now(), so a burst of revisions can
+        # tie; id is the deterministic tiebreaker the cursor comparison uses
+        # too, keeping pages stable.
+        .order_by(ContentRevision.created_at.desc(), ContentRevision.id.desc())
     )
+    if cursor is not None:
+        try:
+            cursor_created, cursor_id = decode_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid cursor",
+            ) from exc
+        query = query.where(
+            tuple_(ContentRevision.created_at, ContentRevision.id)
+            < tuple_(cursor_created, cursor_id)
+        )
+
+    # limit + 1 probe answers "is there more?" without a COUNT.
+    result = await db.execute(query.limit(limit + 1))
+    rows = list(result.scalars().all())
+    has_more = len(rows) > limit
+    page = rows[:limit]
+
+    response.headers["X-Sheaf-Has-More"] = "true" if has_more else "false"
+    if has_more and page:
+        last = page[-1]
+        response.headers["X-Sheaf-Next-Cursor"] = encode_cursor(
+            last.created_at, last.id
+        )
+
     return [
         ContentRevisionRead.model_validate(decrypt_revision_for_read(r))
-        for r in result.scalars().all()
+        for r in page
     ]
 
 

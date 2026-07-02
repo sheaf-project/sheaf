@@ -182,3 +182,72 @@ def test_history_cursor_takes_precedence_over_offset(auth_client: httpx.Client):
     assert resp.status_code == 200
     page2 = resp.json()
     assert {f["id"] for f in page2}.isdisjoint({f["id"] for f in first})
+
+
+# --- Offset upper bound (FIX 2) --------------------------------------------
+
+
+def test_list_offset_upper_bound_rejected(auth_client: httpx.Client):
+    """Legacy offset paging is capped so a giant offset can't make the DB
+    walk-and-discard an arbitrary number of rows. Over the cap is a 422;
+    the cap itself is still accepted."""
+    over = auth_client.get("/v1/fronts", params={"offset": 10_001})
+    assert over.status_code == 422, over.text
+
+    at_cap = auth_client.get("/v1/fronts", params={"offset": 10_000})
+    assert at_cap.status_code == 200, at_cap.text
+
+
+# --- Concurrent switch serialisation (FIX 1) -------------------------------
+
+
+def _concurrent_posts(token: str, payload: dict, n: int) -> list[int]:
+    """Fire `n` identical POST /v1/fronts concurrently, each on its own
+    client sharing `token`. Returns the list of status codes."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    base_url = os.environ["SHEAF_TEST_URL"]
+
+    def _one(_: int) -> int:
+        with httpx.Client(base_url=base_url) as c:
+            c.headers["Authorization"] = token
+            return c.post("/v1/fronts", json=payload).status_code
+
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        return list(pool.map(_one, range(n)))
+
+
+def test_concurrent_duplicate_switches_serialise(auth_client: httpx.Client):
+    """Two concurrent non-replace switches with the same member set must
+    not both land: the per-system advisory lock serialises the duplicate
+    check, so exactly one wins (201) and the rest get 409. Without the
+    lock both reads miss each other's uncommitted insert and both create
+    an open front with the same set."""
+    token = auth_client.headers["Authorization"]
+    member_id = _create_member(auth_client, "RaceDup")
+    payload = {"member_ids": [member_id], "replace_fronts": False}
+
+    codes = _concurrent_posts(token, payload, 5)
+    assert codes.count(201) == 1, codes
+    assert codes.count(409) == 4, codes
+
+    # Exactly one open front with that set exists.
+    current = auth_client.get("/v1/fronts/current").json()
+    matching = [f for f in current if f["member_ids"] == [member_id]]
+    assert len(matching) == 1, current
+
+
+def test_concurrent_replace_switches_leave_one_open(auth_client: httpx.Client):
+    """Concurrent replace switches serialise to a single open front: each
+    auto-ends the currently-open set before opening its own, so once they
+    run one-at-a-time only the last-committed front is left open."""
+    token = auth_client.headers["Authorization"]
+    member_id = _create_member(auth_client, "RaceReplace")
+    payload = {"member_ids": [member_id], "replace_fronts": True}
+
+    codes = _concurrent_posts(token, payload, 5)
+    assert all(c == 201 for c in codes), codes
+
+    current = auth_client.get("/v1/fronts/current").json()
+    assert len(current) == 1, current

@@ -117,6 +117,20 @@ def test_list_jobs_contains_known_jobs(admin_client: httpx.Client):
     assert expected.issubset(names)
 
 
+def test_trigger_refresh_metrics_gauge_distributions(admin_client: httpx.Client):
+    """The heavy distribution gauges run on their own hourly job. Triggering
+    it exercises the SQL-side MAX + count(*) FILTER aggregation (no per-row
+    hydration) and should report success with an items_processed count."""
+    resp = admin_client.post(
+        "/v1/admin/jobs/refresh_metrics_gauge_distributions/run"
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["job_name"] == "refresh_metrics_gauge_distributions"
+    assert data["status"] == "success"
+    assert "items_processed" in data
+
+
 def test_trigger_cleanup_notification_outbox(admin_client: httpx.Client):
     """The outbox sweep is wired and runnable; with no terminal rows it's a
     no-op that still reports success + an items_processed count."""

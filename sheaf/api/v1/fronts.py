@@ -40,6 +40,26 @@ from sheaf.services.system_safety import (
 router = APIRouter(prefix="/fronts", tags=["fronts"])
 
 
+# Namespace for the per-system front-switch advisory lock. Postgres keeps
+# the two-int4 advisory-lock key space disjoint from the single-bigint
+# space the leader election uses (sheaf/services/leader.py), so this only
+# has to stay distinct from any *other* two-int4 advisory lock we might add
+# later. Arbitrary but must not change across deploys.
+_FRONT_SWITCH_LOCK_NS = 0x53480001  # "SH" + 0x0001: front-switch serialisation
+
+
+def _system_front_lock_key(system_id: uuid.UUID) -> int:
+    """Map a system id to a signed int4 for the front-switch advisory lock.
+
+    Deterministic across processes (unlike the built-in ``hash``). A given
+    system always maps to the same key, so its concurrent switches serialise
+    exactly; a collision between two *different* systems only ever adds a
+    little cross-system serialisation of the rare front-create path, never
+    wrong data. Low 31 bits keep the value in non-negative int4 range.
+    """
+    return system_id.int & 0x7FFFFFFF
+
+
 async def _get_user_system(user: User, db: AsyncSession) -> System:
     result = await db.execute(select(System).where(System.user_id == user.id))
     system = result.scalar_one_or_none()
@@ -212,7 +232,19 @@ async def _build_coalesced_member_since(
 async def list_fronts(
     response: Response,
     limit: int = Query(default=50, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        # Legacy offset paging walks and discards `offset` rows server-side,
+        # so an unbounded value is a cheap way to make the DB do arbitrary
+        # work. Cap it; anyone paging deeper should switch to `cursor`, which
+        # stays flat-cost at any depth.
+        le=10_000,
+        description=(
+            "Legacy offset paging, bounded at 10000. For deeper history use "
+            "the `cursor` param, which stays cheap at any depth."
+        ),
+    ),
     cursor: str | None = Query(
         default=None,
         description=(
@@ -371,6 +403,29 @@ async def create_front(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="One or more member IDs are invalid",
         )
+
+    # Serialise front switches for this system. create_front is check-then-
+    # act: it reads the open fronts to auto-end (replace) or to reject an
+    # exact-duplicate member set, then inserts a new open front. Under
+    # READ COMMITTED two concurrent switches each read the pre-insert state,
+    # both pass their checks, and both insert - leaving two overlapping or
+    # duplicate open fronts. A transaction-scoped advisory lock keyed on the
+    # system serialises the whole read-decide-insert section and releases
+    # automatically on commit or rollback, so a stuck request can't hold it.
+    # Explicit int4 casts pin the two-key pg_advisory_xact_lock(int, int)
+    # overload regardless of how the driver types the bound ints (a bare
+    # bigint would fail to resolve the two-key form). Both values are built
+    # to fit signed int4 above.
+    await db.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "CAST(:ns AS integer), CAST(:key AS integer))"
+        ),
+        {
+            "ns": _FRONT_SWITCH_LOCK_NS,
+            "key": _system_front_lock_key(system.id),
+        },
+    )
 
     before_state = await snapshot_front_state(db, system.id)
 
@@ -581,6 +636,20 @@ async def update_front(
 )
 async def list_front_audit(
     front_id: uuid.UUID,
+    response: Response,
+    # A front has no cap on the number of edits, and every audit row
+    # carries two JSONB snapshots, so returning the whole log unbounded is
+    # an O(edits) read. Page it. Default is generous enough that no real
+    # UI hits the boundary; deeper callers follow the cursor. Constants are
+    # inline (no config knob) - bump here if audit histories grow.
+    limit: int = Query(default=200, ge=1, le=500),
+    cursor: str | None = Query(
+        default=None,
+        description=(
+            "Opaque pagination cursor. Pass the `X-Sheaf-Next-Cursor` value "
+            "from the previous response to fetch the next (older) page."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -589,9 +658,13 @@ async def list_front_audit(
     Gated by `fronts:read` (router-level dep). The audit log is
     system-internal; same caller can read the live entry, so the audit
     rows reveal nothing further. Hard-deleted with the entry via
-    ON DELETE CASCADE on front_id."""
+    ON DELETE CASCADE on front_id.
+
+    Keyset-paginated the same way `GET /v1/fronts` is: the body stays a
+    plain array, and `X-Sheaf-Has-More` / `X-Sheaf-Next-Cursor` headers
+    signal and drive the next page."""
     system = await _get_user_system(user, db)
-    # Ownership check via the live front row — if the entry doesn't
+    # Ownership check via the live front row - if the entry doesn't
     # belong to the caller's system, return 404 regardless of whether
     # audit rows happen to exist.
     front_result = await db.execute(
@@ -604,11 +677,40 @@ async def list_front_audit(
             status_code=status.HTTP_404_NOT_FOUND, detail="Front not found"
         )
 
-    audit_result = await db.execute(
+    query = (
         select(FrontAuditEvent)
         .where(FrontAuditEvent.front_id == front_id)
-        .order_by(FrontAuditEvent.created_at.desc())
+        # id is the deterministic tiebreaker for rows sharing a created_at,
+        # matching the cursor's row comparison so pages neither skip nor
+        # duplicate.
+        .order_by(FrontAuditEvent.created_at.desc(), FrontAuditEvent.id.desc())
     )
+    if cursor is not None:
+        try:
+            cursor_created, cursor_id = decode_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid cursor",
+            ) from exc
+        query = query.where(
+            tuple_(FrontAuditEvent.created_at, FrontAuditEvent.id)
+            < tuple_(cursor_created, cursor_id)
+        )
+
+    # limit + 1 probe answers "is there more?" without a COUNT.
+    result = await db.execute(query.limit(limit + 1))
+    rows = list(result.scalars().all())
+    has_more = len(rows) > limit
+    page = rows[:limit]
+
+    response.headers["X-Sheaf-Has-More"] = "true" if has_more else "false"
+    if has_more and page:
+        last = page[-1]
+        response.headers["X-Sheaf-Next-Cursor"] = encode_cursor(
+            last.created_at, last.id
+        )
+
     return [
         FrontAuditEventRead(
             id=row.id,
@@ -619,7 +721,7 @@ async def list_front_audit(
             after=_audit_snapshot_to_read(row.after_snapshot),
             created_at=row.created_at,
         )
-        for row in audit_result.scalars().all()
+        for row in page
     ]
 
 

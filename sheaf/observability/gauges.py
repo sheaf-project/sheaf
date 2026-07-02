@@ -147,83 +147,116 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
     total_fronts = await db.scalar(select(func.count(Front.id)))
     fronts_total.set(int(total_fronts or 0))
 
-    # Per-system front-count distribution. One grouped query; the outer join
-    # keeps systems with zero fronts in the picture so the distribution
-    # covers every system. We never label by system_id - we set a snapshot
-    # cumulative gauge (count of systems at/under each threshold) plus the
-    # single max, which is enough to spot an outlier without naming it.
-    per_system = (
-        (
-            await db.execute(
-                select(func.count(Front.id))
-                .select_from(System)
-                .outerjoin(Front, Front.system_id == System.id)
-                .group_by(System.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    counts = [int(c or 0) for c in per_system]
-    system_front_count_max.set(max(counts) if counts else 0)
-    for threshold in FRONT_COUNT_BUCKETS:
-        systems_by_front_count.labels(le=str(threshold)).set(
-            sum(1 for c in counts if c <= threshold)
-        )
-    systems_by_front_count.labels(le="+Inf").set(len(counts))
-
-    # Journal entries + content-revision (edit-history) volume, same
-    # preserve-by-count lens. One grouped query each; the snapshot CDF +
-    # max are set the same way as the front distribution above.
+    # Journal entries + content-revision (edit-history) volume - the cheap
+    # global COUNT(*) baselines only. The per-system / per-target
+    # distributions that back these (and the front distribution above) are
+    # whole-table scans that change slowly, so they ride a slower cadence in
+    # refresh_gauge_distributions() rather than this 60s pass.
     from sheaf.models.content_revision import ContentRevision
     from sheaf.models.journal_entry import JournalEntry
 
-    def _set_distribution(cdf_gauge, max_gauge, values: list[int]) -> None:
-        max_gauge.set(max(values) if values else 0)
-        for threshold in FRONT_COUNT_BUCKETS:
-            cdf_gauge.labels(le=str(threshold)).set(
-                sum(1 for v in values if v <= threshold)
-            )
-        cdf_gauge.labels(le="+Inf").set(len(values))
-
     je_total = await db.scalar(select(func.count(JournalEntry.id)))
     journal_entries_total.set(int(je_total or 0))
-    je_per_system = [
-        int(c or 0)
-        for c in (
-            await db.execute(
-                select(func.count(JournalEntry.id))
-                .select_from(System)
-                .outerjoin(JournalEntry, JournalEntry.system_id == System.id)
-                .group_by(System.id)
-            )
-        )
-        .scalars()
-        .all()
-    ]
-    _set_distribution(
-        systems_by_journal_entry_count,
-        system_journal_entry_count_max,
-        je_per_system,
-    )
 
     cr_total = await db.scalar(select(func.count(ContentRevision.id)))
     content_revisions_total.set(int(cr_total or 0))
-    # Revisions per target (one journal entry / member bio / message).
-    rev_per_target = [
-        int(c or 0)
-        for c in (
-            await db.execute(
-                select(func.count(ContentRevision.id)).group_by(
-                    ContentRevision.target_type, ContentRevision.target_id
-                )
-            )
+
+
+async def refresh_gauge_distributions(db: AsyncSession) -> dict:
+    """Heavy per-system / per-target distribution gauges, on a slow cadence.
+
+    The per-system front and journal-entry distributions and the per-target
+    revision distribution each scan a whole table. They change slowly and
+    feed capacity / retention decisions rather than alerting, so they run on
+    their own hourly job (registered in sheaf/services/jobs.py) instead of
+    the 60s gauge refresh. Everything is aggregated in SQL: each query
+    returns a single row (max + one count per bucket + the total), so no
+    per-system or per-target rows are ever hydrated into Python.
+    """
+    await _refresh_distributions(db)
+    return {"items_processed": 1}
+
+
+async def _set_count_distribution(
+    db: AsyncSession, per_group, cdf_gauge, max_gauge
+) -> None:
+    """Set a snapshot CDF gauge + max gauge from a per-group count subquery.
+
+    `per_group` is a subquery exposing one integer column `c` per group
+    (per system, per target, ...). The distribution is computed entirely in
+    SQL via MAX(c) and COUNT(*) FILTER (WHERE c <= threshold), so only a
+    single aggregate row comes back - we never label by id and never
+    hydrate one row per group. Preserves the id-free snapshot semantics:
+    `cdf_gauge` is re-set per `le` bucket to the number of groups at/under
+    that threshold, plus a `+Inf` bucket = total groups, and `max_gauge` is
+    the single largest group.
+    """
+    cols = [func.max(per_group.c.c).label("max_c")]
+    for threshold in FRONT_COUNT_BUCKETS:
+        cols.append(
+            func.count()
+            .filter(per_group.c.c <= threshold)
+            .label(f"le_{threshold}")
         )
-        .scalars()
-        .all()
-    ]
-    _set_distribution(
-        targets_by_revision_count, target_revision_count_max, rev_per_target
+    cols.append(func.count().label("total"))
+    row = (await db.execute(select(*cols))).one()
+
+    max_gauge.set(int(row.max_c or 0))
+    for threshold in FRONT_COUNT_BUCKETS:
+        cdf_gauge.labels(le=str(threshold)).set(
+            int(getattr(row, f"le_{threshold}"))
+        )
+    cdf_gauge.labels(le="+Inf").set(int(row.total))
+
+
+async def _refresh_distributions(db: AsyncSession) -> None:
+    from sheaf.models.content_revision import ContentRevision
+    from sheaf.models.front import Front
+    from sheaf.models.journal_entry import JournalEntry
+    from sheaf.models.system import System
+
+    # Per-system front-count distribution. The outer join keeps systems with
+    # zero fronts in the picture (count 0) so the distribution covers every
+    # system - the +Inf bucket equals the system count.
+    front_per_system = (
+        select(func.count(Front.id).label("c"))
+        .select_from(System)
+        .outerjoin(Front, Front.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db, front_per_system, systems_by_front_count, system_front_count_max
+    )
+
+    # Journal entries per system, same preserve-by-count lens.
+    je_per_system = (
+        select(func.count(JournalEntry.id).label("c"))
+        .select_from(System)
+        .outerjoin(JournalEntry, JournalEntry.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db,
+        je_per_system,
+        systems_by_journal_entry_count,
+        system_journal_entry_count_max,
+    )
+
+    # Revisions per target (one journal entry / member bio / message). No
+    # outer join - a target only exists once it has a revision, so the +Inf
+    # bucket is the number of distinct edited targets.
+    rev_per_target = (
+        select(func.count(ContentRevision.id).label("c"))
+        .group_by(ContentRevision.target_type, ContentRevision.target_id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db,
+        rev_per_target,
+        targets_by_revision_count,
+        target_revision_count_max,
     )
 
 

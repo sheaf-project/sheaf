@@ -648,3 +648,64 @@ def test_safety_settings_exposes_messages_toggle(auth_client: httpx.Client):
     assert resp.status_code == 200
     settings = resp.json()["settings"]
     assert "applies_to_messages" in settings
+
+
+def test_message_revision_list_pagination_walks_all(auth_client: httpx.Client):
+    """Message revision history is keyset-paginated like the front history:
+    a small `limit` truncates the page, the X-Sheaf-* headers signal/drive
+    the next page, and the walk yields the same rows as one big page. Body
+    stays a plain array (backward compatible)."""
+    alice = _create_member(auth_client, "Alice")
+    msg = _post(auth_client, author_member_id=alice, body="v0")
+    for i in range(1, 6):
+        auth_client.patch(f"/v1/messages/{msg['id']}", json={"body": f"v{i}"})
+
+    full = auth_client.get(
+        f"/v1/messages/{msg['id']}/revisions", params={"limit": 500}
+    ).json()
+    full_ids = {r["id"] for r in full}
+    assert len(full_ids) > 2, full_ids
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(20):  # generous loop bound
+        params: dict[str, str] = {"limit": "2"}
+        if cursor:
+            params["cursor"] = cursor
+        resp = auth_client.get(
+            f"/v1/messages/{msg['id']}/revisions", params=params
+        )
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert isinstance(page, list) and len(page) <= 2
+        seen.extend(row["id"] for row in page)
+        if resp.headers["X-Sheaf-Has-More"] != "true":
+            break
+        cursor = resp.headers["X-Sheaf-Next-Cursor"]
+
+    assert set(seen) == full_ids, seen
+    assert len(seen) == len(set(seen)), "page boundary produced a duplicate"
+
+
+def test_message_revision_list_rejects_bad_cursor(auth_client: httpx.Client):
+    alice = _create_member(auth_client, "Alice")
+    msg = _post(auth_client, author_member_id=alice, body="x")
+    resp = auth_client.get(
+        f"/v1/messages/{msg['id']}/revisions", params={"cursor": "not-a-cursor"}
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_board_summary_preview_is_newest_body(auth_client: httpx.Client):
+    """Board summary's last_message_preview must be the *newest* message
+    body and message_count the full total. Guards the DISTINCT-ON latest
+    body rewrite (which no longer array_aggs every body on the board)."""
+    alice = _create_member(auth_client, "Alice")
+    _post(auth_client, author_member_id=alice, body="oldest")
+    _post(auth_client, author_member_id=alice, body="middle")
+    _post(auth_client, author_member_id=alice, body="newest")
+
+    boards = auth_client.get("/v1/messages/boards").json()
+    system_board = next(b for b in boards if b["board_kind"] == "system")
+    assert system_board["last_message_preview"] == "newest"
+    assert system_board["message_count"] == 3
