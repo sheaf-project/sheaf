@@ -19,6 +19,7 @@ from sqlalchemy import and_, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
+from sheaf.models.activity_event import ActivityAction, ActivityActorType
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.retention_trim_notice import (
     RetentionTrimNotice,
@@ -26,6 +27,7 @@ from sheaf.models.retention_trim_notice import (
 )
 from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
+from sheaf.services.activity_log import log_activity
 from sheaf.services.journals import (
     _combine_cap,
     effective_revision_caps,
@@ -176,13 +178,25 @@ async def _trim_target_group(
 ) -> int:
     """Trim revisions for a single target. Returns the number deleted.
 
-    `max_revisions=0` means unlimited (no count cap).
-    `max_days=0` means unlimited (no age cap).
+    Count-only by design; the age window was removed because it destroys
+    imported history. Importers set ``created_at`` from the *source*
+    timestamp, so an old-but-just-imported edit-history looked expired and was
+    silently deleted by an age cutoff - the same class of bug as the front
+    retention incident. content_revisions has no separate row-insert column to
+    key a safe age window off, so we cap by NEWEST-N count only and never by
+    age.
 
-    Pinned revisions (pinned_at IS NOT NULL) are exempt from both caps. They
-    form a separate budget bounded by the per-target pin cap, not this sweep.
+    `max_revisions=0` means unlimited (no count cap). `max_days` is still
+    accepted (it is plumbed through for display/caps reporting) but MUST NOT
+    drive any DELETE here.
+
+    Pinned revisions (pinned_at IS NOT NULL) are exempt from the count cap.
+    They form a separate budget bounded by the per-target pin cap, not this
+    sweep.
     """
-    if max_revisions == 0 and max_days == 0:
+    # No count cap -> nothing to trim. The age window that used to run even
+    # when max_revisions == 0 is gone (see docstring).
+    if max_revisions == 0:
         return 0
 
     result = await db.execute(
@@ -198,16 +212,8 @@ async def _trim_target_group(
     if not rows:
         return 0
 
-    # Keep up to max_revisions newest if a count cap exists.
-    keep: set[uuid.UUID] = (
-        {r.id for r in rows[:max_revisions]} if max_revisions > 0 else {r.id for r in rows}
-    )
-
-    # Then drop any kept rows older than max_days.
-    if max_days > 0:
-        cutoff = datetime.now(UTC) - timedelta(days=max_days)
-        keep = {r.id for r in rows if r.id in keep and r.created_at >= cutoff}
-
+    # Keep the newest max_revisions; delete the rest. No age cutoff.
+    keep: set[uuid.UUID] = {r.id for r in rows[:max_revisions]}
     to_delete = [r.id for r in rows if r.id not in keep]
     if not to_delete:
         return 0
@@ -277,10 +283,27 @@ async def gc_revisions(db: AsyncSession) -> dict:
 
         if user_deleted:
             total_deleted += user_deleted
+            # Count-only trim: report the operative count cap. max_days is no
+            # longer a deletion driver (see _trim_target_group), so it is left
+            # out of the trace rather than implying an age cutoff ran.
             detail_lines.append(
                 f"User {user.id}: trimmed {user_deleted} revisions "
-                f"(caps: {max_rev} count, {max_days} days)"
+                f"(newest {max_rev} kept)"
             )
+            # Nothing-silent: per-user account-activity trace when a sweep
+            # actually removes revisions. Content-free (counts only). Dormant
+            # until the new ActivityAction ("retention_pruned") + its Postgres
+            # enum migration land; the lookup is None until then, so this is a
+            # no-op while the jobs stay paused. See the change report.
+            retention_action = getattr(ActivityAction, "RETENTION_PRUNED", None)
+            if retention_action is not None:
+                await log_activity(
+                    db,
+                    user_id=user.id,
+                    action=retention_action,
+                    actor_type=ActivityActorType.SYSTEM,
+                    detail={"revisions_trimmed": user_deleted},
+                )
 
         # Mark the notice completed if its window has passed.
         if notice is not None and notice.effective_at <= datetime.now(UTC):

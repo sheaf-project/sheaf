@@ -9,6 +9,7 @@ Contains:
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
-from sheaf.crypto import decrypt
+from sheaf.crypto import decrypt, encrypt
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.front import Front
@@ -254,12 +255,22 @@ def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChang
             else:
                 applied[field] = new_value
         elif field in _RETENTION_FIELDS:
-            # None = "use tier default" — treat as +infinity so going from a
-            # concrete cap to None is loosening; setting from None to a cap
-            # is tightening (unless tier max is lower, which is enforced
-            # separately at the router).
-            new_eff = float("inf") if new_value is None else new_value
-            cur_eff = float("inf") if current is None else current
+            # For a revision-retention cap, BOTH None ("use tier default") and
+            # 0 ("unlimited") mean the loosest possible cap - keep everything -
+            # so both map to +infinity. The deferred/guarded path is the
+            # data-destroying direction: the effective cap getting *smaller*
+            # (unlimited -> a finite N, or N -> M with M<N), because a smaller
+            # cap widens what the GC sweep deletes. Raising the cap, or moving
+            # to unlimited, keeps more and applies immediately.
+            #
+            # Treating a stored 0 as the literal integer zero (the prior bug)
+            # made 0 sort as the *smallest* cap, so a 0 -> 5 change - the most
+            # destructive transition, since it turns "keep everything" into
+            # "delete all but the newest 5" - passed `5 < 0` == False and was
+            # applied immediately with no grace and no re-auth. Mapping 0 to
+            # +infinity puts it back on the deferred path.
+            new_eff = float("inf") if new_value is None or new_value == 0 else new_value
+            cur_eff = float("inf") if current is None or current == 0 else current
             if new_eff < cur_eff:
                 deferred[field] = new_value
             else:
@@ -324,16 +335,19 @@ async def queue_pending_action(
     """Create a PendingAction row with a fronting snapshot. Caller commits."""
     fronting_ids, fronting_names = await snapshot_current_fronts(system.id, db)
     now = datetime.now(UTC)
+    # target_label and fronting_member_names hold decrypted user content, so
+    # they are encrypted at rest here (the row is transient but lands in any
+    # DB dump taken during the grace window). Read sites decrypt defensively.
     pending = PendingAction(
         system_id=system.id,
         action_type=action_type,
         target_id=target_id,
-        target_label=target_label,
+        target_label=encrypt(target_label),
         requested_at=now,
         requested_by_user_id=user.id,
         finalize_after=now + timedelta(days=system.safety_grace_period_days),
         fronting_member_ids=fronting_ids,
-        fronting_member_names=fronting_names,
+        fronting_member_names=encrypt(json.dumps(fronting_names)),
         status=PendingActionStatus.PENDING,
     )
     db.add(pending)

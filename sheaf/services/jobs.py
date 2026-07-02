@@ -710,7 +710,11 @@ async def _finalize_pending_actions(db: AsyncSession) -> dict:
     for row in pending:
         try:
             await finalize_pending_action(row, db)
-            detail_lines.append(f"{row.action_type} {row.target_label}")
+            # Log the (non-sensitive) target id, not target_label: the label is
+            # encrypted at rest, and job_runs.details is itself a retained
+            # unencrypted column, so logging the decrypted label there would
+            # reopen the same content leak this change closes.
+            detail_lines.append(f"{row.action_type} {row.target_id}")
             pending_actions_finalized_total.labels(
                 category=row.action_type, outcome="completed",
             ).inc()
@@ -1173,6 +1177,9 @@ def _register_all_jobs() -> None:
     # Cheap; the queries are all COUNT(*) on indexed predicates plus
     # bounded Redis SCANs. Disabled when metrics are off so it doesn't
     # waste a tick on every deployment.
+    from sheaf.observability.gauges import (
+        refresh_gauge_distributions as _refresh_metrics_gauge_distributions,
+    )
     from sheaf.observability.gauges import refresh_gauges as _refresh_metrics_gauges
 
     register_job(
@@ -1180,6 +1187,19 @@ def _register_all_jobs() -> None:
         description="Refresh DB- and Redis-sourced Prometheus gauges",
         func=_refresh_metrics_gauges,
         interval_seconds=lambda: settings.metrics_gauge_refresh_seconds,
+        enabled=lambda: settings.metrics_enabled,
+    )
+
+    # Heavy per-system / per-target distribution gauges. Whole-table scans
+    # aggregated in SQL to a single row each; they change slowly and feed
+    # capacity/retention decisions, not alerting, so they run hourly rather
+    # than on the 60s gauge cadence. Runs once on startup (no prior run) so
+    # the distribution gauges populate promptly.
+    register_job(
+        name="refresh_metrics_gauge_distributions",
+        description="Refresh per-system / per-target distribution gauges",
+        func=_refresh_metrics_gauge_distributions,
+        interval_seconds=lambda: 3600,  # hourly
         enabled=lambda: settings.metrics_enabled,
     )
 

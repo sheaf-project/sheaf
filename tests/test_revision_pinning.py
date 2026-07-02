@@ -260,13 +260,14 @@ def test_finalize_pending_unpin_clears_pin():
     """The PendingAction finalize for REVISION_UNPIN must clear pinned_at, not delete."""
 
     async def _run() -> None:
+        import json
         from datetime import UTC, datetime
 
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import AsyncSession
         from sqlalchemy.orm import sessionmaker
 
-        from sheaf.crypto import blind_index
+        from sheaf.crypto import blind_index, encrypt
         from sheaf.models.content_revision import ContentRevision
         from sheaf.models.pending_action import (
             PendingAction,
@@ -309,12 +310,13 @@ def test_finalize_pending_unpin_clears_pin():
                 system_id=system.id,
                 action_type=PendingActionType.REVISION_UNPIN,
                 target_id=revision.id,
-                target_label="test pin",
+                # target_label and fronting_member_names are encrypted at rest.
+                target_label=encrypt("test pin"),
                 requested_at=datetime.now(UTC),
                 requested_by_user_id=user.id,
                 finalize_after=datetime.now(UTC),
                 fronting_member_ids=[],
-                fronting_member_names=[],
+                fronting_member_names=encrypt(json.dumps([])),
                 status=PendingActionStatus.PENDING,
             )
             db.add(pending)

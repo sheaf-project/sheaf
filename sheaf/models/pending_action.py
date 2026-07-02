@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,7 +44,12 @@ class PendingAction(UUIDMixin, Base):
 
     action_type: Mapped[str] = mapped_column(String(32), nullable=False)
     target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    target_label: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Encrypted at rest: this holds decrypted user content (member names,
+    # journal titles, poll questions, message previews) that would otherwise
+    # land in any DB dump taken during the grace window. Text because
+    # ciphertext is longer than the 200-char plaintext bound. Written via
+    # encrypt() in queue_pending_action; decrypted defensively on read.
+    target_label: Mapped[str] = mapped_column(Text, nullable=False)
 
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -59,13 +64,16 @@ class PendingAction(UUIDMixin, Base):
     )
 
     # Snapshot of who was fronting when the action was requested.
-    # Frozen — members may be deleted or front composition may change before finalization.
+    # Frozen - members may be deleted or front composition may change before finalization.
+    # ids are opaque UUIDs (not sensitive) and stay JSONB.
     fronting_member_ids: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
-    fronting_member_names: Mapped[list] = mapped_column(
-        JSONB, nullable=False, default=list, server_default="[]"
-    )
+    # Encrypted at rest for the same reason as target_label: these are
+    # decrypted member names. Stored as encrypt(json.dumps(list_of_names))
+    # in a Text column. No server_default - the app sets the value on every
+    # write and the encrypting migration backfills existing rows.
+    fronting_member_names: Mapped[str] = mapped_column(Text, nullable=False)
 
     status: Mapped[str] = mapped_column(
         String(16),

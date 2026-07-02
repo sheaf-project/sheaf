@@ -152,6 +152,26 @@ def test_different_endpoints_have_separate_limits(anon_client):
     assert resp.status_code == 200
 
 
+def test_sync_export_per_user_rate_limit():
+    """GET /v1/export is rate_limit(6, 3600, "user") - the sync full-account
+    dump is heavy (assembled in memory on the event loop), so it gets a
+    conservative per-user hourly cap on top of the global per-IP backstop."""
+    email = f"rl-export-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+
+        # 6 allowed in the window; the 7th trips the per-user limit.
+        statuses = [c.get("/v1/export").status_code for _ in range(8)]
+
+    assert statuses[0] == 200, statuses
+    assert 429 in statuses, statuses
+
+
 def test_per_user_block_records_admin_history(admin_client):
     """End-to-end: a blocked per-user check leaves a triage trail
     readable via GET /admin/users/{id}/rate-limit-history."""

@@ -19,6 +19,33 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://sheaf:changeme@db:5432/sheaf"
 
+    # Connection pool. Single-process asyncio app: one pool is shared by the
+    # request path and every background loop (job runner, dispatcher, import
+    # runner, export builder). Defaults sized for one uvicorn process; raise
+    # pool_size/max_overflow together with Postgres max_connections if you
+    # run more processes, and mind that each process opens its own pool.
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout: int = 30  # seconds to wait for a free connection
+
+    # Request-path Postgres statement_timeout (milliseconds), applied
+    # per-transaction inside get_db so a pathological O(history) query can't
+    # pin a pooled connection indefinitely. 0 = unlimited. Deliberately does
+    # NOT apply to background jobs - see db_job_statement_timeout_ms.
+    db_statement_timeout_ms: int = 30000
+
+    # Statement timeout (milliseconds) for background jobs that opt into
+    # database.job_session(). Background work (export builds, retention
+    # sweeps, analytics) legitimately runs far longer than a request, so this
+    # defaults to 0 = unlimited; set a large ceiling if you want a backstop
+    # against a runaway job query without capping normal long jobs.
+    db_job_statement_timeout_ms: int = 0
+
+    # Readiness probe (/health/ready) per-dependency timeout in seconds. Kept
+    # tight so a wedged DB or Redis surfaces to the load balancer fast rather
+    # than hanging the health check.
+    health_check_timeout_seconds: float = 2.0
+
     # Redis
     redis_url: str = "redis://redis:6379/0"
 
@@ -560,6 +587,13 @@ class Settings(BaseSettings):
     poll_cleanup_interval_hours: int = 6
 
     # Async data export jobs
+    # Sync GET /v1/export assembles the whole account in memory and
+    # JSON-serialises it on the event loop. Above this many rows (members +
+    # fronts + journal entries + messages) it refuses and points the user at
+    # the async POST /v1/export/jobs flow, which streams to a file on disk.
+    # Guards the event loop against a multi-hundred-MB in-process serialise.
+    # 0 = no limit (the async path is always available regardless).
+    export_sync_max_rows: int = 50000
     # Lifetime of a generated export file before it's auto-deleted from
     # storage and the job row marked EXPIRED. 72h gives the user three days
     # to grab it; long enough for "I'll do this from my desktop later",

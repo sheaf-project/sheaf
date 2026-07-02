@@ -168,6 +168,77 @@ def test_analytics_treats_ongoing_front_as_ending_at_until(
     assert diff <= 5, f"expected ~7200s, got {by_id[member['id']]['total_seconds']}"
 
 
+def test_analytics_longest_session_and_counts(auth_client: httpx.Client):
+    """total_seconds SUMs, session_count COUNTs and longest_session_seconds
+    MAXes across a member's fronts - the aggregation the SQL path computes."""
+    member = auth_client.post("/v1/members", json={"name": "Busy"}).json()
+    now = datetime.now(UTC)
+    sessions = [
+        (now - timedelta(hours=6), now - timedelta(hours=5)),  # 1h
+        (now - timedelta(hours=4), now - timedelta(hours=1)),  # 3h (longest)
+        (
+            now - timedelta(hours=12),
+            now - timedelta(hours=12) + timedelta(minutes=30),
+        ),  # 30m
+    ]
+    for start, end in sessions:
+        start = start.replace(microsecond=0)
+        end = end.replace(microsecond=0)
+        front = auth_client.post(
+            "/v1/fronts",
+            json={"member_ids": [member["id"]], "started_at": _iso(start)},
+        ).json()
+        auth_client.patch(
+            f"/v1/fronts/{front['id']}", json={"ended_at": _iso(end)}
+        )
+
+    data = auth_client.get("/v1/analytics/fronting").json()
+    stats = {m["member_id"]: m for m in data["members"]}[member["id"]]
+    assert stats["session_count"] == 3
+    assert stats["longest_session_seconds"] == 3 * 3600
+    assert stats["total_seconds"] == 3600 + 3 * 3600 + 1800
+
+
+def test_analytics_hour_of_day_respects_timezone(auth_client: httpx.Client):
+    """hour_of_day_seconds bucket the front in the requested timezone. Uses a
+    fixed-offset zone (Etc/GMT-5 = UTC+5, no DST) so the expected bucket is
+    deterministic and Python/Postgres agree on the offset."""
+    member = auth_client.post("/v1/members", json={"name": "Clocked"}).json()
+    # A clean one-hour front aligned to a UTC hour boundary, a few hours ago
+    # so it lands well inside the default 30-day window.
+    start = (datetime.now(UTC) - timedelta(hours=5)).replace(
+        minute=0, second=0, microsecond=0
+    )
+    end = start + timedelta(hours=1)
+    front = auth_client.post(
+        "/v1/fronts",
+        json={"member_ids": [member["id"]], "started_at": _iso(start)},
+    ).json()
+    auth_client.patch(
+        f"/v1/fronts/{front['id']}", json={"ended_at": _iso(end)}
+    )
+
+    utc_data = auth_client.get(
+        "/v1/analytics/fronting", params={"tz": "UTC"}
+    ).json()
+    utc_buckets = {m["member_id"]: m for m in utc_data["members"]}[
+        member["id"]
+    ]["hour_of_day_seconds"]
+    assert utc_buckets[start.hour] == 3600
+    assert sum(utc_buckets) == 3600
+
+    # Etc/GMT-5 is UTC+5 (the POSIX sign is inverted), so the same wall-clock
+    # hour shifts five buckets forward.
+    plus5_data = auth_client.get(
+        "/v1/analytics/fronting", params={"tz": "Etc/GMT-5"}
+    ).json()
+    plus5_buckets = {m["member_id"]: m for m in plus5_data["members"]}[
+        member["id"]
+    ]["hour_of_day_seconds"]
+    assert plus5_buckets[(start.hour + 5) % 24] == 3600
+    assert sum(plus5_buckets) == 3600
+
+
 def test_analytics_percent_of_window(auth_client: httpx.Client):
     """percent_of_window should match total_seconds / window_seconds * 100."""
     member = auth_client.post("/v1/members", json={"name": "Percent"}).json()

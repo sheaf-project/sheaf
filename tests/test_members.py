@@ -88,3 +88,45 @@ def test_archive_member_idempotent(auth_client: httpx.Client):
     again = auth_client.post(f"/v1/members/{mid}/archive").json()
     # Re-archiving is a no-op; the timestamp does not move.
     assert first["archived_at"] == again["archived_at"]
+
+
+def test_bio_revision_list_pagination_walks_all(auth_client: httpx.Client):
+    """The member bio-revision list is keyset-paginated, matching the journal /
+    message / front-audit revision lists: a small `limit` truncates the page and
+    signals more via X-Sheaf-Has-More / X-Sheaf-Next-Cursor, following the cursor
+    walks every revision exactly once, and the body stays a plain array."""
+    mid = auth_client.post(
+        "/v1/members", json={"name": "Bio", "description": "v0"}
+    ).json()["id"]
+    # Five bio (description) edits -> five outgoing revisions captured.
+    for i in range(1, 6):
+        r = auth_client.patch(f"/v1/members/{mid}", json={"description": f"v{i}"})
+        assert r.status_code == 200, r.text
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):  # generous loop bound
+        params: dict[str, str] = {"limit": "2"}
+        if cursor:
+            params["cursor"] = cursor
+        resp = auth_client.get(f"/v1/members/{mid}/revisions", params=params)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert isinstance(page, list) and len(page) <= 2
+        seen.extend(row["id"] for row in page)
+        if resp.headers["X-Sheaf-Has-More"] != "true":
+            break
+        cursor = resp.headers["X-Sheaf-Next-Cursor"]
+
+    assert len(seen) == 5, seen
+    assert len(seen) == len(set(seen)), "page boundary produced a duplicate"
+
+
+def test_bio_revision_list_rejects_bad_cursor(auth_client: httpx.Client):
+    mid = auth_client.post(
+        "/v1/members", json={"name": "BadCursor", "description": "x"}
+    ).json()["id"]
+    resp = auth_client.get(
+        f"/v1/members/{mid}/revisions", params={"cursor": "not-a-cursor"}
+    )
+    assert resp.status_code == 400, resp.text

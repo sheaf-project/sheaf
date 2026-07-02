@@ -138,6 +138,72 @@ def test_delete_queues_when_safety_on(client: httpx.Client):
     assert listing["pending_actions"][0]["target_label"] == "Beta"
 
 
+def _read_pending_row_raw(pending_id: str) -> tuple[str, str]:
+    """Return the raw at-rest (target_label, fronting_member_names) strings
+    straight from the DB, bypassing the API's decrypt-on-read."""
+    result: dict = {}
+
+    async def _run() -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.models.pending_action import PendingAction
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            pending = await db.get(PendingAction, uuid.UUID(pending_id))
+            assert pending is not None
+            result["target_label"] = pending.target_label
+            result["fronting_member_names"] = pending.fronting_member_names
+        await engine.dispose()
+
+    asyncio.run(_run())
+    return result["target_label"], result["fronting_member_names"]
+
+
+def test_pending_action_content_encrypted_at_rest(client: httpx.Client):
+    """target_label and fronting_member_names are ciphertext in the DB, but the
+    read endpoint returns the plaintext."""
+    import json
+
+    from sheaf.crypto import decrypt
+
+    email, _ = _register(client)
+    _set_system_safety_via_db(
+        email,
+        safety_grace_period_days=7,
+        safety_applies_to_members=True,
+        safety_applies_to_fronts=True,
+    )
+    alice = client.post("/v1/members", json={"name": "Alice"}).json()
+    victim = client.post("/v1/members", json={"name": "Victim Member"}).json()
+
+    # Alice is fronting when the destructive action is queued.
+    client.post("/v1/fronts", json={"member_ids": [alice["id"]]})
+
+    resp = client.delete(f"/v1/members/{victim['id']}")
+    assert resp.status_code == 202, resp.text
+    pending_id = resp.json()["pending_action_id"]
+
+    # At rest: neither column contains the plaintext, and both decrypt back.
+    raw_label, raw_names = _read_pending_row_raw(pending_id)
+    assert raw_label != "Victim Member"
+    assert "Victim Member" not in raw_label
+    assert decrypt(raw_label) == "Victim Member"
+
+    assert raw_names != "Alice"
+    assert "Alice" not in raw_names
+    assert json.loads(decrypt(raw_names)) == ["Alice"]
+
+    # Read endpoint returns the decrypted plaintext.
+    pending = client.get("/v1/system/safety").json()["pending_actions"][0]
+    assert pending["target_label"] == "Victim Member"
+    assert pending["fronting_member_names"] == ["Alice"]
+
+
 def test_delete_queues_captures_fronting_snapshot(client: httpx.Client):
     email, _ = _register(client)
     _set_system_safety_via_db(
@@ -539,3 +605,51 @@ def test_member_pending_delete_at_null_when_not_queued(client: httpx.Client):
     assert client.get(f"/v1/members/{member['id']}").json()["pending_delete_at"] is None
     listed = client.get("/v1/members").json()
     assert next(m for m in listed if m["id"] == member["id"])["pending_delete_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Retention-cap loosening: 0 = unlimited (pure unit test of split_safety_changes)
+# ---------------------------------------------------------------------------
+
+
+def test_split_safety_treats_zero_retention_cap_as_unlimited():
+    """0 = unlimited for a revision-retention cap, exactly like None.
+
+    Moving from unlimited (0 or None) to a finite cap is the data-destroying
+    direction - it turns "keep everything" into "delete all but the newest N" -
+    so it must take the deferred/guarded path (grace + re-auth), never apply
+    silently.
+
+    Regression guard: the prior code treated a stored 0 as the literal integer
+    zero (the smallest cap), so a 0 -> 5 change passed `5 < 0` == False and was
+    applied immediately with no grace and no re-auth.
+    """
+    from sheaf.models.system import System
+    from sheaf.services.system_safety import split_safety_changes
+
+    # current = 0 (unlimited) -> finite cap 5: destructive, must defer.
+    split = split_safety_changes(
+        System(journal_max_revisions=0), {"journal_max_revisions": 5}
+    )
+    assert split.deferred == {"journal_max_revisions": 5}
+    assert split.applied == {}
+
+    # current = None (use tier default) -> finite cap 5: same, must defer.
+    split_none = split_safety_changes(
+        System(journal_max_revisions=None), {"journal_max_revisions": 5}
+    )
+    assert split_none.deferred == {"journal_max_revisions": 5}
+
+    # Safe direction: finite cap 5 -> 0 (unlimited) keeps more, applies now.
+    split_loosen = split_safety_changes(
+        System(journal_max_revisions=5), {"journal_max_revisions": 0}
+    )
+    assert split_loosen.applied == {"journal_max_revisions": 0}
+    assert split_loosen.deferred == {}
+
+    # Tightening between two finite caps still defers (10 -> 5).
+    split_tighten = split_safety_changes(
+        System(journal_max_revisions=10), {"journal_max_revisions": 5}
+    )
+    assert split_tighten.deferred == {"journal_max_revisions": 5}
+    assert split_tighten.applied == {}
