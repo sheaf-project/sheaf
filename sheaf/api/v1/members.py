@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.crypto import blind_index, encrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
 from sheaf.models.member import Member
@@ -153,7 +154,8 @@ async def list_members(
     "",
     response_model=MemberRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("members:write"))],
+    # write_rate_limit(): shared per-account write budget (see fronts).
+    dependencies=[Depends(require_scope("members:write")), write_rate_limit()],
 )
 async def create_member(
     body: MemberCreate,
@@ -317,7 +319,9 @@ async def get_member(
 @router.patch(
     "/{member_id}",
     response_model=MemberRead,
-    dependencies=[Depends(require_scope("members:write"))],
+    # A bio edit can capture a content revision, so it counts against the
+    # shared per-account write budget too.
+    dependencies=[Depends(require_scope("members:write")), write_rate_limit()],
 )
 async def update_member(
     member_id: uuid.UUID,

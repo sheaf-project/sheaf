@@ -129,7 +129,7 @@ class Settings(BaseSettings):
 
     # Revision-history retention caps per tier. 0 = unlimited.
     # Covers both journal entries and member bios under a single cap.
-    journal_max_revisions_free: int = 10
+    journal_max_revisions_free: int = 50
     journal_max_revisions_plus: int = 100
     journal_max_revisions_selfhosted: int = 0
     journal_max_revision_days_free: int = 30
@@ -137,6 +137,15 @@ class Settings(BaseSettings):
     journal_max_revision_days_selfhosted: int = 0
     # How often the revision-retention GC sweep runs.
     journal_gc_interval_hours: int = 6
+    # Debounce/checkpoint window (minutes) for live revision capture. Within
+    # this window of the newest unpinned revision's inserted_at, a fresh save
+    # REPLACES that revision's captured content in place instead of appending
+    # a new row - so a burst of rapid saves collapses into a single checkpoint
+    # while a long editing session still accrues a new checkpoint roughly every
+    # revision_debounce_minutes. inserted_at is deliberately not refreshed on
+    # replace, anchoring the window to when each checkpoint was born. 0 =
+    # disabled (every content-changing save appends a row, the old behaviour).
+    revision_debounce_minutes: int = 5
     # Notice period before a tier downgrade trims revision history.
     tier_downgrade_grace_days: int = 14
 
@@ -306,6 +315,29 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
     rate_limit_global_window: int = 60  # window in seconds
+
+    # Per-account combined write rate limit. A single shared bucket across
+    # the whole mutating surface (fronts, journals, messages, members,
+    # reminders): one account cannot exceed this many writes per minute in
+    # total, regardless of how the writes split across endpoints or whether
+    # they arrive over a session, a JWT, or an API key (all three draw down
+    # the same per-account budget). Under preserve-by-default this bounds a
+    # looping client from creating unbounded rows. This is DB-protection, not
+    # a product limit - self-hosters running a heavy integration can raise it
+    # or set 0 to disable, but it is on by default so a buggy client benefits
+    # from the bound too. 0 = disabled.
+    write_rate_per_user_per_min: int = 60
+
+    # Per-SYSTEM front-switch guard. Separate from the per-user write limit:
+    # keyed on the system (which may have several legitimate writers), it
+    # specifically catches a stuck switch-client or looping integration
+    # hammering POST /fronts. A token bucket allows a sustained rate of
+    # front_switch_rate_per_system_per_min with short bursts up to
+    # front_switch_rate_burst absorbed. Also DB-protection, not a product
+    # limit; on by default. Raise or disable for a system that genuinely
+    # switches very fast. 0 (rate) = disabled.
+    front_switch_rate_per_system_per_min: int = 20
+    front_switch_rate_burst: int = 10
 
     # Per-user rate-limit hit history (admin abuse triage). Blocked
     # checks attributable to an authenticated user are recorded to a

@@ -49,6 +49,12 @@ services:
       # stubbed PK API). A live loop would race them and process a job
       # with the real handler before the stubbed drive gets to it.
       IMPORT_RUNNER_ENABLED: "false"
+      # Revision debounce off in tests: many endpoint tests make several rapid
+      # edits and assert one revision per edit. The write-time debounce
+      # (default 5 min in prod) would fold those into one checkpoint. The
+      # write-time debounce behaviour has its own tests that set the window
+      # explicitly, so it stays covered.
+      REVISION_DEBOUNCE_MINUTES: "0"
       # Metrics endpoint. Default off so most configs do not have to
       # think about it; the dedicated metrics config row in run_tests.sh
       # flips ENABLED=true + BIND=main + TOKEN to exercise the endpoint.

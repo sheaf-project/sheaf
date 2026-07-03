@@ -269,17 +269,25 @@ def test_revision_history_lists_and_restores(auth_client: httpx.Client):
 
 def test_gc_revisions_trims_message_revisions(client: httpx.Client):
     """gc_revisions must include 'message' targets in its sweep, otherwise
-    edit history grows unbounded. Mirrors the journal/bio coverage."""
+    edit history grows unbounded. Mirrors the journal/bio coverage.
+
+    Backstop reframing: capture_revision now caps message-revision history at
+    write time, so an over-cap state can only arise from rows that bypassed it
+    (imports, legacy). We seed those directly and give the user an explicit low
+    override so the cap is independent of the free-tier default (now 50).
+    """
     import asyncio
     import os
     import uuid as _uuid
+    from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.orm import sessionmaker
 
     from sheaf.config import settings
-    from sheaf.crypto import blind_index
+    from sheaf.crypto import blind_index, encrypt
+    from sheaf.models.content_revision import ContentRevision
     from sheaf.models.system import System
     from sheaf.models.user import User
     from sheaf.services.retention import gc_revisions
@@ -292,8 +300,9 @@ def test_gc_revisions_trims_message_revisions(client: httpx.Client):
     assert resp.status_code == 201, resp.text
     client.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
 
-    # Drop to free tier (count cap = 10) and disable auto-pin so the cap
-    # alone drives the trim.
+    # Free tier with an explicit count override of 5 (set directly, bypassing
+    # PATCH validation) so the cap under test is independent of the tier
+    # default. Auto-pin off is incidental here since we seed rows directly.
     async def _prep() -> None:
         db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
         engine = create_async_engine(db_url)
@@ -309,18 +318,63 @@ def test_gc_revisions_trims_message_revisions(client: httpx.Client):
                 await db.execute(select(System).where(System.user_id == user.id))
             ).scalar_one()
             system.auto_pin_first_revision = False
+            system.journal_max_revisions = 5
             await db.commit()
         await engine.dispose()
 
     asyncio.run(_prep())
 
+    # A real message so gc_revisions discovers the target; posting does not
+    # capture a revision, so the target starts empty.
     alice = _create_member(client, "Alice")
     msg = _post(client, author_member_id=alice, body="v0")
-    for i in range(1, 16):
-        client.patch(f"/v1/messages/{msg['id']}", json={"body": f"v{i}"})
+    target_id = _uuid.UUID(msg["id"])
 
-    revs_before = client.get(f"/v1/messages/{msg['id']}/revisions").json()
-    assert len(revs_before) == 15
+    # Seed 15 message revisions DIRECTLY (bypassing capture_revision) with
+    # distinct inserted_at, oldest first.
+    async def _seed() -> list[_uuid.UUID]:
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        anchor = datetime.now(UTC) - timedelta(hours=15)
+        try:
+            async with async_session() as db:
+                rows: list[ContentRevision] = []
+                for i in range(15):
+                    rev = ContentRevision(
+                        target_type="message",
+                        target_id=target_id,
+                        body=encrypt(f"seed-{i}"),
+                        inserted_at=anchor + timedelta(minutes=i),
+                    )
+                    db.add(rev)
+                    rows.append(rev)
+                await db.commit()
+                return [r.id for r in rows]
+        finally:
+            await engine.dispose()
+
+    seeded = asyncio.run(_seed())
+
+    async def _remaining_ids() -> set[_uuid.UUID]:
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with async_session() as db:
+                rows = (
+                    await db.execute(
+                        select(ContentRevision.id).where(
+                            ContentRevision.target_type == "message",
+                            ContentRevision.target_id == target_id,
+                        )
+                    )
+                ).scalars().all()
+                return set(rows)
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(_remaining_ids()) == set(seeded)
 
     async def _run_gc() -> int:
         db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
@@ -335,10 +389,12 @@ def test_gc_revisions_trims_message_revisions(client: httpx.Client):
             await engine.dispose()
 
     deleted = asyncio.run(_run_gc())
-    assert deleted >= 5
+    # 15 unpinned rows, cap 5 -> 10 deleted. (>= because the sweep runs over
+    # every user in the shared DB.)
+    assert deleted >= 10
 
-    revs_after = client.get(f"/v1/messages/{msg['id']}/revisions").json()
-    assert len(revs_after) == 10
+    # Newest 5 by inserted_at survive.
+    assert asyncio.run(_remaining_ids()) == set(seeded[10:15])
 
 
 def test_gc_revisions_sweeps_orphaned_message_revisions(client: httpx.Client):

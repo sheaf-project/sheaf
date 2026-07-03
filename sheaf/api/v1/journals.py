@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.api.v1.members import _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
@@ -158,7 +159,8 @@ async def list_journals(
     "",
     response_model=JournalEntryRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("journals:write"))],
+    # write_rate_limit(): shared per-account write budget (see fronts).
+    dependencies=[Depends(require_scope("journals:write")), write_rate_limit()],
 )
 async def create_entry(
     body: JournalEntryCreate,
@@ -212,7 +214,9 @@ async def get_entry(
 @router.patch(
     "/{entry_id}",
     response_model=JournalEntryRead,
-    dependencies=[Depends(require_scope("journals:write"))],
+    # PATCH can generate a content revision, so it counts against the
+    # shared per-account write budget too.
+    dependencies=[Depends(require_scope("journals:write")), write_rate_limit()],
 )
 async def patch_entry(
     entry_id: uuid.UUID,

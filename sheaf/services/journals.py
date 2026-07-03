@@ -8,7 +8,7 @@ in `sheaf/api/v1/journals.py` and `sheaf/services/system_safety.py`.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +82,69 @@ def effective_revision_caps(user: User, system: System) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
+async def _latest_revision(
+    target_type_str: str,
+    target_id: uuid.UUID,
+    db: AsyncSession,
+) -> ContentRevision | None:
+    """Return the newest revision for a target by inserted_at, or None.
+
+    "Newest" is by ``inserted_at`` (true row-landing time), matching the
+    ordering the retention sweep and the write-time count cap use, so the
+    debounce window is measured against the same clock the trim honors.
+    """
+    result = await db.execute(
+        select(ContentRevision)
+        .where(
+            ContentRevision.target_type == target_type_str,
+            ContentRevision.target_id == target_id,
+        )
+        .order_by(ContentRevision.inserted_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def _enforce_write_time_count_cap(
+    *,
+    db: AsyncSession,
+    target_type_str: str,
+    target_id: uuid.UUID,
+    max_revisions: int,
+) -> None:
+    """Trim UNPINNED revisions past the count cap for a single target.
+
+    Runs at write time so the periodic GC sweep is a backstop rather than the
+    primary enforcement. Keeps the newest ``max_revisions`` unpinned rows by
+    ``inserted_at`` (matching the sweep's ordering) and deletes the older
+    overflow in one bounded DELETE. Pinned revisions (pinned_at IS NOT NULL)
+    are never counted or deleted. ``max_revisions == 0`` means unlimited.
+
+    The keep-set subquery is bounded to ``max_revisions`` rows, so this stays
+    O(cap)-ish rather than loading the whole history into Python.
+    """
+    if max_revisions <= 0:
+        return
+    keep_ids = (
+        select(ContentRevision.id)
+        .where(
+            ContentRevision.target_type == target_type_str,
+            ContentRevision.target_id == target_id,
+            ContentRevision.pinned_at.is_(None),
+        )
+        .order_by(ContentRevision.inserted_at.desc())
+        .limit(max_revisions)
+    )
+    await db.execute(
+        delete(ContentRevision).where(
+            ContentRevision.target_type == target_type_str,
+            ContentRevision.target_id == target_id,
+            ContentRevision.pinned_at.is_(None),
+            ContentRevision.id.not_in(keep_ids),
+        )
+    )
+
+
 async def capture_revision(
     *,
     db: AsyncSession,
@@ -94,13 +157,29 @@ async def capture_revision(
 ) -> ContentRevision:
     """Insert a content_revisions row capturing the *outgoing* content.
 
-    `title` and `body` are *plaintext* — encrypted at write time.
+    `title` and `body` are *plaintext* - encrypted at write time.
     image_keys is extracted from the plaintext body, then stored unencrypted
     so orphan cleanup can read it without key access.
+
+    Debounce (checkpoint semantics): when `revision_debounce_minutes` is
+    enabled and the target's newest revision is UNPINNED and landed within
+    that window, we REPLACE that revision's captured content in place (title,
+    body, image_keys, and the editor snapshot) instead of appending a new row.
+    `inserted_at` is deliberately NOT refreshed on replace: the window stays
+    anchored to when each checkpoint was born, so a burst of rapid saves
+    collapses into one revision while a long editing session still accrues a
+    fresh checkpoint roughly every `revision_debounce_minutes` (the first save
+    after the window elapses appends again). If the newest revision is pinned,
+    older than the window, missing (first-ever edit), or debounce is disabled,
+    we append a new row as before.
 
     If this is the first revision captured for the target AND the system has
     `auto_pin_first_revision=True`, the new row is pinned. Defends against
     spam-eviction even when the destructive-action grace flow is off.
+
+    After the write, the effective per-target count cap is enforced (oldest
+    unpinned overflow trimmed); this makes the GC sweep a backstop. Pinned
+    revisions are exempt.
 
     Caller is responsible for then overwriting the target row with the new
     content and committing.
@@ -110,12 +189,46 @@ async def capture_revision(
     )
     editor_ids, editor_names = await snapshot_current_fronts(system_id, db)
 
+    system = await db.get(System, system_id)
+    max_revisions = (
+        effective_revision_caps(user, system)[0] if system is not None else 0
+    )
+
+    enc_title = encrypt(title) if title is not None else None
+    enc_body = encrypt(body)
+    image_keys = extract_image_keys(body)
+
+    debounce_minutes = settings.revision_debounce_minutes
+    if debounce_minutes > 0:
+        latest = await _latest_revision(target_type_str, target_id, db)
+        if (
+            latest is not None
+            and latest.pinned_at is None
+            and _within_debounce_window(latest.inserted_at, debounce_minutes)
+        ):
+            # Replace the newest checkpoint in place. Reuse the same encrypt()
+            # calls as the append path so nothing plaintext is ever stored;
+            # image_keys stays the plaintext-extracted list, as today. Leave
+            # inserted_at untouched on purpose (see docstring).
+            latest.title = enc_title
+            latest.body = enc_body
+            latest.image_keys = image_keys
+            latest.editor_member_ids = editor_ids
+            latest.editor_member_names = editor_names
+            # No new row, so the cap usually has nothing to trim, but run it
+            # anyway - it is cheap and mops up any pre-existing overflow.
+            await _enforce_write_time_count_cap(
+                db=db,
+                target_type_str=target_type_str,
+                target_id=target_id,
+                max_revisions=max_revisions,
+            )
+            return latest
+
     existing_count = await revision_count_for(target_type_str, target_id, db)
     pinned_at: datetime | None = None
-    if existing_count == 0:
-        system = await db.get(System, system_id)
-        if system is not None and system.auto_pin_first_revision:
-            pinned_at = datetime.now(UTC)
+    if existing_count == 0 and system is not None and system.auto_pin_first_revision:
+        pinned_at = datetime.now(UTC)
 
     revision = ContentRevision(
         target_type=target_type_str,
@@ -123,14 +236,35 @@ async def capture_revision(
         user_id=user.id,
         editor_member_ids=editor_ids,
         editor_member_names=editor_names,
-        title=encrypt(title) if title is not None else None,
-        body=encrypt(body),
-        image_keys=extract_image_keys(body),
+        title=enc_title,
+        body=enc_body,
+        image_keys=image_keys,
         pinned_at=pinned_at,
     )
     db.add(revision)
     content_revisions_created_total.inc()
+    # Flush so the new row participates in the count-cap query below (and gets
+    # its server-default inserted_at), then trim the oldest unpinned overflow.
+    await db.flush()
+    await _enforce_write_time_count_cap(
+        db=db,
+        target_type_str=target_type_str,
+        target_id=target_id,
+        max_revisions=max_revisions,
+    )
     return revision
+
+
+def _within_debounce_window(inserted_at: datetime | None, minutes: int) -> bool:
+    """True if `inserted_at` is within `minutes` of now (UTC).
+
+    Guards against a naive datetime (older rows / test fixtures) by assuming
+    UTC when tzinfo is absent, so the comparison never raises.
+    """
+    if inserted_at is None:
+        return False
+    ref = inserted_at if inserted_at.tzinfo is not None else inserted_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - ref) <= timedelta(minutes=minutes)
 
 
 # ---------------------------------------------------------------------------
