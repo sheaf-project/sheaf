@@ -129,7 +129,7 @@ class Settings(BaseSettings):
 
     # Revision-history retention caps per tier. 0 = unlimited.
     # Covers both journal entries and member bios under a single cap.
-    journal_max_revisions_free: int = 10
+    journal_max_revisions_free: int = 50
     journal_max_revisions_plus: int = 100
     journal_max_revisions_selfhosted: int = 0
     journal_max_revision_days_free: int = 30
@@ -137,6 +137,15 @@ class Settings(BaseSettings):
     journal_max_revision_days_selfhosted: int = 0
     # How often the revision-retention GC sweep runs.
     journal_gc_interval_hours: int = 6
+    # Debounce/checkpoint window (minutes) for live revision capture. Within
+    # this window of the newest unpinned revision's inserted_at, a fresh save
+    # REPLACES that revision's captured content in place instead of appending
+    # a new row - so a burst of rapid saves collapses into a single checkpoint
+    # while a long editing session still accrues a new checkpoint roughly every
+    # revision_debounce_minutes. inserted_at is deliberately not refreshed on
+    # replace, anchoring the window to when each checkpoint was born. 0 =
+    # disabled (every content-changing save appends a row, the old behaviour).
+    revision_debounce_minutes: int = 5
     # Notice period before a tier downgrade trims revision history.
     tier_downgrade_grace_days: int = 14
 

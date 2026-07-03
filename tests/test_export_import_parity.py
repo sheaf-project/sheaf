@@ -174,6 +174,13 @@ CLASSIFICATION: dict[type, dict] = {
         },
         "excluded": {
             "id": _SURROGATE_PK,
+            # inserted_at is local row-provenance: a re-imported revision is a
+            # new row and gets a fresh inserted_at (the server default), so it
+            # is deliberately not carried in the export. created_at still
+            # round-trips the source edit time; inserted_at tracks when the row
+            # landed here (what the retention sweep counts from). Same rationale
+            # as a fronts row created_at.
+            "inserted_at": _ROW_CREATED,
         },
     },
     WatchToken: {

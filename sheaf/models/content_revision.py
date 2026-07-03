@@ -64,6 +64,16 @@ class ContentRevision(UUIDMixin, Base):
         nullable=False,
     )
 
+    # True row-insertion time. Unlike created_at (which importers overwrite
+    # with the source edit timestamp), this is always when the row actually
+    # landed here. Retention trimming orders by this so imported history is
+    # counted from when it arrived, not when it was originally authored.
+    inserted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
     # NULL = not pinned. NOT NULL timestamp doubles as flag + UI sort.
     # Pinned revisions are exempt from the rolling retention sweep.
     pinned_at: Mapped[datetime | None] = mapped_column(
@@ -78,6 +88,7 @@ class ContentRevision(UUIDMixin, Base):
             "created_at",
         ),
         Index("ix_content_revisions_created", "created_at"),
+        Index("ix_content_revisions_inserted", "inserted_at"),
         Index("ix_content_revisions_user", "user_id"),
         Index(
             "ix_content_revisions_pinned",

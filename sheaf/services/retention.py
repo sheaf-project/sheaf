@@ -182,9 +182,10 @@ async def _trim_target_group(
     imported history. Importers set ``created_at`` from the *source*
     timestamp, so an old-but-just-imported edit-history looked expired and was
     silently deleted by an age cutoff - the same class of bug as the front
-    retention incident. content_revisions has no separate row-insert column to
-    key a safe age window off, so we cap by NEWEST-N count only and never by
-    age.
+    retention incident. We cap by NEWEST-N count only and never by age. The
+    newest-N is ordered by ``inserted_at`` (the true row-landing time), so a
+    just-imported old-authored revision counts as recent instead of being
+    trimmed first.
 
     `max_revisions=0` means unlimited (no count cap). `max_days` is still
     accepted (it is plumbed through for display/caps reporting) but MUST NOT
@@ -206,13 +207,16 @@ async def _trim_target_group(
             ContentRevision.target_id == target_id,
             ContentRevision.pinned_at.is_(None),
         )
-        .order_by(ContentRevision.created_at.desc())
+        .order_by(ContentRevision.inserted_at.desc())
     )
     rows = list(result.scalars().all())
     if not rows:
         return 0
 
     # Keep the newest max_revisions; delete the rest. No age cutoff.
+    # "Newest" is by inserted_at (when the row landed), not created_at (the
+    # source edit time importers set): a just-imported old-authored revision
+    # must count as recent, not be trimmed first.
     keep: set[uuid.UUID] = {r.id for r in rows[:max_revisions]}
     to_delete = [r.id for r in rows if r.id not in keep]
     if not to_delete:
