@@ -172,6 +172,91 @@ def test_sync_export_per_user_rate_limit():
     assert 429 in statuses, statuses
 
 
+def test_per_user_write_rate_limit_combined():
+    """The combined per-account write limit (write_rate_per_user_per_min,
+    default 60/min) is one shared bucket across the whole mutating surface:
+    a burst of writes split across different endpoints trips a single 429,
+    not a separate per-route counter."""
+    email = f"rl-write-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+
+        first_429 = None
+        allowed = 0
+        # Interleave two different write endpoints. Both draw down the same
+        # per-account bucket, so ~60 combined writes are absorbed and the
+        # burst past that returns 429 regardless of which endpoint it lands
+        # on. The bodyless journal POSTs 4xx on validation but still consume
+        # the budget (the rate-limit dependency runs before body parsing).
+        for i in range(90):
+            if i % 2 == 0:
+                r = c.post(
+                    "/v1/members",
+                    json={"name": f"rl-{uuid.uuid4().hex[:8]}"},
+                )
+            else:
+                r = c.post("/v1/journals")
+            if r.status_code == 429:
+                first_429 = r
+                break
+            allowed += 1
+
+    assert first_429 is not None, "combined write limit never tripped"
+    # Confirm it is the write limit, not some other 429 (member cap, etc.).
+    assert "write rate limit" in first_429.json()["detail"].lower()
+    # Roughly 60 combined writes pass before the shared bucket blocks; allow
+    # slack for counter granularity and the window boundary.
+    assert allowed >= 50, allowed
+
+
+def test_front_switch_guard_per_system():
+    """Rapid front creates past the per-system switch guard return 429,
+    while a normal small burst does not. This guard is keyed on the system
+    and is separate from the per-account write limit that also covers
+    POST /fronts."""
+    email = f"rl-switch-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+
+        member = c.post(
+            "/v1/members", json={"name": f"rl-switch-{uuid.uuid4().hex[:8]}"}
+        )
+        assert member.status_code == 201
+        member_id = member.json()["id"]
+
+        statuses = []
+        first_429 = None
+        # Hammer front creates far past the burst capacity (default 10).
+        # The switch guard is checked before any front DB work, so a request
+        # that would otherwise 201/409 is cut off with 429 once the bucket
+        # drains.
+        for _ in range(40):
+            r = c.post("/v1/fronts", json={"member_ids": [member_id]})
+            statuses.append(r.status_code)
+            if r.status_code == 429 and first_429 is None:
+                first_429 = r
+
+    # A full bucket lets a normal small burst through: the first request is
+    # never blocked by the switch guard.
+    assert statuses[0] != 429, statuses
+    idx = statuses.index(429) if 429 in statuses else None
+    assert idx is not None, statuses
+    # Burst capacity absorbs the first several rapid creates before the guard
+    # trips, so the first 429 lands after a handful of accepted requests.
+    assert idx >= 5, statuses
+    assert "faster than we accept" in first_429.json()["detail"].lower()
+
+
 def test_per_user_block_records_admin_history(admin_client):
     """End-to-end: a blocked per-user check leaves a triage trail
     readable via GET /admin/users/{id}/rate-limit-history."""

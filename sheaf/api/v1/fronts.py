@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import check_front_switch_rate, write_rate_limit
 from sheaf.models.front import Front
 from sheaf.models.front_audit_event import FrontAuditEvent
 from sheaf.models.member import Member
@@ -381,7 +382,9 @@ async def get_current_fronts(
     "",
     response_model=FrontRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("fronts:write"))],
+    # write_rate_limit(): counts against the combined per-account write
+    # budget shared with journals/messages/members/reminders.
+    dependencies=[Depends(require_scope("fronts:write")), write_rate_limit()],
 )
 async def create_front(
     body: FrontCreate,
@@ -389,6 +392,20 @@ async def create_front(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
+
+    # Per-system front-switch guard, in addition to the per-account write
+    # limit above. Keyed on the system rather than the caller, it catches a
+    # stuck switch-client / looping integration on a system that may have
+    # several legitimate writers. Checked before any front DB work so a
+    # runaway loop is cut off early.
+    if not await check_front_switch_rate(system.id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Fronts are being created faster than we accept them for "
+                "your system; check for a looping client or integration."
+            ),
+        )
 
     # Validate member IDs belong to this system
     result = await db.execute(

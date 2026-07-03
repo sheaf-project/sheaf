@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.member import Member
 from sheaf.models.notification_channel import NotificationChannel
 from sheaf.models.pending_action import PendingActionType
@@ -275,7 +276,8 @@ async def list_reminders(
     "",
     response_model=ReminderRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("notifications:write"))],
+    # write_rate_limit(): shared per-account write budget (see fronts).
+    dependencies=[Depends(require_scope("notifications:write")), write_rate_limit()],
 )
 async def create_reminder(
     body: ReminderCreate,

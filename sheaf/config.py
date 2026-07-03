@@ -316,6 +316,29 @@ class Settings(BaseSettings):
     rate_limit_global_per_ip: int = 600  # requests per window (all endpoints combined)
     rate_limit_global_window: int = 60  # window in seconds
 
+    # Per-account combined write rate limit. A single shared bucket across
+    # the whole mutating surface (fronts, journals, messages, members,
+    # reminders): one account cannot exceed this many writes per minute in
+    # total, regardless of how the writes split across endpoints or whether
+    # they arrive over a session, a JWT, or an API key (all three draw down
+    # the same per-account budget). Under preserve-by-default this bounds a
+    # looping client from creating unbounded rows. This is DB-protection, not
+    # a product limit - self-hosters running a heavy integration can raise it
+    # or set 0 to disable, but it is on by default so a buggy client benefits
+    # from the bound too. 0 = disabled.
+    write_rate_per_user_per_min: int = 60
+
+    # Per-SYSTEM front-switch guard. Separate from the per-user write limit:
+    # keyed on the system (which may have several legitimate writers), it
+    # specifically catches a stuck switch-client or looping integration
+    # hammering POST /fronts. A token bucket allows a sustained rate of
+    # front_switch_rate_per_system_per_min with short bursts up to
+    # front_switch_rate_burst absorbed. Also DB-protection, not a product
+    # limit; on by default. Raise or disable for a system that genuinely
+    # switches very fast. 0 (rate) = disabled.
+    front_switch_rate_per_system_per_min: int = 20
+    front_switch_rate_burst: int = 10
+
     # Per-user rate-limit hit history (admin abuse triage). Blocked
     # checks attributable to an authenticated user are recorded to a
     # capped Redis list so an admin can see what an account has tripped

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.member import Member
 from sheaf.models.message import BoardKind, Message
@@ -432,7 +433,8 @@ async def mark_seen(
     "",
     response_model=MessageRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_scope("messages:write"))],
+    # write_rate_limit(): shared per-account write budget (see fronts).
+    dependencies=[Depends(require_scope("messages:write")), write_rate_limit()],
 )
 async def post_message(
     body: MessageCreate,
@@ -495,7 +497,9 @@ async def post_message(
 @router.patch(
     "/{message_id}",
     response_model=MessageRead,
-    dependencies=[Depends(require_scope("messages:write"))],
+    # An edit captures a content revision, so it counts against the shared
+    # per-account write budget too.
+    dependencies=[Depends(require_scope("messages:write")), write_rate_limit()],
 )
 async def edit_message(
     message_id: uuid.UUID,
