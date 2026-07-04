@@ -17,7 +17,7 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.observability.metrics import (
@@ -28,25 +28,46 @@ from sheaf.observability.metrics import (
     auth_trusted_devices_active,
     cf_shield_active,
     content_revisions_total,
+    custom_fields_total,
     db_pool_connections,
     fronts_total,
+    groups_total,
     imports_in_progress,
     imports_oldest_pending_seconds,
     journal_entries_total,
     members_custom_front,
     members_total,
+    messages_total,
     notifications_outbox_depth,
     notifications_outbox_oldest_pending_seconds,
     notifications_subscriptions_active,
+    open_polls_total,
     pending_actions_active,
+    polls_total,
     redis_up,
+    reminders_total,
     requests_per_account_per_minute,
     requests_per_ip_per_minute,
+    system_custom_field_count_max,
     system_front_count_max,
+    system_group_count_max,
     system_journal_entry_count_max,
+    system_message_count_max,
+    system_open_poll_count_max,
+    system_poll_count_max,
+    system_reminder_count_max,
+    system_tag_count_max,
+    systems_by_custom_field_count,
     systems_by_front_count,
+    systems_by_group_count,
     systems_by_journal_entry_count,
+    systems_by_message_count,
+    systems_by_open_poll_count,
+    systems_by_poll_count,
+    systems_by_reminder_count,
+    systems_by_tag_count,
     systems_total,
+    tags_total,
     target_revision_count_max,
     targets_by_revision_count,
     users_pending_delete,
@@ -161,6 +182,43 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
     cr_total = await db.scalar(select(func.count(ContentRevision.id)))
     content_revisions_total.set(int(cr_total or 0))
 
+    # Remaining bulk-creatable capped entities: cheap global COUNT(*)
+    # baselines here; the per-system distributions ride the slow
+    # refresh_gauge_distributions() pass. Messages count live only
+    # (deleted_at IS NULL), matching how the board summary counts them;
+    # open polls count deadline-in-the-future rows, matching the cap.
+    from sheaf.models.custom_field import CustomFieldDefinition
+    from sheaf.models.group import Group
+    from sheaf.models.message import Message
+    from sheaf.models.poll import Poll
+    from sheaf.models.reminder import Reminder
+    from sheaf.models.tag import Tag
+
+    msg_total = await db.scalar(
+        select(func.count(Message.id)).where(Message.deleted_at.is_(None))
+    )
+    messages_total.set(int(msg_total or 0))
+
+    poll_total = await db.scalar(select(func.count(Poll.id)))
+    polls_total.set(int(poll_total or 0))
+
+    open_poll_total = await db.scalar(
+        select(func.count(Poll.id)).where(Poll.closes_at > now)
+    )
+    open_polls_total.set(int(open_poll_total or 0))
+
+    group_total = await db.scalar(select(func.count(Group.id)))
+    groups_total.set(int(group_total or 0))
+
+    tag_total = await db.scalar(select(func.count(Tag.id)))
+    tags_total.set(int(tag_total or 0))
+
+    cf_total = await db.scalar(select(func.count(CustomFieldDefinition.id)))
+    custom_fields_total.set(int(cf_total or 0))
+
+    reminder_total = await db.scalar(select(func.count(Reminder.id)))
+    reminders_total.set(int(reminder_total or 0))
+
 
 async def refresh_gauge_distributions(db: AsyncSession) -> dict:
     """Heavy per-system / per-target distribution gauges, on a slow cadence.
@@ -211,9 +269,17 @@ async def _set_count_distribution(
 
 async def _refresh_distributions(db: AsyncSession) -> None:
     from sheaf.models.content_revision import ContentRevision
+    from sheaf.models.custom_field import CustomFieldDefinition
     from sheaf.models.front import Front
+    from sheaf.models.group import Group
     from sheaf.models.journal_entry import JournalEntry
+    from sheaf.models.message import Message
+    from sheaf.models.poll import Poll
+    from sheaf.models.reminder import Reminder
     from sheaf.models.system import System
+    from sheaf.models.tag import Tag
+
+    now = datetime.now(UTC)
 
     # Per-system front-count distribution. The outer join keeps systems with
     # zero fronts in the picture (count 0) so the distribution covers every
@@ -257,6 +323,107 @@ async def _refresh_distributions(db: AsyncSession) -> None:
         rev_per_target,
         targets_by_revision_count,
         target_revision_count_max,
+    )
+
+    # Live board messages per system (deleted_at IS NULL). The soft-delete
+    # filter sits in the join condition, not a WHERE, so systems with zero
+    # live messages stay in the distribution (the +Inf bucket is all systems).
+    message_per_system = (
+        select(func.count(Message.id).label("c"))
+        .select_from(System)
+        .outerjoin(
+            Message,
+            and_(Message.system_id == System.id, Message.deleted_at.is_(None)),
+        )
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db, message_per_system, systems_by_message_count, system_message_count_max
+    )
+
+    # All polls per system.
+    poll_per_system = (
+        select(func.count(Poll.id).label("c"))
+        .select_from(System)
+        .outerjoin(Poll, Poll.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db, poll_per_system, systems_by_poll_count, system_poll_count_max
+    )
+
+    # Open polls per system (closes_at > now), the per-system view against the
+    # concurrent-open-poll cap. Filter in the join so zero-open systems stay.
+    open_poll_per_system = (
+        select(func.count(Poll.id).label("c"))
+        .select_from(System)
+        .outerjoin(
+            Poll, and_(Poll.system_id == System.id, Poll.closes_at > now)
+        )
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db,
+        open_poll_per_system,
+        systems_by_open_poll_count,
+        system_open_poll_count_max,
+    )
+
+    # Groups, tags, custom-field definitions, reminders per system.
+    group_per_system = (
+        select(func.count(Group.id).label("c"))
+        .select_from(System)
+        .outerjoin(Group, Group.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db, group_per_system, systems_by_group_count, system_group_count_max
+    )
+
+    tag_per_system = (
+        select(func.count(Tag.id).label("c"))
+        .select_from(System)
+        .outerjoin(Tag, Tag.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db, tag_per_system, systems_by_tag_count, system_tag_count_max
+    )
+
+    cf_per_system = (
+        select(func.count(CustomFieldDefinition.id).label("c"))
+        .select_from(System)
+        .outerjoin(
+            CustomFieldDefinition,
+            CustomFieldDefinition.system_id == System.id,
+        )
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db,
+        cf_per_system,
+        systems_by_custom_field_count,
+        system_custom_field_count_max,
+    )
+
+    reminder_per_system = (
+        select(func.count(Reminder.id).label("c"))
+        .select_from(System)
+        .outerjoin(Reminder, Reminder.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db,
+        reminder_per_system,
+        systems_by_reminder_count,
+        system_reminder_count_max,
     )
 
 

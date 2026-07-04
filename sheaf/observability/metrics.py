@@ -568,6 +568,157 @@ content_revisions_created_total = _C(
     "velocity; the save-spam signal.",
 )
 
+# Per-system volume for the remaining bulk-creatable user-content entities
+# that gained per-import row caps (board messages, polls, groups, tags,
+# custom-field definitions, reminders). Same preserve-by-count lens as front
+# history: a global COUNT(*) total, an id-free per-system CDF snapshot re-set
+# each refresh (systems whose count is <= each `le` bucket, `+Inf` = all
+# systems), the single-largest system, and - where there's one clean create
+# choke point - a live-create Counter. FRONT_COUNT_BUCKETS thresholds are
+# reused (plain counts). These ground the import row-cap tuning in real usage.
+
+# Board messages. Counted live (deleted_at IS NULL), matching how the board
+# summary counts them - soft-deleted rows don't count against a system.
+messages_total = _G(
+    "sheaf_messages_total",
+    "All live board messages (deleted_at IS NULL) across all systems.",
+)
+systems_by_message_count = _G(
+    "sheaf_systems_by_message_count",
+    "Number of systems whose live board-message count is <= the `le` bucket "
+    "(point-in-time cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_message_count_max = _G(
+    "sheaf_system_message_count_max",
+    "Largest single system's live board-message count.",
+)
+messages_created_total = _C(
+    "sheaf_messages_created_total",
+    "Board messages created via the live post path (not imports). Post "
+    "velocity, distinct from the HTTP request counter on POST /v1/messages.",
+)
+
+# Polls. Two lenses: all polls per system, and OPEN polls per system - the
+# latter is what the tier concurrency cap and the import clamp bound. An open
+# poll is one whose deadline is still in the future (closes_at > now), the
+# same definition the create-path cap uses.
+polls_total = _G(
+    "sheaf_polls_total",
+    "All polls across all systems (global volume baseline).",
+)
+systems_by_poll_count = _G(
+    "sheaf_systems_by_poll_count",
+    "Number of systems whose poll count is <= the `le` bucket (point-in-time "
+    "cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_poll_count_max = _G(
+    "sheaf_system_poll_count_max",
+    "Largest single system's poll count.",
+)
+polls_created_total = _C(
+    "sheaf_polls_created_total",
+    "Polls created via the live create path (not imports).",
+)
+open_polls_total = _G(
+    "sheaf_open_polls_total",
+    "Polls currently open (closes_at > now) across all systems. Open polls "
+    "are what the tier concurrency cap and the import clamp bound.",
+)
+systems_by_open_poll_count = _G(
+    "sheaf_systems_by_open_poll_count",
+    "Number of systems whose OPEN poll count (closes_at > now) is <= the `le` "
+    "bucket (point-in-time cumulative distribution, re-set each refresh). The "
+    "direct per-system view against the concurrent-open-poll cap.",
+    ["le"],
+)
+system_open_poll_count_max = _G(
+    "sheaf_system_open_poll_count_max",
+    "Largest single system's open-poll count - the outlier signal against "
+    "the concurrent-open-poll cap.",
+)
+
+# Groups, tags, custom-field definitions, reminders. Lower-volume per-system
+# config entities that gained import row caps. Each has a single clean create
+# choke point, so all carry a live-create counter too.
+groups_total = _G(
+    "sheaf_groups_total",
+    "All groups across all systems (global volume baseline).",
+)
+systems_by_group_count = _G(
+    "sheaf_systems_by_group_count",
+    "Number of systems whose group count is <= the `le` bucket (point-in-time "
+    "cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_group_count_max = _G(
+    "sheaf_system_group_count_max",
+    "Largest single system's group count.",
+)
+groups_created_total = _C(
+    "sheaf_groups_created_total",
+    "Groups created via the live create path (not imports).",
+)
+
+tags_total = _G(
+    "sheaf_tags_total",
+    "All tags across all systems (global volume baseline).",
+)
+systems_by_tag_count = _G(
+    "sheaf_systems_by_tag_count",
+    "Number of systems whose tag count is <= the `le` bucket (point-in-time "
+    "cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_tag_count_max = _G(
+    "sheaf_system_tag_count_max",
+    "Largest single system's tag count.",
+)
+tags_created_total = _C(
+    "sheaf_tags_created_total",
+    "Tags created via the live create path (not imports).",
+)
+
+custom_fields_total = _G(
+    "sheaf_custom_fields_total",
+    "All custom-field definitions across all systems (global volume "
+    "baseline).",
+)
+systems_by_custom_field_count = _G(
+    "sheaf_systems_by_custom_field_count",
+    "Number of systems whose custom-field-definition count is <= the `le` "
+    "bucket (point-in-time cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_custom_field_count_max = _G(
+    "sheaf_system_custom_field_count_max",
+    "Largest single system's custom-field-definition count.",
+)
+custom_fields_created_total = _C(
+    "sheaf_custom_fields_created_total",
+    "Custom-field definitions created via the live create path (not imports).",
+)
+
+reminders_total = _G(
+    "sheaf_reminders_total",
+    "All reminders across all systems (global volume baseline).",
+)
+systems_by_reminder_count = _G(
+    "sheaf_systems_by_reminder_count",
+    "Number of systems whose reminder count is <= the `le` bucket "
+    "(point-in-time cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_reminder_count_max = _G(
+    "sheaf_system_reminder_count_max",
+    "Largest single system's reminder count.",
+)
+reminders_created_total = _C(
+    "sheaf_reminders_created_total",
+    "Reminders created via the live create path (not imports).",
+)
+
 # ---------------------------------------------------------------------------
 # Infra
 # ---------------------------------------------------------------------------

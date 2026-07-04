@@ -13,6 +13,7 @@ from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.observability.metrics import groups_created_total
 from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
@@ -117,6 +118,7 @@ async def create_group(
     group = Group(system_id=system.id, **body.model_dump())
     db.add(group)
     await db.commit()
+    groups_created_total.inc()
     await db.refresh(group)
     return group
 

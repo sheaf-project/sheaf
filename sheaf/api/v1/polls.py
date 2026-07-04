@@ -23,7 +23,11 @@ from sheaf.models.pending_action import PendingActionType
 from sheaf.models.poll import Poll, PollOption, PollVote, PollVoteEvent
 from sheaf.models.system import System
 from sheaf.models.user import User
-from sheaf.observability.metrics import tier_label, tier_limit_hits_total
+from sheaf.observability.metrics import (
+    polls_created_total,
+    tier_label,
+    tier_limit_hits_total,
+)
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.poll import (
     PollAuditRead,
@@ -312,6 +316,7 @@ async def create_poll(
         )
     db.add(poll)
     await db.commit()
+    polls_created_total.inc()
     refreshed = await _get_owned_poll(poll.id, system, db)
     return _to_read(refreshed)
 
