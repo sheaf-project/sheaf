@@ -29,8 +29,10 @@ append-everything behaviour.
 
 import logging
 import uuid
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
@@ -106,7 +108,10 @@ from sheaf.services.import_image_strip import (
 )
 from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
 from sheaf.services.member_limits import enforce_import_member_cap
-from sheaf.services.polls import max_retention_days_for_tier
+from sheaf.services.polls import (
+    max_concurrent_open_for_tier,
+    max_retention_days_for_tier,
+)
 
 logger = logging.getLogger("sheaf.import.sheaf")
 
@@ -189,6 +194,154 @@ def _clamp_poll_retention_days(value: int, cap: int) -> int:
         # ceiling rather than letting 0 slip past the cap.
         return cap
     return min(value, cap)
+
+
+def _open_poll_sort_key(source_time: datetime | None) -> tuple[int, float]:
+    """Sort key for ranking imported open polls by source time.
+
+    A poll with no source time ranks oldest (closed first). timestamp() gives a
+    total order that never raises on an aware/naive mix (or a crafted extreme
+    date), unlike comparing datetimes directly.
+    """
+    if source_time is None:
+        return (0, 0.0)
+    try:
+        return (1, source_time.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return (1, 0.0)
+
+
+def excess_open_polls_to_close(
+    created_open: list[tuple[datetime | None, Poll]],
+    *,
+    cap: int,
+    existing_open: int,
+) -> list[Poll]:
+    """Pick which freshly-imported OPEN polls to flip to CLOSED so the system
+    stays within its tier's concurrent-open-poll cap.
+
+    The poll-create API caps how many polls a system may have open at once
+    (``max_concurrent_open_for_tier``); importers wrote Poll rows straight past
+    it, so an import could leave a system with hundreds of open polls. Given the
+    open polls this run would add (``created_open`` = (source_time, poll) pairs)
+    and how many are already open (``existing_open``), keep at most
+    ``cap - existing_open`` of the incoming ones open and return the rest to be
+    closed. Nothing is dropped - closing preserves the poll, its options and
+    votes.
+
+    Keep-open rule: the newest-by-source-time polls keep the open slots; the
+    oldest excess are closed. ``cap <= 0`` means the tier has no concurrent-open
+    limit, so nothing is closed. Shared by the native, Prism and PluralSpace
+    importers so the rule is identical everywhere.
+    """
+    if cap <= 0:
+        return []
+    keep = max(cap - existing_open, 0)
+    if len(created_open) <= keep:
+        return []
+    order = sorted(
+        range(len(created_open)),
+        key=lambda i: (_open_poll_sort_key(created_open[i][0]), i),
+        reverse=True,
+    )
+    # Newest `keep` stay open; the remainder (oldest excess) are closed.
+    return [created_open[i][1] for i in order[keep:]]
+
+
+@dataclass
+class DepthCorrection:
+    """Result of ``correct_nesting_depth``: the corrected parent map plus the
+    nodes whose parent changed (``moved`` = reparented for depth,
+    ``cycle_broken`` = rooted to cut a parent cycle)."""
+
+    parent_of: dict
+    moved: set
+    cycle_broken: set
+
+
+def correct_nesting_depth(parent_of: dict, *, max_depth: int) -> DepthCorrection:
+    """Clamp a group parent map so no node ends deeper than ``max_depth``.
+
+    ``parent_of`` maps node -> parent node (None, or an id not present, means
+    root; root depth is 1). Importers set ``parent_group_id`` with no depth
+    check, so an import could build a group tree deeper than the API's
+    ``MAX_GROUP_DEPTH``. This resolves the tree and returns a ``DepthCorrection``
+    that GUARANTEES every node's corrected depth is <= ``max_depth``.
+
+    Correction is top-down: a too-deep node hops up to its nearest ancestor
+    still shallower than the cap, so it lands at exactly ``max_depth`` and its
+    subtree hangs off the deepest allowed level (descendants are clamped the
+    same way as the walk reaches them). Termination is guaranteed: a first pass
+    cuts any parent cycle in malformed input (bounded by the node count), so the
+    depth pass only ever walks a finite acyclic chain.
+    """
+    nodes = set(parent_of)
+    work = dict(parent_of)
+    cycle_broken: set = set()
+
+    # --- Pass 1: cut parent cycles (functional graph: one parent per node). ---
+    # color: 1 = fully resolved (acyclic above), on-stack tracked per walk.
+    color: dict = {}
+    for start in nodes:
+        stack: list = []
+        cur = start
+        while cur is not None and cur in nodes:
+            c = color.get(cur)
+            if c == 1:
+                break  # chain above `cur` already known acyclic
+            if c == 0:
+                # `cur` is on the current stack: a loop. Root it to break the
+                # cycle, then stop (the rest of the chain is now acyclic).
+                work[cur] = None
+                cycle_broken.add(cur)
+                break
+            color[cur] = 0
+            stack.append(cur)
+            cur = work.get(cur)
+        for node in stack:
+            color[node] = 1
+
+    # --- Pass 2: resolve depth top-down and clamp. ---
+    depth: dict = {}
+    corrected_parent: dict = {}
+    moved: set = set()
+
+    def _resolve(start: object) -> None:
+        chain: list = []
+        cur = start
+        # Acyclic now, so this climb terminates at a resolved node / root /
+        # external parent.
+        while cur is not None and cur in nodes and cur not in depth:
+            chain.append(cur)
+            cur = work.get(cur)
+        # Process root-ward first so each node's parent is already resolved.
+        for node in reversed(chain):
+            p = work.get(node)
+            if p is None or p not in nodes:
+                corrected_parent[node] = None
+                depth[node] = 1
+                continue
+            pd = depth[p]
+            if pd < max_depth:
+                corrected_parent[node] = p
+                depth[node] = pd + 1
+            else:
+                # Too deep: hop up to the nearest ancestor shallower than the
+                # cap so this node lands at <= max_depth.
+                anc = p
+                while anc is not None and depth[anc] >= max_depth:
+                    anc = corrected_parent[anc]
+                corrected_parent[node] = anc
+                depth[node] = depth[anc] + 1 if anc is not None else 1
+                moved.add(node)
+
+    for n in nodes:
+        if n not in depth:
+            _resolve(n)
+
+    return DepthCorrection(
+        parent_of=corrected_parent, moved=moved, cycle_broken=cycle_broken
+    )
 
 
 class SheafPreviewSummary:
@@ -361,9 +514,59 @@ def preview(data: dict) -> SheafPreviewSummary:
 
     report = ClampReport()
     measure_native_payload(data, report)
-    summary.limit_warnings = report.to_warnings()
+    summary.limit_warnings = report.to_warnings() + il.import_row_cap_warnings(
+        {
+            "fronts": summary.front_count,
+            "journal_entries": summary.journal_count,
+            "messages": summary.message_count,
+            "revisions": len(data.get("revisions", [])),
+            "polls": summary.poll_count,
+            "groups": summary.group_count,
+            "tags": summary.tag_count,
+            "custom_fields": summary.custom_field_count,
+        }
+    )
+    summary.limit_warnings += _group_depth_warnings(data.get("groups", []))
 
     return summary
+
+
+def _group_depth_warnings(groups: object) -> list[str]:
+    """Predict the group-nesting-depth clamp from a native-shaped payload.
+
+    Pure function of the declared ``parent_id`` links (no DB), matching the
+    fresh-import case the run performs. Importers set ``parent_id`` with no
+    depth check, so this warns when the payload nests groups deeper than the
+    API's ``MAX_GROUP_DEPTH`` (they get reparented up to fit) or contains a
+    looping parent chain (it gets cut). Defensive against malformed shapes.
+    """
+    from sheaf.api.v1.groups import MAX_GROUP_DEPTH
+
+    parent_of: dict[str, str | None] = {}
+    ids: set[str] = set()
+    for g in _as_list(groups):
+        if isinstance(g, dict) and g.get("id"):
+            ids.add(g["id"])
+    for g in _as_list(groups):
+        if not isinstance(g, dict) or not g.get("id"):
+            continue
+        parent = g.get("parent_id")
+        parent_of[g["id"]] = parent if parent in ids else None
+    if not parent_of:
+        return []
+    correction = correct_nesting_depth(parent_of, max_depth=MAX_GROUP_DEPTH)
+    out: list[str] = []
+    if correction.moved:
+        out.append(
+            f"{len(correction.moved)} group(s) exceed the maximum nesting "
+            f"depth ({MAX_GROUP_DEPTH}) and were moved up to fit."
+        )
+    if correction.cycle_broken:
+        out.append(
+            f"{len(correction.cycle_broken)} group(s) had a looping parent "
+            "reference and were moved to the top level."
+        )
+    return out
 
 
 async def count_new_members_for_import(
@@ -473,7 +676,7 @@ async def run_import(
             if sys_data.get("name"):
                 system.name = clamp_str(sys_data["name"], il.SYS_NAME, report=report)
             if sys_data.get("description") is not None:
-                # Strip any /v1/files/... image embeds — those keys belong
+                # Strip any /v1/files/... image embeds - those keys belong
                 # to the exporting account, not this one.
                 system.description = _resolve_md(
                     sys_data["description"]
@@ -678,6 +881,28 @@ async def run_import(
         strategy=conflict_strategy,
     )
     await enforce_import_member_cap(db, system, new_count)
+
+    # Per-import row caps (bomb protection). Count the rows each enabled
+    # section would create from the parsed payload - only sections the caller
+    # opted into contribute, since a disabled section writes nothing. Revisions
+    # are always attempted, so they're always counted. Gross source counts:
+    # dedup/skip only ever reduces the real write count, so this can't
+    # under-count the ceiling. Raises ImportPayloadError before any section
+    # loop runs, matching the member cap.
+    il.enforce_import_row_caps(
+        {
+            "fronts": len(data.get("fronts", [])) if fronts else 0,
+            "journal_entries": len(data.get("journals", [])) if journals else 0,
+            "messages": len(data.get("messages", [])) if messages else 0,
+            "revisions": len(data.get("revisions", [])),
+            "polls": len(data.get("polls", [])) if polls else 0,
+            "groups": len(data.get("groups", [])) if groups else 0,
+            "tags": len(data.get("tags", [])) if tags else 0,
+            "custom_fields": (
+                len(data.get("custom_fields", [])) if custom_fields else 0
+            ),
+        }
+    )
 
     # Map old export ID → resolved Member (created / skipped / updated).
     # `written_old_ids` tracks the rows this run actually wrote, so the
@@ -895,6 +1120,50 @@ async def run_import(
                             group_id=group.id, member_id=member.id
                         )
                     )
+
+        # Clamp nesting depth. Importers set parent_id with no depth check, so a
+        # crafted (or just deep) export could build a group tree past the API's
+        # MAX_GROUP_DEPTH. Load the whole system's parent map in one query (the
+        # new links are flushed first) and reparent any group we created that
+        # ended too deep - or whose parent chain loops - up to the deepest
+        # allowed level. Non-destructive: no group or membership is lost.
+        if created_group_ids:
+            from sheaf.api.v1.groups import MAX_GROUP_DEPTH
+
+            await db.flush()
+            depth_rows = await db.execute(
+                select(Group.id, Group.parent_id).where(
+                    Group.system_id == system.id
+                )
+            )
+            parent_of = {gid: pid for gid, pid in depth_rows.all()}
+            correction = correct_nesting_depth(
+                parent_of, max_depth=MAX_GROUP_DEPTH
+            )
+            created_by_id = {
+                g.id: g
+                for g in old_gid_to_group.values()
+                if g.id in created_group_ids
+            }
+            depth_moved = 0
+            cycle_moved = 0
+            for gid, grp in created_by_id.items():
+                if gid in correction.moved:
+                    grp.parent_id = correction.parent_of[gid]
+                    depth_moved += 1
+                elif gid in correction.cycle_broken:
+                    grp.parent_id = correction.parent_of[gid]
+                    cycle_moved += 1
+            if depth_moved:
+                warnings.append(
+                    f"{depth_moved} group(s) exceed the maximum nesting depth "
+                    f"({MAX_GROUP_DEPTH}) and were moved up to fit."
+                )
+            if cycle_moved:
+                warnings.append(
+                    f"{cycle_moved} group(s) had a looping parent reference and "
+                    "were moved to the top level."
+                )
 
     # --- Fronts ---
     if fronts:
@@ -1192,6 +1461,29 @@ async def run_import(
             if importing_user is not None
             else 0
         )
+        # Concurrent-open-poll cap. The API caps how many polls a system may
+        # have open (closes_at in the future) at once; the importer bypassed it.
+        # We import every poll but flip the excess OPEN ones to CLOSED. Resolve
+        # the ceiling and the count of already-open polls once, up front.
+        poll_now = datetime.now(UTC)
+        poll_open_cap = (
+            max_concurrent_open_for_tier(importing_user.tier)
+            if importing_user is not None
+            else 0
+        )
+        existing_open_polls = 0
+        if poll_open_cap > 0:
+            existing_open_polls = (
+                await db.execute(
+                    select(func.count(Poll.id)).where(
+                        Poll.system_id == system.id,
+                        Poll.closes_at > poll_now,
+                    )
+                )
+            ).scalar_one()
+        # (source_time, poll) for polls this run imports OPEN, ranked below so
+        # the newest keep the open slots and the oldest excess are closed.
+        created_open_polls: list[tuple[datetime | None, Poll]] = []
         poll_index = (
             await load_poll_index(db, system.id) if dedupe else ContentMatchIndex()
         )
@@ -1245,6 +1537,10 @@ async def run_import(
             if pcreated:
                 poll.created_at = pcreated
             db.add(poll)
+            # Track polls that land OPEN so the concurrency clamp below can flip
+            # the excess to closed. Source time orders the keep-open decision.
+            if closes_at > poll_now:
+                created_open_polls.append((pcreated or closes_at, poll))
 
             # Options first; vote/event option references resolve through this.
             old_option_to_new: dict[str, PollOption] = {}
@@ -1323,6 +1619,24 @@ async def run_import(
                 db.add(event)
 
             result.polls_imported += 1
+
+        # Flip the excess open polls to closed so the system stays within the
+        # tier's concurrent-open cap. Closing = closes_at at import time, so the
+        # poll lands closed and purges like any normally-closed poll; its
+        # options and votes are preserved.
+        if poll_open_cap > 0:
+            to_close = excess_open_polls_to_close(
+                created_open_polls,
+                cap=poll_open_cap,
+                existing_open=existing_open_polls,
+            )
+            for closed_poll in to_close:
+                closed_poll.closes_at = poll_now
+            if to_close:
+                warnings.append(
+                    f"{len(to_close)} poll(s) exceed your concurrent-open-poll "
+                    "limit and will be imported as closed."
+                )
 
         await db.flush()
 

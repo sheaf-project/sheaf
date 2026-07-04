@@ -121,7 +121,8 @@ def preview(data: dict) -> TBPreviewSummary:
             if _tupper_id(t) is not None
         ],
         group_count=len(groups),
-        limit_warnings=report.to_warnings(),
+        limit_warnings=report.to_warnings()
+        + il.import_row_cap_warnings({"groups": len(groups)}),
     )
 
 
@@ -161,6 +162,13 @@ async def run_import(
         strategy=options.conflict_strategy,
     )
     await enforce_import_member_cap(db, system, new_count)
+
+    # Per-import row caps (bomb protection). Beyond members, Tupperbox only
+    # writes groups; hard-fail before writing if they blow the cap. Gross
+    # count: dedup/skip only reduces the real write count.
+    il.enforce_import_row_caps(
+        {"groups": len(_list(data, "groups")) if options.groups else 0}
+    )
 
     id_to_member: dict[str, Member] = {}
     tuppers_no_id = 0

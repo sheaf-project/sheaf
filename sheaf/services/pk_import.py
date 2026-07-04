@@ -130,6 +130,15 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
     report = ClampReport()
     measure_pk_payload(data, report)
 
+    switch_count = (
+        switch_count_override if switch_count_override is not None else len(switches)
+    )
+    # PK switches become front-history rows on import; surface the per-import
+    # front / group caps up front alongside the clamp warnings.
+    limit_warnings = report.to_warnings() + il.import_row_cap_warnings(
+        {"fronts": switch_count, "groups": len(groups)}
+    )
+
     return PKPreviewSummary(
         system_name=_clean_str(data.get("name")),
         member_count=len(members),
@@ -142,10 +151,10 @@ def preview(data: dict, *, switch_count_override: int | None = None) -> PKPrevie
             if m.get("id")
         ],
         group_count=len(groups),
-        switch_count=switch_count_override if switch_count_override is not None else len(switches),
+        switch_count=switch_count,
         earliest_switch=min(timestamps) if timestamps else None,
         latest_switch=max(timestamps) if timestamps else None,
-        limit_warnings=report.to_warnings(),
+        limit_warnings=limit_warnings,
     )
 
 

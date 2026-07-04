@@ -19,6 +19,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
@@ -354,7 +355,16 @@ def preview(data: dict) -> SPPreviewSummary:
     # sees the warning before committing. Same caps as run_import.
     report = ClampReport()
     measure_sp_payload(data, report)
-    summary.limit_warnings = report.to_warnings()
+    # Predict the per-import row caps too. Notes are not yet imported as
+    # journals, so they don't count toward any cap here.
+    summary.limit_warnings = report.to_warnings() + il.import_row_cap_warnings(
+        {
+            "fronts": len(fronts),
+            "custom_fields": len(fields),
+            "groups": len(groups),
+            "messages": summary.message_count,
+        }
+    )
     return summary
 
 
@@ -500,6 +510,31 @@ async def run_import(
         strategy=options.conflict_strategy,
     )
     await enforce_import_member_cap(db, system, new_count)
+
+    # Per-import row caps (bomb protection). Beyond members / custom fronts, SP
+    # writes front-history rows, custom fields, groups and chat messages; count
+    # each enabled section's source rows and hard-fail before writing if any
+    # blows its cap. Notes are not yet imported (journal feature pending), so
+    # there are no journal rows to count. Gross counts: dedup/skip only reduces
+    # the real write count.
+    il.enforce_import_row_caps(
+        {
+            "fronts": (
+                len(_get_collection_alt(data, "frontHistory", "fronters"))
+                if options.front_history
+                else 0
+            ),
+            "custom_fields": (
+                len(_get_collection(data, "customFields"))
+                if options.custom_fields
+                else 0
+            ),
+            "groups": (
+                len(_get_collection(data, "groups")) if options.groups else 0
+            ),
+            "messages": len(_sp_chat_rows(data)) if options.messages else 0,
+        }
+    )
 
     # Map SP member _id → resolved Sheaf Member for cross-referencing.
     # The map points at the resolved row (created / skipped / updated) so
@@ -696,6 +731,45 @@ async def run_import(
                 f"Dropped {unresolvable_parents} group parent links that "
                 "pointed at a group not present in the export."
             )
+
+        # Clamp nesting depth. SP builds a nested group tree via `parent` with
+        # no depth check, so a deep (or looping) export could exceed the API's
+        # MAX_GROUP_DEPTH. Mirror the native importer: load the system's parent
+        # map and reparent any group we created that ended too deep, or whose
+        # parent chain loops, up to the deepest allowed level. Non-destructive.
+        if created_group_ids:
+            from sheaf.api.v1.groups import MAX_GROUP_DEPTH
+            from sheaf.services.sheaf_import import correct_nesting_depth
+
+            await db.flush()
+            depth_rows = await db.execute(
+                select(Group.id, Group.parent_id).where(
+                    Group.system_id == system.id
+                )
+            )
+            parent_of = {gid: pid for gid, pid in depth_rows.all()}
+            correction = correct_nesting_depth(parent_of, max_depth=MAX_GROUP_DEPTH)
+            depth_moved = 0
+            cycle_moved = 0
+            for grp in sp_gid_to_group.values():
+                if grp.id not in created_group_ids:
+                    continue
+                if grp.id in correction.moved:
+                    grp.parent_id = correction.parent_of[grp.id]
+                    depth_moved += 1
+                elif grp.id in correction.cycle_broken:
+                    grp.parent_id = correction.parent_of[grp.id]
+                    cycle_moved += 1
+            if depth_moved:
+                warnings.append(
+                    f"{depth_moved} group(s) exceed the maximum nesting depth "
+                    f"({MAX_GROUP_DEPTH}) and were moved up to fit."
+                )
+            if cycle_moved:
+                warnings.append(
+                    f"{cycle_moved} group(s) had a looping parent reference and "
+                    "were moved to the top level."
+                )
 
     # --- Front history ---
     if options.front_history:

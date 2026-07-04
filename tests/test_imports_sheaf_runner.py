@@ -17,7 +17,7 @@ from tests._import_runner_helpers import (
     wait_for_terminal,
 )
 
-# Minimal valid Sheaf export — version + a couple of members. Other
+# Minimal valid Sheaf export - version + a couple of members. Other
 # sections empty; enough to prove the runner walks the canonical
 # export dict.
 _SHEAF_EXPORT = {
@@ -495,6 +495,41 @@ def test_sheaf_runner_hard_fails_over_member_cap(admin_client: httpx.Client):
     assert admin_client.get("/v1/members/limit").json()["current"] == 0
 
 
+def test_sheaf_runner_hard_fails_over_row_cap(auth_client: httpx.Client):
+    """An import whose per-entity row count exceeds a per-import row cap fails
+    cleanly up front (bomb protection), like the member cap. A low cap is
+    injected into the runner process so the test doesn't have to build a
+    hundred-thousand-row fixture. Tags need no member cross-references, so
+    three of them exceed a cap of 1 with a one-member payload."""
+    export = {
+        "version": 2,
+        "system": {"name": "Bomb"},
+        "members": [{"id": "m1", "name": "Solo"}],
+        "tags": [
+            {"id": "t1", "name": "one", "member_ids": []},
+            {"id": "t2", "name": "two", "member_ids": []},
+            {"id": "t3", "name": "three", "member_ids": []},
+        ],
+    }
+    job = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner(
+        setup="import sheaf.config; sheaf.config.settings.import_max_tags = 1"
+    )
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "failed", final
+    blob = (
+        (final.get("last_error") or "")
+        + " "
+        + " ".join(e["message"] for e in final["events"])
+    ).lower()
+    assert "tags" in blob and "one job" in blob, final
+
+    # Nothing was written: none of the tags landed.
+    names = {t["name"] for t in auth_client.get("/v1/tags").json()}
+    assert not ({"one", "two", "three"} & names), names
+
+
 # A foreign-looking owner UUID. Doesn't have to exist as a real user; the
 # import only inspects the structural shape of the key path, not whether
 # the embedded user_id resolves to anything live.
@@ -590,7 +625,7 @@ def test_sheaf_runner_strips_cross_account_image_refs(auth_client: httpx.Client)
 
     # Journal entry body lost the internal embed. `image_keys` is an
     # internal column used by the orphan sweeper, not exposed on
-    # JournalEntryRead — the body assertion above is the user-visible
+    # JournalEntryRead - the body assertion above is the user-visible
     # proof that the strip ran; the corresponding image_keys clear is
     # verified by the strip-helper unit tests.
     journals = auth_client.get("/v1/journals").json()
@@ -758,3 +793,171 @@ def test_sheaf_reimport_is_idempotent_across_all_sections(
     assert len(auth_client.get("/v1/members").json()) == 2
     assert len(auth_client.get("/v1/groups").json()) == 1
     assert len(auth_client.get("/v1/fields").json()) == 1
+
+
+def _deep_group_export(depth: int) -> dict:
+    """A single member plus a `depth`-long parent chain of groups, the deepest
+    group carrying the member. Used to prove the importer clamps nesting depth
+    the way the create API does (MAX_GROUP_DEPTH = 8)."""
+    groups = [
+        {
+            "id": f"g{i}",
+            "name": f"Deep {i}",
+            "parent_id": f"g{i - 1}" if i > 1 else None,
+            "member_ids": ["m1"] if i == depth else [],
+        }
+        for i in range(1, depth + 1)
+    ]
+    return {
+        "version": "2",
+        "system": {"name": "Deep Groups"},
+        "members": [{"id": "m1", "name": "DeepAda"}],
+        "fronts": [],
+        "groups": groups,
+        "tags": [],
+        "custom_fields": [],
+    }
+
+
+def test_sheaf_runner_clamps_group_nesting_depth(auth_client: httpx.Client):
+    """A crafted export nesting groups 10 deep imports every group, but the
+    ones past MAX_GROUP_DEPTH (8) are reparented up so none exceed the cap.
+    Memberships ride along untouched and the job warns about the move."""
+    job = _post_file(auth_client, payload=json.dumps(_deep_group_export(10)).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    # Every group came across (nothing dropped for being too deep).
+    assert final["counts"]["groups_imported"] == 10, final["counts"]
+    # The clamp warned the user.
+    assert any(
+        "maximum nesting depth (8)" in e["message"] for e in final["events"]
+    ), final["events"]
+
+    groups = auth_client.get("/v1/groups").json()
+    assert len(groups) == 10
+    parent_of = {g["id"]: g["parent_id"] for g in groups}
+
+    def depth(gid: str) -> int:
+        seen: set[str] = set()
+        d = 0
+        cur: str | None = gid
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            d += 1
+            cur = parent_of.get(cur)
+        return d
+
+    # No group ends deeper than the cap.
+    assert max(depth(g["id"]) for g in groups) <= 8, parent_of
+
+    # The membership on the deepest source group survived the reparent.
+    deepest = next(g for g in groups if g["name"] == "Deep 10")
+    members = auth_client.get(f"/v1/groups/{deepest['id']}/members").json()
+    assert any(m["name"] == "DeepAda" for m in members), members
+
+
+def test_sheaf_runner_survives_cyclic_group_parents(auth_client: httpx.Client):
+    """A malformed export whose group parents loop must not hang the importer;
+    the cycle is cut (a group is rooted) and the job completes."""
+    export = {
+        "version": "2",
+        "system": {"name": "Loopy Groups"},
+        "members": [],
+        "fronts": [],
+        "groups": [
+            {"id": "a", "name": "Loop A", "parent_id": "b"},
+            {"id": "b", "name": "Loop B", "parent_id": "a"},
+        ],
+        "tags": [],
+        "custom_fields": [],
+    }
+    job = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"]["groups_imported"] == 2, final["counts"]
+
+    groups = auth_client.get("/v1/groups").json()
+    parent_of = {g["id"]: g["parent_id"] for g in groups}
+    # The loop was broken: at least one of the two is now a root.
+    assert any(p is None for p in parent_of.values()), parent_of
+
+
+def test_sheaf_runner_clamps_concurrent_open_polls(auth_client: httpx.Client):
+    """A crafted export with more OPEN polls than the tier's concurrent-open
+    cap imports every poll (votes included) but flips the oldest excess to
+    closed, so the system never lands over the cap the create API enforces.
+
+    Guarded like test_polls_api.test_concurrent_cap_enforced: a selfhosted
+    deployment has no cap (0) and nothing to clamp, so the test is a no-op
+    there and does its real work under a capped (saas) tier."""
+    from datetime import UTC, datetime, timedelta
+
+    cfg = auth_client.get("/v1/polls/server-config").json()
+    cap = cfg["max_concurrent_open_polls"]
+    if cap == 0:
+        return
+
+    # How many polls the system already has open, so the assertions hold even
+    # if a prior test left some behind.
+    open_before = sum(
+        1 for p in auth_client.get("/v1/polls").json() if not p["is_closed"]
+    )
+
+    now = datetime.now(UTC)
+    n = cap + 2
+    polls = [
+        {
+            "id": f"p{i}",
+            "question": f"Q{i}",
+            "kind": "single_choice",
+            "results_visibility": "live",
+            # All open (close well in the future); distinct created_at so the
+            # keep-newest ordering is deterministic.
+            "closes_at": (now + timedelta(days=7)).isoformat(),
+            "created_at": (now + timedelta(minutes=i)).isoformat(),
+            "retention_days": 30,
+            "options": [
+                {"id": f"o{i}a", "text": "a", "position": 0},
+                {"id": f"o{i}b", "text": "b", "position": 1},
+            ],
+            "votes": [{"voted_as_member_id": "m1", "option_ids": [f"o{i}a"]}],
+        }
+        for i in range(n)
+    ]
+    export = {
+        "version": "2",
+        "system": {"name": "Poll Cap"},
+        "members": [{"id": "m1", "name": "PollAda"}],
+        "fronts": [],
+        "groups": [],
+        "tags": [],
+        "custom_fields": [],
+        "polls": polls,
+    }
+    job = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    # Every poll imported (nothing dropped for being over the cap).
+    assert final["counts"]["polls_imported"] == n, final["counts"]
+    # The clamp warned about the excess.
+    assert any(
+        "concurrent-open-poll limit" in e["message"] for e in final["events"]
+    ), final["events"]
+
+    listed = auth_client.get("/v1/polls").json()
+    open_now = sum(1 for p in listed if not p["is_closed"])
+    # The system never ends over the cap the create API enforces (fresh system,
+    # so open_before is 0 and open_now settles at exactly the cap).
+    assert open_now <= max(cap, open_before), (open_now, cap, open_before)
+    # We imported cap+2 open polls, so the excess had to land closed: the number
+    # of imported polls left open can't exceed the free slots that existed.
+    imported = [p for p in listed if p["question"].startswith("Q")]
+    imported_open = sum(1 for p in imported if not p["is_closed"])
+    assert imported_open <= max(cap - open_before, 0), (imported_open, cap)
+
+    # Non-destructive: every imported poll kept its single vote, closed or not.
+    assert len(imported) == n
+    assert all(p["total_votes"] == 1 for p in imported), imported

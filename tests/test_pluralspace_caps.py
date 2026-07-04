@@ -78,3 +78,25 @@ def test_preview_no_warnings_when_within_caps() -> None:
     parsed = parse_export(_build_zip(data))
     summary = preview(parsed)
     assert summary.limit_warnings == []
+
+
+def test_preview_surfaces_over_cap_messages(monkeypatch) -> None:
+    """Chat rows (flattened across channels) over the per-import messages cap
+    are predicted in the preview, ahead of the job's authoritative enforcement.
+    """
+    from sheaf.config import settings
+
+    monkeypatch.setattr(settings, "import_max_messages", 2)
+    data = {
+        "system": {"name": "Sys"},
+        "members": [{"id": "m1", "name": "Alex"}],
+        "chat_channels": [
+            {"name": "c1", "messages": [{"content": "a"}, {"content": "b"}]},
+            {"name": "c2", "messages": [{"content": "c"}]},
+        ],
+    }
+    parsed = parse_export(_build_zip(data))
+    summary = preview(parsed)
+    assert any(
+        "3 messages" in w and "one job" in w for w in summary.limit_warnings
+    ), summary.limit_warnings

@@ -62,7 +62,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
@@ -128,6 +128,8 @@ from sheaf.services.import_parsing import (
     sanitize_external_avatar_url,
 )
 from sheaf.services.member_limits import enforce_import_member_cap
+from sheaf.services.polls import max_concurrent_open_for_tier
+from sheaf.services.sheaf_import import excess_open_polls_to_close
 
 logger = logging.getLogger("sheaf.imports.pluralspace")
 
@@ -303,6 +305,50 @@ def measure_export(data: dict, report: ClampReport) -> None:
                 s(msg.get("content"), il.MESSAGE_BODY)
 
 
+def _distinct_role_count(members_in: list) -> int:
+    """Number of distinct (case-insensitive) PluralSpace role names across
+    members - i.e. how many Tag rows roles-as-tags would create at most.
+    Used by both the preview prediction and the import's row-cap enforcement so
+    the two agree.
+    """
+    roles: set[str] = set()
+    for m in members_in:
+        if not isinstance(m, dict):
+            continue
+        for role in _list(m.get("role")):
+            role_str = _clean_str(role)
+            if role_str:
+                roles.add(role_str.lower())
+    return len(roles)
+
+
+def _distinct_group_count(member_groups: list, members_in: list) -> int:
+    """Number of distinct (case-insensitive) group names PluralSpace would
+    create - across the ``member_groups[]`` definitions AND the inline
+    ``members[].groups[]`` names, which ``_import_groups`` also turns into Group
+    rows. Counting only member_groups (as a naive count would) under-counts and
+    lets the group cap be bypassed via inline names. Used by both the preview
+    prediction and the row-cap enforcement so the two agree and the cap
+    reflects what actually gets written. Dedup key is the lowercased name,
+    matching ``_import_groups``; existing-group dedup is ignored, so this is a
+    gross upper bound (the safe direction for a cap).
+    """
+    names: set[str] = set()
+    for g in member_groups:
+        if isinstance(g, dict):
+            name = _clean_str(g.get("name"))
+            if name:
+                names.add(name.lower())
+    for m in members_in:
+        if not isinstance(m, dict):
+            continue
+        for raw in _list(m.get("groups")):
+            name = _clean_str(raw)
+            if name:
+                names.add(name.lower())
+    return len(names)
+
+
 def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
     """Walk the parsed export and return a counts + member-list summary.
 
@@ -346,6 +392,19 @@ def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
 
     report = ClampReport()
     measure_export(data, report)
+    row_cap_warnings = il.import_row_cap_warnings(
+        {
+            "tags": _distinct_role_count(members_raw),
+            "groups": _distinct_group_count(
+                _list(data.get("member_groups")), members_raw
+            ),
+            "custom_fields": len(_list(data.get("custom_fields"))),
+            "fronts": len(_list(data.get("fronts"))),
+            "journal_entries": len(_list(data.get("journal_entries"))),
+            "messages": chat_msg_count,
+            "polls": len(_list(data.get("polls"))),
+        }
+    )
 
     return PluralspacePreviewSummary(
         system_name=sys_name,
@@ -354,7 +413,9 @@ def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
         member_count=len(member_summaries),
         custom_front_count=custom_front_count,
         members=member_summaries,
-        group_count=len(_list(data.get("member_groups"))),
+        group_count=_distinct_group_count(
+            _list(data.get("member_groups")), members_raw
+        ),
         custom_field_count=len(_list(data.get("custom_fields"))),
         front_count=len(_list(data.get("fronts"))),
         journal_entry_count=len(_list(data.get("journal_entries"))),
@@ -363,7 +424,7 @@ def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
         poll_count=len(_list(data.get("polls"))),
         thought_count=len(_list(data.get("thoughts"))),
         media_file_count=len(parsed.media_paths),
-        limit_warnings=report.to_warnings(),
+        limit_warnings=report.to_warnings() + row_cap_warnings,
     )
 
 
@@ -468,6 +529,43 @@ async def run_import(
         strategy=conflict_strategy,
     )
     await enforce_import_member_cap(db, system, new_count)
+
+    # Per-import row caps (bomb protection). Count the rows each enabled section
+    # would create and hard-fail before writing if any blows its cap. Tags come
+    # from distinct member roles; messages are the flattened chat rows across
+    # channels. Gross source counts: dedup/skip only reduces the real write
+    # count.
+    il.enforce_import_row_caps(
+        {
+            "tags": (
+                _distinct_role_count(members_in) if roles_as_tags else 0
+            ),
+            "groups": (
+                _distinct_group_count(_list(data.get("member_groups")), members_in)
+                if groups
+                else 0
+            ),
+            "custom_fields": (
+                len(_list(data.get("custom_fields"))) if custom_fields else 0
+            ),
+            "fronts": len(_list(data.get("fronts"))) if fronts else 0,
+            "journal_entries": (
+                len(_list(data.get("journal_entries")))
+                if journal_entries
+                else 0
+            ),
+            "messages": (
+                sum(
+                    len(_list(c.get("messages")))
+                    for c in _list(data.get("chat_channels"))
+                    if isinstance(c, dict)
+                )
+                if chat_messages
+                else 0
+            ),
+            "polls": len(_list(data.get("polls"))) if polls else 0,
+        }
+    )
 
     # Map PS id -> resolved row (created / skipped / updated) so later
     # sections (avatars, tags, groups, fronts) link correctly.
@@ -616,6 +714,7 @@ async def run_import(
             ps_id_to_member,
             member_name_to_member,
             system.id,
+            user,
             db,
             result.warnings,
             report,
@@ -1222,6 +1321,7 @@ async def _import_polls(
     ps_id_to_member: dict[str, Member],
     member_name_to_member: dict[str, Member],
     system_id: uuid.UUID,
+    user: User,
     db: AsyncSession,
     warnings: list[str],
     report: ClampReport,
@@ -1237,7 +1337,10 @@ async def _import_polls(
     Open-ended polls (`closes_at: null`) get a one-year-from-creation
     close time because Sheaf requires it. Under dedupe, a poll matching
     an existing created_at is skipped wholesale (options + votes belong
-    to the poll row). Returns (imported, skipped).
+    to the poll row). Open polls beyond the importing user's
+    concurrent-open-poll cap are imported already-closed (the API
+    enforces the cap on create; the importer must not bypass it).
+    Returns (imported, skipped).
     """
     imported = 0
     skipped = 0
@@ -1246,6 +1349,22 @@ async def _import_polls(
     )
     open_ended_count = 0
     missing_voter_count = 0
+
+    # Concurrent-open-poll cap. One `now` for the whole section so the
+    # open/closed decision and the close-time we write stay consistent.
+    now = datetime.now(UTC)
+    open_cap = max_concurrent_open_for_tier(user.tier)
+    existing_open = 0
+    if open_cap > 0:
+        existing_open = (
+            await db.execute(
+                select(func.count(Poll.id)).where(
+                    Poll.system_id == system_id,
+                    Poll.closes_at > now,
+                )
+            )
+        ).scalar_one()
+    created_open_polls: list[tuple[datetime | None, Poll]] = []
     for p_data in polls_in:
         if not isinstance(p_data, dict):
             continue
@@ -1264,7 +1383,7 @@ async def _import_polls(
             poll_index.register(created_at)
         closes_at = _parse_iso(p_data.get("closes_at"))
         if closes_at is None:
-            base = created_at or datetime.now(UTC)
+            base = created_at or now
             closes_at = base + timedelta(days=365)
             open_ended_count += 1
 
@@ -1285,6 +1404,8 @@ async def _import_polls(
         if created_at:
             poll.created_at = created_at
         db.add(poll)
+        if closes_at > now:
+            created_open_polls.append((created_at or closes_at, poll))
 
         # Build options + invert option-keyed votes into voter-keyed.
         option_rows: list[tuple[str, PollOption]] = []
@@ -1332,6 +1453,21 @@ async def _import_polls(
             db.add(vote_row)
 
         imported += 1
+
+    # Flip the excess open polls to closed so the import can't leave the system
+    # over the tier's concurrent-open-poll cap. Non-destructive: options + votes
+    # are preserved; the poll just lands closed.
+    if open_cap > 0:
+        to_close = excess_open_polls_to_close(
+            created_open_polls, cap=open_cap, existing_open=existing_open
+        )
+        for closed_poll in to_close:
+            closed_poll.closes_at = now
+        if to_close:
+            warnings.append(
+                f"{len(to_close)} poll(s) exceed your concurrent-open-poll "
+                "limit and will be imported as closed."
+            )
 
     if open_ended_count:
         warnings.append(
