@@ -403,6 +403,44 @@ def test_preview_decrypts_and_returns_summary(auth_client: httpx.Client):
     assert names == {"Member-A", "Member-B"}
 
 
+def test_preview_warns_when_open_polls_exceed_concurrent_cap(
+    auth_client: httpx.Client,
+):
+    """Prism polls that would import OPEN (not closed -> one-year window)
+    past the tier's concurrent-open cap surface the clamp warning in the
+    preview, matching what the import raises."""
+    cap = auth_client.get("/v1/polls/server-config").json()[
+        "max_concurrent_open_polls"
+    ]
+    if cap == 0:
+        # Unlimited tier (selfhosted-style deployment): the clamp never fires.
+        return
+    over = 2
+    payload, _ = _make_export(with_polls=False)
+    payload["polls"] = [
+        {
+            "id": str(uuid.uuid4()),
+            "question": f"Q{i}?",
+            "isClosed": False,
+            "createdAt": "2026-06-01T10:00:00.000Z",
+        }
+        for i in range(cap + over)
+    ]
+    envelope = synthesize_envelope(payload, _PASSPHRASE)
+    resp = auth_client.post(
+        "/v1/import/prism/preview",
+        files={"file": ("e.prism", envelope, "application/octet-stream")},
+        data={"passphrase": _PASSPHRASE},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["open_poll_count"] == cap + over
+    hits = [w for w in body["limit_warnings"] if "concurrent-open-poll" in w]
+    assert hits, body["limit_warnings"]
+    # Fresh account -> 0 existing open polls, so the overage is exactly `over`.
+    assert hits[0].startswith(f"{over} poll(s)")
+
+
 def test_preview_wrong_passphrase_is_400(auth_client: httpx.Client):
     payload, _ = _make_export()
     envelope = synthesize_envelope(payload, _PASSPHRASE)

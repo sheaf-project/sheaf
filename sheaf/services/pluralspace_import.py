@@ -129,7 +129,10 @@ from sheaf.services.import_parsing import (
 )
 from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.polls import max_concurrent_open_for_tier
-from sheaf.services.sheaf_import import excess_open_polls_to_close
+from sheaf.services.sheaf_import import (
+    excess_open_polls_to_close,
+    open_poll_close_warning,
+)
 
 logger = logging.getLogger("sheaf.imports.pluralspace")
 
@@ -349,6 +352,30 @@ def _distinct_group_count(member_groups: list, members_in: list) -> int:
     return len(names)
 
 
+def _count_incoming_open_polls(polls: object, *, now: datetime | None = None) -> int:
+    """Count PluralSpace polls that would import OPEN. Mirrors ``_import_polls``'
+    close-time rule: an open-ended poll (``closes_at: null``) gets a one-year
+    window (open), otherwise it is open only if its ``closes_at`` is in the
+    future. Feeds the preview's concurrent-open estimate; the import re-clamps
+    authoritatively. Defensive so a malformed payload can't raise here."""
+    now = now or datetime.now(UTC)
+    count = 0
+    for p in _list(polls):
+        if not isinstance(p, dict):
+            continue
+        closes_at = _parse_iso(p.get("closes_at"))
+        if closes_at is None:
+            # Open-ended -> one-year-from-creation window, always future.
+            count += 1
+            continue
+        try:
+            if closes_at > now:
+                count += 1
+        except TypeError:
+            continue
+    return count
+
+
 def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
     """Walk the parsed export and return a counts + member-list summary.
 
@@ -422,6 +449,7 @@ def preview(parsed: _ParsedExport) -> PluralspacePreviewSummary:
         chat_channel_count=len(chat_channels),
         chat_message_count=chat_msg_count,
         poll_count=len(_list(data.get("polls"))),
+        open_poll_count=_count_incoming_open_polls(data.get("polls")),
         thought_count=len(_list(data.get("thoughts"))),
         media_file_count=len(parsed.media_paths),
         limit_warnings=report.to_warnings() + row_cap_warnings,
@@ -1464,10 +1492,7 @@ async def _import_polls(
         for closed_poll in to_close:
             closed_poll.closes_at = now
         if to_close:
-            warnings.append(
-                f"{len(to_close)} poll(s) exceed your concurrent-open-poll "
-                "limit and will be imported as closed."
-            )
+            warnings.append(open_poll_close_warning(len(to_close)))
 
     if open_ended_count:
         warnings.append(

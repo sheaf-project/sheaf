@@ -11,16 +11,31 @@ from __future__ import annotations
 import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
+from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.services.import_parsing import ImportPayloadError
 from sheaf.services.pluralspace_import import parse_export_async, preview
+from sheaf.services.sheaf_import import open_poll_preview_warning
 
 router = APIRouter(prefix="/import", tags=["import"])
 
 MAX_IMPORT_SIZE = 100 * 1024 * 1024
+
+
+async def _get_user_system(user: User, db: AsyncSession) -> System:
+    result = await db.execute(select(System).where(System.user_id == user.id))
+    system = result.scalar_one_or_none()
+    if system is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="System not found"
+        )
+    return system
 
 
 # Per-user rate limit: a worst-case preview decompresses and parses
@@ -28,7 +43,8 @@ MAX_IMPORT_SIZE = 100 * 1024 * 1024
 @router.post("/pluralspace/preview", dependencies=[rate_limit(10, 60, "user")])
 async def preview_pluralspace_import(
     file: UploadFile,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Open a PluralSpace export zip and return a counts summary."""
     data = await file.read()
@@ -42,6 +58,8 @@ async def preview_pluralspace_import(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Import file is empty.",
         )
+
+    system = await _get_user_system(user, db)
 
     try:
         parsed = await parse_export_async(data)
@@ -57,4 +75,10 @@ async def preview_pluralspace_import(
         ) from exc
 
     summary = preview(parsed)
+    # Estimate: the import re-clamps the concurrent-open cap authoritatively.
+    poll_warning = await open_poll_preview_warning(
+        db, system.id, user, summary.open_poll_count
+    )
+    if poll_warning:
+        summary.limit_warnings.append(poll_warning)
     return summary.model_dump(mode="json")

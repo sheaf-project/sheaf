@@ -139,7 +139,10 @@ from sheaf.services.prism_crypto import (
     decrypt_envelope,
     decrypt_media_blob,
 )
-from sheaf.services.sheaf_import import excess_open_polls_to_close
+from sheaf.services.sheaf_import import (
+    excess_open_polls_to_close,
+    open_poll_close_warning,
+)
 
 logger = logging.getLogger("sheaf.imports.prism")
 
@@ -234,6 +237,30 @@ def _measure_prism_payload(data: dict, report: ClampReport) -> None:
         s(f.get("name"), il.CF_NAME)
 
 
+def _count_incoming_open_polls(polls: object, *, now: datetime | None = None) -> int:
+    """Count Prism polls that would import OPEN. Mirrors ``_import_polls``'
+    close-time rule: a non-closed poll gets ``closes_at = created + 1yr`` (open);
+    a closed poll keeps its ``createdAt`` (open only if that is in the future).
+    Feeds the preview's concurrent-open estimate; the import re-clamps
+    authoritatively. Defensive so a malformed payload can't raise here."""
+    now = now or datetime.now(UTC)
+    count = 0
+    for p in _list(polls):
+        if not isinstance(p, dict):
+            continue
+        created_at = _parse_iso(p.get("createdAt"))
+        if bool(p.get("isClosed")):
+            closes_at = created_at or now
+        else:
+            closes_at = (created_at or now) + timedelta(days=365)
+        try:
+            if closes_at > now:
+                count += 1
+        except TypeError:
+            continue
+    return count
+
+
 def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
     """Walk the decrypted JSON and return counts + member list summary.
 
@@ -296,6 +323,7 @@ def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
         conversation_count=len(_list(data.get("conversations"))),
         message_count=len(_list(data.get("messages"))),
         poll_count=len(_list(data.get("polls"))),
+        open_poll_count=_count_incoming_open_polls(data.get("polls")),
         poll_option_count=len(_list(data.get("pollOptions"))),
         note_count=len(_list(data.get("notes"))),
         reminder_count=len(_list(data.get("reminders"))),
@@ -1175,10 +1203,7 @@ async def _import_polls(
         for closed_poll in to_close:
             closed_poll.closes_at = now
         if to_close:
-            warnings.append(
-                f"{len(to_close)} poll(s) exceed your concurrent-open-poll "
-                "limit and will be imported as closed."
-            )
+            warnings.append(open_poll_close_warning(len(to_close)))
 
     if open_ended:
         warnings.append(

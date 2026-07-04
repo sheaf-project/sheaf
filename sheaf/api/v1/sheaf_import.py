@@ -13,13 +13,21 @@ source value to submit the job under.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.database import get_db
+from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
 from sheaf.services.sheaf_archive_import import parse_archive_async
 from sheaf.services.sheaf_archive_import import preview as archive_preview
-from sheaf.services.sheaf_import import SheafPreviewSummary, preview
+from sheaf.services.sheaf_import import (
+    SheafPreviewSummary,
+    open_poll_preview_warning,
+    preview,
+)
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -70,16 +78,28 @@ def _summary_dict(p: SheafPreviewSummary) -> dict:
         "journal_count": p.journal_count,
         "message_count": p.message_count,
         "poll_count": p.poll_count,
+        "open_poll_count": p.open_poll_count,
         "reminder_count": p.reminder_count,
         "channel_count": p.channel_count,
         "limit_warnings": p.limit_warnings,
     }
 
 
+async def _get_user_system(user: User, db: AsyncSession) -> System:
+    result = await db.execute(select(System).where(System.user_id == user.id))
+    system = result.scalar_one_or_none()
+    if system is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="System not found"
+        )
+    return system
+
+
 @router.post("/sheaf/preview")
 async def preview_import(
     file: UploadFile,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Parse a Sheaf export (JSON or with-images zip) and summarise it."""
     data = await file.read()
@@ -88,6 +108,8 @@ async def preview_import(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Import file too large. Max 100MB.",
         )
+
+    system = await _get_user_system(user, db)
 
     if data[:2] == _ZIP_MAGIC:
         try:
@@ -98,6 +120,12 @@ async def preview_import(
                 detail=str(exc),
             ) from exc
         summary, image_count = archive_preview(parsed)
+        # Estimate: the import re-clamps the concurrent-open cap authoritatively.
+        poll_warning = await open_poll_preview_warning(
+            db, system.id, user, summary.open_poll_count
+        )
+        if poll_warning:
+            summary.limit_warnings.append(poll_warning)
         return {
             **_summary_dict(summary),
             "archive": True,
@@ -105,8 +133,15 @@ async def preview_import(
         }
 
     parsed_json = await _parse_json_export(data)
+    summary = preview(parsed_json)
+    # Estimate: the import re-clamps the concurrent-open cap authoritatively.
+    poll_warning = await open_poll_preview_warning(
+        db, system.id, user, summary.open_poll_count
+    )
+    if poll_warning:
+        summary.limit_warnings.append(poll_warning)
     return {
-        **_summary_dict(preview(parsed_json)),
+        **_summary_dict(summary),
         "archive": False,
         "image_count": 0,
     }

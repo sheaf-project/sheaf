@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from sheaf.services.sheaf_import import (
     correct_nesting_depth,
     excess_open_polls_to_close,
+    open_poll_import_overage,
     preview,
 )
 
@@ -80,6 +81,55 @@ def test_open_polls_missing_source_time_ranks_oldest():
     to_close = excess_open_polls_to_close(created, cap=1, existing_open=0)
     assert set(to_close) == {"pN", "p0"}
     assert "p1" not in to_close  # newest kept open
+
+
+# ---------------------------------------------------------------------------
+# open_poll_import_overage (pure count mirror used by the preview)
+# ---------------------------------------------------------------------------
+
+
+def test_overage_unlimited_cap_is_zero():
+    # cap <= 0 means the tier has no concurrent-open limit.
+    assert open_poll_import_overage(incoming_open=50, cap=0, existing_open=0) == 0
+    assert open_poll_import_overage(incoming_open=50, cap=-1, existing_open=999) == 0
+
+
+def test_overage_within_cap_is_zero():
+    assert open_poll_import_overage(incoming_open=3, cap=5, existing_open=0) == 0
+    # exactly at the cap is still fine.
+    assert open_poll_import_overage(incoming_open=5, cap=5, existing_open=0) == 0
+
+
+def test_overage_counts_existing_plus_incoming():
+    # cap 5, already 4 open -> 1 slot for 3 incoming, so 2 must close.
+    assert open_poll_import_overage(incoming_open=3, cap=5, existing_open=4) == 2
+    # cap already full -> all incoming close.
+    assert open_poll_import_overage(incoming_open=3, cap=5, existing_open=5) == 3
+    # over-full counts the same as full, never more than incoming.
+    assert open_poll_import_overage(incoming_open=3, cap=5, existing_open=9) == 3
+
+
+def test_overage_capped_at_incoming():
+    # Overage never exceeds the incoming count (existing already way over cap).
+    assert open_poll_import_overage(incoming_open=2, cap=1, existing_open=100) == 2
+
+
+def test_overage_matches_list_helper():
+    # The pure count must equal what the list decision helper would close.
+    for incoming, cap, existing in [
+        (5, 2, 0),
+        (3, 5, 4),
+        (3, 5, 5),
+        (3, 5, 9),
+        (0, 5, 2),
+        (4, 0, 0),
+    ]:
+        closed = excess_open_polls_to_close(
+            _open(incoming), cap=cap, existing_open=existing
+        )
+        assert open_poll_import_overage(
+            incoming_open=incoming, cap=cap, existing_open=existing
+        ) == len(closed)
 
 
 # ---------------------------------------------------------------------------

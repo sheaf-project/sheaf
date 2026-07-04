@@ -248,6 +248,93 @@ def excess_open_polls_to_close(
     return [created_open[i][1] for i in order[keep:]]
 
 
+def open_poll_import_overage(
+    *, incoming_open: int, cap: int, existing_open: int
+) -> int:
+    """How many freshly-imported OPEN polls would be flipped to CLOSED to keep
+    the system within its tier's concurrent-open-poll cap.
+
+    Pure count mirror of ``excess_open_polls_to_close`` (same rule, no Poll
+    rows): ``cap <= 0`` means the tier has no concurrent-open limit so nothing
+    is closed; otherwise the newest ``cap - existing_open`` incoming open polls
+    keep their slots and the rest are closed. Used by the preview to warn up
+    front; the import path re-clamps authoritatively.
+    """
+    if cap <= 0:
+        return 0
+    return max(0, min(incoming_open, existing_open + incoming_open - cap))
+
+
+def open_poll_close_warning(count: int) -> str:
+    """User-facing heads-up when ``count`` imported open polls will be flipped
+    to closed to stay within the tier's concurrent-open-poll cap. Shared by the
+    import path (authoritative) and the preview (estimate) so the wording is
+    identical everywhere."""
+    return (
+        f"{count} poll(s) exceed your concurrent-open-poll limit and will be "
+        "imported as closed."
+    )
+
+
+def count_incoming_open_polls(polls: object, *, now: datetime | None = None) -> int:
+    """Count payload polls that would import OPEN (parsed ``closes_at`` in the
+    future). Mirrors the import's open/closed decision so the preview's
+    concurrent-open estimate lines up with what the run would clamp. Reuses the
+    importer's ``_parse_iso`` and is defensive against malformed shapes and
+    naive/extreme datetimes so a crafted upload can't raise here.
+    """
+    now = now or datetime.now(UTC)
+    count = 0
+    for p in _as_list(polls):
+        if not isinstance(p, dict):
+            continue
+        closes_at = _parse_iso(p.get("closes_at"))
+        if closes_at is None:
+            continue
+        try:
+            if closes_at > now:
+                count += 1
+        except TypeError:
+            # Naive vs aware mismatch (crafted/legacy value): a real export
+            # carries aware timestamps, so treat an un-comparable one as not
+            # open rather than raising in the preview path.
+            continue
+    return count
+
+
+async def open_poll_preview_warning(
+    db: AsyncSession, system_id: uuid.UUID, user: User, incoming_open: int
+) -> str | None:
+    """Preview heads-up: how many of ``incoming_open`` incoming open polls would
+    be imported closed to keep the system within its tier's concurrent-open-poll
+    cap.
+
+    Counts the system's currently-open polls (``closes_at`` in the future) and
+    compares against the same tier cap the import clamp uses, then returns the
+    same warning string the import path emits, or ``None`` when nothing would be
+    closed. This is an ESTIMATE: existing-open can change before the real
+    import, which re-clamps authoritatively.
+    """
+    cap = max_concurrent_open_for_tier(user.tier)
+    if cap <= 0 or incoming_open <= 0:
+        return None
+    now = datetime.now(UTC)
+    existing_open = (
+        await db.execute(
+            select(func.count(Poll.id)).where(
+                Poll.system_id == system_id,
+                Poll.closes_at > now,
+            )
+        )
+    ).scalar_one()
+    overage = open_poll_import_overage(
+        incoming_open=incoming_open, cap=cap, existing_open=existing_open
+    )
+    if overage <= 0:
+        return None
+    return open_poll_close_warning(overage)
+
+
 @dataclass
 class DepthCorrection:
     """Result of ``correct_nesting_depth``: the corrected parent map plus the
@@ -356,6 +443,10 @@ class SheafPreviewSummary:
         self.journal_count: int = 0
         self.message_count: int = 0
         self.poll_count: int = 0
+        # Incoming polls that would import OPEN (closes_at in the future). The
+        # preview endpoint uses this + the tier cap + a DB count of already-open
+        # polls to warn when the concurrent-open clamp would close some.
+        self.open_poll_count: int = 0
         self.reminder_count: int = 0
         self.channel_count: int = 0
         # Fields/lists that exceed the schema caps and would be shortened on
@@ -507,6 +598,7 @@ def preview(data: dict) -> SheafPreviewSummary:
     summary.journal_count = len(data.get("journals", []))
     summary.message_count = len(data.get("messages", []))
     summary.poll_count = len(data.get("polls", []))
+    summary.open_poll_count = count_incoming_open_polls(data.get("polls", []))
     summary.reminder_count = len(data.get("reminders", []))
     summary.channel_count = sum(
         len(t.get("channels", [])) for t in data.get("watch_tokens", [])
@@ -1633,10 +1725,7 @@ async def run_import(
             for closed_poll in to_close:
                 closed_poll.closes_at = poll_now
             if to_close:
-                warnings.append(
-                    f"{len(to_close)} poll(s) exceed your concurrent-open-poll "
-                    "limit and will be imported as closed."
-                )
+                warnings.append(open_poll_close_warning(len(to_close)))
 
         await db.flush()
 
