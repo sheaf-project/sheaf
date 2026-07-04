@@ -347,6 +347,15 @@ job_last_success_timestamp = _G(
     ["job"],
     multiprocess_mode="max",
 )
+orphan_files_deleted_total = _C(
+    "sheaf_orphan_files_deleted_total",
+    # Deliberately its own series (not folded into job_items_processed_total)
+    # so a deletion-volume alert can target it directly: the 2026-07-03 incident
+    # over-deleted 1000+ live blobs and surfaced only via a user report. Alert
+    # on an unusual increase over a single run's interval.
+    "Uploaded files removed by the orphaned-file cleanup job (real deletions, "
+    "not dry-run).",
+)
 job_consecutive_failures = _G(
     "sheaf_job_consecutive_failures",
     "Consecutive failures of each job since the last success.",

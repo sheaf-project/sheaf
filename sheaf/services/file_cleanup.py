@@ -11,12 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
+from sheaf.files import _to_internal_key
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
+from sheaf.observability.metrics import orphan_files_deleted_total
 from sheaf.services.journals import entry_plaintext
 from sheaf.services.markdown import extract_image_keys
 from sheaf.services.members import member_plaintext
@@ -26,13 +28,20 @@ logger = logging.getLogger("sheaf.cleanup")
 
 
 def _key_from_avatar(value: str | None) -> set[str]:
-    """Return the storage key from an avatar_url DB field.
+    """Return the internal storage key referenced by an avatar_url/banner_url.
 
-    avatar_url stores the storage key directly (e.g. avatars/user_id/uuid.png).
+    The column can hold any of the three internal forms - a bare storage key
+    (e.g. ``avatars/user_id/uuid.png``), a ``/v1/files/<key>`` serve URL, or a
+    legacy ``{s3_public_url}/<key>`` CDN URL - or an external URL. Route through
+    the canonical resolver so every internal form collapses to its bare key and
+    externals (never our own uploaded files) drop out. Comparing only the bare
+    form here is exactly what let the 2026-07-03 cleanup treat legacy CDN-URL
+    avatars/banners as orphaned and delete the live blob.
     """
-    if value:
-        return {value}
-    return set()
+    if not value:
+        return set()
+    key = _to_internal_key(value)
+    return {key} if key is not None else set()
 
 
 def _extract_keys_from_markdown(text: str | None) -> set[str]:
@@ -148,7 +157,7 @@ async def find_file_references(
     if system is None:
         return refs
 
-    if system.avatar_url == key:
+    if key in _key_from_avatar(system.avatar_url):
         refs.append({
             "kind": "system_avatar",
             "label": "System avatar",
@@ -166,14 +175,14 @@ async def find_file_references(
     for m in members:
         name, description = member_plaintext(m)
         member_name[m.id] = name
-        if m.avatar_url == key:
+        if key in _key_from_avatar(m.avatar_url):
             refs.append({
                 "kind": "member_avatar",
                 "label": f"{name}'s avatar",
                 "target_type": "member",
                 "target_id": str(m.id),
             })
-        if m.banner_url == key:
+        if key in _key_from_avatar(m.banner_url):
             refs.append({
                 "kind": "member_banner",
                 "label": f"{name}'s banner",
@@ -283,6 +292,7 @@ async def cleanup_orphaned_files(
     for f in to_delete:
         await storage.delete(f.key)
         freed_bytes += f.size_bytes
+        orphan_files_deleted_total.inc()
         logger.info("Deleted orphaned file: %s (%d bytes)", f.key, f.size_bytes)
 
     return {

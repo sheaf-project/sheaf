@@ -200,11 +200,19 @@ deletion_reminder, deletion_confirmed, announcement, other}.
 | `sheaf_job_items_processed_total` | counter | `job` |
 | `sheaf_job_last_success_timestamp` | gauge | `job` |
 | `sheaf_job_consecutive_failures` | gauge | `job` |
+| `sheaf_orphan_files_deleted_total` | counter | (none) |
 
 `job` is the name registered via `register_job()`. Alert on
 `time() - last_success_timestamp > N` for stuck-job detection. (The
 timestamp gauge predates the `_seconds` naming convention; it is a unix
 timestamp in seconds despite the missing suffix.)
+
+`sheaf_orphan_files_deleted_total` counts real (non-dry-run) blob deletions by
+the orphaned-file cleanup. It is intentionally its own series so an abnormal
+deletion volume is directly alertable: alert on an unexpected jump over a single
+run's interval (e.g. `increase(sheaf_orphan_files_deleted_total[1h])` above a
+sane ceiling), so an over-deletion trips within a run rather than surfacing via
+a user report.
 
 ### Leader election
 
