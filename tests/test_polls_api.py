@@ -514,3 +514,96 @@ def test_concurrent_cap_enforced(auth_client: httpx.Client):
         },
     )
     assert resp.status_code == 403
+
+
+# --- Retention purge nothing-silent trace ---------------------------------
+
+
+def test_purge_expired_polls_writes_activity_trace(auth_client: httpx.Client):
+    """Purging an expired poll leaves a content-free RETENTION_PRUNED activity
+    event for the owning user with the purged count, and the cascade removes
+    the poll's options."""
+    import asyncio
+    import os
+    import uuid
+
+    me = auth_client.get("/v1/auth/me").json()
+    system = auth_client.get("/v1/systems/me").json()
+    user_id = uuid.UUID(me["id"])
+    system_id = uuid.UUID(system["id"])
+
+    async def run() -> tuple[int, bool, bool, int]:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.models.activity_event import ActivityAction, ActivityEvent
+        from sheaf.models.poll import Poll, PollOption
+        from sheaf.services.polls import purge_expired_polls
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        session_factory = sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        now = datetime.now(UTC)
+        try:
+            # Insert an already-expired poll (closed 10 days ago, 1-day
+            # retention) directly, so it is eligible for the sweep.
+            async with session_factory() as db:
+                poll = Poll(
+                    id=uuid.uuid4(),
+                    system_id=system_id,
+                    question="expired-poll",
+                    description=None,
+                    kind="single_choice",
+                    results_visibility="live",
+                    closes_at=now - timedelta(days=10),
+                    retention_days=1,
+                )
+                db.add(poll)
+                await db.flush()
+                db.add(
+                    PollOption(
+                        id=uuid.uuid4(),
+                        poll_id=poll.id,
+                        text="opt",
+                        position=0,
+                    )
+                )
+                await db.commit()
+                poll_id = poll.id
+
+            async with session_factory() as db:
+                purged = await purge_expired_polls(db)
+                await db.commit()
+
+            async with session_factory() as db:
+                poll_gone = (await db.get(Poll, poll_id)) is None
+                opt_result = await db.execute(
+                    select(PollOption).where(PollOption.poll_id == poll_id)
+                )
+                options_gone = not opt_result.scalars().all()
+
+                ev_result = await db.execute(
+                    select(ActivityEvent).where(
+                        ActivityEvent.user_id == user_id,
+                        ActivityEvent.action == ActivityAction.RETENTION_PRUNED,
+                    )
+                )
+                traces = [
+                    e.detail["polls_purged"]
+                    for e in ev_result.scalars().all()
+                    if e.detail and "polls_purged" in e.detail
+                ]
+            traced = traces[0] if traces else 0
+            return purged, poll_gone, options_gone, traced
+        finally:
+            await engine.dispose()
+
+    purged, poll_gone, options_gone, traced = asyncio.run(run())
+    assert purged >= 1
+    assert poll_gone, "expired poll survived the purge"
+    assert options_gone, "cascade did not remove the poll's options"
+    assert traced >= 1, "no RETENTION_PRUNED trace with polls_purged for the user"

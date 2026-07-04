@@ -16,12 +16,13 @@ import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.config import settings
 from sheaf.crypto import decrypt, encrypt
+from sheaf.models.activity_event import ActivityAction, ActivityActorType
 from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.poll import (
@@ -30,7 +31,9 @@ from sheaf.models.poll import (
     PollVoteAction,
     PollVoteEvent,
 )
+from sheaf.models.system import System
 from sheaf.models.user import User, UserTier
+from sheaf.services.activity_log import log_activity
 
 logger = logging.getLogger("sheaf.polls")
 
@@ -392,12 +395,47 @@ def purges_at(poll: Poll) -> datetime:
 async def purge_expired_polls(db: AsyncSession) -> int:
     """Delete polls whose closes_at + retention_days has elapsed.
 
-    Cascades remove options, votes, and audit events.
+    Cascades remove options, votes, and audit events (DB-level ON DELETE
+    CASCADE on poll_options / poll_votes / poll_vote_events).
+
+    Nothing-silent: before deleting, group the expiring polls by owning user
+    and leave one content-free RETENTION_PRUNED account-activity trace per
+    affected user (detail {"polls_purged": n}), mirroring the front-retention
+    and revision-GC sweeps. A sweep that deletes with no trail is invisible
+    until someone reads the job internals, so every automated deletion leaves
+    one.
     """
     now = datetime.now(UTC)
-    result = await db.execute(select(Poll))
-    polls = list(result.scalars().all())
-    expired = [p for p in polls if purges_at(p) <= now]
-    for poll in expired:
-        await db.delete(poll)
-    return len(expired)
+
+    # Expiry is expressed entirely in Poll columns, so filter in SQL instead of
+    # scanning the whole table into Python: closes_at + retention_days days
+    # <= now. make_interval(days => retention_days) keeps the per-poll integer
+    # as an interval without hardcoding a day count.
+    expired_predicate = (
+        Poll.closes_at + func.make_interval(0, 0, 0, Poll.retention_days) <= now
+    )
+
+    # Per-user counts, taken before the delete so the trace matches what was
+    # actually removed.
+    per_user = await db.execute(
+        select(System.user_id, func.count(Poll.id))
+        .join(System, Poll.system_id == System.id)
+        .where(expired_predicate)
+        .group_by(System.user_id)
+    )
+    user_counts = {uid: cnt for uid, cnt in per_user.all()}
+
+    result = await db.execute(delete(Poll).where(expired_predicate))
+    purged = result.rowcount or 0
+
+    for uid, cnt in user_counts.items():
+        if cnt:
+            await log_activity(
+                db,
+                user_id=uid,
+                action=ActivityAction.RETENTION_PRUNED,
+                actor_type=ActivityActorType.SYSTEM,
+                detail={"polls_purged": cnt},
+            )
+
+    return purged

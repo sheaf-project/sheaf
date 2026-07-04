@@ -40,6 +40,9 @@ class JobDefinition:
     func: JobFunc
     interval_seconds: Callable[[], int]
     enabled: Callable[[], bool]
+    # True for jobs that delete or hard-mutate user data. These are the jobs
+    # the destructive_jobs_enabled master switch pauses in one move.
+    destructive: bool = False
 
 
 _REGISTRY: dict[str, JobDefinition] = {}
@@ -51,6 +54,7 @@ def register_job(
     func: JobFunc,
     interval_seconds: Callable[[], int],
     enabled: Callable[[], bool] | None = None,
+    destructive: bool = False,
 ) -> None:
     """Register a job for periodic execution."""
     _REGISTRY[name] = JobDefinition(
@@ -59,11 +63,19 @@ def register_job(
         func=func,
         interval_seconds=interval_seconds,
         enabled=enabled or (lambda: True),
+        destructive=destructive,
     )
 
 
 def get_registry() -> dict[str, JobDefinition]:
     return _REGISTRY
+
+
+def _destructive_paused(job: JobDefinition) -> bool:
+    """True when a destructive job must be skipped because the master kill
+    switch is off. Split out so the runner loop and its tests share one
+    definition of the freeze."""
+    return job.destructive and not settings.destructive_jobs_enabled
 
 
 async def run_job(job_name: str, db: AsyncSession) -> JobRun:
@@ -189,7 +201,17 @@ async def job_runner_loop() -> None:
             if not job.enabled():
                 continue
 
-            # Use a job-scoped name — assigning to the outer `interval`
+            # Incident-response freeze: a destructive job is skipped while the
+            # master kill switch is off, exactly like a disabled one. One INFO
+            # line per skip so an operator can see the freeze is in effect.
+            if _destructive_paused(job):
+                logger.info(
+                    "skipping destructive job %s: destructive_jobs_enabled is off",
+                    name,
+                )
+                continue
+
+            # Use a job-scoped name - assigning to the outer `interval`
             # here would corrupt the loop's own wake cadence on the next
             # `asyncio.sleep(interval)`, drifting it to whatever the
             # last-registered job's interval happens to be.
@@ -1013,11 +1035,19 @@ def _register_all_jobs() -> None:
         return
     _registered = True
 
+    # process_account_deletions and finalize_pending_actions execute
+    # USER-REQUESTED deletions (a scheduled account deletion past its grace;
+    # System Safety destructive actions past their grace). They are included in
+    # the freeze so an incident pause stops ALL data deletion, in-flight user
+    # requests included. If an operator instead wants user-requested deletions
+    # to keep flowing while destructive_jobs_enabled is off, flip these two to
+    # destructive=False - that is the one deliberate change to make here.
     register_job(
         name="process_account_deletions",
         description="Permanently delete accounts past their grace period",
         func=_process_account_deletions,
         interval_seconds=lambda: settings.job_check_interval_minutes * 60,
+        destructive=True,
     )
 
     register_job(
@@ -1037,6 +1067,7 @@ def _register_all_jobs() -> None:
             settings.sheaf_mode == SheafMode.SAAS
             and settings.email_verification == "required"
         ),
+        destructive=True,
     )
 
     register_job(
@@ -1044,6 +1075,7 @@ def _register_all_jobs() -> None:
         description="Delete uploaded files no longer referenced by any member or system",
         func=_cleanup_orphaned_files,
         interval_seconds=lambda: settings.orphan_cleanup_interval_hours * 3600,
+        destructive=True,
     )
 
     register_job(
@@ -1052,6 +1084,7 @@ def _register_all_jobs() -> None:
         func=_prune_free_tier_fronts,
         interval_seconds=lambda: settings.retention_check_interval_hours * 3600,
         enabled=lambda: settings.sheaf_mode == SheafMode.SAAS,
+        destructive=True,
     )
 
     register_job(
@@ -1059,6 +1092,7 @@ def _register_all_jobs() -> None:
         description="Trim journal/bio revision history to per-user effective caps",
         func=_gc_revisions,
         interval_seconds=lambda: settings.journal_gc_interval_hours * 3600,
+        destructive=True,
     )
 
     register_job(
@@ -1075,11 +1109,17 @@ def _register_all_jobs() -> None:
         interval_seconds=lambda: 86400,  # daily
     )
 
+    # NOT marked destructive on purpose. This deletes IP-bearing security
+    # events to honour the retention promise: it removes no user content, it
+    # enforces a privacy obligation. It carries its own switch
+    # (security_event_cleanup_enabled) so the destructive_jobs_enabled master
+    # pause cannot silently stop IP minimisation while it is engaged.
     register_job(
         name="cleanup_security_events",
         description="Delete security-event rows past the retention window",
         func=_cleanup_security_events,
         interval_seconds=lambda: 86400,  # daily
+        enabled=lambda: settings.security_event_cleanup_enabled,
     )
 
     register_job(
@@ -1087,13 +1127,19 @@ def _register_all_jobs() -> None:
         description="Delete account-activity rows past the retention window",
         func=_cleanup_activity_events,
         interval_seconds=lambda: 86400,  # daily
+        destructive=True,
     )
 
+    # See the note on process_account_deletions above: this finalizes
+    # user-requested System Safety deletions and is frozen with them. Flip to
+    # destructive=False if user-requested deletions should keep running during
+    # an incident pause.
     register_job(
         name="finalize_pending_actions",
         description="Execute System Safety pending destructive actions past their grace period",
         func=_finalize_pending_actions,
         interval_seconds=lambda: settings.job_check_interval_minutes * 60,
+        destructive=True,
     )
 
     register_job(
@@ -1137,6 +1183,7 @@ def _register_all_jobs() -> None:
         description="Delete polls past their retention window post-close",
         func=_purge_expired_polls,
         interval_seconds=lambda: settings.poll_cleanup_interval_hours * 3600,
+        destructive=True,
     )
 
     # NOTE: the import *runner* is NOT registered here. It needs a
