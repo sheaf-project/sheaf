@@ -12,6 +12,7 @@ from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.observability.metrics import custom_fields_created_total
 from sheaf.schemas.custom_field import (
     CustomFieldCreate,
     CustomFieldRead,
@@ -93,6 +94,7 @@ async def create_field(
     field = CustomFieldDefinition(system_id=system.id, **body.model_dump())
     db.add(field)
     await db.commit()
+    custom_fields_created_total.inc()
     await db.refresh(field)
     return field
 

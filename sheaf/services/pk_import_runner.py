@@ -30,7 +30,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
-from sheaf.services.import_limits import ClampReport
+from sheaf.services.import_limits import ClampReport, enforce_import_row_caps
 from sheaf.services.import_parsing import (
     ImportPayloadError,
     expect_dict,
@@ -143,6 +143,19 @@ async def _process_pk_export(
         strategy=options.conflict_strategy,
     )
     await enforce_import_member_cap(db, system, new_count)
+
+    # Per-import row caps (bomb protection). PK builds only fronts (from switch
+    # history) and groups beyond members; count each enabled section's source
+    # rows and hard-fail before writing if either blows its cap. Gross counts:
+    # dedup/skip only reduces the real write count.
+    enforce_import_row_caps(
+        {
+            "fronts": (
+                len(get_list(parsed, "switches")) if options.front_history else 0
+            ),
+            "groups": len(get_list(parsed, "groups")) if options.groups else 0,
+        }
+    )
 
     hid_to_member: dict[str, Member] = {}
     for member, hid in candidates:

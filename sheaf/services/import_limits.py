@@ -23,8 +23,11 @@ planned as the mechanical backstop; until it lands, keep these in sync by hand.)
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
+
+from sheaf.services.import_parsing import ImportPayloadError
 
 
 class Cap(NamedTuple):
@@ -162,3 +165,84 @@ def clamp_list[T](
             report.record_list(cap)
         return items[: cap.limit]
     return items
+
+
+# --- Per-import row caps ----------------------------------------------------
+# Hard ceilings on how many rows of each entity a SINGLE import job may create.
+# Unlike the length clamps above (which shorten a value and keep going) or the
+# member cap (a per-tenant product limit), these are pure resource / parse-bomb
+# guards: they bound the work one crafted or oversized export can force in a
+# single transaction, independent of tier or existing row counts. An over-cap
+# import fails cleanly via ImportPayloadError - the same classified job failure
+# as the member cap - rather than grinding through hundreds of thousands of
+# per-row flushes. The values live in sheaf/config.py (import_max_*); 0 there
+# disables the cap for that entity.
+#
+# Keys are the labels importers pass; each maps to the import_max_<key> setting
+# and a user-facing plural noun. Every importer computes the per-entity count
+# it would create (reusing its preview/member-cap counts where it already has
+# them) and calls enforce_import_row_caps before its write loop; the preview
+# surfaces the same over-cap condition up front via import_row_cap_warnings.
+_ROW_CAP_LABELS: dict[str, str] = {
+    "fronts": "fronts",
+    "journal_entries": "journal entries",
+    "messages": "messages",
+    "revisions": "revisions",
+    "polls": "polls",
+    "groups": "groups",
+    "tags": "tags",
+    "custom_fields": "custom fields",
+}
+
+
+def _row_cap_for(entity: str) -> int:
+    """Configured cap for an entity label (0 = unlimited/disabled)."""
+    # Imported lazily so this module stays import-cheap and free of a
+    # config dependency at load time.
+    from sheaf.config import settings
+
+    return getattr(settings, f"import_max_{entity}", 0)
+
+
+def _over_cap(counts: Mapping[str, int]) -> Iterator[tuple[str, int, int]]:
+    """Yield (label, count, cap) for each entity whose count exceeds its cap.
+
+    Skips entities with a cap of 0 (disabled), a count at/under the cap, or a
+    key with no configured cap, so callers only see genuine breaches.
+    """
+    for entity, count in counts.items():
+        cap = _row_cap_for(entity)
+        if cap > 0 and count > cap:
+            yield _ROW_CAP_LABELS.get(entity, entity), count, cap
+
+
+def _row_cap_message(label: str, count: int, cap: int) -> str:
+    return (
+        f"This export has {count} {label}, more than the {cap} Sheaf imports "
+        "in one job. Split the file into smaller pieces, or contact support "
+        "to raise the limit."
+    )
+
+
+def enforce_import_row_caps(counts: Mapping[str, int]) -> None:
+    """Raise ImportPayloadError if any per-entity count exceeds its import cap.
+
+    ``counts`` maps entity labels (see :data:`_ROW_CAP_LABELS`) to the number
+    of rows of that entity this import would create. No-op for a cap of 0 or a
+    count under cap. Raising ImportPayloadError makes an over-cap import a
+    clean, classified job failure, matching the member cap. Importers call this
+    once, before their write loop, with only the entities they produce.
+    """
+    for label, count, cap in _over_cap(counts):
+        raise ImportPayloadError(_row_cap_message(label, count, cap))
+
+
+def import_row_cap_warnings(counts: Mapping[str, int]) -> list[str]:
+    """Non-raising preview counterpart of :func:`enforce_import_row_caps`.
+
+    Returns one actionable warning line per over-cap entity so the preview can
+    show "this export has N fronts, more than the M we import per job; split
+    the file" before the user commits. The import run still enforces (raises)
+    as the authoritative guard.
+    """
+    return [_row_cap_message(label, count, cap) for label, count, cap in _over_cap(counts)]

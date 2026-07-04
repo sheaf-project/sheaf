@@ -72,6 +72,9 @@ class PluralspacePreviewSummary(BaseModel):
     chat_channel_count: int = 0
     chat_message_count: int = 0
     poll_count: int = 0
+    # Incoming polls that would import OPEN (used with the tier cap + a DB
+    # count of already-open polls to warn when the concurrent-open clamp fires).
+    open_poll_count: int = 0
     thought_count: int = 0
     media_file_count: int = 0
 

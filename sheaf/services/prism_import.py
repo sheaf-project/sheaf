@@ -68,9 +68,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.config import settings
 from sheaf.crypto import blind_index, encrypt
 from sheaf.models.custom_field import (
     CustomFieldDefinition,
@@ -132,10 +133,15 @@ from sheaf.services.import_parsing import (
     sanitize_external_avatar_url,
 )
 from sheaf.services.member_limits import enforce_import_member_cap
+from sheaf.services.polls import max_concurrent_open_for_tier
 from sheaf.services.prism_crypto import (
     DecryptedEnvelope,
     decrypt_envelope,
     decrypt_media_blob,
+)
+from sheaf.services.sheaf_import import (
+    excess_open_polls_to_close,
+    open_poll_close_warning,
 )
 
 logger = logging.getLogger("sheaf.imports.prism")
@@ -231,6 +237,30 @@ def _measure_prism_payload(data: dict, report: ClampReport) -> None:
         s(f.get("name"), il.CF_NAME)
 
 
+def _count_incoming_open_polls(polls: object, *, now: datetime | None = None) -> int:
+    """Count Prism polls that would import OPEN. Mirrors ``_import_polls``'
+    close-time rule: a non-closed poll gets ``closes_at = created + 1yr`` (open);
+    a closed poll keeps its ``createdAt`` (open only if that is in the future).
+    Feeds the preview's concurrent-open estimate; the import re-clamps
+    authoritatively. Defensive so a malformed payload can't raise here."""
+    now = now or datetime.now(UTC)
+    count = 0
+    for p in _list(polls):
+        if not isinstance(p, dict):
+            continue
+        created_at = _parse_iso(p.get("createdAt"))
+        if bool(p.get("isClosed")):
+            closes_at = created_at or now
+        else:
+            closes_at = (created_at or now) + timedelta(days=365)
+        try:
+            if closes_at > now:
+                count += 1
+        except TypeError:
+            continue
+    return count
+
+
 def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
     """Walk the decrypted JSON and return counts + member list summary.
 
@@ -263,6 +293,22 @@ def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
     report = ClampReport()
     _measure_prism_payload(data, report)
 
+    # Predict the per-import row caps too. Conversations + member board posts
+    # both become Message rows, so they share the messages cap.
+    row_cap_warnings = il.import_row_cap_warnings(
+        {
+            "groups": len(_list(data.get("memberGroups"))),
+            "custom_fields": len(_list(data.get("customFields"))),
+            "fronts": len(_list(data.get("frontSessions"))),
+            "journal_entries": len(_list(data.get("notes"))),
+            "polls": len(_list(data.get("polls"))),
+            "messages": (
+                len(_list(data.get("messages")))
+                + len(_list(data.get("memberBoardPosts")))
+            ),
+        }
+    )
+
     return PrismPreviewSummary(
         system_name=sys_name,
         format_version=_clean_str(data.get("formatVersion")),
@@ -277,6 +323,7 @@ def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
         conversation_count=len(_list(data.get("conversations"))),
         message_count=len(_list(data.get("messages"))),
         poll_count=len(_list(data.get("polls"))),
+        open_poll_count=_count_incoming_open_polls(data.get("polls")),
         poll_option_count=len(_list(data.get("pollOptions"))),
         note_count=len(_list(data.get("notes"))),
         reminder_count=len(_list(data.get("reminders"))),
@@ -284,7 +331,7 @@ def preview(parsed: ParsedPrism) -> PrismPreviewSummary:
         member_board_post_count=len(_list(data.get("memberBoardPosts"))),
         media_attachment_count=len(_list(data.get("mediaAttachments"))),
         media_blob_count=len(parsed.media_blobs),
-        limit_warnings=report.to_warnings(),
+        limit_warnings=report.to_warnings() + row_cap_warnings,
     )
 
 
@@ -407,6 +454,36 @@ async def run_import(
     )
     await enforce_import_member_cap(db, system, new_count)
 
+    # Per-import row caps (bomb protection). Count the rows each enabled Prism
+    # section would create and hard-fail before writing if any blows its cap.
+    # Both conversations and member board posts land as Message rows, so they
+    # share the messages cap. Prism has no revisions and roles-as-tags is
+    # reserved (a no-op), so neither is counted. Gross source counts:
+    # dedup/skip only reduces the real write count.
+    il.enforce_import_row_caps(
+        {
+            "groups": (
+                len(_list(data.get("memberGroups"))) if member_groups else 0
+            ),
+            "custom_fields": (
+                len(_list(data.get("customFields"))) if custom_fields else 0
+            ),
+            "fronts": (
+                len(_list(data.get("frontSessions"))) if front_sessions else 0
+            ),
+            "journal_entries": len(_list(data.get("notes"))) if notes else 0,
+            "polls": len(_list(data.get("polls"))) if polls else 0,
+            "messages": (
+                (len(_list(data.get("messages"))) if conversations else 0)
+                + (
+                    len(_list(data.get("memberBoardPosts")))
+                    if member_board_posts
+                    else 0
+                )
+            ),
+        }
+    )
+
     # Map PS id -> handle wrapping the resolved row (created / skipped /
     # updated) so every later section attributes to the right member.
     ps_id_to_handle: dict[str, _MemberHandle] = {}
@@ -524,6 +601,7 @@ async def run_import(
             _list(data.get("pollOptions")),
             ps_id_to_handle,
             system.id,
+            user,
             db,
             result.warnings,
             dedupe=content_dedupe,
@@ -957,6 +1035,7 @@ async def _import_polls(
     options_in: list,
     ps_id_to_handle: dict[str, _MemberHandle],
     system_id: uuid.UUID,
+    user: User,
     db: AsyncSession,
     warnings: list[str],
     *,
@@ -971,7 +1050,10 @@ async def _import_polls(
     `responseText` on "other" option votes is appended to the option
     text (Sheaf has no per-vote freeform field). Under dedupe, a poll
     matching an existing created_at is skipped wholesale (options +
-    votes belong to the poll row). Returns (imported, skipped).
+    votes belong to the poll row). Open polls beyond the importing
+    user's concurrent-open-poll cap are imported already-closed (the
+    API enforces the cap on create; the importer must not bypass it).
+    Returns (imported, skipped).
     """
     imported = 0
     skipped = 0
@@ -982,6 +1064,22 @@ async def _import_polls(
     anonymous_count = 0
     response_text_dropped = 0
     missing_voter = 0
+
+    # Concurrent-open-poll cap. One `now` for the whole section so the
+    # open/closed decision and the close-time we write stay consistent.
+    now = datetime.now(UTC)
+    open_cap = max_concurrent_open_for_tier(user.tier)
+    existing_open = 0
+    if open_cap > 0:
+        existing_open = (
+            await db.execute(
+                select(func.count(Poll.id)).where(
+                    Poll.system_id == system_id,
+                    Poll.closes_at > now,
+                )
+            )
+        ).scalar_one()
+    created_open_polls: list[tuple[datetime | None, Poll]] = []
 
     options_by_poll: dict[str, list[dict]] = {}
     for o in options_in:
@@ -1008,9 +1106,9 @@ async def _import_polls(
                 continue
             poll_index.register(created_at)
         if is_closed:
-            closes_at = created_at or datetime.now(UTC)
+            closes_at = created_at or now
         else:
-            base = created_at or datetime.now(UTC)
+            base = created_at or now
             closes_at = base + timedelta(days=365)
             open_ended += 1
         poll = Poll(
@@ -1030,6 +1128,8 @@ async def _import_polls(
         if created_at:
             poll.created_at = created_at
         db.add(poll)
+        if closes_at > now:
+            created_open_polls.append((created_at or closes_at, poll))
 
         opts = options_by_poll.get(prism_id or "", [])
         opts.sort(key=lambda o: (o.get("sortOrder") or 0))
@@ -1053,7 +1153,7 @@ async def _import_polls(
                     response_text_dropped += 1
                 option_id = uuid.uuid4()
                 voter_to_options.setdefault(handle.member.id, []).append(option_id)
-                # Stash on the per-vote entry — we'll resolve below.
+                # Stash on the per-vote entry - we'll resolve below.
                 vote["_sheaf_option_id"] = option_id
             display_text = text
             if response_texts:
@@ -1092,6 +1192,18 @@ async def _import_polls(
                 )
             )
         imported += 1
+
+    # Flip the excess open polls to closed so the import can't leave the system
+    # over the tier's concurrent-open-poll cap. Non-destructive: options + votes
+    # are preserved; the poll just lands closed.
+    if open_cap > 0:
+        to_close = excess_open_polls_to_close(
+            created_open_polls, cap=open_cap, existing_open=existing_open
+        )
+        for closed_poll in to_close:
+            closed_poll.closes_at = now
+        if to_close:
+            warnings.append(open_poll_close_warning(len(to_close)))
 
     if open_ended:
         warnings.append(
@@ -1322,8 +1434,20 @@ async def _import_media_attachments(
         )
         return 0
     imported = 0
-    quota_warned = False
+    # Count cap: the storage quota bounds restored BYTES, this bounds
+    # normalize_image passes (see MAX_IMPORT_RESTORED_IMAGES in config.py). A
+    # crafted file could otherwise force unbounded Pillow decodes even on a
+    # full account, since store_imported_image normalises before checking
+    # quota. Matches the archive importer's restore loop.
+    restore_cap = settings.max_import_restored_images
     for att in atts_in:
+        if restore_cap and imported >= restore_cap:
+            warnings.append(
+                f"Media attachment imports stopped after {restore_cap} files "
+                "(per-import limit, MAX_IMPORT_RESTORED_IMAGES). Remaining "
+                "attachments were skipped."
+            )
+            break
         if not isinstance(att, dict):
             continue
         media_id = _clean_str(att.get("mediaId"))
@@ -1361,11 +1485,15 @@ async def _import_media_attachments(
                     f"Media attachment {media_id!r} was rejected by the image "
                     "normaliser."
                 )
-            elif not quota_warned:  # quota_full
+            else:  # quota_full
+                # Storage is full: stop importing images entirely rather than
+                # running a normalize pass per remaining attachment on a full
+                # account. Matches the archive importer's quota break.
                 warnings.append(
-                    "Media attachment imports stopped: storage quota reached."
+                    "Media attachment imports stopped: storage quota reached. "
+                    "Remaining attachments were skipped."
                 )
-                quota_warned = True
+                break
             continue
         imported += 1
     return imported
@@ -1455,7 +1583,7 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
     s = value.replace("Z", "+00:00")
     # Prism timestamps sometimes carry microseconds with > 6 digits.
-    # fromisoformat tolerates 0/3/6 — split trailing junk if any.
+    # fromisoformat tolerates 0/3/6 - split trailing junk if any.
     try:
         return datetime.fromisoformat(s)
     except ValueError:

@@ -72,6 +72,9 @@ class PrismPreviewSummary(BaseModel):
     conversation_count: int = 0
     message_count: int = 0
     poll_count: int = 0
+    # Incoming polls that would import OPEN (used with the tier cap + a DB
+    # count of already-open polls to warn when the concurrent-open clamp fires).
+    open_poll_count: int = 0
     poll_option_count: int = 0
     note_count: int = 0
     reminder_count: int = 0

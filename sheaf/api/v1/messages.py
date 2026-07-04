@@ -26,6 +26,7 @@ from sheaf.models.message import BoardKind, Message
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.observability.metrics import messages_created_total
 from sheaf.schemas.journal import (
     ContentRevisionRead,
     PinRevisionRequest,
@@ -490,6 +491,7 @@ async def post_message(
     )
     db.add(msg)
     await db.commit()
+    messages_created_total.inc()
     await db.refresh(msg)
     return await _to_read(msg, db)
 

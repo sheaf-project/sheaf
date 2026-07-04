@@ -57,3 +57,19 @@ def test_preview_clean_export_has_no_limit_warnings():
     }
     summary = preview(data)
     assert summary.limit_warnings == []
+
+
+def test_preview_surfaces_over_cap_front_history(monkeypatch):
+    """Front-history rows over the per-import cap are predicted in the preview,
+    so the user is warned before the job fails (bomb protection)."""
+    from sheaf.config import settings
+
+    monkeypatch.setattr(settings, "import_max_fronts", 1)
+    data = {
+        "members": [{"_id": "a", "name": "A"}],
+        "frontHistory": [{"member": "a"}, {"member": "a"}],
+    }
+    summary = preview(data)
+    assert any(
+        "2 fronts" in w and "one job" in w for w in summary.limit_warnings
+    ), summary.limit_warnings

@@ -6,7 +6,11 @@ rendering that the preview surfaces.
 
 from __future__ import annotations
 
+import pytest
+
+from sheaf.config import settings
 from sheaf.services import import_limits as il
+from sheaf.services.import_parsing import ImportPayloadError
 
 
 def test_clamp_str_under_cap_is_untouched():
@@ -134,3 +138,80 @@ def test_clamp_poll_retention_unlimited_tier_keeps_value():
     # including an imported 0 (unlimited).
     assert _clamp_poll_retention_days(365, 0) == 365
     assert _clamp_poll_retention_days(0, 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-import row caps (bomb protection)
+# ---------------------------------------------------------------------------
+
+
+def test_row_caps_no_op_under_cap(monkeypatch):
+    monkeypatch.setattr(settings, "import_max_fronts", 100)
+    # Under cap and exactly at cap must not raise (cap is an upper bound).
+    il.enforce_import_row_caps({"fronts": 99})
+    il.enforce_import_row_caps({"fronts": 100})
+
+
+def test_row_caps_disabled_when_zero(monkeypatch):
+    monkeypatch.setattr(settings, "import_max_fronts", 0)
+    # 0 disables the cap - no ceiling at all.
+    il.enforce_import_row_caps({"fronts": 10_000_000})
+
+
+def test_row_caps_over_cap_raises_actionable_message(monkeypatch):
+    monkeypatch.setattr(settings, "import_max_fronts", 5)
+    with pytest.raises(ImportPayloadError) as exc:
+        il.enforce_import_row_caps({"fronts": 6})
+    msg = str(exc.value)
+    assert "6 fronts" in msg
+    assert "5 Sheaf imports in one job" in msg
+    assert "Split the file" in msg
+
+
+def test_row_caps_uses_readable_entity_labels(monkeypatch):
+    monkeypatch.setattr(settings, "import_max_journal_entries", 2)
+    monkeypatch.setattr(settings, "import_max_custom_fields", 2)
+    with pytest.raises(ImportPayloadError) as exc:
+        il.enforce_import_row_caps({"journal_entries": 3})
+    assert "3 journal entries" in str(exc.value)
+    with pytest.raises(ImportPayloadError) as exc:
+        il.enforce_import_row_caps({"custom_fields": 3})
+    assert "3 custom fields" in str(exc.value)
+
+
+def test_row_caps_unknown_key_is_ignored(monkeypatch):
+    # A label with no matching setting has no cap and must not raise.
+    il.enforce_import_row_caps({"widgets": 10_000_000})
+
+
+def test_row_cap_warnings_mirror_enforcement(monkeypatch):
+    monkeypatch.setattr(settings, "import_max_messages", 5)
+    monkeypatch.setattr(settings, "import_max_polls", 5)
+    warnings = il.import_row_cap_warnings({"messages": 6, "polls": 2})
+    # Only the over-cap entity produces a line; the under-cap one is silent.
+    assert len(warnings) == 1
+    assert "6 messages" in warnings[0]
+    assert "5 Sheaf imports in one job" in warnings[0]
+
+
+def test_row_cap_warnings_empty_when_all_under_cap(monkeypatch):
+    monkeypatch.setattr(settings, "import_max_fronts", 100)
+    assert il.import_row_cap_warnings({"fronts": 1}) == []
+
+
+def test_native_preview_surfaces_over_cap(monkeypatch):
+    """The native preview folds the row-cap prediction into limit_warnings so
+    the user sees an over-cap export before committing, not only when the job
+    fails."""
+    from sheaf.services import sheaf_import
+
+    monkeypatch.setattr(settings, "import_max_fronts", 1)
+    data = {
+        "version": 2,
+        "members": [{"id": "m1", "name": "Solo"}],
+        "fronts": [{"id": "f1"}, {"id": "f2"}, {"id": "f3"}],
+    }
+    summary = sheaf_import.preview(data)
+    assert any(
+        "3 fronts" in w and "one job" in w for w in summary.limit_warnings
+    ), summary.limit_warnings

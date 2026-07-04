@@ -292,6 +292,42 @@ def test_preview_returns_summary(auth_client: httpx.Client):
     assert names == {"Alpha", "Beta"}
 
 
+def test_preview_warns_when_open_polls_exceed_concurrent_cap(
+    auth_client: httpx.Client,
+):
+    """PluralSpace polls that would import OPEN (future or open-ended close
+    time) past the tier's concurrent-open cap surface the clamp warning in
+    the preview, matching what the import raises."""
+    cap = auth_client.get("/v1/polls/server-config").json()[
+        "max_concurrent_open_polls"
+    ]
+    if cap == 0:
+        # Unlimited tier (selfhosted-style deployment): the clamp never fires.
+        return
+    over = 2
+    data = _sample_data()
+    data["polls"] = [
+        {
+            "id": str(uuid.uuid4()),
+            "title": f"open question {i}",
+            "closes_at": "2027-01-01T00:00:00+00:00",
+            "options": [],
+        }
+        for i in range(cap + over)
+    ]
+    resp = auth_client.post(
+        "/v1/import/pluralspace/preview",
+        files={"file": ("export.zip", _build_zip(data), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["open_poll_count"] == cap + over
+    hits = [w for w in body["limit_warnings"] if "concurrent-open-poll" in w]
+    assert hits, body["limit_warnings"]
+    # Fresh account -> 0 existing open polls, so the overage is exactly `over`.
+    assert hits[0].startswith(f"{over} poll(s)")
+
+
 def test_preview_rejects_non_zip(auth_client: httpx.Client):
     resp = auth_client.post(
         "/v1/import/pluralspace/preview",

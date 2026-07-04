@@ -243,6 +243,65 @@ def test_journal_revision_volume_metrics_present():
         assert _series_value(body, name) is not None, f"missing series: {name}"
 
 
+def test_capped_entity_volume_metrics_present():
+    """The remaining bulk-creatable capped entities (board messages, polls,
+    groups, tags, custom fields, reminders) each expose a label-less global
+    total, a label-less per-system max, and a live-create counter, all present
+    from the first scrape. The `le`-labelled per-system distribution gauges
+    only appear once the distribution refresher has run, so not asserted
+    here (see test_capped_entity_distributions_populate)."""
+    body = _scrape()
+    for name in (
+        "sheaf_messages_total",
+        "sheaf_system_message_count_max",
+        "sheaf_messages_created_total",
+        "sheaf_polls_total",
+        "sheaf_system_poll_count_max",
+        "sheaf_polls_created_total",
+        "sheaf_open_polls_total",
+        "sheaf_system_open_poll_count_max",
+        "sheaf_groups_total",
+        "sheaf_system_group_count_max",
+        "sheaf_groups_created_total",
+        "sheaf_tags_total",
+        "sheaf_system_tag_count_max",
+        "sheaf_tags_created_total",
+        "sheaf_custom_fields_total",
+        "sheaf_system_custom_field_count_max",
+        "sheaf_custom_fields_created_total",
+        "sheaf_reminders_total",
+        "sheaf_system_reminder_count_max",
+        "sheaf_reminders_created_total",
+    ):
+        assert _series_value(body, name) is not None, f"missing series: {name}"
+
+
+def test_capped_entity_distributions_populate(admin_client: httpx.Client):
+    """Triggering the hourly distribution job exercises the SQL-side
+    MAX + count(*) FILTER aggregation for every capped-entity distribution
+    and sets the `le`-labelled snapshot gauges. After a run each distribution
+    exposes its `+Inf` bucket (total groups counted). Mirrors the front /
+    journal distribution wiring, just asserted end-to-end."""
+    resp = admin_client.post(
+        "/v1/admin/jobs/refresh_metrics_gauge_distributions/run"
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+
+    body = _scrape()
+    for name in (
+        "sheaf_systems_by_message_count",
+        "sheaf_systems_by_poll_count",
+        "sheaf_systems_by_open_poll_count",
+        "sheaf_systems_by_group_count",
+        "sheaf_systems_by_tag_count",
+        "sheaf_systems_by_custom_field_count",
+        "sheaf_systems_by_reminder_count",
+    ):
+        val = _series_value(body, name, {"le": "+Inf"})
+        assert val is not None, f"missing +Inf bucket for {name}"
+
+
 # ---------------------------------------------------------------------------
 # Leader election
 # ---------------------------------------------------------------------------

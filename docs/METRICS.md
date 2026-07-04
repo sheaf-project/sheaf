@@ -320,6 +320,33 @@ detect non-zero from the first scrape.
 | `sheaf_targets_by_revision_count` | gauge | `le` (revisions-per-target threshold; `+Inf` = all targets) |
 | `sheaf_target_revision_count_max` | gauge | - |
 | `sheaf_content_revisions_created_total` | counter | - |
+| `sheaf_messages_total` | gauge | - |
+| `sheaf_systems_by_message_count` | gauge | `le` (live-message-count threshold; `+Inf` = all systems) |
+| `sheaf_system_message_count_max` | gauge | - |
+| `sheaf_messages_created_total` | counter | - |
+| `sheaf_polls_total` | gauge | - |
+| `sheaf_systems_by_poll_count` | gauge | `le` (poll-count threshold; `+Inf` = all systems) |
+| `sheaf_system_poll_count_max` | gauge | - |
+| `sheaf_polls_created_total` | counter | - |
+| `sheaf_open_polls_total` | gauge | - |
+| `sheaf_systems_by_open_poll_count` | gauge | `le` (open-poll-count threshold; `+Inf` = all systems) |
+| `sheaf_system_open_poll_count_max` | gauge | - |
+| `sheaf_groups_total` | gauge | - |
+| `sheaf_systems_by_group_count` | gauge | `le` (group-count threshold; `+Inf` = all systems) |
+| `sheaf_system_group_count_max` | gauge | - |
+| `sheaf_groups_created_total` | counter | - |
+| `sheaf_tags_total` | gauge | - |
+| `sheaf_systems_by_tag_count` | gauge | `le` (tag-count threshold; `+Inf` = all systems) |
+| `sheaf_system_tag_count_max` | gauge | - |
+| `sheaf_tags_created_total` | counter | - |
+| `sheaf_custom_fields_total` | gauge | - |
+| `sheaf_systems_by_custom_field_count` | gauge | `le` (field-count threshold; `+Inf` = all systems) |
+| `sheaf_system_custom_field_count_max` | gauge | - |
+| `sheaf_custom_fields_created_total` | counter | - |
+| `sheaf_reminders_total` | gauge | - |
+| `sheaf_systems_by_reminder_count` | gauge | `le` (reminder-count threshold; `+Inf` = all systems) |
+| `sheaf_system_reminder_count_max` | gauge | - |
+| `sheaf_reminders_created_total` | counter | - |
 
 `sheaf_systems_by_front_count` is a point-in-time cumulative distribution of
 per-system front-history size, re-set each gauge refresh: each `le` series is
@@ -344,6 +371,24 @@ message, and `sheaf_target_revision_count_max` is the most-revised single
 target (the save-spam outlier signal). `sheaf_content_revisions_created_total`
 is edit velocity on the live edit path (imports excluded). See
 `../sheaf-design-docs/usage-limits-and-tiers.md`.
+
+The board-message / poll / group / tag / custom-field / reminder sets apply
+the same lens to the remaining bulk-creatable user-content entities that
+gained per-import row caps, so the caps can be tuned from real per-system
+usage. Each set is a global `*_total`, an id-free per-system CDF snapshot
+(`sheaf_systems_by_<entity>_count`, re-set each distribution refresh, `+Inf`
+= all systems), the single-largest system (`sheaf_system_<entity>_count_max`),
+and a live-create `*_created_total` counter (imports excluded - imports have
+their own counters). `sheaf_messages_total` and `sheaf_systems_by_message_count`
+count live messages only (`deleted_at IS NULL`), matching the board summary.
+Polls carry two lenses: all polls, and OPEN polls
+(`sheaf_open_polls_total` / `sheaf_systems_by_open_poll_count` /
+`sheaf_system_open_poll_count_max`, where open = `closes_at` in the future).
+The open-poll set is the operationally useful one: it is what the tier
+concurrent-open-poll cap and the import clamp bound, so
+`sheaf_system_open_poll_count_max` read against the cap is the direct outlier
+signal. The `*_total` gauges refresh on the 60s gauge pass; the per-system
+distributions ride the hourly distribution job.
 
 ### Infra
 

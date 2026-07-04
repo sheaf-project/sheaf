@@ -28,6 +28,7 @@ from sheaf.models.reminder import Reminder
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.observability.metrics import reminders_created_total
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.reminder import (
     ReminderCreate,
@@ -326,6 +327,7 @@ async def create_reminder(
     )
     db.add(reminder)
     await db.commit()
+    reminders_created_total.inc()
     # Re-fetch with relations for the response shape.
     refreshed = await _get_owned_reminder(reminder.id, system, db)
     return _to_read(refreshed)

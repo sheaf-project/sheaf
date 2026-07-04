@@ -188,6 +188,25 @@ def test_sp_warns_when_field_value_references_unknown_field(
     ), final["events"]
 
 
+def test_sp_clamps_deep_group_nesting(auth_client: httpx.Client):
+    """SP builds a nested group tree via `parent`; a chain deeper than the API's
+    MAX_GROUP_DEPTH is reparented up to fit, so the import completes (rather than
+    creating an over-deep tree) and warns. The reparent is only applied when a
+    group was too deep, so the depth warning firing means the clamp ran."""
+    groups = [{"_id": "g0", "name": "g0", "parent": "root"}]
+    for i in range(1, 12):  # 12-deep chain, well past the depth-8 cap
+        groups.append({"_id": f"g{i}", "name": f"g{i}", "parent": f"g{i - 1}"})
+    payload = _sp_payload(groups=groups)
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert any(
+        "nesting depth" in w for w in _warnings(final["events"])
+    ), final["events"]
+
+
 def test_sp_warns_when_front_history_member_missing(auth_client: httpx.Client):
     payload = _sp_payload(
         frontHistory=[

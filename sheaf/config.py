@@ -127,6 +127,24 @@ class Settings(BaseSettings):
     member_limit_plus: int = 0  # unlimited
     member_limit_selfhosted: int = 0  # unlimited
 
+    # Per-IMPORT-JOB hard row caps. These bound how many rows of each entity a
+    # SINGLE import can create in one transaction - parse-bomb / resource
+    # protection (each front, for instance, does a per-row flush), NOT a
+    # per-tenant product limit like the member cap above. A crafted or simply
+    # huge export can otherwise force hundreds of thousands of inserts in one
+    # go; these caps fail the job cleanly first. 0 = unlimited/disabled for
+    # that entity. Enforced by every importer before its write loop and
+    # predicted at preview. Self-hosters with genuinely large systems can raise
+    # them.
+    import_max_fronts: int = 100000
+    import_max_journal_entries: int = 50000
+    import_max_messages: int = 100000
+    import_max_revisions: int = 100000
+    import_max_polls: int = 10000
+    import_max_groups: int = 10000
+    import_max_tags: int = 10000
+    import_max_custom_fields: int = 10000
+
     # Revision-history retention caps per tier. 0 = unlimited.
     # Covers both journal entries and member bios under a single cap.
     journal_max_revisions_free: int = 50

@@ -13,6 +13,7 @@ from sheaf.models.pending_action import PendingActionType
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
+from sheaf.observability.metrics import tags_created_total
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.schemas.tag import TagCreate, TagMemberUpdate, TagRead, TagUpdate
 from sheaf.services.members import decrypt_member_for_read
@@ -70,6 +71,7 @@ async def create_tag(
     tag = Tag(system_id=system.id, **body.model_dump())
     db.add(tag)
     await db.commit()
+    tags_created_total.inc()
     await db.refresh(tag)
     return tag
 
