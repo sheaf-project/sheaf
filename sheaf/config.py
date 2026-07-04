@@ -85,6 +85,25 @@ class Settings(BaseSettings):
     orphan_cleanup_interval_hours: int = 24  # how often orphan file cleanup runs
     job_log_retention_days: int = 30  # how long to keep job run logs
 
+    # Incident-response master kill switch for data-deleting background jobs.
+    # Flip to False to halt EVERY job marked `destructive=True` in one move -
+    # the "stop all data deletion" lever an operator can reach for while
+    # investigating a suspected retention bug, instead of editing each job's
+    # interval to 0 one at a time.
+    # Non-deleting jobs and operational cleanups are unaffected. The one
+    # deliberate exception is the security-event (IP) cleanup below, which is a
+    # privacy obligation kept on its own switch so a blanket pause can't silence
+    # it.
+    destructive_jobs_enabled: bool = True
+
+    # Separate switch for the security-event (IP) cleanup only. That sweep
+    # enforces the 30-day IP retention promise (see security_event_retention_days)
+    # and is a privacy-policy obligation, so it is deliberately NOT gated by the
+    # destructive_jobs_enabled master switch - an incident pause must not leave
+    # IPs sitting past their retention window. Set False only if you must stop
+    # IP minimisation for a specific, considered reason.
+    security_event_cleanup_enabled: bool = True
+
     # File storage
     storage_backend: str = "filesystem"  # "filesystem" or "s3"
     storage_path: Path = Path("data/files")

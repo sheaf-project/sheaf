@@ -521,3 +521,106 @@ def test_enqueue_notify_wakes_the_listener():
             await engine.dispose()
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Operator kill switch for data-deleting jobs
+
+
+def test_master_switch_pauses_only_destructive_jobs():
+    """With destructive_jobs_enabled off, a job marked destructive is frozen
+    (the runner's skip predicate returns True); a non-destructive job is not."""
+    from sheaf.config import settings
+    from sheaf.services import jobs as jobs_module
+
+    saved = dict(jobs_module._REGISTRY)
+    saved_flag = settings.destructive_jobs_enabled
+    try:
+        jobs_module._REGISTRY.clear()
+        jobs_module.register_job(
+            name="wipes-data", description="", func=None,
+            interval_seconds=lambda: 60, destructive=True,
+        )
+        jobs_module.register_job(
+            name="reads-only", description="", func=None,
+            interval_seconds=lambda: 60,
+        )
+        destructive = jobs_module._REGISTRY["wipes-data"]
+        safe = jobs_module._REGISTRY["reads-only"]
+
+        # Master on: nothing is paused.
+        settings.destructive_jobs_enabled = True
+        assert jobs_module._destructive_paused(destructive) is False
+        assert jobs_module._destructive_paused(safe) is False
+
+        # Master off: only the destructive job is frozen.
+        settings.destructive_jobs_enabled = False
+        assert jobs_module._destructive_paused(destructive) is True
+        assert jobs_module._destructive_paused(safe) is False
+    finally:
+        settings.destructive_jobs_enabled = saved_flag
+        jobs_module._REGISTRY.clear()
+        jobs_module._REGISTRY.update(saved)
+
+
+def test_expected_jobs_are_marked_destructive():
+    """The data-deleting jobs carry destructive=True; operational cleanups and
+    non-deleting jobs do not. Guards against a new deleting job being added
+    without wiring it into the freeze."""
+    from sheaf.services import jobs as jobs_module
+
+    jobs_module._register_all_jobs()
+    reg = jobs_module.get_registry()
+
+    destructive = {
+        "prune_free_tier_fronts",
+        "gc_revisions",
+        "purge_expired_polls",
+        "cleanup_orphaned_files",
+        "cleanup_unverified_accounts",
+        "cleanup_activity_events",
+        "process_account_deletions",
+        "finalize_pending_actions",
+    }
+    for name in destructive:
+        assert reg[name].destructive is True, name
+
+    not_destructive = {
+        "cleanup_security_events",
+        "cleanup_job_logs",
+        "cleanup_import_jobs",
+        "cleanup_notification_outbox",
+        "cleanup_export_jobs",
+        "tick_repeated_reminders",
+        "build_export_jobs",
+    }
+    for name in not_destructive:
+        assert reg[name].destructive is False, name
+
+
+def test_security_event_cleanup_kept_on_its_own_switch():
+    """cleanup_security_events is a privacy obligation: it is NOT destructive
+    (so the master pause never touches it) and follows its own
+    security_event_cleanup_enabled switch instead."""
+    from sheaf.config import settings
+    from sheaf.services import jobs as jobs_module
+
+    jobs_module._register_all_jobs()
+    job = jobs_module.get_registry()["cleanup_security_events"]
+
+    saved_master = settings.destructive_jobs_enabled
+    saved_own = settings.security_event_cleanup_enabled
+    try:
+        # Master pause on, own switch on: still runs (not destructive, enabled).
+        settings.destructive_jobs_enabled = False
+        settings.security_event_cleanup_enabled = True
+        assert jobs_module._destructive_paused(job) is False
+        assert job.enabled() is True
+
+        # Own switch off: skipped even with the master switch on.
+        settings.destructive_jobs_enabled = True
+        settings.security_event_cleanup_enabled = False
+        assert job.enabled() is False
+    finally:
+        settings.destructive_jobs_enabled = saved_master
+        settings.security_event_cleanup_enabled = saved_own
