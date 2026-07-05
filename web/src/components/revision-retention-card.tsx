@@ -228,8 +228,10 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
   );
 }
 
-// Mirror of split_safety_changes' retention-field rule: None = +inf for
-// comparison so going from a concrete cap to None is a loosening.
+// Mirror of split_safety_changes' retention-field rule: None/0 = +inf, and a
+// SMALLER effective cap (fewer revisions kept, so more history deleted) is the
+// loosening direction that defers behind re-auth + the grace period. Raising a
+// cap, or going to unlimited, is a tightening and applies immediately.
 function isLoosening(
   settings: RetentionSettings,
   newRev: number | null,
@@ -244,5 +246,5 @@ function isLoosening(
 function isCapLoosening(current: number | null, next: number | null): boolean {
   const cur = current === null ? Infinity : current === 0 ? Infinity : current;
   const nxt = next === null ? Infinity : next === 0 ? Infinity : next;
-  return nxt > cur;
+  return nxt < cur;
 }
