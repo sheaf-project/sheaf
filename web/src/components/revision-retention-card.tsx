@@ -92,7 +92,11 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
   const dirty =
     newRev !== settings.override_revisions || newDays !== settings.override_days;
   const loosening = isLoosening(settings, newRev, newDays);
-  const needsReauth = loosening && gracePeriod > 0;
+  // Re-auth is required for any restrictive change once the account has a
+  // delete-confirmation tier set, regardless of the grace period. The grace
+  // period only controls whether the change defers or applies immediately.
+  const needsReauth = loosening && authTier !== "none";
+  const showGraceMessage = loosening && gracePeriod > 0;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -159,41 +163,52 @@ function RetentionForm({ settings }: { settings: RetentionSettings }) {
               </p>
             </div>
           </div>
-          {needsReauth && (
+          {(needsReauth || showGraceMessage) && (
             <div className="space-y-3 border-t pt-3">
-              <p className="text-sm text-muted-foreground">
-                Lowering caps is a loosening of safety: it requires re-auth and
-                takes effect after the {gracePeriod}-day grace period.
-              </p>
-              {(authTier === "password" || authTier === "both") && (
-                <div className="space-y-1">
-                  <Label htmlFor="revision-retention-password" className="text-sm">Password</Label>
-                  <Input
-                    id="revision-retention-password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
+              {needsReauth && (
+                <p className="text-sm text-muted-foreground">
+                  Lowering caps is a restrictive change, so it requires re-auth.
+                </p>
               )}
-              {(authTier === "totp" || authTier === "both") &&
-                user?.totp_enabled && (
-                  <div className="space-y-1">
-                    <Label htmlFor="revision-retention-totp" className="text-sm">TOTP code</Label>
-                    <Input
-                      id="revision-retention-totp"
-                      value={totpCode}
-                      onChange={(e) => setTotpCode(e.target.value)}
-                      placeholder="6-digit code"
-                      inputMode="numeric"
-                      maxLength={6}
-                      pattern="[0-9]{6}"
-                      autoComplete="off"
-                      required
-                    />
-                  </div>
-                )}
+              {showGraceMessage && (
+                <p className="text-sm text-muted-foreground">
+                  The change takes effect after the {gracePeriod}-day grace
+                  period.
+                </p>
+              )}
+              {needsReauth && (
+                <>
+                  {(authTier === "password" || authTier === "both") && (
+                    <div className="space-y-1">
+                      <Label htmlFor="revision-retention-password" className="text-sm">Password</Label>
+                      <Input
+                        id="revision-retention-password"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                      />
+                    </div>
+                  )}
+                  {(authTier === "totp" || authTier === "both") &&
+                    user?.totp_enabled && (
+                      <div className="space-y-1">
+                        <Label htmlFor="revision-retention-totp" className="text-sm">TOTP code</Label>
+                        <Input
+                          id="revision-retention-totp"
+                          value={totpCode}
+                          onChange={(e) => setTotpCode(e.target.value)}
+                          placeholder="6-digit code"
+                          inputMode="numeric"
+                          maxLength={6}
+                          pattern="[0-9]{6}"
+                          autoComplete="off"
+                          required
+                        />
+                      </div>
+                    )}
+                </>
+              )}
             </div>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
