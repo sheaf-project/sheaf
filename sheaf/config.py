@@ -69,9 +69,15 @@ class Settings(BaseSettings):
     sheaf_git_tag: str = ""
     sheaf_build_time: str = ""
 
-    # aaS settings
-    free_tier_front_retention_days: int = 30
-    retention_check_interval_hours: int = 6
+    # User-opt-in front-history retention sweep.
+    # Fixed import grace: a freshly-imported front is never aged out until it
+    # has actually lived in the database this many days, so importing old
+    # history with retention on doesn't abruptly delete it - the user gets a
+    # window to review it or raise the setting first. Not a per-system knob.
+    front_retention_import_grace_days: int = 14
+    # How often the front-retention sweep runs. Opt-in and idempotent, so a
+    # daily cadence is plenty; it is a no-op for systems with retention off.
+    front_retention_check_interval_hours: int = 24
 
     # Account deletion
     account_deletion_grace_days: int = 7

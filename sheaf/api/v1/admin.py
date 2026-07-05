@@ -23,7 +23,7 @@ from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.services.admin_audit import log_admin_action
 from sheaf.services.file_cleanup import cleanup_orphaned_files
-from sheaf.services.front_retention import prune_free_tier_fronts
+from sheaf.services.front_retention import sweep_front_retention
 
 logger = logging.getLogger("sheaf.admin")
 
@@ -568,8 +568,9 @@ async def run_retention(
     admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger front history retention pruning. Admin only."""
-    count = await prune_free_tier_fronts(db)
+    """Manually trigger the user-opt-in front-history retention sweep. Admin only."""
+    result = await sweep_front_retention(db)
+    count = result.get("items_processed", 0)
     await log_admin_action(
         db,
         admin=admin,

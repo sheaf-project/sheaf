@@ -507,11 +507,13 @@ async def _cleanup_orphaned_files(db: AsyncSession) -> dict:
     }
 
 
-async def _prune_free_tier_fronts(db: AsyncSession) -> dict:
-    """Wrapper around existing front retention pruning."""
-    from sheaf.services.front_retention import prune_free_tier_fronts
+async def _sweep_front_retention(db: AsyncSession) -> dict:
+    """Wrapper around the user-opt-in front-history retention sweep."""
+    from sheaf.services.front_retention import sweep_front_retention
 
-    return await prune_free_tier_fronts(db)
+    result = await sweep_front_retention(db)
+    await db.commit()
+    return result
 
 
 async def _gc_revisions(db: AsyncSession) -> dict:
@@ -1078,12 +1080,15 @@ def _register_all_jobs() -> None:
         destructive=True,
     )
 
+    # User privacy control, not operator cost-control: unconditionally enabled
+    # (no mode gate) so it applies in self-hosted too, and inert for any system
+    # that has not opted in (front_retention_days = 0). destructive=True so the
+    # kill switch freezes it with the other data-deleting jobs.
     register_job(
-        name="prune_free_tier_fronts",
-        description="Prune front history older than retention window for free-tier users",
-        func=_prune_free_tier_fronts,
-        interval_seconds=lambda: settings.retention_check_interval_hours * 3600,
-        enabled=lambda: settings.sheaf_mode == SheafMode.SAAS,
+        name="front_retention_sweep",
+        description="Age out closed fronting history for systems that opted in to retention",
+        func=_sweep_front_retention,
+        interval_seconds=lambda: settings.front_retention_check_interval_hours * 3600,
         destructive=True,
     )
 
