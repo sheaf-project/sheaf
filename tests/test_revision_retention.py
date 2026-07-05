@@ -268,6 +268,105 @@ def test_override_above_tier_max_is_rejected(client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Front-history retention setting (inert - no sweep yet, settings surface only)
+# ---------------------------------------------------------------------------
+
+
+def test_get_retention_front_retention_default_off(client: httpx.Client):
+    """front_retention_days defaults to 0 (off = keep forever)."""
+    _register(client)
+    body = client.get("/v1/retention").json()
+    assert body["front_retention_days"] == 0
+
+
+def test_front_retention_enable_applies_immediately_when_no_grace(
+    client: httpx.Client,
+):
+    """Enabling (0 -> N) is a tightening, but with grace=0 it lands at once."""
+    _register(client)
+    resp = client.patch("/v1/retention", json={"front_retention_days": 30})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["front_retention_days"] == 30
+
+
+def test_front_retention_enable_with_grace_is_deferred(client: httpx.Client):
+    """Enabling (0 -> N) with a grace period defers behind SafetyChangeRequest.
+
+    The re-auth gate is satisfied trivially here: the default delete_confirmation
+    tier is NONE, so no password/TOTP is required to defer.
+    """
+    email = _register(client)
+    _set_system_safety_via_db(email, safety_grace_period_days=7)
+
+    resp = client.patch("/v1/retention", json={"front_retention_days": 30})
+    assert resp.status_code == 200, resp.text
+    # Not applied yet - still off while the change waits out the grace window.
+    assert resp.json()["front_retention_days"] == 0
+
+    # The pending change is visible on the system safety endpoint.
+    pending = client.get("/v1/system/safety").json()["pending_changes"]
+    assert any("front_retention_days" in p["changes"] for p in pending)
+
+
+def test_front_retention_shorten_with_grace_is_deferred(client: httpx.Client):
+    """Shortening the window (N -> smaller) is also a tightening and defers."""
+    email = _register(client)
+    _set_system_safety_via_db(
+        email, front_retention_days=90, safety_grace_period_days=7
+    )
+
+    resp = client.patch("/v1/retention", json={"front_retention_days": 30})
+    assert resp.status_code == 200, resp.text
+    # Still on the longer window until the deferred change finalizes.
+    assert resp.json()["front_retention_days"] == 90
+
+    pending = client.get("/v1/system/safety").json()["pending_changes"]
+    assert any(
+        p["changes"].get("front_retention_days") == 30 for p in pending
+    )
+
+
+def test_front_retention_turn_off_applies_immediately(client: httpx.Client):
+    """Turning it off (N -> 0) keeps more data, so it applies immediately even
+    with a grace period configured."""
+    email = _register(client)
+    _set_system_safety_via_db(
+        email, front_retention_days=30, safety_grace_period_days=7
+    )
+
+    resp = client.patch("/v1/retention", json={"front_retention_days": 0})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["front_retention_days"] == 0
+
+
+def test_front_retention_lengthen_applies_immediately(client: httpx.Client):
+    """Lengthening the window (N -> larger) keeps more data, applies at once."""
+    email = _register(client)
+    _set_system_safety_via_db(
+        email, front_retention_days=30, safety_grace_period_days=7
+    )
+
+    resp = client.patch("/v1/retention", json={"front_retention_days": 90})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["front_retention_days"] == 90
+
+
+def test_front_retention_rejects_null(client: httpx.Client):
+    """The column is non-null (0 = off), so there is no clear-override null
+    semantic - an explicit null is a client error."""
+    _register(client)
+    resp = client.patch("/v1/retention", json={"front_retention_days": None})
+    assert resp.status_code == 400
+
+
+def test_front_retention_rejects_negative(client: httpx.Client):
+    """ge=0 bound: a negative window is rejected by schema validation."""
+    _register(client)
+    resp = client.patch("/v1/retention", json={"front_retention_days": -5})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # tier_revision_caps + on_tier_change
 # ---------------------------------------------------------------------------
 
