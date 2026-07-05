@@ -19,6 +19,7 @@ from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.services.front_retention import front_retention_preview_warning
 from sheaf.services.import_parsing import ImportPayloadError
 from sheaf.services.pluralspace_import import parse_export_async, preview
 from sheaf.services.sheaf_import import open_poll_preview_warning
@@ -81,4 +82,9 @@ async def preview_pluralspace_import(
     )
     if poll_warning:
         summary.limit_warnings.append(poll_warning)
+    retention_warning = front_retention_preview_warning(
+        system.front_retention_days, summary.front_count > 0
+    )
+    if retention_warning:
+        summary.limit_warnings.append(retention_warning)
     return summary.model_dump(mode="json")

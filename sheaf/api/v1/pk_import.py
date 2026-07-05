@@ -11,13 +11,18 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
+from sheaf.database import get_db
+from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.schemas.pk_import import (
     PKApiPreviewRequest,
     PKPreviewSummary,
 )
+from sheaf.services.front_retention import front_retention_preview_warning
 from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
 from sheaf.services.pk_api import (
     PKApiError,
@@ -31,6 +36,16 @@ logger = logging.getLogger("sheaf.import.pk")
 router = APIRouter(prefix="/import", tags=["import"])
 
 MAX_IMPORT_SIZE = 100 * 1024 * 1024  # 100MB — PK exports are tiny but be safe
+
+
+async def _get_user_system(user: User, db: AsyncSession) -> System:
+    result = await db.execute(select(System).where(System.user_id == user.id))
+    system = result.scalar_one_or_none()
+    if system is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="System not found"
+        )
+    return system
 
 
 async def _parse_upload(file: UploadFile) -> dict[str, Any]:
@@ -74,11 +89,19 @@ def _api_error_to_http(exc: PKApiError) -> HTTPException:
 @router.post("/pluralkit/preview", response_model=PKPreviewSummary)
 async def preview_file_import(
     file: UploadFile,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Parse a PK export file and return a summary."""
     data = await _parse_upload(file)
-    return build_preview(data)
+    summary = build_preview(data)
+    system = await _get_user_system(user, db)
+    retention_warning = front_retention_preview_warning(
+        system.front_retention_days, summary.switch_count > 0
+    )
+    if retention_warning:
+        summary.limit_warnings.append(retention_warning)
+    return summary
 
 
 # --- API path ----------------------------------------------------------------
@@ -87,7 +110,8 @@ async def preview_file_import(
 @router.post("/pluralkit-api/preview", response_model=PKPreviewSummary)
 async def preview_api_import(
     body: PKApiPreviewRequest,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Preview an import by reading from the PluralKit API directly.
 
@@ -120,4 +144,10 @@ async def preview_api_import(
     if has_more:
         # Set the count to the page size; UI will format "100+".
         summary.switch_count = len(switch_sample)
+    system = await _get_user_system(user, db)
+    retention_warning = front_retention_preview_warning(
+        system.front_retention_days, summary.switch_count > 0
+    )
+    if retention_warning:
+        summary.limit_warnings.append(retention_warning)
     return summary

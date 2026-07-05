@@ -42,6 +42,36 @@ from sheaf.services.activity_log import log_activity
 
 logger = logging.getLogger("sheaf.retention")
 
+
+def front_retention_preview_warning(
+    front_retention_days: int, has_front_history: bool
+) -> str | None:
+    """Preview heads-up for a system with front-history retention turned on that
+    is about to import fronting history.
+
+    An imported front carries its old real-world ``ended_at``, so a system with
+    retention on that imports old history has just landed rows the sweep will
+    age out once the fixed import grace elapses. The whole point of the grace is
+    that this is never a surprise, so the preview names the window and the grace
+    up front and tells the user how to keep older history.
+
+    Deliberately window-stated, not a per-front count: the exact number of
+    entries older than the window would mean threading the window into each
+    importer's front parse, which is a future refinement. Returns the warning
+    string when retention is on (> 0) AND the import contains any front history,
+    else ``None``.
+    """
+    if front_retention_days > 0 and has_front_history:
+        return (
+            f"You have front-history retention set to {front_retention_days} "
+            "days, so imported fronting history older than that will be aged "
+            f"out {settings.front_retention_import_grace_days} days after "
+            "import. To keep older history, raise or turn off your retention "
+            "window before importing."
+        )
+    return None
+
+
 # Delete in bounded batches with a commit between each rather than one giant
 # DELETE, so a large opt-in system's backlog can't hold a single long
 # transaction / lock set. The loop re-runs the predicate until nothing is left.
