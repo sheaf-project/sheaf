@@ -91,6 +91,10 @@ function changeSummary(changes: Record<string, unknown>): string {
       parts.push(
         v === null ? "revision age cap → tier default" : `revision age cap → ${v} days`,
       );
+    } else if (k === "front_retention_days") {
+      parts.push(
+        v === 0 ? "front retention → off" : `front retention → ${v} days`,
+      );
     } else {
       parts.push(`${k} → ${v}`);
     }

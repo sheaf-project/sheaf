@@ -145,6 +145,15 @@ class System(UUIDMixin, TimestampMixin, Base):
         Integer, nullable=True
     )
 
+    # User-opt-in front-history privacy retention. 0 = off = keep fronting
+    # history forever (the default). A positive value is the age-out window in
+    # days, keyed off each front's real-world end time (ended_at) by the sweep,
+    # which lands in a later change. Enabling it or shortening the window routes
+    # through SafetyChangeRequest (asymmetric loosening) like the revision caps.
+    front_retention_days: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+
     # OpenPlural import residual: foreign data Sheaf does not model (other
     # apps' `extensions` namespaces, the chat/relationships modules,
     # front_events/front_comments, non-tag taxonomy) preserved verbatim on

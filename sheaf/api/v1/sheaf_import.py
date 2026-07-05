@@ -20,6 +20,7 @@ from sheaf.auth.dependencies import get_current_user
 from sheaf.database import get_db
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.services.front_retention import front_retention_preview_warning
 from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
 from sheaf.services.sheaf_archive_import import parse_archive_async
 from sheaf.services.sheaf_archive_import import preview as archive_preview
@@ -126,6 +127,11 @@ async def preview_import(
         )
         if poll_warning:
             summary.limit_warnings.append(poll_warning)
+        retention_warning = front_retention_preview_warning(
+            system.front_retention_days, summary.front_count > 0
+        )
+        if retention_warning:
+            summary.limit_warnings.append(retention_warning)
         return {
             **_summary_dict(summary),
             "archive": True,
@@ -140,6 +146,11 @@ async def preview_import(
     )
     if poll_warning:
         summary.limit_warnings.append(poll_warning)
+    retention_warning = front_retention_preview_warning(
+        system.front_retention_days, summary.front_count > 0
+    )
+    if retention_warning:
+        summary.limit_warnings.append(retention_warning)
     return {
         **_summary_dict(summary),
         "archive": False,

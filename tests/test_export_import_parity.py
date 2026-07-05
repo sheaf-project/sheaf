@@ -91,6 +91,11 @@ CLASSIFICATION: dict[type, dict] = {
             "user_id": "owning account FK, re-pointed to the importing user",
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "front_retention_days": (
+                "opt-in privacy setting that arms deletion; deliberately not "
+                "round-tripped so a restore never silently arms a deletion "
+                "policy - the user re-enables it through the guarded flow"
+            ),
         },
     },
     Member: {

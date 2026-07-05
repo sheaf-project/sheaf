@@ -213,6 +213,12 @@ _RETENTION_FIELDS = (
     "journal_max_revisions",
     "journal_max_revision_days",
     "pinned_revision_max_per_target",
+    # front_retention_days is a WINDOW (days), same direction as the revision
+    # caps: smaller = more restrictive = more deletion = deferred. 0 = off =
+    # keep forever = loosest, which the branch below maps to +infinity (same as
+    # None), so 0 -> N and N -> M<N sort as tightening and defer, while N -> 0
+    # or lengthening the window loosens and applies immediately.
+    "front_retention_days",
 )
 
 

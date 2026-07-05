@@ -11,8 +11,9 @@ Async `POST /export/jobs` enqueues a build that includes image bytes,
 delivered as a zip via S3-presigned download or filesystem stream.
 """
 
+import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -53,6 +54,60 @@ from sheaf.services.members import member_plaintext
 from sheaf.services.openplural_archive import unpack_residual
 
 router = APIRouter(prefix="/export", tags=["export"])
+
+logger = logging.getLogger("sheaf.export")
+
+
+def _safe_decrypt(value: str | None) -> str | None:
+    """Decrypt an encrypted field for the export, tolerating a single
+    unreadable value instead of sinking the whole dump.
+
+    A data export is best-effort: if one field holds ciphertext that can't
+    be decrypted (corruption, a key-rotation edge, or plain bad data), that
+    one field should come back null while every other field still exports -
+    far better than 500ing the entire account backup over a single row.
+    Returns None for a None input, or None when decryption fails. The
+    warning lets an operator see it happened without leaking the field's
+    plaintext or ciphertext into the logs.
+    """
+    if value is None:
+        return None
+    try:
+        return decrypt(value)
+    except Exception:
+        logger.warning(
+            "An encrypted field could not be decrypted during export; "
+            "exporting it as null"
+        )
+        return None
+
+
+# Stand-in written into the export when a required text field (e.g. a member
+# name) can't be decrypted. Null would risk a NOT NULL violation on re-import;
+# a placeholder re-imports cleanly and signals the field was unrecoverable.
+_UNREADABLE_PLACEHOLDER = "[unreadable]"
+
+
+def _safe_plaintext(fn: Callable, *, fallback):
+    """Run a shared decrypt-to-plaintext helper while assembling the export,
+    tolerating a single unreadable field.
+
+    The export leans on shared service helpers (member / journal / revision /
+    custom-field plaintext) that raise on unreadable ciphertext. Left bare
+    that would 500 the entire export over one bad row. We can't soften those
+    helpers - they back read endpoints too - so we catch here, at the export
+    call site only, log a content-free warning, and fall back: a placeholder
+    for required fields, null for optional ones. The fallback shape mirrors
+    the helper's own return (a tuple for the two-value helpers).
+    """
+    try:
+        return fn()
+    except Exception:
+        logger.warning(
+            "An encrypted field could not be decrypted during export; "
+            "substituting a fallback value"
+        )
+        return fallback
 
 
 # asyncpg caps a single statement at 32767 bind parameters. Any `.in_(ids)`
@@ -152,8 +207,21 @@ async def export_all(
     members_result = await db.execute(
         select(Member).where(Member.system_id == system.id)
     )
+    # member_plaintext returns (name, description). Name is required (a
+    # placeholder on failure so re-import doesn't hit the NOT NULL column);
+    # description is optional (null). A single unreadable member field can't
+    # be more granular here - the helper decrypts both together - so if
+    # either raises, name falls back to the placeholder and description to
+    # null, and the rest of the export is unaffected.
     members_with_plaintext = [
-        (m, *member_plaintext(m)) for m in members_result.scalars().all()
+        (
+            m,
+            *_safe_plaintext(
+                lambda m=m: member_plaintext(m),
+                fallback=(_UNREADABLE_PLACEHOLDER, None),
+            ),
+        )
+        for m in members_result.scalars().all()
     ]
     members_with_plaintext.sort(key=lambda t: t[1].casefold())
 
@@ -321,7 +389,7 @@ async def export_all(
                 "emoji": m.emoji,
                 "is_custom_front": m.is_custom_front,
                 "privacy": m.privacy.value,
-                "note": decrypt(m.note) if m.note else None,
+                "note": _safe_decrypt(m.note) if m.note else None,
                 "quick_switch_pin": m.quick_switch_pin,
                 "notify_on_front_global": m.notify_on_front_global,
                 "notify_on_front_self": m.notify_on_front_self,
@@ -340,7 +408,7 @@ async def export_all(
                 "ended_at": f.ended_at.isoformat() if f.ended_at else None,
                 "member_ids": [str(m.id) for m in f.members],
                 "custom_status": (
-                    decrypt(f.custom_status) if f.custom_status else None
+                    _safe_decrypt(f.custom_status) if f.custom_status else None
                 ),
             }
             for f in fronts
@@ -376,7 +444,11 @@ async def export_all(
                 "values": [
                     {
                         "member_id": str(v.member_id),
-                        "value": field_value_plaintext(v),
+                        # Custom-field value is optional user content: null on
+                        # an unreadable field rather than sinking the export.
+                        "value": _safe_plaintext(
+                            lambda v=v: field_value_plaintext(v), fallback=None
+                        ),
                     }
                     for v in fd.values
                 ],
@@ -433,7 +505,7 @@ def _system_dict(system: System) -> dict:
         "id": str(system.id),
         "name": system.name,
         "description": system.description,
-        "note": decrypt(system.note) if system.note else None,
+        "note": _safe_decrypt(system.note) if system.note else None,
         "tag": system.tag,
         "avatar_url": system.avatar_url,
         "color": system.color,
@@ -474,7 +546,11 @@ def _system_dict(system: System) -> dict:
 
 
 def _journal_dict(entry: JournalEntry) -> dict:
-    title, body = entry_plaintext(entry)
+    # Journal title and body are optional content: null on an unreadable
+    # field rather than 500ing the whole export.
+    title, body = _safe_plaintext(
+        lambda: entry_plaintext(entry), fallback=(None, None)
+    )
     return {
         "id": str(entry.id),
         "member_id": str(entry.member_id) if entry.member_id else None,
@@ -493,7 +569,11 @@ def _journal_dict(entry: JournalEntry) -> dict:
 
 
 def _revision_dict(revision: ContentRevision) -> dict:
-    title, body = revision_plaintext(revision)
+    # Revision title and body are optional content: null on an unreadable
+    # field rather than 500ing the whole export.
+    title, body = _safe_plaintext(
+        lambda: revision_plaintext(revision), fallback=(None, None)
+    )
     return {
         "id": str(revision.id),
         "target_type": revision.target_type,
@@ -593,8 +673,8 @@ def _reminder_dict(reminder) -> dict:
     pending queue) is omitted and the channel_id is just the original UUID
     so a re-import on a fresh instance won't resolve unless the channels
     were imported there too."""
-    title = decrypt(reminder.title) if reminder.title else ""
-    body = decrypt(reminder.body) if reminder.body else None
+    title = _safe_decrypt(reminder.title) if reminder.title else ""
+    body = _safe_decrypt(reminder.body) if reminder.body else None
     return {
         "id": str(reminder.id),
         "channel_id": str(reminder.channel_id),
@@ -636,7 +716,7 @@ def _message_dict(msg) -> dict:
         "parent_message_id": (
             str(msg.parent_message_id) if msg.parent_message_id else None
         ),
-        "body": decrypt(msg.body) if msg.body else "",
+        "body": _safe_decrypt(msg.body) if msg.body else "",
         "created_at": msg.created_at.isoformat(),
         "updated_at": msg.updated_at.isoformat(),
     }
@@ -649,8 +729,8 @@ def _poll_dict(poll) -> dict:
     they're meaningful again."""
     return {
         "id": str(poll.id),
-        "question": decrypt(poll.question) if poll.question else "",
-        "description": decrypt(poll.description) if poll.description else None,
+        "question": _safe_decrypt(poll.question) if poll.question else "",
+        "description": _safe_decrypt(poll.description) if poll.description else None,
         "kind": poll.kind,
         "results_visibility": poll.results_visibility,
         "closes_at": poll.closes_at.isoformat(),
@@ -661,7 +741,7 @@ def _poll_dict(poll) -> dict:
         "options": [
             {
                 "id": str(opt.id),
-                "text": decrypt(opt.text) if opt.text else "",
+                "text": _safe_decrypt(opt.text) if opt.text else "",
                 "position": opt.position,
             }
             for opt in sorted(poll.options, key=lambda o: o.position)

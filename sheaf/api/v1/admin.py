@@ -23,7 +23,7 @@ from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.services.admin_audit import log_admin_action
 from sheaf.services.file_cleanup import cleanup_orphaned_files
-from sheaf.services.front_retention import prune_free_tier_fronts
+from sheaf.services.front_retention import sweep_front_retention
 
 logger = logging.getLogger("sheaf.admin")
 
@@ -563,19 +563,55 @@ async def reject_user(
 # Maintenance operations (kept from before, now using get_admin_write_user)
 # ---------------------------------------------------------------------------
 
+def _check_destructive_freeze(*, is_destructive: bool, override_freeze: bool) -> bool:
+    """Guard a manual destructive-job trigger against the kill switch.
+
+    When ``destructive_jobs_enabled`` is off, deletion is frozen for the
+    scheduled runner; a manual admin trigger must not silently bypass that.
+    Refuse a destructive job unless the caller explicitly passes
+    ``override_freeze=true``, and return whether the freeze was overridden so
+    the caller can record it in the admin audit. Non-destructive jobs are never
+    affected. The freeze being about unattended automation, a deliberate,
+    acknowledged, audited override is allowed; a reflexive one is not.
+    """
+    if is_destructive and not settings.destructive_jobs_enabled:
+        if not override_freeze:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Data deletion is frozen (destructive_jobs_enabled is off). "
+                    "Pass override_freeze=true to run this destructive job anyway."
+                ),
+            )
+        return True
+    return False
+
+
 @router.post("/retention/run")
 async def run_retention(
+    override_freeze: bool = False,
     admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger front history retention pruning. Admin only."""
-    count = await prune_free_tier_fronts(db)
+    """Manually trigger the user-opt-in front-history retention sweep. Admin only.
+
+    Destructive: refuses while the kill switch is off unless
+    override_freeze=true, and records the override in the admin audit.
+    """
+    freeze_overridden = _check_destructive_freeze(
+        is_destructive=True, override_freeze=override_freeze
+    )
+    result = await sweep_front_retention(db)
+    count = result.get("items_processed", 0)
+    after = {"job": "retention/run", "pruned": count}
+    if freeze_overridden:
+        after["freeze_overridden"] = True
     await log_admin_action(
         db,
         admin=admin,
         action=AdminAuditAction.JOB_TRIGGER,
         target_type=AdminAuditTargetType.JOB,
-        after={"job": "retention/run", "pruned": count},
+        after=after,
     )
     await db.commit()
     return {"pruned": count}
@@ -583,10 +619,18 @@ async def run_retention(
 
 @router.post("/cleanup/run")
 async def run_cleanup(
+    override_freeze: bool = False,
     admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Clean up orphaned files for all users. Admin only."""
+    """Clean up orphaned files for all users. Admin only.
+
+    Destructive: refuses while the kill switch is off unless
+    override_freeze=true, and records the override in the admin audit.
+    """
+    freeze_overridden = _check_destructive_freeze(
+        is_destructive=True, override_freeze=override_freeze
+    )
     result = await db.execute(select(User.id))
     user_ids = [str(uid) for (uid,) in result]
 
@@ -597,16 +641,19 @@ async def run_cleanup(
         total_orphaned += stats["orphaned"]
         total_freed += stats["freed_bytes"]
 
+    after = {
+        "job": "cleanup/run",
+        "orphaned": total_orphaned,
+        "freed_bytes": total_freed,
+    }
+    if freeze_overridden:
+        after["freeze_overridden"] = True
     await log_admin_action(
         db,
         admin=admin,
         action=AdminAuditAction.JOB_TRIGGER,
         target_type=AdminAuditTargetType.JOB,
-        after={
-            "job": "cleanup/run",
-            "orphaned": total_orphaned,
-            "freed_bytes": total_freed,
-        },
+        after=after,
     )
     await db.commit()
 
@@ -881,10 +928,15 @@ async def list_jobs(
 @router.post("/jobs/{job_name}/run")
 async def trigger_job(
     job_name: str,
+    override_freeze: bool = False,
     admin: User = Depends(get_admin_write_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger a scheduled job. Requires admin:write."""
+    """Manually trigger a scheduled job. Requires admin:write.
+
+    A job marked destructive refuses while the kill switch is off unless
+    override_freeze=true, and the override is recorded in the admin audit.
+    """
     from sheaf.services.jobs import get_registry, run_job
 
     registry = get_registry()
@@ -894,13 +946,20 @@ async def trigger_job(
             detail=f"Unknown job: {job_name}",
         )
 
+    freeze_overridden = _check_destructive_freeze(
+        is_destructive=registry[job_name].destructive,
+        override_freeze=override_freeze,
+    )
     run = await run_job(job_name, db)
+    after = {"job": job_name, "status": run.status}
+    if freeze_overridden:
+        after["freeze_overridden"] = True
     await log_admin_action(
         db,
         admin=admin,
         action=AdminAuditAction.JOB_TRIGGER,
         target_type=AdminAuditTargetType.JOB,
-        after={"job": job_name, "status": run.status},
+        after=after,
     )
     await db.commit()
 

@@ -28,6 +28,10 @@ class RetentionResponse(BaseModel):
     tier_max_days: int
     override_revisions: int | None
     override_days: int | None
+    # User-opt-in front-history retention window in days. 0 = off = keep
+    # forever. Non-null on the model (unlike the revision overrides), so this
+    # is always a concrete int.
+    front_retention_days: int
     trim_notice: RetentionTrimNoticeRead | None = None
 
 
@@ -41,6 +45,13 @@ class RetentionUpdate(BaseModel):
 
     max_revisions: int | None = Field(default=None, ge=0, le=100000)
     max_revision_days: int | None = Field(default=None, ge=0, le=36500)
+
+    # Front-history retention window in days. 0 = off = keep forever. Uncapped
+    # per tier (no tier-max coercion), so only a sanity ceiling is applied.
+    # Enabling (0 -> N) or shortening (N -> smaller) is a tightening that
+    # defers behind the grace period with re-auth; turning it off or
+    # lengthening applies immediately.
+    front_retention_days: int | None = Field(default=None, ge=0, le=36500)
 
     # Re-auth needed for loosening (cap reductions).
     password: str | None = None

@@ -573,7 +573,7 @@ def test_expected_jobs_are_marked_destructive():
     reg = jobs_module.get_registry()
 
     destructive = {
-        "prune_free_tier_fronts",
+        "front_retention_sweep",
         "gc_revisions",
         "purge_expired_polls",
         "cleanup_orphaned_files",

@@ -72,6 +72,7 @@ async def get_retention(
         tier_max_days=tier_days,
         override_revisions=system.journal_max_revisions,
         override_days=system.journal_max_revision_days,
+        front_retention_days=system.front_retention_days,
         trim_notice=(
             RetentionTrimNoticeRead.model_validate(notice) if notice else None
         ),
@@ -104,6 +105,19 @@ async def update_retention(
         proposed["journal_max_revision_days"] = _coerce_override(
             sent["max_revision_days"], tier_days
         )
+    if "front_retention_days" in sent:
+        # Uncapped per tier, so NO _coerce_override (there is no tier max to
+        # enforce). The column is non-null (0 = off), so unlike the revision
+        # overrides there is no "clear override" null semantic - reject an
+        # explicit null rather than let it hit the NOT NULL column. The ge=0
+        # bound is enforced by the schema; re-check for defence in depth.
+        value = sent["front_retention_days"]
+        if value is None or value < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="front_retention_days must be an integer >= 0",
+            )
+        proposed["front_retention_days"] = value
 
     split = split_safety_changes(system, proposed)
 
@@ -145,6 +159,7 @@ async def update_retention(
         tier_max_days=tier_days,
         override_revisions=system.journal_max_revisions,
         override_days=system.journal_max_revision_days,
+        front_retention_days=system.front_retention_days,
         trim_notice=(
             RetentionTrimNoticeRead.model_validate(notice) if notice else None
         ),

@@ -10,11 +10,16 @@ test_imports_sheaf_runner.py.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import os
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+
+from tests.conftest import BASE_URL
 
 
 def _upload(client: httpx.Client, path: str, payload: dict) -> httpx.Response:
@@ -23,6 +28,57 @@ def _upload(client: httpx.Client, path: str, payload: dict) -> httpx.Response:
         path,
         files={"file": ("export.json", io.BytesIO(body), "application/json")},
     )
+
+
+def _register_client(c: httpx.Client) -> str:
+    """Register a fresh user on the given client and return the email, so a
+    test can reach into the DB to set that user's system settings."""
+    email = f"ret-preview-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = c.post(
+        "/v1/auth/register",
+        json={"email": email, "password": "testpassword123"},
+    )
+    assert resp.status_code == 201, resp.text
+    c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+    return email
+
+
+def _set_front_retention(email: str, days: int) -> None:
+    """Set the user's ``System.front_retention_days`` directly in the DB.
+
+    The real toggle routes through a SafetyChangeRequest (asymmetric
+    loosening), which is not what these preview tests exercise - they only
+    need the setting in place - so write it straight to the row."""
+
+    async def _run() -> None:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.crypto import blind_index
+        from sheaf.models.system import System
+        from sheaf.models.user import User
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        async with async_session() as db:
+            user = (
+                await db.execute(
+                    select(User).where(User.email_hash == blind_index(email))
+                )
+            ).scalar_one()
+            system = (
+                await db.execute(select(System).where(System.user_id == user.id))
+            ).scalar_one()
+            system.front_retention_days = days
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_run())
 
 
 def _future_iso(days: int = 30) -> str:
@@ -148,3 +204,59 @@ def test_preview_no_warning_when_open_polls_within_cap(auth_client: httpx.Client
     body = resp.json()
     assert body["open_poll_count"] == n
     assert not [w for w in body["limit_warnings"] if "concurrent-open-poll" in w]
+
+
+def _front_payload() -> dict:
+    """A minimal v2 export carrying one front, so front_count > 0."""
+    return {
+        "version": "2",
+        "system": {"name": "S"},
+        "members": [{"id": "m1", "name": "Alice"}],
+        "fronts": [{"id": "f1", "members": ["m1"]}],
+    }
+
+
+def test_preview_warns_when_retention_on_and_import_has_front_history():
+    """A system with front-history retention turned on that previews an import
+    containing fronting history is told, up front, that the imported history
+    older than its window will age out after the import grace - so there is no
+    surprise deletion later."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = _register_client(c)
+        _set_front_retention(email, 30)
+        resp = _upload(c, "/v1/import/sheaf/preview", _front_payload())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["front_count"] == 1
+    hits = [w for w in body["limit_warnings"] if "front-history retention" in w]
+    assert hits, body["limit_warnings"]
+    # The window and the grace are both named, so the message is self-contained.
+    assert "30 days" in hits[0]
+    assert "14 days" in hits[0]
+
+
+def test_preview_no_retention_warning_when_retention_off():
+    """With retention off (the default, 0) the same front-carrying import
+    previews with no retention warning - nothing would age out."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        _register_client(c)
+        resp = _upload(c, "/v1/import/sheaf/preview", _front_payload())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["front_count"] == 1
+    assert not [w for w in body["limit_warnings"] if "front-history retention" in w]
+
+
+def test_preview_no_retention_warning_when_import_has_no_fronts():
+    """Retention on but the import carries no fronting history: no warning,
+    because there is nothing that could age out."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = _register_client(c)
+        _set_front_retention(email, 30)
+        payload = _front_payload()
+        payload["fronts"] = []
+        resp = _upload(c, "/v1/import/sheaf/preview", payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["front_count"] == 0
+    assert not [w for w in body["limit_warnings"] if "front-history retention" in w]
