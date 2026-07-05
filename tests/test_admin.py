@@ -189,6 +189,39 @@ def test_cleanup_run(admin_client: httpx.Client):
     assert "total_freed_bytes" in data
 
 
+def test_manual_trigger_freeze_guard(monkeypatch):
+    """A manual destructive-job trigger refuses while the kill switch is off
+    unless explicitly overridden; non-destructive jobs are never affected."""
+    import pytest
+    from fastapi import HTTPException
+
+    from sheaf.api.v1 import admin
+    from sheaf.config import settings
+
+    # Non-destructive: never blocked, even while frozen.
+    monkeypatch.setattr(settings, "destructive_jobs_enabled", False)
+    assert (
+        admin._check_destructive_freeze(is_destructive=False, override_freeze=False)
+        is False
+    )
+    # Destructive + switch on: runs, and it is not an override.
+    monkeypatch.setattr(settings, "destructive_jobs_enabled", True)
+    assert (
+        admin._check_destructive_freeze(is_destructive=True, override_freeze=False)
+        is False
+    )
+    # Destructive + frozen + no override: refused with 409.
+    monkeypatch.setattr(settings, "destructive_jobs_enabled", False)
+    with pytest.raises(HTTPException) as exc_info:
+        admin._check_destructive_freeze(is_destructive=True, override_freeze=False)
+    assert exc_info.value.status_code == 409
+    # Destructive + frozen + explicit override: allowed, reported as overridden.
+    assert (
+        admin._check_destructive_freeze(is_destructive=True, override_freeze=True)
+        is True
+    )
+
+
 # ---------------------------------------------------------------------------
 # Admin API key scopes
 # ---------------------------------------------------------------------------
