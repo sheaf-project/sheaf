@@ -610,11 +610,19 @@ export interface RetentionSettings {
   override_revisions: number | null;
   override_days: number | null;
   trim_notice: RetentionTrimNotice | null;
+  // Age-out window for closed fronting history, in days. 0 = off = keep
+  // forever. Enabling or shortening this schedules deletion of history
+  // older than the window (after a fixed import grace), so those changes
+  // route through the System Safety grace + re-auth path; turning it off
+  // or lengthening applies immediately.
+  front_retention_days: number;
 }
 
 export interface RetentionUpdate {
   max_revisions?: number | null;
   max_revision_days?: number | null;
+  // 0 = off = keep fronting history forever.
+  front_retention_days?: number;
   password?: string;
   totp_code?: string;
 }
