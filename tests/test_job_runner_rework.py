@@ -368,6 +368,66 @@ def test_fresh_running_export_is_left_alone(
 
 
 # ---------------------------------------------------------------------------
+# Cleanup sweep: FAILED rows are aged out on completed_at, not expires_at
+# (a FAILED job never produced a file, so it carries no expires_at).
+
+
+def _set_export_failed(job_id: str, *, completed_hours_ago: float) -> None:
+    async def run() -> None:
+        engine = _test_engine()
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE export_jobs SET status = 'failed', "
+                        "completed_at = :ts, expires_at = NULL, "
+                        "file_location = NULL, error = 'synthetic failure' "
+                        "WHERE id = :id"
+                    ),
+                    {
+                        "ts": datetime.now(UTC)
+                        - timedelta(hours=completed_hours_ago),
+                        "id": job_id,
+                    },
+                )
+                await conn.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_expired_failed_export_is_cleaned(
+    auth_client: httpx.Client, admin_client: httpx.Client,
+):
+    from sheaf.config import settings
+
+    job_id = _enqueue_export(auth_client)
+    _set_export_failed(
+        job_id, completed_hours_ago=settings.export_job_ttl_hours + 1
+    )
+
+    resp = admin_client.post("/v1/admin/jobs/cleanup_export_jobs/run")
+    assert resp.status_code == 200, resp.text
+
+    detail = auth_client.get(f"/v1/export/jobs/{job_id}").json()
+    assert detail["status"] == "expired", detail
+
+
+def test_recent_failed_export_is_left_alone(
+    auth_client: httpx.Client, admin_client: httpx.Client,
+):
+    job_id = _enqueue_export(auth_client)
+    _set_export_failed(job_id, completed_hours_ago=0)
+
+    resp = admin_client.post("/v1/admin/jobs/cleanup_export_jobs/run")
+    assert resp.status_code == 200, resp.text
+
+    detail = auth_client.get(f"/v1/export/jobs/{job_id}").json()
+    assert detail["status"] == "failed", detail
+
+
+# ---------------------------------------------------------------------------
 # Leader + import observability metrics
 
 

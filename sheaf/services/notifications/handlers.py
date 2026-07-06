@@ -127,8 +127,11 @@ async def _deliver_web_push(
     # manages its own connection, so this is validate-only rather than
     # pinned - acceptable for the narrow window, and the endpoint must be
     # https for the gate to pass anything a push service would issue.
+    # assert_url_safe does a blocking getaddrinfo, so offload it to a worker
+    # thread: a black-holing or slow resolver on a client-supplied endpoint
+    # must not stall the dispatcher's event loop.
     try:
-        assert_url_safe(str(sub["endpoint"]))
+        await asyncio.to_thread(assert_url_safe, str(sub["endpoint"]))
     except SsrfRejected as exc:
         return permanent(f"SSRF rejection: {exc}")
 

@@ -16,7 +16,7 @@ import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
@@ -444,17 +444,27 @@ async def _send_completion_email(*, user_email: str, job_id: uuid.UUID) -> None:
 async def run_cleanup_tick() -> int:
     """Sweep expired DONE jobs: delete their files, mark row EXPIRED.
 
-    Idempotent — claims rows by status transition, so two workers running
-    simultaneously can't double-delete (only one will see DONE→EXPIRED
-    succeed). Also picks up FAILED rows older than the TTL just to keep
-    the table tidy.
+    Idempotent - claims rows by status transition, so two workers running
+    simultaneously can't double-delete (only one will see the row move to
+    EXPIRED succeed). Also picks up FAILED rows older than the TTL just to
+    keep the table tidy: those carry no expires_at (they never produced a
+    file to expire), so they're aged out on completed_at + TTL instead.
     """
     cutoff = datetime.now(UTC)
+    failed_cutoff = cutoff - timedelta(hours=settings.export_job_ttl_hours)
     async with async_session_factory() as db:
         result = await db.execute(
             select(ExportJob).where(
-                ExportJob.status == ExportJobStatus.DONE,
-                ExportJob.expires_at <= cutoff,
+                or_(
+                    and_(
+                        ExportJob.status == ExportJobStatus.DONE,
+                        ExportJob.expires_at <= cutoff,
+                    ),
+                    and_(
+                        ExportJob.status == ExportJobStatus.FAILED,
+                        ExportJob.completed_at <= failed_cutoff,
+                    ),
+                )
             )
         )
         jobs = list(result.scalars().all())

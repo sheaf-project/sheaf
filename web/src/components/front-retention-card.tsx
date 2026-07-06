@@ -110,7 +110,11 @@ function FrontRetentionForm({ settings }: { settings: RetentionSettings }) {
   // Destructive direction: enabling (off -> N) or shortening (N -> M, M < N).
   const destructive =
     toEffective(newDays) < toEffective(settings.front_retention_days);
-  const needsReauth = destructive && gracePeriod > 0;
+  // Re-auth is required for any destructive change once the account has a
+  // delete-confirmation tier set, regardless of the grace period. The grace
+  // period only controls whether the change defers or applies immediately.
+  const needsReauth = destructive && authTier !== "none";
+  const showGraceMessage = destructive && gracePeriod > 0;
 
   const mutation = useMutation({
     mutationFn: updateRetention,
@@ -210,43 +214,54 @@ function FrontRetentionForm({ settings }: { settings: RetentionSettings }) {
               (or leave empty) to turn it off.
             </p>
           </div>
-          {needsReauth && (
+          {(needsReauth || showGraceMessage) && (
             <div className="space-y-3 border-t pt-3">
-              <p className="text-sm text-muted-foreground">
-                Turning retention on or shortening the window schedules deletion
-                of history older than the window, so it requires re-auth and
-                takes effect after the {gracePeriod}-day grace period. You can
-                cancel during that window.
-              </p>
-              {(authTier === "password" || authTier === "both") && (
-                <div className="space-y-1">
-                  <Label htmlFor="front-retention-password" className="text-sm">Password</Label>
-                  <Input
-                    id="front-retention-password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
+              {needsReauth && (
+                <p className="text-sm text-muted-foreground">
+                  Turning retention on or shortening the window schedules
+                  deletion of history older than the window, so it requires
+                  re-auth.
+                </p>
               )}
-              {(authTier === "totp" || authTier === "both") &&
-                user?.totp_enabled && (
-                  <div className="space-y-1">
-                    <Label htmlFor="front-retention-totp" className="text-sm">TOTP code</Label>
-                    <Input
-                      id="front-retention-totp"
-                      value={totpCode}
-                      onChange={(e) => setTotpCode(e.target.value)}
-                      placeholder="6-digit code"
-                      inputMode="numeric"
-                      maxLength={6}
-                      pattern="[0-9]{6}"
-                      autoComplete="off"
-                      required
-                    />
-                  </div>
-                )}
+              {showGraceMessage && (
+                <p className="text-sm text-muted-foreground">
+                  The change takes effect after the {gracePeriod}-day grace
+                  period, and you can cancel until then.
+                </p>
+              )}
+              {needsReauth && (
+                <>
+                  {(authTier === "password" || authTier === "both") && (
+                    <div className="space-y-1">
+                      <Label htmlFor="front-retention-password" className="text-sm">Password</Label>
+                      <Input
+                        id="front-retention-password"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                      />
+                    </div>
+                  )}
+                  {(authTier === "totp" || authTier === "both") &&
+                    user?.totp_enabled && (
+                      <div className="space-y-1">
+                        <Label htmlFor="front-retention-totp" className="text-sm">TOTP code</Label>
+                        <Input
+                          id="front-retention-totp"
+                          value={totpCode}
+                          onChange={(e) => setTotpCode(e.target.value)}
+                          placeholder="6-digit code"
+                          inputMode="numeric"
+                          maxLength={6}
+                          pattern="[0-9]{6}"
+                          autoComplete="off"
+                          required
+                        />
+                      </div>
+                    )}
+                </>
+              )}
             </div>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
