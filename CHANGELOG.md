@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-07
+
 ### Added
 
 - **User-opt-in front-history retention.** You can now set a per-system window that ages out closed fronting history older than a chosen age. It is off by default and is a privacy control rather than a paid feature, so it is not tiered per plan. Enabling it or shortening the window is a deferred, re-auth-gated System Safety change with a cancellable countdown (turning it off or lengthening the window applies immediately), and a front is only ever removed once it is closed, ended longer ago than the window, and has lived in the database past a fixed 14-day import grace - so a freshly imported archive is never abruptly deleted and you have two weeks to review it or change the setting. The settings card sits next to revision retention and prompts you to export a copy before enabling; the import preview warns, before you commit, when retention is on and old imported history will age out, and how to keep it. The setting is deliberately excluded from the data export, so restoring a backup never silently re-arms a deletion policy from a file. Deletions leave a per-user account-activity trace and honour the deletion kill switch.
