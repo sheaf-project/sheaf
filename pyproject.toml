@@ -37,7 +37,7 @@ dependencies = [
 s3 = ["boto3>=1.35.0"]
 ses = ["boto3>=1.35.0"]
 sendgrid = ["httpx>=0.28.0"]
-smtp = ["aiosmtplib>=3.0.0"]
+smtp = ["aiosmtplib>=5.1.1"]
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
