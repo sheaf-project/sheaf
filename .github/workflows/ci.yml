@@ -284,3 +284,22 @@ jobs:
           files: |
             web-dist-${{ github.ref_name }}.tar.gz
             web/dist/build-manifest.json
+
+      # Let downstream tooling know a release shipped. Target and token
+      # live in secrets so they never appear in this file or in logs;
+      # skips quietly when unset (forks, dry runs).
+      - name: Notify docs tooling
+        if: success()
+        env:
+          DISPATCH_REPO: ${{ secrets.DOCS_DISPATCH_REPO }}
+          DISPATCH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DISPATCH_REPO" ] || [ -z "$DISPATCH_TOKEN" ]; then
+            echo "docs dispatch not configured; skipping"
+            exit 0
+          fi
+          curl -fsS -X POST \
+            "https://api.github.com/repos/${DISPATCH_REPO}/dispatches" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            --data "{\"event_type\":\"release-web\",\"client_payload\":{\"platform\":\"web\",\"ref\":\"${GITHUB_REF_NAME}\"}}"
