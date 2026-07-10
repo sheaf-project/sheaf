@@ -69,6 +69,9 @@ export function FrontsPage() {
       try {
         const res = await apiFetch<{ settings: Record<string, unknown> }>(
           "/v1/settings/client/web",
+          // A fresh account 404s here (no saved defaults yet); expected, so
+          // don't toast. We fall back to {} below.
+          { skipErrorToast: true },
         );
         return res.settings;
       } catch {
