@@ -6,6 +6,15 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **A stored file key can no longer be used to read another account's uploads.** Avatar, banner, and bio/journal image references are re-signed into a live URL every time they are read, and nothing stopped you from storing another account's storage key in your own profile - which would then be re-signed on your behalf into a working link to their file, surviving even after they made it private or deleted it. Writes now reject any internal file key that isn't in your own namespace, and the file-serving endpoint refuses any key outside the image upload prefixes (so a signed URL can never reach, say, an export archive).
+- **API-key scope tightening on the file endpoints.** Listing files, reading storage usage, and inspecting where a file is referenced required only authentication, so a key with any unrelated scope could read that data - and the reference view discloses journal-entry titles, dodging the journals scope. Those reads now require the matching read scope (and the reference view requires journal read as well), and deleting a file now requires the explicit delete scope rather than write. Session and app (JWT) auth are unaffected.
+
+### Fixed
+
+- **Orphaned-file cleanup no longer races a fresh upload or leaks storage on a delete failure.** A file uploaded but not yet attached to a profile looked orphaned in the gap before it was attached; cleanup now ignores files younger than a grace window so that window can't be hit. Cleanup also deletes the stored object before removing its database row (and guards each file independently), so a storage error leaves the row for the next run to retry instead of stranding an object with no record of it, and one bad file no longer aborts the whole batch.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added

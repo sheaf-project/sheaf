@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.crypto import blind_index, encrypt
 from sheaf.database import get_db
+from sheaf.files import owned_avatar_url, owned_description_urls
 from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
@@ -180,6 +181,12 @@ async def create_member(
     plaintext_name: str = data.pop("name")
     plaintext_description: str | None = data.pop("description", None)
     plaintext_note: str | None = data.pop("note", None)
+    # Drop any avatar/banner/bio media that references another account's
+    # storage keys before it reaches the DB - a foreign key would be
+    # re-signed into a live serve URL on read (cross-tenant read oracle).
+    data["avatar_url"] = owned_avatar_url(data.get("avatar_url"), user.id)
+    data["banner_url"] = owned_avatar_url(data.get("banner_url"), user.id)
+    plaintext_description = owned_description_urls(plaintext_description, user.id)
     member = Member(
         system_id=system.id,
         name=encrypt(plaintext_name),
@@ -332,6 +339,17 @@ async def update_member(
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
     update_data = body.model_dump(exclude_unset=True)
+    # Same ownership guard as create: a key from another account must not be
+    # stored (and later re-signed) here. Filter before the revision-capture
+    # comparison so the stored and compared values match.
+    if "avatar_url" in update_data:
+        update_data["avatar_url"] = owned_avatar_url(update_data["avatar_url"], user.id)
+    if "banner_url" in update_data:
+        update_data["banner_url"] = owned_avatar_url(update_data["banner_url"], user.id)
+    if "description" in update_data:
+        update_data["description"] = owned_description_urls(
+            update_data["description"], user.id
+        )
     _, current_description = member_plaintext(member)
     if (
         "description" in update_data
