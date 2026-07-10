@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.api.v1.members import _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.files import owned_description_urls
 from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
@@ -177,7 +178,9 @@ async def create_entry(
             system=system,
             member_id=body.member_id,
             title=body.title,
-            body=body.body,
+            # Strip embedded image refs pointing at another account's files
+            # before they are stored (and later re-signed on read).
+            body=owned_description_urls(body.body, user.id),
             visibility=body.visibility,
             author_member_ids=body.author_member_ids,
         )
@@ -233,7 +236,7 @@ async def patch_entry(
             user=user,
             entry=entry,
             title=update_data.get("title"),
-            body=update_data.get("body"),
+            body=owned_description_urls(update_data.get("body"), user.id),
             visibility=update_data.get("visibility"),
             author_member_ids=update_data.get("author_member_ids"),
         )

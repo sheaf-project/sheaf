@@ -6,8 +6,11 @@ import pytest
 
 from sheaf.config import settings
 from sheaf.files import (
+    internal_key_owner,
     normalize_avatar_url,
     normalize_description_urls,
+    owned_avatar_url,
+    owned_description_urls,
     resolve_avatar_url,
     resolve_description_urls,
     sign_cdn_url,
@@ -268,3 +271,80 @@ def test_resolve_description_urls_resigns_legacy_cdn_row(monkeypatch):
 def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
     result = resolve_description_urls("![avatar](https://gravatar.com/x.png)")
     assert result == "![avatar](https://gravatar.com/x.png)"
+
+
+# ---------------------------------------------------------------------------
+# Ownership binding: a caller can't persist another account's storage key
+# (which would be re-signed into a live serve URL on read).
+
+_OWNER = "11111111-1111-1111-1111-111111111111"
+_OTHER = "22222222-2222-2222-2222-222222222222"
+
+
+def test_internal_key_owner_extracts_user_segment():
+    assert internal_key_owner(f"avatars/{_OWNER}/abc.png") == _OWNER
+    assert internal_key_owner(f"bios/{_OTHER}/x.png") == _OTHER
+    assert internal_key_owner(f"banners/{_OWNER}/y.webp") == _OWNER
+
+
+def test_internal_key_owner_rejects_non_media_prefix():
+    # An exports/ key (or anything outside the upload prefixes) has no owner.
+    assert internal_key_owner(f"exports/{_OWNER}/dump.zip") is None
+    assert internal_key_owner("garbage") is None
+
+
+def test_owned_avatar_url_keeps_own_key():
+    key = f"avatars/{_OWNER}/abc.png"
+    assert owned_avatar_url(key, _OWNER) == key
+
+
+def test_owned_avatar_url_drops_foreign_key():
+    # The core exploit: storing someone else's key must be refused.
+    assert owned_avatar_url(f"avatars/{_OTHER}/abc.png", _OWNER) is None
+
+
+def test_owned_avatar_url_drops_non_media_prefix_key():
+    assert owned_avatar_url(f"exports/{_OWNER}/dump.zip", _OWNER) is None
+
+
+def test_owned_avatar_url_passes_external_and_none():
+    assert owned_avatar_url("https://gravatar.com/x.png", _OWNER) == (
+        "https://gravatar.com/x.png"
+    )
+    assert owned_avatar_url(None, _OWNER) is None
+
+
+def test_owned_avatar_url_accepts_uuid_owner_object():
+    import uuid
+
+    owner = uuid.UUID(_OWNER)
+    key = f"avatars/{_OWNER}/abc.png"
+    assert owned_avatar_url(key, owner) == key
+    assert owned_avatar_url(f"avatars/{_OTHER}/abc.png", owner) is None
+
+
+def test_owned_description_urls_drops_foreign_embed():
+    text = f"before ![pic](/v1/files/bios/{_OTHER}/a.png) after"
+    result = owned_description_urls(text, _OWNER)
+    assert _OTHER not in result
+    assert "before " in result and " after" in result
+
+
+def test_owned_description_urls_keeps_own_embed():
+    text = f"![pic](/v1/files/bios/{_OWNER}/a.png)"
+    assert owned_description_urls(text, _OWNER) == text
+
+
+def test_owned_description_urls_keeps_external_embed():
+    text = "![pic](https://gravatar.com/x.png)"
+    assert owned_description_urls(text, _OWNER) == text
+
+
+def test_owned_description_urls_mixed_keeps_own_drops_foreign():
+    text = (
+        f"![mine](/v1/files/avatars/{_OWNER}/m.png) "
+        f"![theirs](/v1/files/avatars/{_OTHER}/t.png)"
+    )
+    result = owned_description_urls(text, _OWNER)
+    assert f"avatars/{_OWNER}/m.png" in result
+    assert _OTHER not in result

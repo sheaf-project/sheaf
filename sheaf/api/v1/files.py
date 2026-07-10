@@ -283,7 +283,7 @@ async def upload_file(
     }
 
 
-@router.get("/usage")
+@router.get("/usage", dependencies=[Depends(require_scope("members:read"))])
 async def get_usage(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -305,7 +305,7 @@ async def get_usage(
     }
 
 
-@router.get("/list")
+@router.get("/list", dependencies=[Depends(require_scope("members:read"))])
 async def list_files(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -341,7 +341,17 @@ async def list_files(
     ]
 
 
-@router.get("/{file_id}/references")
+@router.get(
+    "/{file_id}/references",
+    # This endpoint discloses member AND journal references (titles, edit
+    # history), so a scoped key needs read on both - otherwise a key with
+    # only members:read could enumerate journal-entry titles, dodging the
+    # journals:* gate. Session/JWT auth bypasses scope checks as usual.
+    dependencies=[
+        Depends(require_scope("members:read")),
+        Depends(require_scope("journals:read")),
+    ],
+)
 async def get_file_references(
     file_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -365,7 +375,7 @@ async def get_file_references(
     return {"key": file.key, "references": references}
 
 
-@router.delete("/{file_id}", dependencies=[Depends(require_scope("members:write"))])
+@router.delete("/{file_id}", dependencies=[Depends(require_scope("members:delete"))])
 async def delete_file(
     file_id: uuid.UUID,
     body: MemberDeleteConfirm | None = None,
@@ -447,6 +457,10 @@ async def cleanup_dry_run(
 
 serve_router = APIRouter(prefix="/files", tags=["files"])
 
+# Uploads only ever write under these prefixes; the serve endpoint refuses
+# any key outside them (see serve_file).
+_SERVE_KEY_PREFIXES = ("avatars/", "bios/", "banners/")
+
 _CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -485,6 +499,15 @@ async def serve_file(
     """
     if ".." in path or path.startswith("/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
+    # Prefix allowlist: this endpoint serves image uploads only, which are
+    # always keyed under one of these prefixes (see upload_file). Refusing
+    # anything else stops a valid HMAC (which signs an arbitrary key on
+    # serialization) from being used to fetch objects outside the image
+    # namespace - e.g. an `exports/` key when the export bucket falls back to
+    # the shared image bucket. 404, not 400, so it doesn't confirm the key.
+    if not path.startswith(_SERVE_KEY_PREFIXES):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     if settings.image_serving == "signed" and (
         not token or not expires or not verify_file_token(path, token, expires)

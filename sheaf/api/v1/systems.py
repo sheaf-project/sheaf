@@ -8,6 +8,7 @@ from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
+from sheaf.files import owned_avatar_url, owned_description_urls
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.user import User
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
@@ -56,6 +57,14 @@ async def update_own_system(
 ):
     system = await _get_user_system(user, db)
     update_data = body.model_dump(exclude_unset=True)
+    # Drop avatar/bio media referencing another account's storage keys before
+    # it is stored (and later re-signed on read) - cross-tenant read oracle.
+    if "avatar_url" in update_data:
+        update_data["avatar_url"] = owned_avatar_url(update_data["avatar_url"], user.id)
+    if "description" in update_data:
+        update_data["description"] = owned_description_urls(
+            update_data["description"], user.id
+        )
     for key, value in update_data.items():
         if key == "note":
             # Encrypt at rest. Empty string clears the column (notes are

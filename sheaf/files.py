@@ -224,6 +224,75 @@ def resolve_description_urls(text: str | None) -> str | None:
     return _MD_IMAGE_URL_RE.sub(_replace, text)
 
 
+# Prefixes our uploads write under: {prefix}/{user_id}/{uuid}.{ext}. The
+# second path segment identifies the owning account, which is what the
+# ownership filters below key off.
+_MEDIA_KEY_PREFIXES = ("avatars", "bios", "banners")
+
+
+def internal_key_owner(key: str) -> str | None:
+    """Return the owner user-id embedded in an internal storage key.
+
+    Uploads key every blob as ``{prefix}/{user_id}/{uuid}.{ext}`` (see
+    files.upload_file), so the second path segment is the owning account.
+    Returns None if `key` doesn't match that layout (e.g. an ``exports/`` key
+    or anything malformed), which the callers treat as "not this user's".
+    """
+    parts = key.split("/")
+    if len(parts) >= 3 and parts[0] in _MEDIA_KEY_PREFIXES:
+        return parts[1]
+    return None
+
+
+def owned_avatar_url(value: str | None, owner_id: object) -> str | None:
+    """Drop an internal storage key that isn't in `owner_id`'s namespace.
+
+    None and external URLs pass through unchanged (externals are already
+    gated by normalize_avatar_url). An internal key is kept only when its
+    embedded owner segment matches `owner_id`.
+
+    Without this, a caller could persist another account's key in their own
+    avatar_url / banner_url. That key is re-signed into a live serve URL on
+    every read (see MemberRead._sign_avatar_url), so it becomes an
+    authorization oracle: a cross-tenant read of the other account's file,
+    and a way to keep fetching it after the owner has un-shared or deleted
+    the original. Enforced at the write handlers, which have the
+    authenticated user (the schema validators that call normalize_* run
+    without any request/user context).
+    """
+    if value is None:
+        return None
+    key = _to_internal_key(value)
+    if key is None:
+        return value  # external URL, left to normalize_avatar_url's gate
+    if internal_key_owner(key) == str(owner_id):
+        return key
+    return None
+
+
+def owned_description_urls(text: str | None, owner_id: object) -> str | None:
+    """Strip embedded internal file refs not in `owner_id`'s namespace.
+
+    The markdown twin of owned_avatar_url for bio / journal bodies: external
+    refs and the surrounding prose are left untouched; an internal
+    ``/v1/files/{key}`` (or bare-key / CDN) ref is dropped whole unless its
+    key belongs to `owner_id`. Same oracle risk as owned_avatar_url.
+    """
+    if text is None:
+        return None
+
+    def _filter(m: re.Match) -> str:
+        prefix, url, suffix = m.group(1), m.group(2), m.group(3)
+        key = _to_internal_key(url)
+        if key is None:
+            return prefix + url + suffix  # external, leave as-is
+        if internal_key_owner(key) == str(owner_id):
+            return prefix + url + suffix
+        return ""  # foreign internal ref: drop the whole image
+
+    return _MD_IMAGE_URL_RE.sub(_filter, text)
+
+
 def normalize_description_urls(text: str | None) -> str | None:
     """Normalize markdown image URLs for safe DB storage.
 
