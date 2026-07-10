@@ -6,6 +6,11 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Background jobs now always record a failure, even when the failure poisoned the database transaction.** A job that failed with a database error left its transaction unusable, so the write that records the failed run itself failed and the run - and its failure metrics - went unrecorded, meaning the "failed repeatedly" alert could never fire for exactly that class of failure. A failed job now rolls back its work and records the terminal run from a fresh transaction, and a mid-run failure no longer commits partial work.
+- **Reproducible backend builds.** The backend image installed dependencies straight from the project's version ranges, ignoring the lockfile, so a build could ship dependency versions that were never tested together. The image now installs the exact versions pinned in `uv.lock`.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added
