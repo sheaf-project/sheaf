@@ -13,7 +13,7 @@ export function DataImportCard() {
           Supported sources: SimplyPlural (export file), PluralKit (export file
           or live API via your <code>pk;token</code>), Tupperbox (export file),
           Sheaf (export file), Octocon and compatible forks (via PK export), Prism
-          (export file), PluralSpace (export file).
+          (export file), PluralSpace (export file), OpenPlural (export file).
         </p>
         <Link to="/import">
           <Button variant="outline">Import data</Button>

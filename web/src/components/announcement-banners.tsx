@@ -21,6 +21,9 @@ function useClientSettings(clientId: string) {
       try {
         const res = await apiFetch<{ settings: Record<string, unknown> }>(
           `/v1/settings/client/${encodeURIComponent(clientId)}`,
+          // No stored blob for this client 404s by design (e.g. a fresh
+          // account with nothing dismissed yet); expected, so don't toast.
+          { skipErrorToast: true },
         );
         return res.settings;
       } catch {
