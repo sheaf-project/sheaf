@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **Web-push delivery now pins the push endpoint to a validated address, closing a DNS-rebinding SSRF.** The web-push handler validated the client-supplied endpoint once and then let the push library open its own connection, which re-resolved the hostname - a nameserver could answer the check with a public address and the delivery with an internal one. It now resolves and validates once and hands the library a connection pinned to that address (with the original hostname preserved for TLS), matching how webhook and ntfy already deliver.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added

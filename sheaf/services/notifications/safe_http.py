@@ -192,3 +192,148 @@ def safe_client(timeout: float = 10.0) -> httpx.AsyncClient:
         # check we already did.
         follow_redirects=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Sync / requests pinning (pywebpush)
+# ---------------------------------------------------------------------------
+#
+# httpx pinning above can't help pywebpush: it is sync (requests under the
+# hood) and opens its own connection, re-resolving the endpoint host and
+# reopening the DNS-rebinding window that resolve_pinned closes for webhook
+# and ntfy. These helpers give the same guarantee for the requests path -
+# resolve + validate once, then hand pywebpush a session whose connections
+# are pinned to the validated IP (Host header + TLS SNI/verification stay on
+# the original hostname). Both run under asyncio.to_thread since getaddrinfo
+# and requests are blocking.
+
+
+def resolve_pinned_ip(url: str) -> tuple[str, str]:
+    """Resolve `url`'s host, validate every address, return (host, ip_literal).
+
+    Sync counterpart to resolve_pinned for the requests/pywebpush path. The
+    returned ip_literal is netloc-ready (IPv6 already bracketed) for pinning
+    the connection target. Raises SsrfRejected on a disallowed scheme or any
+    disallowed / unresolvable address. Validates every returned address (not
+    just the pinned one) so a mixed public+internal answer is rejected
+    outright.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SsrfRejected(f"scheme {parsed.scheme!r} not allowed")
+    host = parsed.hostname
+    if host is None:
+        raise SsrfRejected("missing host")
+
+    # IP literal: validate and use as-is (nothing to rebind).
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        addr = None
+    if addr is not None:
+        if _is_disallowed(addr):
+            raise SsrfRejected(f"address {host} is disallowed")
+        lit = f"[{addr}]" if isinstance(addr, ipaddress.IPv6Address) else str(addr)
+        return host, lit
+
+    try:
+        infos = socket.getaddrinfo(
+            host, parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise SsrfRejected(f"DNS resolution failed for {host}") from exc
+
+    chosen: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
+    for info in infos:
+        try:
+            candidate = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if _is_disallowed(candidate):
+            raise SsrfRejected(
+                f"{host} resolves to disallowed address {info[4][0]}"
+            )
+        if chosen is None:
+            chosen = candidate
+    if chosen is None:
+        raise SsrfRejected(f"DNS resolution returned no addresses for {host}")
+
+    lit = f"[{chosen}]" if isinstance(chosen, ipaddress.IPv6Address) else str(chosen)
+    return host, lit
+
+
+# Cached so we import requests (transitive via pywebpush, optional in minimal
+# deploys) lazily and build the adapter class only once.
+_pinned_adapter_cls = None
+
+
+def _get_pinned_adapter_cls():  # noqa: ANN202 - returns a requests.HTTPAdapter subclass
+    global _pinned_adapter_cls
+    if _pinned_adapter_cls is not None:
+        return _pinned_adapter_cls
+
+    import requests
+
+    class _PinnedIPAdapter(requests.adapters.HTTPAdapter):
+        """Force every connection to a pre-validated IP while keeping the
+        original Host header and TLS hostname (SNI + cert verification).
+
+        Merges the two requests-toolbelt recipes (ForcedIP + HostHeaderSSL):
+        rewrite the connection target to the pinned IP, but verify the cert
+        against the real hostname so a rebind can't downgrade TLS either.
+        """
+
+        def __init__(self, host: str, ip_literal: str, **kwargs) -> None:
+            self._pin_host = host
+            self._pin_ip = ip_literal
+            super().__init__(**kwargs)
+
+        def send(self, request, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            parsed = urlparse(request.url)
+            if parsed.hostname != self._pin_host:
+                # A redirect (or unexpected reuse) to a different host must not
+                # ride the pin; the pinned IP belongs to _pin_host only.
+                raise SsrfRejected(
+                    f"request host {parsed.hostname!r} does not match pinned "
+                    f"host {self._pin_host!r}"
+                )
+            host_header = self._pin_host
+            if parsed.port is not None:
+                host_header = f"{host_header}:{parsed.port}"
+            request.headers["Host"] = host_header
+            if parsed.scheme == "https":
+                # SNI + hostname verification stay on the real host even though
+                # we connect to the IP.
+                self.poolmanager.connection_pool_kw["server_hostname"] = self._pin_host
+                self.poolmanager.connection_pool_kw["assert_hostname"] = self._pin_host
+            netloc = self._pin_ip
+            if parsed.port is not None:
+                netloc = f"{netloc}:{parsed.port}"
+            request.url = urlunparse(parsed._replace(netloc=netloc))
+            return super().send(request, **kwargs)
+
+    _pinned_adapter_cls = _PinnedIPAdapter
+    return _pinned_adapter_cls
+
+
+def pinned_requests_session(url: str):  # noqa: ANN201 - returns a requests.Session
+    """Build a requests.Session pinned to `url`'s validated public IP.
+
+    Resolves + validates once, then mounts an adapter that steers every
+    connection to that IP with the Host header and TLS hostname preserved.
+    Redirect-following is disabled: a 3xx to an internal host would be
+    re-resolved by requests and dodge the pin. Raises SsrfRejected. Intended
+    to be handed to pywebpush via requests_session=. Run under
+    asyncio.to_thread - resolution and the eventual request both block.
+    """
+    import requests
+
+    host, ip_literal = resolve_pinned_ip(url)
+    session = requests.Session()
+    # First redirect raises TooManyRedirects rather than being followed.
+    session.max_redirects = 0
+    adapter = _get_pinned_adapter_cls()(host, ip_literal)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
