@@ -6,6 +6,13 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **No more spurious "Not found." toast on a brand-new account.** The web app reads your saved client settings (theme, onboarding state, dismissed announcements, saved front-view defaults) on load, and a fresh account has no settings stored yet, so the backend returns the expected 404. Several of those reads defaulted to empty correctly but still surfaced the generic error toast, so every first load flashed "Not found." until onboarding wrote the first settings blob. Those reads now suppress the toast for their own expected-empty case.
+- **The trusted-device name field now appears on the standard login form too.** When 2FA is required and you tick "trust this device", the optional device-name field was only rendered on the registration-closed login variant, not the normal tabbed login, so most users could name a trusted device from one form but not the other. Both forms now offer it.
+- **The import history empty-state and the settings import card list every supported source.** The "no imports yet" copy named only four of the supported sources and the settings card omitted OpenPlural; both now reflect the full set (PluralKit, SimplyPlural, Tupperbox, PluralSpace, Prism, OpenPlural, and Sheaf exports).
+- **The notification-channel "Resolved members" preview no longer runs off the card.** On a large system the "Will receive" / "Will not receive" rosters rendered as one unbounded list; each column now scrolls internally past a bound instead of stretching the page.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added

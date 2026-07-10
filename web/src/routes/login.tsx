@@ -235,19 +235,32 @@ export function LoginPage() {
                           autoFocus
                         />
                       </div>
-                      <div className="flex items-start gap-3">
-                        <Checkbox
-                          id="login-remember"
-                          checked={rememberDevice}
-                          onCheckedChange={(v) => setRememberDevice(v === true)}
-                        />
-                        <Label
-                          htmlFor="login-remember"
-                          className="text-sm font-normal leading-snug cursor-pointer"
-                        >
-                          Trust this device for 30 days. Skip the 2FA prompt on
-                          this browser until then.
-                        </Label>
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-3">
+                          <Checkbox
+                            id="login-remember"
+                            checked={rememberDevice}
+                            onCheckedChange={(v) =>
+                              setRememberDevice(v === true)
+                            }
+                          />
+                          <Label
+                            htmlFor="login-remember"
+                            className="text-sm font-normal leading-snug cursor-pointer"
+                          >
+                            Trust this device for 30 days. Skip the 2FA prompt
+                            on this browser until then.
+                          </Label>
+                        </div>
+                        {rememberDevice && (
+                          <Input
+                            id="login-device-nickname"
+                            value={deviceNickname}
+                            onChange={(e) => setDeviceNickname(e.target.value)}
+                            placeholder="Device name (optional)"
+                            maxLength={128}
+                          />
+                        )}
                       </div>
                     </>
                   )}
