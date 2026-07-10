@@ -161,6 +161,10 @@ async function fetchWebSettings(): Promise<WebClientSettings> {
   try {
     const res = await apiFetch<{ settings: WebClientSettings }>(
       "/v1/settings/client/web",
+      // A fresh account has no settings blob yet, so the backend 404s by
+      // design. That's the normal first-run state here, not an error worth
+      // a toast; we fall back to {} below.
+      { skipErrorToast: true },
     );
     return res.settings ?? {};
   } catch {
