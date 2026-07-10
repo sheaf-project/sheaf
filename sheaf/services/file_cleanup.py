@@ -6,6 +6,7 @@ or bio image, and deletes them from both storage and the database.
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,15 @@ from sheaf.services.members import member_plaintext
 from sheaf.storage import get_storage
 
 logger = logging.getLogger("sheaf.cleanup")
+
+# Grace period before a freshly-uploaded, still-unreferenced file is eligible
+# for cleanup. Uploads are a two-step flow: POST /files/upload creates the
+# blob + row (an orphan), then a later write attaches it (avatar, bio embed).
+# Between those two calls the file looks orphaned; deleting it there is the
+# race that would nuke a file the user is mid-way through attaching. Requiring
+# the row to have aged past this window makes that window unreachable - a real
+# abandoned upload is still reclaimed on the next run after it ages out.
+_ORPHAN_GRACE = timedelta(hours=1)
 
 
 def _key_from_avatar(value: str | None) -> set[str]:
@@ -57,8 +67,15 @@ async def find_orphaned_files(
 
     Returns a list of orphaned UploadedFile rows.
     """
+    # Only consider files that have aged past the grace window - see
+    # _ORPHAN_GRACE. A file uploaded seconds ago that hasn't been attached yet
+    # is not an orphan, it's mid-flow.
+    cutoff = datetime.now(UTC) - _ORPHAN_GRACE
     result = await db.execute(
-        select(UploadedFile).where(UploadedFile.user_id == user_id)
+        select(UploadedFile).where(
+            UploadedFile.user_id == user_id,
+            UploadedFile.created_at < cutoff,
+        )
     )
     uploaded = list(result.scalars().all())
 
@@ -277,27 +294,46 @@ async def cleanup_orphaned_files(
 
     # Re-scan under the same session right before deleting. If a concurrent
     # write attached one of these files (set an avatar, embedded it in a bio)
-    # between the initial find and now, this narrows the window where we'd
-    # delete a live reference to effectively nothing. Delete DB rows first
-    # and commit; only then remove blobs, so a surviving reference keeps the
-    # row and the blob together.
+    # between the initial find and now, this narrows the already-grace-bounded
+    # window where we'd delete a live reference to effectively nothing.
     current_keys = {f.key for f in await find_orphaned_files(db, user_id)}
     to_delete = [f for f in orphaned if f.key in current_keys]
 
-    for f in to_delete:
-        await db.delete(f)
-    await db.commit()
-
+    # Delete the blob FIRST, and only drop the DB row once its blob is gone.
+    # The previous order (rows deleted + committed, then blobs) meant a blob
+    # delete that raised left an object with no row to ever find it again -
+    # permanently orphaned storage - and one failure aborted the whole batch.
+    # Blob-first inverts that: a storage failure just leaves the row for the
+    # next run to retry, and a row with no blob (if the row delete were to
+    # fail) is harmless and self-heals (the retry treats an already-gone blob
+    # as success). Per-file guarding means one bad key doesn't strand the rest.
     freed_bytes = 0
+    deleted: list[UploadedFile] = []
     for f in to_delete:
-        await storage.delete(f.key)
+        try:
+            await storage.delete(f.key)
+        except FileNotFoundError:
+            # Blob already gone (e.g. a half-finished prior run). Fall through
+            # and remove the now-dangling row.
+            pass
+        except Exception:
+            # Real storage error - keep the row so a later run retries rather
+            # than leaking the blob with no record of it.
+            logger.warning(
+                "Failed to delete orphaned blob %s; leaving row for retry", f.key
+            )
+            continue
+        await db.delete(f)
+        deleted.append(f)
         freed_bytes += f.size_bytes
         orphan_files_deleted_total.inc()
         logger.info("Deleted orphaned file: %s (%d bytes)", f.key, f.size_bytes)
 
+    await db.commit()
+
     return {
-        "orphaned": len(to_delete),
+        "orphaned": len(deleted),
         "freed_bytes": freed_bytes,
         "dry_run": False,
-        "keys": [f.key for f in to_delete],
+        "keys": [f.key for f in deleted],
     }
