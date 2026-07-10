@@ -75,7 +75,7 @@ function Column({
       {rows.length === 0 ? (
         <p className="text-xs text-muted-foreground">None.</p>
       ) : (
-        <ul className="space-y-1">
+        <ul className="max-h-72 space-y-1 overflow-y-auto pr-1">
           {rows.map((r) => (
             <li
               key={r.member_id}

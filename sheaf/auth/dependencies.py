@@ -102,14 +102,19 @@ async def get_current_user(
         user_id = await get_session_user_id(session_id)
         if user_id is not None:
             request.state.auth_method = "session"
+            # Track the validated session id for admin step-up and the
+            # session-management endpoints. Only stamp it here, inside the
+            # branch that actually validated the cookie: an API-key or
+            # bearer request may carry a stray sheaf_session cookie we never
+            # checked, and treating that unvalidated value as a live session
+            # would let a scoped key mint a full child session off a made-up
+            # cookie (the /sessions/secondary parent contract). A JWT bound
+            # to a session already set request.state.session_id above.
+            request.state.session_id = session_id
             # Update last-active metadata
             await touch_session(
                 session_id, ip=client_ip(request),
             )
-
-    # Track session_id from cookie for admin step-up auth
-    if session_id is not None and not hasattr(request.state, "session_id"):
-        request.state.session_id = session_id
 
     if user_id is None:
         raise HTTPException(

@@ -22,6 +22,9 @@ function useWebSettings() {
       try {
         const res = await apiFetch<{ settings: Record<string, unknown> }>(
           "/v1/settings/client/web",
+          // Fresh accounts have no blob yet, so the backend 404s by design;
+          // that is the normal pre-onboarding state, not a toastable error.
+          { skipErrorToast: true },
         );
         return res.settings;
       } catch {

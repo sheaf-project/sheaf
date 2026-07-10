@@ -30,7 +30,7 @@ from sheaf.observability.metrics import tier_label, tier_limit_hits_total
 from sheaf.services.notifications.payload import RenderedMessage
 from sheaf.services.notifications.safe_http import (
     SsrfRejected,
-    assert_url_safe,
+    pinned_requests_session,
     resolve_pinned,
     safe_client,
 )
@@ -124,14 +124,17 @@ async def _deliver_web_push(
 
     # The endpoint is client-supplied (whatever the browser's push service
     # handed it), so it gets the same SSRF gate as webhook URLs. pywebpush
-    # manages its own connection, so this is validate-only rather than
-    # pinned - acceptable for the narrow window, and the endpoint must be
-    # https for the gate to pass anything a push service would issue.
-    # assert_url_safe does a blocking getaddrinfo, so offload it to a worker
-    # thread: a black-holing or slow resolver on a client-supplied endpoint
-    # must not stall the dispatcher's event loop.
+    # opens its own connection and would re-resolve the host, so a plain
+    # validate-then-send leaves the DNS-rebinding window open. Instead we
+    # resolve + validate once and hand pywebpush a session pinned to that IP
+    # (Host header + TLS hostname preserved), matching how webhook/ntfy pin.
+    # Building the session does a blocking getaddrinfo, so offload it: a
+    # black-holing or slow resolver on a client-supplied endpoint must not
+    # stall the dispatcher's event loop.
     try:
-        await asyncio.to_thread(assert_url_safe, str(sub["endpoint"]))
+        pinned_session = await asyncio.to_thread(
+            pinned_requests_session, str(sub["endpoint"])
+        )
     except SsrfRejected as exc:
         return permanent(f"SSRF rejection: {exc}")
 
@@ -140,7 +143,8 @@ async def _deliver_web_push(
     try:
         # pywebpush is sync (requests under the hood): run it in a worker
         # thread with an explicit timeout so a slow push service can stall
-        # neither the event loop nor the dispatcher slot indefinitely.
+        # neither the event loop nor the dispatcher slot indefinitely. The
+        # pinned session keeps the connection on the validated IP.
         await asyncio.to_thread(
             webpush,
             subscription_info=sub,
@@ -148,6 +152,7 @@ async def _deliver_web_push(
             vapid_private_key=settings.vapid_private_key,
             vapid_claims={"sub": settings.vapid_subject or "mailto:admin@example.com"},
             timeout=10,
+            requests_session=pinned_session,
         )
         return SUCCESS
     except WebPushException as exc:

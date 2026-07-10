@@ -34,6 +34,9 @@ async function fetchWebSettings(): Promise<WebSettingsShape> {
   try {
     const res = await apiFetch<{ settings: WebSettingsShape }>(
       "/v1/settings/client/web",
+      // No settings blob on a fresh account is the expected 404 here, not an
+      // error the user should see toasted; we default to {} below.
+      { skipErrorToast: true },
     );
     return res.settings ?? {};
   } catch {
