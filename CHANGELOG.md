@@ -6,6 +6,11 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **A scoped API key could no longer be escalated into a full account session.** When a request authenticated with an API key also carried a stray session cookie, that cookie value was recorded as the request's session without ever being validated, and the companion-device endpoint (which mints a child session from the caller's session) then accepted it as a real parent - so a read-only key could mint an unrestricted session and act as the whole account. The session id is now only ever taken from a session that actually authenticated the request, and the companion-device endpoint additionally refuses API-key callers and confirms the parent session belongs to the user.
+- **Credential changes now revoke other sessions for app / token clients, not just cookie sessions.** Changing your password or email is meant to kick every other session on the account; it selected the session to keep from the browser cookie alone, so a mobile or API client (which sends a bearer token, not a cookie) revoked nothing and a stolen token elsewhere survived the change. Both flows now identify the current session from the authenticated request regardless of client, and fail closed (revoking everything) if the current session can't be identified.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added

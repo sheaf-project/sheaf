@@ -875,9 +875,18 @@ async def change_password(
     # session cookie elsewhere is dead. The calling session stays alive.
     # Refresh tokens bound to revoked sessions fail at /refresh when the
     # session lookup misses.
-    revoked = 0
-    if session_id:
-        revoked = await delete_other_sessions(user.id, session_id)
+    #
+    # Prefer the auth-bound session id (set for both cookie auth and
+    # session-bound JWTs) over the raw cookie: a mobile/bearer client sends
+    # no sheaf_session cookie, so keying off the cookie alone revoked
+    # nothing for them and left a stolen token alive. Fall back to the
+    # cookie, and if we still can't identify the current session, fail
+    # closed by revoking all of them rather than silently sparing every one.
+    current_sid = getattr(request.state, "session_id", None) or session_id
+    if current_sid:
+        revoked = await delete_other_sessions(user.id, current_sid)
+    else:
+        revoked = await delete_all_user_sessions(user.id)
 
     await _sec("success")
     return {"changed": True, "revoked_other_sessions": revoked}
@@ -889,6 +898,7 @@ async def change_password(
 )
 async def change_email(
     body: EmailChange,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_id: str | None = Cookie(default=None, alias="sheaf_session"),
@@ -979,9 +989,14 @@ async def change_email(
     )
     await db.commit()
 
-    revoked = 0
-    if session_id:
-        revoked = await delete_other_sessions(user.id, session_id)
+    # Same as change-password: prefer the auth-bound session id so bearer
+    # clients (no cookie) still revoke their other sessions, falling back to
+    # the cookie and failing closed if neither identifies the caller.
+    current_sid = getattr(request.state, "session_id", None) or session_id
+    if current_sid:
+        revoked = await delete_other_sessions(user.id, current_sid)
+    else:
+        revoked = await delete_all_user_sessions(user.id)
 
     return {
         "email": new_email,
@@ -1385,9 +1400,23 @@ async def create_secondary_session(
     "kicking out my phone also kicks out its watch."
     """
     parent_sid = getattr(request.state, "session_id", None)
-    if not parent_sid:
+    if getattr(request.state, "auth_method", None) == "api_key" or not parent_sid:
         # API-key callers don't have a session, and minting a child without
-        # a parent would defeat the cascade contract.
+        # a parent would defeat the cascade contract. The api_key guard is
+        # explicit belt-and-braces: request.state.session_id is only ever
+        # stamped from a validated session now, but we never want a scoped
+        # key to reach create_session regardless of how session_id was set.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A session-bound caller is required to mint a secondary session",
+        )
+
+    # Defence in depth: confirm the parent is a live session owned by this
+    # user before cascading a child off it, so a stale or spoofed handle
+    # can't seed an orphan session.
+    from sheaf.auth.sessions import get_session_user_id
+
+    if await get_session_user_id(parent_sid) != user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A session-bound caller is required to mint a secondary session",
