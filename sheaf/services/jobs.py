@@ -84,53 +84,98 @@ async def run_job(job_name: str, db: AsyncSession) -> JobRun:
     if job is None:
         raise ValueError(f"Unknown job: {job_name}")
 
+    started_at = datetime.now(UTC)
     run = JobRun(
         id=uuid.uuid4(),
         job_name=job_name,
-        started_at=datetime.now(UTC),
+        started_at=started_at,
         status="running",
         items_processed=0,
     )
     db.add(run)
     await db.flush()
+    run_id = run.id
 
     try:
         result = await job.func(db)
-        run.status = "success"
-        run.items_processed = result.get("items_processed", 0)
-        run.details = result.get("details")
-        run.finished_at = datetime.now(UTC)
     except Exception:
-        run.status = "error"
-        run.error_message = traceback.format_exc()
-        run.finished_at = datetime.now(UTC)
-        logger.exception("Job %s failed", job_name)
+        # A handler failure may have poisoned this session (a DB error aborts
+        # the transaction), so recording the failed row into `db` would itself
+        # raise and we'd lose both the JobRun and its failure metrics - the
+        # exact case the "failed N times in a row" alert must catch. Roll back
+        # the handler's partial work and persist the terminal row from a fresh
+        # session instead. Mirrors import_runner's terminal-failure path.
+        return await _record_job_failure(job_name, run_id, started_at, db)
 
+    run.status = "success"
+    run.items_processed = result.get("items_processed", 0)
+    run.details = result.get("details")
+    run.finished_at = datetime.now(UTC)
     await db.flush()
+    _emit_job_metrics(run)
+    return run
 
-    # Metrics: count outcome, observe duration, update items_processed,
-    # set last-success timestamp, and track consecutive failures so
-    # alerts can fire on "job has failed 5 times in a row".
+
+def _emit_job_metrics(run: JobRun) -> None:
+    """Count outcome, observe duration, update items_processed, set the
+    last-success timestamp, and track consecutive failures so alerts can fire
+    on 'job has failed N times in a row'."""
     elapsed = (run.finished_at - run.started_at).total_seconds()
-    job_runs_total.labels(job=job_name, outcome=run.status).inc()
-    job_run_duration_seconds.labels(job=job_name).observe(elapsed)
+    job_runs_total.labels(job=run.job_name, outcome=run.status).inc()
+    job_run_duration_seconds.labels(job=run.job_name).observe(elapsed)
     if run.status == "success":
         if run.items_processed:
-            job_items_processed_total.labels(job=job_name).inc(run.items_processed)
-        job_last_success_timestamp.labels(job=job_name).set(
+            job_items_processed_total.labels(job=run.job_name).inc(run.items_processed)
+        job_last_success_timestamp.labels(job=run.job_name).set(
             run.finished_at.timestamp()
         )
-        _consecutive_failures[job_name] = 0
-        job_consecutive_failures.labels(job=job_name).set(0)
+        _consecutive_failures[run.job_name] = 0
+        job_consecutive_failures.labels(job=run.job_name).set(0)
     else:
-        # Counter would be wrong here — failures aren't monotonic, they
+        # Counter would be wrong here - failures aren't monotonic, they
         # reset on success. Use a private state dict so we can increment
         # against the current value without re-querying the registry.
-        prev = _consecutive_failures.get(job_name, 0)
-        _consecutive_failures[job_name] = prev + 1
-        job_consecutive_failures.labels(job=job_name).set(prev + 1)
+        prev = _consecutive_failures.get(run.job_name, 0)
+        _consecutive_failures[run.job_name] = prev + 1
+        job_consecutive_failures.labels(job=run.job_name).set(prev + 1)
 
-    return run
+
+async def _record_job_failure(
+    job_name: str, run_id: uuid.UUID, started_at: datetime, db: AsyncSession
+) -> JobRun:
+    """Roll back the failed job's session and record the terminal JobRun from
+    a fresh session.
+
+    Reusing `db` after the handler raised is unsafe: a database error leaves
+    the transaction in an aborted state where the next write (the failure row)
+    also raises, so the failure would go unrecorded and its metrics never
+    increment. The rollback also discards any partial work the handler did
+    (all-or-nothing), matching import_runner. The returned row is detached but
+    readable (sessions use expire_on_commit=False)."""
+    error_text = traceback.format_exc()
+    logger.exception("Job %s failed", job_name)
+    try:
+        await db.rollback()
+    except Exception:
+        logger.exception("Rollback after job %s failure also failed", job_name)
+
+    from sheaf.database import async_session_factory
+
+    failed = JobRun(
+        id=run_id,
+        job_name=job_name,
+        started_at=started_at,
+        status="error",
+        items_processed=0,
+        error_message=error_text,
+        finished_at=datetime.now(UTC),
+    )
+    async with async_session_factory() as fresh:
+        fresh.add(failed)
+        await fresh.commit()
+
+    _emit_job_metrics(failed)
+    return failed
 
 
 # Process-local consecutive-failure counter. Multiproc-safe-enough for v1:

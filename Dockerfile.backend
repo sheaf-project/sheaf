@@ -4,8 +4,9 @@ WORKDIR /app
 
 RUN addgroup --system sheaf && adduser --system --ingroup sheaf sheaf
 
-# Copy source first — hatchling needs the package dir to build
-COPY pyproject.toml .
+# Copy source first - hatchling needs the package dir to build. uv.lock comes
+# along so the install below pins to it rather than re-resolving.
+COPY pyproject.toml uv.lock ./
 COPY sheaf/ sheaf/
 COPY alembic.ini .
 COPY alembic/ alembic/
@@ -19,7 +20,21 @@ ARG PIP_EXTRA_INDEX_URL=
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
 
-RUN pip install --no-cache-dir ".[s3,ses,smtp,sendgrid]"
+# Install exactly what uv.lock pins. A plain `pip install .` re-resolves
+# every dependency from the pyproject version ranges, so a build can ship
+# versions CI never tested (FastAPI, Starlette, redis, ...) and is not
+# reproducible. Export the locked set to a pinned requirements file and
+# install that, then install the sheaf package itself with --no-deps so pip
+# never touches the dependency tree. uv is pulled via pip (honouring any
+# PIP_INDEX_URL mirror) and removed afterwards to keep the image lean.
+RUN pip install --no-cache-dir uv \
+ && uv export --frozen --no-dev --no-emit-project --no-hashes \
+      --extra s3 --extra ses --extra smtp --extra sendgrid \
+      -o /tmp/requirements.lock.txt \
+ && pip install --no-cache-dir -r /tmp/requirements.lock.txt \
+ && pip install --no-cache-dir --no-deps . \
+ && pip uninstall -y uv \
+ && rm -f /tmp/requirements.lock.txt
 
 # Dev-only tools (destructive jobs for demo instances, etc.)
 # Only installed when INCLUDE_DEV_TOOLS=true. Default: not installed,
