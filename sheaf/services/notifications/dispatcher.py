@@ -274,7 +274,9 @@ def _render_reminder(payload: dict) -> RenderedMessage:
     body = payload.get("body") or ""
     if kind == "reminder_digest":
         count = payload.get("missed_count") or 0
-        last = payload.get("last_missed_at") or ""
+        # Prefer the pre-localised, zone-stamped form; fall back to the raw ISO
+        # for any digest row queued before that field existed.
+        last = payload.get("last_missed_display") or payload.get("last_missed_at") or ""
         suffix = f" (×{count})" if count > 1 else ""
         # Keep the body terse — channels with a strict size budget (web push
         # at ~4KB) don't have room for full per-occurrence detail anyway.

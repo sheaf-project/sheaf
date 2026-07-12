@@ -206,6 +206,16 @@ def _digest_payload(
     so each can be tracked independently.
     """
     rows = sorted(pending_rows, key=lambda r: r.scheduled_for)
+    # A reminder's times belong in its own schedule timezone (the zone the user
+    # set the schedule in), so the digest reads back the way it was configured.
+    # `..._at` stays UTC ISO for any structured consumer; `last_missed_display`
+    # is the human-facing form the notification body renders, with a stamp.
+    zone = _zone(reminder.schedule_tz)
+    last_display = (
+        rows[-1].scheduled_for.astimezone(zone).strftime("%Y-%m-%d %H:%M %Z")
+        if rows
+        else None
+    )
     return {
         "kind": "reminder_digest",
         "reminder_id": str(reminder.id),
@@ -218,6 +228,7 @@ def _digest_payload(
         "last_missed_at": rows[-1].scheduled_for.astimezone(UTC).isoformat()
         if rows
         else None,
+        "last_missed_display": last_display,
     }
 
 

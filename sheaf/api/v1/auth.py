@@ -96,6 +96,7 @@ from sheaf.schemas.user import (
 from sheaf.services import captcha
 from sheaf.services.activity_log import log_activity
 from sheaf.services.security_events import record_security_event
+from sheaf.timezones import localize
 
 _VALID_SCOPES = {
     "system:read", "system:write",
@@ -2148,8 +2149,17 @@ async def request_account_deletion(
             from sheaf.services.email_templates import deletion_confirmation_email
 
             email = decrypt(user.email)
+            # Render the deadline in the account's display timezone (UTC when
+            # "automatic") so a user west/east of UTC sees the correct local
+            # calendar date rather than the UTC one. Month is spelled out, so
+            # there's no dd/mm vs mm/dd ambiguity to resolve.
+            system_tz = (
+                await db.execute(
+                    select(System.timezone).where(System.user_id == user.id)
+                )
+            ).scalar_one_or_none()
             subject, html, text = deletion_confirmation_email(
-                deletion_date.strftime("%B %d, %Y")
+                localize(deletion_date, system_tz).strftime("%B %d, %Y")
             )
             await send_email(email, subject, html, text, kind="deletion_confirmed")
         except Exception:
