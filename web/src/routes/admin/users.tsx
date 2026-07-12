@@ -42,6 +42,7 @@ import {
   type ExplainAccountResponse,
   type RateLimitHistoryResponse,
 } from "@/lib/admin";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 
 function formatBytes(bytes: number): string {
@@ -53,6 +54,7 @@ function formatBytes(bytes: number): string {
 
 function SessionsSection({ userId }: { userId: string }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
 
@@ -86,7 +88,7 @@ function SessionsSection({ userId }: { userId: string }) {
               {s.nickname ? `${s.nickname} · ` : ""}
               {s.user_agent ?? "(unknown UA)"} · {s.ip ?? "—"}
               {s.created_at
-                ? ` · ${new Date(s.created_at).toLocaleString()}`
+                ? ` · ${formatDateTime(s.created_at)}`
                 : ""}
             </span>
             {confirming === s.id ? (
@@ -137,6 +139,7 @@ function SessionsSection({ userId }: { userId: string }) {
 
 function ImportLogsSection({ userId }: { userId: string }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [openJobId, setOpenJobId] = useState<string | null>(null);
@@ -177,7 +180,7 @@ function ImportLogsSection({ userId }: { userId: string }) {
                 <span className="flex-1 truncate">
                   {j.source} · {j.status}
                   {j.created_at
-                    ? ` · ${new Date(j.created_at).toLocaleString()}`
+                    ? ` · ${formatDateTime(j.created_at)}`
                     : ""}
                   {j.last_error ? " · error" : ""}
                 </span>
@@ -282,6 +285,7 @@ function ImportLogsSection({ userId }: { userId: string }) {
 
 function SecurityEventsSection({ userId }: { userId: string }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
 
@@ -346,7 +350,7 @@ function SecurityEventsSection({ userId }: { userId: string }) {
         <ul className="space-y-0.5 font-mono">
           {data.events.map((e) => (
             <li key={e.id}>
-              {new Date(e.created_at).toLocaleString()} · {e.event_type} ·{" "}
+              {formatDateTime(e.created_at)} · {e.event_type} ·{" "}
               <span
                 className={
                   e.outcome === "success" || e.outcome === "sent"
@@ -369,6 +373,7 @@ function SecurityEventsSection({ userId }: { userId: string }) {
 }
 
 function RateLimitSection({ userId }: { userId: string }) {
+  const { formatDateTime } = useDateFormatters();
   const [showAll, setShowAll] = useState(false);
   const { data } = useQuery<RateLimitHistoryResponse>({
     queryKey: ["admin", "rate-limit-history", userId],
@@ -394,7 +399,7 @@ function RateLimitSection({ userId }: { userId: string }) {
       <ul className="space-y-0.5 font-mono">
         {shown.map((hit, i) => (
           <li key={i}>
-            {new Date(hit.at).toLocaleString()} · {hit.bucket} ({hit.scope}) ·{" "}
+            {formatDateTime(hit.at)} · {hit.bucket} ({hit.scope}) ·{" "}
             {hit.route}
             {hit.ip ? ` · ${hit.ip}` : ""}
           </li>
@@ -413,6 +418,7 @@ function RateLimitSection({ userId }: { userId: string }) {
 }
 
 function ExplainPanel({ userId }: { userId: string }) {
+  const { formatDateTime } = useDateFormatters();
   const [open, setOpen] = useState(false);
   const { data, isLoading } = useQuery<ExplainAccountResponse>({
     queryKey: ["admin", "explain", userId],
@@ -471,7 +477,7 @@ function ExplainPanel({ userId }: { userId: string }) {
                 <div>
                   <span className="text-muted-foreground">Last login:</span>{" "}
                   {data.last_login_at
-                    ? new Date(data.last_login_at).toLocaleString()
+                    ? formatDateTime(data.last_login_at)
                     : "never"}
                 </div>
                 <div>
@@ -504,7 +510,7 @@ function ExplainPanel({ userId }: { userId: string }) {
                   <ul className="space-y-0.5 font-mono">
                     {data.recent_admin_audit.slice(0, 5).map((row) => (
                       <li key={row.id}>
-                        {new Date(row.created_at).toLocaleString()} ·{" "}
+                        {formatDateTime(row.created_at)} ·{" "}
                         {row.action}
                         {row.reason ? ` — "${row.reason}"` : ""}
                       </li>
@@ -522,6 +528,7 @@ function ExplainPanel({ userId }: { userId: string }) {
 
 function UserActions({ user }: { user: AdminUser }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const [confirming, setConfirming] = useState<string | null>(null);
   const [newEmail, setNewEmail] = useState("");
   const [reason, setReason] = useState("");
@@ -596,7 +603,7 @@ function UserActions({ user }: { user: AdminUser }) {
       qc.invalidateQueries({ queryKey: ["admin", "explain", user.id] });
       toast.success(
         data.suspended_until
-          ? `Suspended until ${new Date(data.suspended_until).toLocaleString()}`
+          ? `Suspended until ${formatDateTime(data.suspended_until)}`
           : "Suspended indefinitely",
       );
       setConfirming(null);
@@ -1294,6 +1301,7 @@ function UserActions({ user }: { user: AdminUser }) {
 
 function UserRow({ user }: { user: AdminUser }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const [tier, setTier] = useState(user.tier);
   const [isAdmin, setIsAdmin] = useState(user.is_admin);
   const [canUploadImages, setCanUploadImages] = useState(user.can_upload_images);
@@ -1365,7 +1373,7 @@ function UserRow({ user }: { user: AdminUser }) {
                   user.suspended_reason
                     ? `Reason: ${user.suspended_reason}` +
                       (user.suspended_until
-                        ? ` (until ${new Date(user.suspended_until).toLocaleString()})`
+                        ? ` (until ${formatDateTime(user.suspended_until)})`
                         : " (indefinite)")
                     : "Suspended"
                 }

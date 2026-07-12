@@ -6,11 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { timeAgo } from "@/lib/utils";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 export function TrustedDevicesCard() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   const { data: devices } = useQuery({
     queryKey: ["trusted-devices"],
     queryFn: getTrustedDevices,
@@ -138,7 +140,7 @@ export function TrustedDevicesCard() {
                   ? `Last used ${timeAgo(d.last_used_at)}`
                   : "Not yet used"}
                 {d.last_used_ip && ` from ${d.last_used_ip}`}
-                {" · "}Expires {new Date(d.expires_at).toLocaleDateString()}
+                {" · "}Expires {formatDate(d.expires_at)}
               </p>
             </div>
             <Button

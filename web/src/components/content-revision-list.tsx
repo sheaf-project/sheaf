@@ -20,10 +20,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
-import { formatDateTime } from "@/lib/date-format";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import type {
   ContentRevision,
-  DateFormat,
   DeleteConfirmation,
   DestructiveConfirm,
   UnpinRevisionResponse,
@@ -76,7 +75,6 @@ export function ContentRevisionList({
   authTier,
   invalidateOnRestore,
   emptyMessage = "No revisions yet. Edits will appear here.",
-  dateFormat = "ymd",
 }: {
   targetId: string;
   currentBody: string;
@@ -95,9 +93,9 @@ export function ContentRevisionList({
   authTier?: DeleteConfirmation;
   invalidateOnRestore: readonly (readonly unknown[])[];
   emptyMessage?: string;
-  dateFormat?: DateFormat;
 }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const { data, isLoading } = useQuery({
     queryKey,
     queryFn: () => list(targetId),
@@ -144,7 +142,7 @@ export function ContentRevisionList({
       invalidateAll();
       setUnpinConfirm(null);
       if (resp.pending_action_id && resp.finalize_after) {
-        const when = new Date(resp.finalize_after).toLocaleString();
+        const when = formatDateTime(resp.finalize_after);
         toast.success(`Unpin queued — finalizes ${when}. Cancel from Safety settings.`);
       } else {
         toast.success("Revision unpinned");
@@ -211,7 +209,7 @@ export function ContentRevisionList({
                     <span className="truncate">{rev.title || "(untitled)"}</span>
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {formatDateTime(rev.created_at, dateFormat)}
+                    {formatDateTime(rev.created_at)}
                     {rev.editor_member_names.length > 0
                       ? ` · ${rev.editor_member_names.join(", ")}`
                       : ""}
@@ -328,7 +326,7 @@ export function ContentRevisionList({
             <DialogTitle>
               {previewing?.rev.title ||
                 (previewing
-                  ? `Revision from ${formatDateTime(previewing.rev.created_at, dateFormat)}`
+                  ? `Revision from ${formatDateTime(previewing.rev.created_at)}`
                   : "Revision")}
             </DialogTitle>
           </DialogHeader>

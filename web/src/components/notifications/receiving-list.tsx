@@ -5,6 +5,7 @@ import {
   useReceiving,
   useUnsubscribeReceiving,
 } from "@/hooks/use-notifications";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import type { ReceivingChannelView } from "@/types/api";
 
 import { destinationLabel } from "./destination-meta";
@@ -72,6 +73,7 @@ function ReceivingRow({
   channel: ReceivingChannelView;
   onUnsubscribe: (channelId: string) => void;
 }) {
+  const { formatDateTime } = useDateFormatters();
   const state =
     channel.destination_state === "disabled" && channel.paused_by_sender
       ? PAUSED_BY_SENDER_LABEL
@@ -98,7 +100,7 @@ function ReceivingRow({
             {channel.last_delivered_at && (
               <>
                 {" · last delivery "}
-                {new Date(channel.last_delivered_at).toLocaleString()}
+                {formatDateTime(channel.last_delivered_at)}
               </>
             )}
           </p>

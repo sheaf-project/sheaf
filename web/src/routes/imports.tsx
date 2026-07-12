@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   type ImportJobStatus,
   type ImportJobSummary,
@@ -48,6 +49,7 @@ function countsSummary(counts: Record<string, number>): string {
 }
 
 function ImportRow({ job }: { job: ImportJobSummary }) {
+  const { formatDateTime } = useDateFormatters();
   return (
     <Link
       to={`/imports/${job.id}`}
@@ -61,7 +63,7 @@ function ImportRow({ job }: { job: ImportJobSummary }) {
         {countsSummary(job.counts)}
       </span>
       <span className="shrink-0 text-xs text-muted-foreground">
-        {new Date(job.created_at).toLocaleString()}
+        {formatDateTime(job.created_at)}
       </span>
     </Link>
   );

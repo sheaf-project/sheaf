@@ -23,6 +23,7 @@ import {
   type Announcement,
 } from "@/lib/announcements";
 import { timeAgo } from "@/lib/utils";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   Plus,
   Trash2,
@@ -33,25 +34,6 @@ import {
   AlertTriangle,
   AlertOctagon,
 } from "lucide-react";
-
-// A datetime-local <input> works in the browser's local zone; the API
-// stores/returns ISO (UTC) strings. Convert between the two.
-function isoToLocalInput(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-    d.getHours(),
-  )}:${pad(d.getMinutes())}`;
-}
-
-function localInputToIso(local: string): string | null {
-  if (!local) return null;
-  const d = new Date(local);
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
 
 const severityIcons = {
   info: Info,
@@ -68,6 +50,7 @@ const severityColors = {
 
 function AnnouncementRow({ announcement }: { announcement: Announcement }) {
   const qc = useQueryClient();
+  const { formatDate, formatDateTime } = useDateFormatters();
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
@@ -130,15 +113,15 @@ function AnnouncementRow({ announcement }: { announcement: Announcement }) {
           {announcement.body}
         </p>
         <div className="mt-1 flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span title={new Date(announcement.created_at).toLocaleString()}>
+          <span title={formatDateTime(announcement.created_at)}>
             Created {timeAgo(announcement.created_at)}
           </span>
           {announcement.starts_at && (
-            <span>Starts: {new Date(announcement.starts_at).toLocaleDateString()}</span>
+            <span>Starts: {formatDate(announcement.starts_at)}</span>
           )}
           {announcement.expires_at && (
             <span>
-              Expires: {new Date(announcement.expires_at).toLocaleString()}
+              Expires: {formatDateTime(announcement.expires_at)}
             </span>
           )}
         </div>
@@ -211,6 +194,7 @@ function EditAnnouncementForm({
   onDone: () => void;
 }) {
   const qc = useQueryClient();
+  const { toDateTimeLocal, fromDateTimeLocal } = useDateFormatters();
   const [title, setTitle] = useState(announcement.title);
   const [body, setBody] = useState(announcement.body);
   const [severity, setSeverity] = useState<string>(announcement.severity);
@@ -219,7 +203,7 @@ function EditAnnouncementForm({
     announcement.visible_while_logged_out,
   );
   const [expiresAt, setExpiresAt] = useState(
-    isoToLocalInput(announcement.expires_at),
+    toDateTimeLocal(announcement.expires_at),
   );
 
   const save = useMutation({
@@ -231,7 +215,7 @@ function EditAnnouncementForm({
         dismissible,
         visible_while_logged_out: visibleWhileLoggedOut,
         ...(expiresAt
-          ? { expires_at: localInputToIso(expiresAt) }
+          ? { expires_at: fromDateTimeLocal(expiresAt) }
           : { clear_expires_at: true }),
       }),
     onSuccess: () => {
@@ -332,6 +316,7 @@ function EditAnnouncementForm({
 }
 
 function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
+  const { fromDateTimeLocal } = useDateFormatters();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [severity, setSeverity] = useState("info");
@@ -347,7 +332,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
         severity,
         dismissible,
         visible_while_logged_out: visibleWhileLoggedOut,
-        expires_at: localInputToIso(expiresAt),
+        expires_at: fromDateTimeLocal(expiresAt),
       }),
     onSuccess: () => {
       setTitle("");

@@ -13,6 +13,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AUTO_VALUE,
+  FOLLOW_ACCOUNT_VALUE,
+  TimezoneSelect,
+} from "@/components/timezone-select";
+import { useTimezone } from "@/hooks/use-timezone";
 import { dateFormatLabels } from "@/lib/date-format";
 import type { DateFormat, PrivacyLevel } from "@/types/api";
 import { toast } from "sonner";
@@ -48,8 +54,8 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat };
-  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat }) => void;
+  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat; timezone?: string | null };
+  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
@@ -60,6 +66,7 @@ function SystemSettingsForm({
   const [color, setColor] = useState(initial.color ?? "");
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial.privacy);
   const [dateFormat, setDateFormat] = useState<DateFormat>(initial.date_format ?? "ymd");
+  const [timezone, setTimezone] = useState<string | null>(initial.timezone ?? null);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -72,6 +79,7 @@ function SystemSettingsForm({
       color: color || null,
       privacy,
       date_format: dateFormat,
+      timezone,
     });
   }
 
@@ -172,11 +180,69 @@ function SystemSettingsForm({
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="system-timezone">Timezone</Label>
+            <TimezoneSelect
+              id="system-timezone"
+              value={timezone ?? AUTO_VALUE}
+              specialOptions={[
+                { value: AUTO_VALUE, label: "Automatic (device local)" },
+              ]}
+              onValueChange={(v) => setTimezone(v === AUTO_VALUE ? null : v)}
+            />
+            <p className="text-xs text-muted-foreground">
+              The timezone timestamps are shown in, synced across your devices.
+              "Automatic" uses each device's own clock. Saved with this form.
+            </p>
+          </div>
+          <DeviceTimezoneOverride />
           <Button type="submit" disabled={loading}>
             {loading ? "Saving..." : "Save"}
           </Button>
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Per-device timezone override. Distinct from the account default above: this
+ * writes localStorage on this browser only, applies immediately (no Save), and
+ * never touches the synced account value - so a machine in another zone can pin
+ * its own without changing what other devices see.
+ */
+function DeviceTimezoneOverride() {
+  const { deviceOverride, setDeviceOverride, resolvedTimeZone } = useTimezone();
+
+  // Map the override state (null | "auto" | zone) onto the picker's sentinels.
+  const value =
+    deviceOverride === null
+      ? FOLLOW_ACCOUNT_VALUE
+      : deviceOverride === "auto"
+        ? AUTO_VALUE
+        : deviceOverride;
+
+  return (
+    <div className="space-y-2 rounded-md border p-3 bg-muted/20">
+      <Label htmlFor="device-timezone">On this device</Label>
+      <TimezoneSelect
+        id="device-timezone"
+        value={value}
+        specialOptions={[
+          { value: FOLLOW_ACCOUNT_VALUE, label: "Follow account default" },
+          { value: AUTO_VALUE, label: "Automatic (this device's clock)" },
+        ]}
+        onValueChange={(v) =>
+          setDeviceOverride(
+            v === FOLLOW_ACCOUNT_VALUE ? null : v === AUTO_VALUE ? "auto" : v,
+          )
+        }
+      />
+      <p className="text-xs text-muted-foreground">
+        Overrides the account timezone on this browser only, applied
+        immediately. Currently showing times in{" "}
+        {resolvedTimeZone ?? "this device's local zone"}.
+      </p>
+    </div>
   );
 }

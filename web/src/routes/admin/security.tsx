@@ -5,6 +5,7 @@ import {
   securityStuffingView,
   type SecurityEventRow,
 } from "@/lib/admin";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,7 @@ function outcomeBadge(outcome: string) {
 }
 
 function EventsTable({ events }: { events: SecurityEventRow[] }) {
+  const { formatDateTime } = useDateFormatters();
   return (
     <Card>
       <CardContent className="p-0">
@@ -43,7 +45,7 @@ function EventsTable({ events }: { events: SecurityEventRow[] }) {
             {events.map((e) => (
               <tr key={e.id} className="border-b text-sm last:border-0">
                 <td className="py-2 px-3 align-top whitespace-nowrap">
-                  {new Date(e.created_at).toLocaleString()}
+                  {formatDateTime(e.created_at)}
                 </td>
                 <td className="py-2 px-3 align-top">{e.event_type}</td>
                 <td className="py-2 px-3 align-top">
@@ -175,6 +177,7 @@ function StuffingWatch({
 }: {
   onPickIp: (ip: string) => void;
 }) {
+  const { formatDateTime } = useDateFormatters();
   const [hours, setHours] = useState(24);
   const [minFailures, setMinFailures] = useState(10);
 
@@ -252,7 +255,7 @@ function StuffingWatch({
                     {o.failures}
                   </td>
                   <td className="py-2 px-3 align-top whitespace-nowrap text-xs text-muted-foreground">
-                    {new Date(o.last_seen).toLocaleString()}
+                    {formatDateTime(o.last_seen)}
                   </td>
                   <td className="py-2 px-3 align-top text-right">
                     <Button

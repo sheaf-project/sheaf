@@ -63,6 +63,7 @@ def test_export_includes_system_preferences(auth_client: httpx.Client):
     sys = export["system"]
     assert "replace_fronts_default" in sys
     assert "date_format" in sys
+    assert "timezone" in sys
     assert "delete_confirmation" in sys
 
 

@@ -155,6 +155,7 @@ def to_native(envelope: dict) -> dict:
             "color": sys_in.get("color"),
             "privacy": _op_privacy(sys_in.get("privacy")),
             "date_format": ext.get("date_format"),
+            "timezone": ext.get("timezone"),
             "replace_fronts_default": ext.get("replace_fronts_default"),
             "coalesce_contiguous_fronts": ext.get("coalesce_contiguous_fronts"),
             "delete_confirmation": ext.get("delete_confirmation"),

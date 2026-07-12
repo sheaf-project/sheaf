@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { showApiErrorToast } from "@/lib/api-errors";
 
 import { useMembers } from "@/hooks/use-members";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { getCurrentFronts } from "@/lib/fronts";
 import { getMySystem } from "@/lib/systems";
 import {
@@ -40,6 +41,7 @@ export function PollDetailPage() {
   const { pollId } = useParams<{ pollId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const { formatDate, formatDateTime } = useDateFormatters();
 
   const { data: poll, isLoading } = useQuery({
     queryKey: ["poll", pollId],
@@ -82,9 +84,9 @@ export function PollDetailPage() {
       qc.invalidateQueries({ queryKey: ["polls"] });
       if (isDeleteQueued(resp)) {
         toast.success(
-          `Deletion queued. Will finalize after ${new Date(
+          `Deletion queued. Will finalize after ${formatDateTime(
             resp.finalize_after,
-          ).toLocaleString()} unless cancelled.`,
+          )} unless cancelled.`,
         );
       } else {
         toast.success("Poll deleted");
@@ -143,11 +145,11 @@ export function PollDetailPage() {
               <Badge variant="secondary">Closed</Badge>
             ) : (
               <span>
-                Closes {new Date(poll.closes_at).toLocaleString()}
+                Closes {formatDateTime(poll.closes_at)}
               </span>
             )}
             <span>
-              Auto-purges {new Date(poll.purges_at).toLocaleDateString()} (
+              Auto-purges {formatDate(poll.purges_at)} (
               {poll.retention_days}d after close)
             </span>
           </div>
@@ -423,6 +425,7 @@ function AuditCard({
   memberById: Map<string, Member>;
   options: { id: string; text: string }[];
 }) {
+  const { formatDateTime } = useDateFormatters();
   if (!isVisible) {
     return (
       <div className="rounded-md border p-4 text-sm text-muted-foreground">
@@ -468,7 +471,7 @@ function AuditCard({
               return (
                 <ContentRow
                   key={e.id}
-                  when={new Date(e.created_at).toLocaleString()}
+                  when={formatDateTime(e.created_at)}
                   action={e.action}
                   detail={
                     <span>

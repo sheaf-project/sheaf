@@ -1,6 +1,7 @@
 import { type FormEvent, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -137,6 +138,7 @@ function ScopeRow({
 
 export function ApiKeysCard() {
   const { user } = useAuth();
+  const { formatDate } = useDateFormatters();
   const qc = useQueryClient();
   const { data: keys } = useQuery({ queryKey: ["api-keys"], queryFn: listApiKeys });
   const revoke = useMutation({
@@ -299,9 +301,9 @@ export function ApiKeysCard() {
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Created {new Date(k.created_at).toLocaleDateString()}
-                    {k.last_used_at && ` · Last used ${new Date(k.last_used_at).toLocaleDateString()}`}
-                    {k.expires_at && ` · Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                    Created {formatDate(k.created_at)}
+                    {k.last_used_at && ` · Last used ${formatDate(k.last_used_at)}`}
+                    {k.expires_at && ` · Expires ${formatDate(k.expires_at)}`}
                   </p>
                 </div>
                 {revokeConfirmId === k.id ? (

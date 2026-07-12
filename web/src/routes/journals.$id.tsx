@@ -26,7 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMembers } from "@/hooks/use-members";
-import { formatDateTime } from "@/lib/date-format";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   deleteJournal,
   getJournal,
@@ -37,7 +37,6 @@ import {
   updateJournal,
 } from "@/lib/journals";
 import { getSystemSafety } from "@/lib/system-safety";
-import { getMySystem } from "@/lib/systems";
 import { apiErrorMessage } from "@/lib/api-errors";
 import { isDeleteQueued } from "@/types/api";
 
@@ -52,15 +51,11 @@ export function JournalDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data: members } = useMembers();
-  const { data: system } = useQuery({
-    queryKey: ["system", "me"],
-    queryFn: getMySystem,
-  });
+  const { formatDateTime } = useDateFormatters();
   const { data: safety } = useQuery({
     queryKey: ["system-safety"],
     queryFn: getSystemSafety,
   });
-  const dateFormat = system?.date_format ?? "ymd";
 
   const { data: entry, isLoading } = useQuery({
     queryKey: ["journal", entryId],
@@ -98,7 +93,7 @@ export function JournalDetailPage() {
 
   const member = entry.member_id ? members?.find((m) => m.id === entry.member_id) : null;
   const titleDisplay =
-    entry.title || `Entry from ${formatDateTime(entry.created_at, dateFormat)}`;
+    entry.title || `Entry from ${formatDateTime(entry.created_at)}`;
   const authors = entry.author_member_names.length > 0
     ? entry.author_member_names.join(", ")
     : "account";
@@ -149,12 +144,12 @@ export function JournalDetailPage() {
         {member ? (
           <>
             About <span className="font-medium">{member.display_name || member.name}</span>{" "}
-            · written by {authors} · {formatDateTime(entry.created_at, dateFormat)}
+            · written by {authors} · {formatDateTime(entry.created_at)}
           </>
         ) : (
           <>
             System-wide · written by {authors} ·{" "}
-            {formatDateTime(entry.created_at, dateFormat)}
+            {formatDateTime(entry.created_at)}
           </>
         )}
       </p>
@@ -181,7 +176,6 @@ export function JournalDetailPage() {
                 ["system-safety"],
               ]}
               emptyMessage="No revisions yet. Edits to this entry will appear here."
-              dateFormat={dateFormat}
             />
           </CardContent>
         </Card>

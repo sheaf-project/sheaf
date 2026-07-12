@@ -7,6 +7,7 @@ import {
   type MemberUpdate,
 } from "@/types/api";
 import * as api from "@/lib/members";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 
 export const memberKeys = {
   all: ["members"] as const,
@@ -53,6 +54,7 @@ export function useUpdateMember() {
 
 export function useDeleteMember() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
     mutationFn: ({
       id,
@@ -66,7 +68,7 @@ export function useDeleteMember() {
       if (isDeleteQueued(result)) {
         qc.invalidateQueries({ queryKey: ["system-safety"] });
         toast.success(
-          `Member scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+          `Member scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
         );
       } else {
         toast.success("Member deleted");

@@ -40,7 +40,8 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "name": CORE, "description": CORE, "tag": CORE, "color": CORE,
         "privacy": CORE, "avatar_url": CORE,
         # extensions.sheaf.* (note + prefs + the safety/retention blocks).
-        "note": EXT, "date_format": EXT, "replace_fronts_default": EXT,
+        "note": EXT, "date_format": EXT, "timezone": EXT,
+        "replace_fronts_default": EXT,
         "coalesce_contiguous_fronts": EXT, "delete_confirmation": EXT,
         "auto_pin_first_revision": EXT,
         "safety_grace_period_days": EXT, "safety_applies_to_members": EXT,

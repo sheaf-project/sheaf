@@ -181,6 +181,7 @@ def build_envelope(
         sys_ext = {
             "note": sys_data.get("note"),
             "date_format": sys_data.get("date_format"),
+            "timezone": sys_data.get("timezone"),
             "replace_fronts_default": sys_data.get("replace_fronts_default"),
             "coalesce_contiguous_fronts": sys_data.get("coalesce_contiguous_fronts"),
             "delete_confirmation": sys_data.get("delete_confirmation"),

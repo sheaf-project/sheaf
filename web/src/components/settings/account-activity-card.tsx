@@ -3,6 +3,7 @@ import {
   getMyAccountActivity,
   type AccountActivityEvent,
 } from "@/lib/account-activity";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -38,6 +39,7 @@ function formatDetail(detail: Record<string, unknown> | null): string {
 }
 
 export function AccountActivityCard() {
+  const { formatDateTime } = useDateFormatters();
   const { data: events, isLoading } = useQuery({
     queryKey: ["account-activity", "me"],
     queryFn: () => getMyAccountActivity(),
@@ -77,7 +79,7 @@ export function AccountActivityCard() {
                     </span>
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {new Date(e.created_at).toLocaleString()}
+                    {formatDateTime(e.created_at)}
                   </span>
                 </div>
                 {e.detail && Object.keys(e.detail).length > 0 && (

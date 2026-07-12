@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { showApiErrorToast } from "@/lib/api-errors";
 
 import { useAuth } from "@/hooks/use-auth";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   createExportJob,
   exportData,
@@ -160,6 +161,7 @@ function StepUpDialog({
 
 export function DataExportCard() {
   const { user } = useAuth();
+  const { formatDateTime } = useDateFormatters();
   const qc = useQueryClient();
   const [syncing, setSyncing] = useState(false);
   const [mode, setMode] = useState<ExportMode | null>(null);
@@ -444,14 +446,14 @@ export function DataExportCard() {
                       <span className="text-xs text-muted-foreground">
                         {FORMAT_LABELS[j.format] ?? j.format}
                         {" · "}
-                        {new Date(j.requested_at).toLocaleString()}
+                        {formatDateTime(j.requested_at)}
                       </span>
                       <span className="text-xs">
                         <StatusBadge status={j.status} />{" "}
                         {j.status === "done" && j.expires_at && (
                           <span className="text-muted-foreground">
                             · {formatBytes(j.file_size_bytes)} · expires{" "}
-                            {new Date(j.expires_at).toLocaleString()}
+                            {formatDateTime(j.expires_at)}
                           </span>
                         )}
                         {j.status === "failed" && j.error && (

@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { requestAccountDeletion, cancelDeletion, getAuthConfig } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +12,7 @@ import { ApiError } from "@/lib/api-client";
 
 export function DeleteAccountCard() {
   const { user, refreshUser } = useAuth();
+  const { formatDate } = useDateFormatters();
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState("");
@@ -54,9 +56,7 @@ export function DeleteAccountCard() {
   }
 
   if (isPending) {
-    const deletionDate = user?.deletion_scheduled_for
-      ? new Date(user.deletion_scheduled_for)
-      : null;
+    const deletionDate = user?.deletion_scheduled_for ?? null;
 
     return (
       <Card className="border-destructive/50">
@@ -69,9 +69,7 @@ export function DeleteAccountCard() {
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
             Your account is scheduled for permanent deletion
-            {deletionDate
-              ? ` on ${deletionDate.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}`
-              : ""}.
+            {deletionDate ? ` on ${formatDate(deletionDate)}` : ""}.
             All your data will be permanently removed.
           </p>
           <Button

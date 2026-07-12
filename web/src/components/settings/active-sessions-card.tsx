@@ -6,11 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { timeAgo } from "@/lib/utils";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 export function ActiveSessionsCard() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   const { data: sessions } = useQuery({
     queryKey: ["sessions"],
     queryFn: getSessions,
@@ -125,7 +127,7 @@ export function ActiveSessionsCard() {
               <p className="text-xs text-muted-foreground">
                 Last active {timeAgo(s.last_active_at)}
                 {s.last_active_ip && ` from ${s.last_active_ip}`}
-                {" · "}Created {new Date(s.created_at).toLocaleDateString()}
+                {" · "}Created {formatDate(s.created_at)}
                 {s.created_ip && ` from ${s.created_ip}`}
               </p>
             </div>

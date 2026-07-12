@@ -13,10 +13,12 @@ import {
   type InviteCode,
 } from "@/lib/admin";
 import { timeAgo } from "@/lib/utils";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Copy, Plus, Trash2 } from "lucide-react";
 
 function InviteRow({ invite }: { invite: InviteCode }) {
   const qc = useQueryClient();
+  const { formatDate, formatDateTime } = useDateFormatters();
   const [confirming, setConfirming] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -70,14 +72,14 @@ function InviteRow({ invite }: { invite: InviteCode }) {
       <td className="py-3 pr-4 text-xs text-muted-foreground">
         {invite.expires_at ? (
           <span className={isExpired ? "text-destructive" : ""}>
-            {isExpired ? "Expired" : new Date(invite.expires_at).toLocaleDateString()}
+            {isExpired ? "Expired" : formatDate(invite.expires_at)}
           </span>
         ) : (
           "Never"
         )}
       </td>
       <td className="py-3 pr-4 text-xs text-muted-foreground">
-        <span title={new Date(invite.created_at).toLocaleString()}>
+        <span title={formatDateTime(invite.created_at)}>
           {timeAgo(invite.created_at)}
         </span>
         {invite.created_by_email && (
