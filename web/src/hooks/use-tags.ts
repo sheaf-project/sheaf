@@ -13,6 +13,7 @@ import {
   type TagUpdate,
 } from "@/types/api";
 import * as api from "@/lib/tags";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 
 export const tagKeys = {
   all: ["tags"] as const,
@@ -89,6 +90,7 @@ export function useUpdateTag() {
 
 export function useDeleteTag() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
     mutationFn: ({
       id,
@@ -102,7 +104,7 @@ export function useDeleteTag() {
       if (isDeleteQueued(result)) {
         qc.invalidateQueries({ queryKey: ["system-safety"] });
         toast.success(
-          `Tag scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+          `Tag scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
         );
       } else {
         toast.success("Tag deleted");

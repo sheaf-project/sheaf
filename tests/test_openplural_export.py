@@ -29,6 +29,7 @@ def _native() -> dict:
             "id": "s1", "name": "Sys", "description": "d", "note": "sysnote",
             "tag": "|S|", "avatar_url": "/v1/files/avatars/u/a.png",
             "color": "#fff", "privacy": "public", "date_format": "ymd",
+            "timezone": "America/New_York",
             "replace_fronts_default": True, "coalesce_contiguous_fronts": False,
             "delete_confirmation": "password",
             "safety": {"grace_period_days": 7},
@@ -178,6 +179,7 @@ def test_round_trip_to_native_restores_fields():
     assert back["system"]["name"] == "Sys"
     assert back["system"]["note"] == "sysnote"
     assert back["system"]["date_format"] == "ymd"
+    assert back["system"]["timezone"] == "America/New_York"
     assert back["system"]["safety"] == {"grace_period_days": 7}
     m1 = next(m for m in back["members"] if m["id"] == "m1")
     assert m1["name"] == "Alex"

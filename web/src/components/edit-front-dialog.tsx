@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { useUpdateFront } from "@/hooks/use-fronts";
 import type { Front } from "@/types/api";
 import { Button } from "@/components/ui/button";
@@ -16,21 +17,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MemberSelect } from "@/components/member-select";
 
-function toLocalInput(iso: string | null): string {
-  if (!iso) return "";
-  // datetime-local wants YYYY-MM-DDTHH:mm in the browser's local zone.
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-    d.getHours(),
-  )}:${pad(d.getMinutes())}`;
-}
-
-function fromLocalInput(value: string): string | null {
-  if (!value) return null;
-  return new Date(value).toISOString();
-}
-
 export function EditFrontDialog({
   front,
   onOpenChange,
@@ -42,6 +28,9 @@ export function EditFrontDialog({
   onSaved?: () => void;
 }) {
   const updateFront = useUpdateFront();
+  // datetime-local values are rendered/parsed in the display timezone, so the
+  // times a user reads elsewhere match the times they edit here.
+  const { toDateTimeLocal, fromDateTimeLocal, timeZone } = useDateFormatters();
   const [error, setError] = useState("");
 
   // Reinit the form on the open transition without useEffect (lint
@@ -67,8 +56,8 @@ export function EditFrontDialog({
     setDraft({
       fromFrontId: front.id,
       memberIds: front.member_ids,
-      startedAt: toLocalInput(front.started_at),
-      endedAt: toLocalInput(front.ended_at),
+      startedAt: toDateTimeLocal(front.started_at),
+      endedAt: toDateTimeLocal(front.ended_at),
       reopen: false,
       customStatus: front.custom_status ?? "",
     });
@@ -105,21 +94,21 @@ export function EditFrontDialog({
       custom_status?: string | null;
     } = {};
 
-    const originalStartedAt = toLocalInput(front.started_at);
-    const originalEndedAt = toLocalInput(front.ended_at);
+    const originalStartedAt = toDateTimeLocal(front.started_at);
+    const originalEndedAt = toDateTimeLocal(front.ended_at);
     const originalCustomStatus = front.custom_status ?? "";
     const originalMemberIds = [...front.member_ids].sort();
     const draftMemberIds = [...draft.memberIds].sort();
 
     if (draft.startedAt !== originalStartedAt) {
-      const iso = fromLocalInput(draft.startedAt);
+      const iso = fromDateTimeLocal(draft.startedAt);
       if (iso) body.started_at = iso;
     }
     // Reopen flag wins: explicit clear.
     if (draft.reopen) {
       body.ended_at = null;
     } else if (draft.endedAt !== originalEndedAt) {
-      body.ended_at = fromLocalInput(draft.endedAt);
+      body.ended_at = fromDateTimeLocal(draft.endedAt);
     }
     if (draft.customStatus !== originalCustomStatus) {
       body.custom_status = draft.customStatus.trim() || null;
@@ -199,8 +188,8 @@ export function EditFrontDialog({
         </div>
 
         <p className="text-xs text-muted-foreground">
-          Times are in your device's local timezone, in the date format your
-          browser uses.
+          Times are in {timeZone ?? "your device's local timezone"}. The
+          picker's date format follows your browser.
         </p>
 
         {front?.ended_at && (

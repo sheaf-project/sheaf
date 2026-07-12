@@ -9,6 +9,7 @@ import {
   type UploadedFileInfo,
 } from "@/lib/files";
 import { getMySystem } from "@/lib/systems";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { isDeleteQueued, type DestructiveConfirm } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -62,6 +63,7 @@ function ReferenceItem({ reference }: { reference: FileReference }) {
 
 export function UploadedFilesCard() {
   const qc = useQueryClient();
+  const { formatDate, formatDateTime } = useDateFormatters();
   const { data: files, isLoading } = useQuery({
     queryKey: ["files", "list"],
     queryFn: listFiles,
@@ -82,7 +84,7 @@ export function UploadedFilesCard() {
       if (isDeleteQueued(result)) {
         qc.invalidateQueries({ queryKey: ["system-safety"] });
         toast.success(
-          `Image scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+          `Image scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
         );
       } else {
         toast.success("File deleted");
@@ -120,7 +122,7 @@ export function UploadedFilesCard() {
                   )}
                   title={
                     f.pending_delete_at
-                      ? `Pending delete - finalises ${new Date(f.pending_delete_at).toLocaleString()}. Open to manage.`
+                      ? `Pending delete - finalises ${formatDateTime(f.pending_delete_at)}. Open to manage.`
                       : undefined
                   }
                 >

@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Checkbox } from "@/components/ui/checkbox";
 import { isDeleteQueued } from "@/types/api";
 import type {
@@ -44,19 +45,6 @@ import type {
   PollKind,
   PollResultsVisibility,
 } from "@/types/api";
-
-function offsetLocal(msFromNow: number): string {
-  const d = new Date(Date.now() + msFromNow);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-    d.getHours(),
-  )}:${pad(d.getMinutes())}`;
-}
-
-function defaultClosesAtLocal(): string {
-  // 24h from now, in datetime-local format the <input> needs.
-  return offsetLocal(24 * 60 * 60 * 1000);
-}
 
 function formatRelative(iso: string): string {
   const target = new Date(iso).getTime();
@@ -77,6 +65,7 @@ function formatRelative(iso: string): string {
 
 export function PollsPage() {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const { data: polls, isLoading } = useQuery({
     queryKey: ["polls"],
     queryFn: listPolls,
@@ -110,9 +99,9 @@ export function PollsPage() {
       setDeleting(null);
       if (isDeleteQueued(resp)) {
         toast.success(
-          `Deletion queued. Will finalize after ${new Date(
+          `Deletion queued. Will finalize after ${formatDateTime(
             resp.finalize_after,
-          ).toLocaleString()} unless cancelled.`,
+          )} unless cancelled.`,
         );
       } else {
         toast.success("Poll deleted");
@@ -262,11 +251,16 @@ function CreatePollDialog({
   serverConfig: import("@/types/api").PollServerConfig | null;
 }) {
   const qc = useQueryClient();
+  // datetime-local values render/parse in the display timezone (24h from now
+  // by default), matching how poll deadlines are shown everywhere else.
+  const { toDateTimeLocal, fromDateTimeLocal } = useDateFormatters();
   const [question, setQuestion] = useState("");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState<PollKind>("single_choice");
   const [visibility, setVisibility] = useState<PollResultsVisibility>("live");
-  const [closesAtLocal, setClosesAtLocal] = useState(defaultClosesAtLocal());
+  const [closesAtLocal, setClosesAtLocal] = useState(() =>
+    toDateTimeLocal(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()),
+  );
   const [includeCustomFronts, setIncludeCustomFronts] = useState(false);
   const [restrictToFronters, setRestrictToFronters] = useState(false);
   const [retentionDays, setRetentionDays] = useState<number>(
@@ -280,7 +274,9 @@ function CreatePollDialog({
   // Computed once at dialog mount; the cap is a per-tier ceiling, not a
   // ticking clock, so a stale-by-a-few-seconds value is fine.
   const [closesAtMaxLocal] = useState<string | undefined>(() =>
-    maxClose ? offsetLocal(maxClose * 1000) : undefined,
+    maxClose
+      ? toDateTimeLocal(new Date(Date.now() + maxClose * 1000).toISOString())
+      : undefined,
   );
 
   const createMut = useMutation({
@@ -302,7 +298,11 @@ function CreatePollDialog({
 
   function submit() {
     if (!valid) return;
-    const closesAt = new Date(closesAtLocal).toISOString();
+    const closesAt = fromDateTimeLocal(closesAtLocal);
+    if (!closesAt) {
+      toast.error("A close time is required.");
+      return;
+    }
     createMut.mutate({
       question: question.trim(),
       description: description.trim() || null,

@@ -73,7 +73,7 @@ CLASSIFICATION: dict[type, dict] = {
     System: {
         "exported": {
             "name", "description", "note", "tag", "avatar_url", "color",
-            "privacy", "delete_confirmation", "date_format",
+            "privacy", "delete_confirmation", "date_format", "timezone",
             "replace_fronts_default", "coalesce_contiguous_fronts",
             "auto_pin_first_revision", "safety_grace_period_days",
             "safety_applies_to_members", "safety_applies_to_groups",

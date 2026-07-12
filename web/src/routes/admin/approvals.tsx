@@ -13,6 +13,7 @@ import {
   type PendingUser,
 } from "@/lib/admin";
 import { timeAgo } from "@/lib/utils";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Check, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 
@@ -26,6 +27,7 @@ function ApprovalRow({
   onToggleSelected: (checked: boolean) => void;
 }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const [confirming, setConfirming] = useState<"approve" | "reject" | null>(null);
 
   const approve = useMutation({
@@ -62,7 +64,7 @@ function ApprovalRow({
         {user.signup_ip ?? "—"}
       </td>
       <td className="py-3 pr-4 text-xs text-muted-foreground">
-        <span title={new Date(user.created_at).toLocaleString()}>
+        <span title={formatDateTime(user.created_at)}>
           {timeAgo(user.created_at)}
         </span>
       </td>

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { getMyAdminActivity, type UserAdminActivityEvent } from "@/lib/admin";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -20,6 +21,7 @@ function formatDiff(
 }
 
 export function AdminActivityCard() {
+  const { formatDateTime } = useDateFormatters();
   const { data: events, isLoading } = useQuery({
     queryKey: ["admin-activity", "me"],
     queryFn: () => getMyAdminActivity(),
@@ -62,7 +64,7 @@ export function AdminActivityCard() {
                     </span>
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {new Date(e.created_at).toLocaleString()}
+                    {formatDateTime(e.created_at)}
                   </span>
                 </div>
                 {e.reason && (

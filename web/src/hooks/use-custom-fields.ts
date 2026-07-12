@@ -8,6 +8,7 @@ import {
   type DestructiveConfirm,
 } from "@/types/api";
 import * as api from "@/lib/custom-fields";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { memberKeys } from "./use-members";
 
 export const fieldKeys = {
@@ -47,6 +48,7 @@ export function useUpdateField() {
 
 export function useDeleteField() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
     mutationFn: ({
       id,
@@ -60,7 +62,7 @@ export function useDeleteField() {
       if (isDeleteQueued(result)) {
         qc.invalidateQueries({ queryKey: ["system-safety"] });
         toast.success(
-          `Field scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+          `Field scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
         );
       } else {
         toast.success("Field deleted");

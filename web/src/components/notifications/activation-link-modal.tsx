@@ -1,6 +1,7 @@
 import { Copy, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,8 +25,8 @@ export function ActivationLinkModal({
   expiresAt: string | null;
   channelName: string;
 }) {
+  const { formatDateTime } = useDateFormatters();
   if (!url) return null;
-  const expires = expiresAt ? new Date(expiresAt) : null;
 
   function copy() {
     if (!url) return;
@@ -43,9 +44,9 @@ export function ActivationLinkModal({
           <DialogDescription>
             One-time activation link. We won't show it again, so copy it now and
             relay it to the recipient out-of-band (chat, signal, in-person).
-            {expires && (
+            {expiresAt && (
               <>
-                {" "}Expires <strong>{expires.toLocaleString()}</strong>.
+                {" "}Expires <strong>{formatDateTime(expiresAt)}</strong>.
               </>
             )}
           </DialogDescription>

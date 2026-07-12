@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTags, useCreateTag, useUpdateTag, useDeleteTag } from "@/hooks/use-tags";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { getMySystem } from "@/lib/systems";
 import { ColorDot } from "@/components/color-dot";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { Link } from "react-router";
 
 export function TagsManagerCard() {
   const { data: tags } = useTags();
+  const { formatDateTime } = useDateFormatters();
   const { data: system } = useQuery({
     queryKey: ["system", "me"],
     queryFn: getMySystem,
@@ -119,7 +121,7 @@ export function TagsManagerCard() {
                 }}
                 title={
                   t.pending_delete_at
-                    ? `Pending delete - finalises ${new Date(t.pending_delete_at).toLocaleString()}. Click to cancel in Safety.`
+                    ? `Pending delete - finalises ${formatDateTime(t.pending_delete_at)}. Click to cancel in Safety.`
                     : undefined
                 }
               >

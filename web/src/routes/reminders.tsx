@@ -4,6 +4,7 @@ import { Bell, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { useMembers } from "@/hooks/use-members";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { getMySystem } from "@/lib/systems";
 import { listAllChannels } from "@/lib/notifications";
 import {
@@ -60,6 +61,7 @@ function browserTz(): string {
 
 export function RemindersPage() {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const { data: reminders, isLoading } = useQuery({
     queryKey: ["reminders"],
     queryFn: listReminders,
@@ -100,9 +102,9 @@ export function RemindersPage() {
       setDeleting(null);
       if (isDeleteQueued(resp)) {
         toast.success(
-          `Deletion queued. Will finalize after ${new Date(
+          `Deletion queued. Will finalize after ${formatDateTime(
             resp.finalize_after,
-          ).toLocaleString()} unless cancelled.`,
+          )} unless cancelled.`,
         );
       } else {
         toast.success("Reminder deleted");
@@ -219,12 +221,13 @@ function ReminderRow({
   onDelete: () => void;
   onToggle: (v: boolean) => void;
 }) {
+  const { formatDateTime } = useDateFormatters();
   const summary = useMemo(
     () => triggerSummary(reminder, memberById),
     [reminder, memberById],
   );
   const nextFire = reminder.next_fire_at
-    ? new Date(reminder.next_fire_at).toLocaleString()
+    ? formatDateTime(reminder.next_fire_at)
     : null;
   return (
     <div

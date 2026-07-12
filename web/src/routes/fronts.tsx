@@ -31,7 +31,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn, formatDateTime, timeAgo } from "@/lib/utils";
+import { cn, timeAgo } from "@/lib/utils";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { getMySystem } from "@/lib/systems";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import type { Front } from "@/types/api";
@@ -57,6 +58,7 @@ function isPageSize(v: unknown): v is (typeof HISTORY_PAGE_SIZES)[number] {
 
 export function FrontsPage() {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const { data: current, isLoading: currentLoading } = useCurrentFronts();
 
   // Saved defaults from client settings — only consulted when the URL
@@ -386,8 +388,8 @@ export function FrontsPage() {
                   <span>
                     {formatDateTime(front.started_at)}
                     {front.ended_at
-                      ? ` — ${formatDateTime(front.ended_at)}`
-                      : " — ongoing"}
+                      ? ` - ${formatDateTime(front.ended_at)}`
+                      : " - ongoing"}
                   </span>
                   <Button
                     size="sm"

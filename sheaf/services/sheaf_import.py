@@ -112,6 +112,7 @@ from sheaf.services.polls import (
     max_concurrent_open_for_tier,
     max_retention_days_for_tier,
 )
+from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
 
@@ -164,6 +165,17 @@ _SAFETY_APPLIES_KEYS = (
 def _date_format(val: object) -> DateFormat | None:
     if isinstance(val, str) and val in _VALID_DATE_FORMAT:
         return DateFormat(val)
+    return None
+
+
+def _timezone(val: object) -> str | None:
+    """Coerce an imported timezone to a valid IANA zone, or None (auto).
+
+    Anything that is not a known zone - including null, the wrong type, or a
+    zone name this build's tz database doesn't recognise - falls back to auto
+    rather than persisting a value clients can't format against."""
+    if isinstance(val, str) and is_valid_timezone(val):
+        return val
     return None
 
 
@@ -817,6 +829,10 @@ async def run_import(
             df = _date_format(sys_data.get("date_format"))
             if df is not None:
                 system.date_format = df
+            # Present-and-null (auto), present-and-zone, or present-and-junk
+            # (-> auto) all round-trip; absent leaves the default (auto).
+            if "timezone" in sys_data:
+                system.timezone = _timezone(sys_data.get("timezone"))
 
             # System Safety toggles + grace period + auto-pin. delete_confirmation
             # is deliberately NOT restored: importing a TOTP-requiring tier onto

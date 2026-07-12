@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 import { Clock } from "lucide-react";
 
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { cn } from "@/lib/utils";
 
 /** Compact "Pending delete - finalises in Nd" badge for list items whose
@@ -15,19 +16,16 @@ export function PendingDeleteBadge({
   finalizeAt: string | null | undefined;
   className?: string;
 }) {
+  const { formatDate, formatDateTime } = useDateFormatters();
   if (!finalizeAt) return null;
   // Show the absolute finalize date - pure across renders (no Date.now in
   // the render path) and more informative anyway for a grace window of
   // days. The Settings -> Safety page shows the exact countdown.
-  const date = new Date(finalizeAt);
-  const label = date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
+  const label = formatDate(finalizeAt);
   return (
     <Link
       to="/settings/safety"
-      title={`Pending delete - finalises ${date.toLocaleString()}. Click to cancel.`}
+      title={`Pending delete - finalises ${formatDateTime(finalizeAt)}. Click to cancel.`}
       className={cn(
         "inline-flex items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 hover:bg-amber-500/20 dark:text-amber-400",
         className,

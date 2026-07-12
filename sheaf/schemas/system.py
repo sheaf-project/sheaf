@@ -10,6 +10,7 @@ from sheaf.files import (
     resolve_description_urls,
 )
 from sheaf.models.system import DateFormat, DeleteConfirmation, PrivacyLevel
+from sheaf.timezones import is_valid_timezone
 
 
 class SystemCreate(BaseModel):
@@ -41,6 +42,11 @@ class SystemUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=7)
     privacy: PrivacyLevel | None = None
     date_format: DateFormat | None = None
+    # Unlike the NOT-NULL prefs above, `null` here is a *meaningful* value
+    # (auto = device-local), so timezone is deliberately kept out of the
+    # _reject_explicit_null validator. Omitted -> unchanged (PATCH semantics
+    # via model_fields_set); null -> auto; a string must be a real IANA zone.
+    timezone: str | None = Field(default=None, max_length=64)
     replace_fronts_default: bool | None = None
     coalesce_contiguous_fronts: bool | None = None
 
@@ -48,6 +54,16 @@ class SystemUpdate(BaseModel):
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:
         return normalize_avatar_url(v)
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, v: str | None) -> str | None:
+        # None (auto) is allowed and passes through. A non-null value must be
+        # a known IANA zone, else 422 rather than persisting junk that every
+        # client would then fail to format against.
+        if v is not None and not is_valid_timezone(v):
+            raise ValueError(f"unknown timezone {v!r}")
+        return v
 
     @field_validator("description", mode="before")
     @classmethod
@@ -86,6 +102,7 @@ class SystemRead(BaseModel):
     privacy: PrivacyLevel
     delete_confirmation: DeleteConfirmation
     date_format: DateFormat
+    timezone: str | None
     replace_fronts_default: bool
     coalesce_contiguous_fronts: bool
     created_at: datetime

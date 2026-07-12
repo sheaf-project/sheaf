@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { listFrontAudit } from "@/lib/fronts";
 import { useMembers } from "@/hooks/use-members";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateTime } from "@/lib/utils";
 import type { FrontSnapshot } from "@/types/api";
 
 function memberNames(
@@ -23,6 +23,7 @@ function diff(
   before: FrontSnapshot,
   after: FrontSnapshot,
   members: Map<string, { display_name: string | null; name: string }>,
+  formatDateTime: (d: string | null | undefined) => string,
 ): { label: string; from: string; to: string }[] {
   const rows: { label: string; from: string; to: string }[] = [];
 
@@ -63,6 +64,7 @@ function diff(
 }
 
 export function FrontAuditHistory({ frontId }: { frontId: string }) {
+  const { formatDateTime } = useDateFormatters();
   const { data: events, isLoading } = useQuery({
     queryKey: ["fronts", frontId, "audit"],
     queryFn: () => listFrontAudit(frontId),
@@ -86,7 +88,7 @@ export function FrontAuditHistory({ frontId }: { frontId: string }) {
   return (
     <ul className="space-y-3">
       {events.map((ev) => {
-        const changes = diff(ev.before, ev.after, members);
+        const changes = diff(ev.before, ev.after, members, formatDateTime);
         return (
           <li
             key={ev.id}

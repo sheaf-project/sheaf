@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { apiErrorMessage } from "@/lib/api-errors";
 import { getMemberLimit } from "@/lib/members";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -646,6 +647,7 @@ function SPImportFlow({ onBack }: { onBack: () => void }) {
 
 function PKImportFlow({ onBack }: { onBack: () => void }) {
   const navigate = useNavigate();
+  const { formatDate } = useDateFormatters();
   const [method, setMethod] = useState<PKMethod>("choose");
   const [step, setStep] = useState<Step>("upload");
   const [file, setFile] = useState<File | null>(null);
@@ -898,9 +900,9 @@ function PKImportFlow({ onBack }: { onBack: () => void }) {
               </div>
               {preview.earliest_switch && preview.latest_switch && (
                 <div className="col-span-2 text-xs text-muted-foreground">
-                  Switch range: {new Date(preview.earliest_switch).toLocaleDateString()}
+                  Switch range: {formatDate(preview.earliest_switch)}
                   {" "}to{" "}
-                  {new Date(preview.latest_switch).toLocaleDateString()}
+                  {formatDate(preview.latest_switch)}
                 </div>
               )}
             </CardContent>

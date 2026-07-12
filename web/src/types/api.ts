@@ -71,6 +71,10 @@ export interface System {
   privacy: PrivacyLevel;
   delete_confirmation: DeleteConfirmation;
   date_format: DateFormat;
+  /** Account display timezone. null = "automatic" (each device renders in
+   *  its own local clock); otherwise an IANA zone name. This is the synced
+   *  account default; a per-device override may shadow it locally. */
+  timezone: string | null;
   replace_fronts_default: boolean;
   coalesce_contiguous_fronts: boolean;
   created_at: string;
@@ -86,6 +90,9 @@ export interface SystemUpdate {
   color?: string | null;
   privacy?: PrivacyLevel;
   date_format?: DateFormat;
+  /** Omit to leave unchanged; null sets "automatic"; a string must be a
+   *  valid IANA zone (the backend 422s an unknown zone). */
+  timezone?: string | null;
   replace_fronts_default?: boolean;
   coalesce_contiguous_fronts?: boolean;
 }

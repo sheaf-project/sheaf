@@ -12,6 +12,7 @@ import {
   type FrontUpdate,
 } from "@/types/api";
 import * as api from "@/lib/fronts";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 
 export const frontKeys = {
   all: ["fronts"] as const,
@@ -86,6 +87,7 @@ export function useUpdateFront() {
 
 export function useDeleteFront() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
     mutationFn: ({
       id,
@@ -100,7 +102,7 @@ export function useDeleteFront() {
       if (isDeleteQueued(result)) {
         qc.invalidateQueries({ queryKey: ["system-safety"] });
         toast.success(
-          `Front entry scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+          `Front entry scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
         );
       } else {
         toast.success("Front deleted");

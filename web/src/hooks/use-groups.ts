@@ -8,6 +8,7 @@ import {
   type GroupUpdate,
 } from "@/types/api";
 import * as api from "@/lib/groups";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 
 export const groupKeys = {
   all: ["groups"] as const,
@@ -72,6 +73,7 @@ export function useUpdateGroup() {
 
 export function useDeleteGroup() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
     mutationFn: ({
       id,
@@ -85,7 +87,7 @@ export function useDeleteGroup() {
       if (isDeleteQueued(result)) {
         qc.invalidateQueries({ queryKey: ["system-safety"] });
         toast.success(
-          `Group scheduled for deletion — cancellable in Settings until ${new Date(result.finalize_after).toLocaleDateString()}.`,
+          `Group scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
         );
       } else {
         toast.success("Group deleted");

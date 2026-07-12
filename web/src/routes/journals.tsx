@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router";
 import {
   useInfiniteQuery,
   useMutation,
-  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
@@ -23,7 +22,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCurrentFronts } from "@/hooks/use-fronts";
 import { useMembers } from "@/hooks/use-members";
 import { createJournal, listJournals } from "@/lib/journals";
-import { getMySystem } from "@/lib/systems";
 import type { JournalListResponse, Member } from "@/types/api";
 
 const PAGE_LIMIT = 25;
@@ -140,12 +138,6 @@ function JournalList({
   memberLookup: Map<string, Member>;
   members: Member[];
 }) {
-  const { data: system } = useQuery({
-    queryKey: ["system", "me"],
-    queryFn: getMySystem,
-  });
-  const dateFormat = system?.date_format ?? "ymd";
-
   const params = useMemo(() => {
     if (filter === "system") return { system_only: true, limit: PAGE_LIMIT };
     if (filter !== "all") return { member_id: filter, limit: PAGE_LIMIT };
@@ -191,7 +183,6 @@ function JournalList({
             key={entry.id}
             entry={entry}
             memberLookup={memberLookup}
-            dateFormat={dateFormat}
           />
         ))}
       </div>

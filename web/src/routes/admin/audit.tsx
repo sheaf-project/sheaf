@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getAdminAuditEvents, type AdminAuditEvent } from "@/lib/admin";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,7 @@ function formatDiff(
 }
 
 export function AdminAuditPage() {
+  const { formatDateTime } = useDateFormatters();
   const [targetUserId, setTargetUserId] = useState("");
   const [action, setAction] = useState("");
   const [page, setPage] = useState(1);
@@ -126,7 +128,7 @@ export function AdminAuditPage() {
               {events?.map((e: AdminAuditEvent) => (
                 <tr key={e.id} className="border-b text-sm last:border-0">
                   <td className="py-2 px-3 align-top whitespace-nowrap">
-                    {new Date(e.created_at).toLocaleString()}
+                    {formatDateTime(e.created_at)}
                   </td>
                   <td className="py-2 px-3 align-top">
                     {e.admin_email ?? <span className="text-muted-foreground">deleted</span>}

@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { showApiErrorToast } from "@/lib/api-errors";
 
 import { useMembers } from "@/hooks/use-members";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { getCurrentFronts } from "@/lib/fronts";
 import { getMySystem } from "@/lib/systems";
 import {
@@ -220,6 +221,7 @@ function BoardView({
   members: Member[];
 }) {
   const qc = useQueryClient();
+  const { formatDateTime } = useDateFormatters();
   const { data: system } = useQuery({
     queryKey: ["system", "me"],
     queryFn: getMySystem,
@@ -292,9 +294,9 @@ function BoardView({
       setDeleting(null);
       if (isDeleteQueued(resp)) {
         toast.success(
-          `Deletion queued. Will finalize after ${new Date(
+          `Deletion queued. Will finalize after ${formatDateTime(
             resp.finalize_after,
-          ).toLocaleString()} unless cancelled.`,
+          )} unless cancelled.`,
         );
       } else {
         toast.success("Deleted");
@@ -491,7 +493,6 @@ function BoardView({
       {historyFor && (
         <HistoryDialog
           message={historyFor}
-          dateFormat={system?.date_format ?? "ymd"}
           onClose={() => setHistoryFor(null)}
           onRestored={() => {
             setHistoryFor(null);
@@ -542,6 +543,7 @@ function MessageRow({
   onDelete: (cascade: boolean) => void;
   replyCount?: number;
 }) {
+  const { formatDateTime } = useDateFormatters();
   const author =
     msg.author_member_id !== null
       ? (memberById.get(msg.author_member_id)?.display_name ??
@@ -583,7 +585,7 @@ function MessageRow({
           )}
         </div>
         <span className="text-xs text-muted-foreground">
-          {new Date(msg.created_at).toLocaleString()}
+          {formatDateTime(msg.created_at)}
           {msg.updated_at && msg.updated_at !== msg.created_at && (
             <span className="ml-1 italic">(edited)</span>
           )}
@@ -771,12 +773,10 @@ function EditDialog({
 
 function HistoryDialog({
   message,
-  dateFormat,
   onClose,
   onRestored,
 }: {
   message: Message;
-  dateFormat: import("@/types/api").DateFormat;
   onClose: () => void;
   onRestored: () => void;
 }) {
@@ -810,7 +810,6 @@ function HistoryDialog({
             ["messages", "revisions", message.id],
           ]}
           emptyMessage="No revisions yet. Edits to this message will appear here."
-          dateFormat={dateFormat}
         />
       </DialogContent>
     </Dialog>

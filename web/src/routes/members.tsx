@@ -11,7 +11,7 @@ import {
 } from "@/hooks/use-members";
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
-import { formatBirthday } from "@/lib/date-format";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
@@ -939,9 +939,8 @@ function MemberView({
 }) {
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(member.id);
-  const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
   const { data: safety } = useQuery({ queryKey: ["system-safety"], queryFn: getSystemSafety });
-  const dateFormat = system?.date_format ?? "ymd";
+  const { formatBirthday } = useDateFormatters();
   const [showRevisions, setShowRevisions] = useState(false);
 
   const fieldDisplay = useMemo(() => {
@@ -1033,7 +1032,7 @@ function MemberView({
               )}
               {member.birthday && (
                 <p className="text-sm text-muted-foreground">
-                  {formatBirthday(member.birthday, dateFormat)}
+                  {formatBirthday(member.birthday)}
                 </p>
               )}
               {member.pluralkit_id && (
@@ -1087,7 +1086,6 @@ function MemberView({
                   ["system-safety"],
                 ]}
                 emptyMessage="No bio revisions yet. Edits to the bio will appear here."
-                dateFormat={dateFormat}
               />
             </div>
           )}

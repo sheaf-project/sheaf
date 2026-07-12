@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Global display-timezone preference.** You can now set the timezone your timestamps are shown in, instead of always following the device's clock. It is a per-account preference that syncs across your devices (a sibling of the existing date-format setting) and can be overridden per device, so a machine in another zone can pin its own without changing the account default. The default is "automatic", which keeps today's behaviour (each device uses its own local time). Absolute times carry the zone they are shown in (for example `1:37pm EST`) so there is no ambiguity. The setting is included in your data export and restored on import.
+
 ## [1.2.1] - 2026-07-11
 
 ### Security

@@ -1,9 +1,9 @@
 import { Link } from "react-router";
 import { Card, CardContent } from "@/components/ui/card";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
-import { formatDateTime } from "@/lib/date-format";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { cn } from "@/lib/utils";
-import type { DateFormat, JournalEntry, Member } from "@/types/api";
+import type { JournalEntry, Member } from "@/types/api";
 
 const SNIPPET_CHARS = 180;
 
@@ -20,15 +20,14 @@ function snippet(body: string): string {
 export function JournalEntryCard({
   entry,
   memberLookup,
-  dateFormat = "ymd",
 }: {
   entry: JournalEntry;
   memberLookup?: Map<string, Member>;
-  dateFormat?: DateFormat;
 }) {
+  const { formatDateTime } = useDateFormatters();
   const member = entry.member_id ? memberLookup?.get(entry.member_id) : null;
   const titleDisplay =
-    entry.title || `Entry from ${formatDateTime(entry.created_at, dateFormat)}`;
+    entry.title || `Entry from ${formatDateTime(entry.created_at)}`;
   const authors = entry.author_member_names.length > 0
     ? entry.author_member_names.join(", ")
     : "account";
@@ -45,7 +44,7 @@ export function JournalEntryCard({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="font-medium truncate">{titleDisplay}</p>
             <span className="text-xs text-muted-foreground shrink-0">
-              {formatDateTime(entry.created_at, dateFormat)}
+              {formatDateTime(entry.created_at)}
             </span>
           </div>
           <p className="text-xs text-muted-foreground">

@@ -19,6 +19,33 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Timezone guard: dates must render through the blessed formatters
+      // (useDateFormatters / formatDate / formatDateTime in @/lib/date-format)
+      // so they honour the user's timezone preference and carry a zone stamp.
+      // Raw toLocale* on a date silently renders in the browser's zone and
+      // dodges the preference - see lib/date-format.ts. Numeric
+      // `n.toLocaleString()` is unaffected (only the Date form is caught).
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.property.name='toLocaleDateString']",
+          message:
+            'Do not format dates with toLocaleDateString (ignores the timezone preference). Use formatDate from useDateFormatters()/@/lib/date-format.',
+        },
+        {
+          selector: "CallExpression[callee.property.name='toLocaleTimeString']",
+          message:
+            'Do not format times with toLocaleTimeString (ignores the timezone preference). Use formatDateTime from useDateFormatters()/@/lib/date-format.',
+        },
+        {
+          selector:
+            "CallExpression[callee.property.name='toLocaleString'][callee.object.callee.name='Date']",
+          message:
+            'Do not format a Date with toLocaleString (ignores the timezone preference). Use formatDateTime from useDateFormatters()/@/lib/date-format. (Numeric toLocaleString is fine.)',
+        },
+      ],
+    },
   },
   // shadcn/ui components export variant helpers alongside components
   {

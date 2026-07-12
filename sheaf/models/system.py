@@ -64,6 +64,13 @@ class System(UUIDMixin, TimestampMixin, Base):
         default=DateFormat.YMD,
         nullable=False,
     )
+    # Global display timezone for rendered timestamps. NULL = "auto" = each
+    # device uses its own local clock (the default); a non-null value is an
+    # IANA zone name (e.g. "America/New_York") validated against the tz
+    # database at write time. This is the synced account default - clients may
+    # layer a per-device override on top locally. Twin of date_format: both are
+    # exported, round-tripped display preferences, not instance-local chrome.
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # When True, creating a new front automatically ends all currently open fronts.
     replace_fronts_default: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
