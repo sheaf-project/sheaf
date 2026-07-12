@@ -16,8 +16,9 @@ fixed-offset zones the picker offers ("EST", "EST5EDT", "Etc/GMT+5", ...).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from functools import lru_cache
-from zoneinfo import available_timezones
+from zoneinfo import ZoneInfo, available_timezones
 
 
 @lru_cache(maxsize=1)
@@ -30,3 +31,17 @@ def is_valid_timezone(value: str) -> bool:
     """True if `value` is a known IANA zone name. Does not accept the "auto"
     sentinel - callers represent auto as NULL/None, not a string."""
     return value in _valid_timezones()
+
+
+def localize(dt: datetime, tz: str | None) -> datetime:
+    """Convert an aware datetime into `tz` (an IANA zone), or UTC when `tz` is
+    None / unset / unknown.
+
+    Server-side counterpart to the web formatter, for the handful of places the
+    backend renders a timestamp for a human (emails, notification bodies). The
+    account "automatic" case (None) collapses to UTC so the emitted zone stamp
+    (`strftime("%Z")`) is honest about the zone the reader is seeing, rather
+    than guessing a device zone the server can't know."""
+    if tz and is_valid_timezone(tz):
+        return dt.astimezone(ZoneInfo(tz))
+    return dt.astimezone(UTC)
