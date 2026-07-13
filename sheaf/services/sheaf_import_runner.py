@@ -76,6 +76,7 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
         polls=options.polls,
         reminders=options.reminders,
         notifications=options.notifications,
+        relationships=options.relationships,
     )
 
     update_counts(
@@ -103,6 +104,12 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
         reminders_skipped=result.reminders_skipped,
         channels_imported=result.channels_imported,
         channels_skipped=result.channels_skipped,
+        relationship_types_imported=result.relationship_types_imported,
+        relationship_types_skipped=result.relationship_types_skipped,
+        member_relationships_imported=result.member_relationships_imported,
+        member_relationships_skipped=result.member_relationships_skipped,
+        group_relationships_imported=result.group_relationships_imported,
+        group_relationships_skipped=result.group_relationships_skipped,
     )
     for warning in result.warnings:
         append_event(job, level="warning", stage="import", message=warning)
@@ -121,7 +128,10 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
             f"{result.messages_imported} messages, "
             f"{result.polls_imported} polls, "
             f"{result.reminders_imported} reminders, "
-            f"{result.channels_imported} notification channels"
+            f"{result.channels_imported} notification channels, "
+            f"{result.relationship_types_imported} relationship types, "
+            f"{result.member_relationships_imported} member relationships, "
+            f"{result.group_relationships_imported} group relationships"
         ),
     )
 

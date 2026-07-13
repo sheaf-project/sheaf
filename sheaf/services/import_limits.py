@@ -85,6 +85,13 @@ REMINDER_NAME = Cap("reminder name", 120)
 REMINDER_TITLE = Cap("reminder title", 500)
 REMINDER_BODY = Cap("reminder body", 2000)
 
+# --- Relationships ----------------------------------------------------------
+# Mirrors the relationship_types columns (name / forward_label / reverse_label
+# are String(100)). A dedicated schema lands with the relationships API; until
+# then these track the column widths so an import can't over-run them.
+REL_TYPE_NAME = Cap("relationship type name", 100)
+REL_TYPE_LABEL = Cap("relationship type label", 100)
+
 
 @dataclass
 class ClampReport:
@@ -192,6 +199,9 @@ _ROW_CAP_LABELS: dict[str, str] = {
     "groups": "groups",
     "tags": "tags",
     "custom_fields": "custom fields",
+    "relationship_types": "relationship types",
+    "member_relationships": "member relationships",
+    "group_relationships": "group relationships",
 }
 
 

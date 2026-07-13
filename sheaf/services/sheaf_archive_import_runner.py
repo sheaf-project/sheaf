@@ -79,6 +79,7 @@ async def handle_sheaf_archive(job: ImportJob, db: AsyncSession) -> None:
         polls=options.polls,
         reminders=options.reminders,
         notifications=options.notifications,
+        relationships=options.relationships,
     )
 
     base = result.base
@@ -107,6 +108,12 @@ async def handle_sheaf_archive(job: ImportJob, db: AsyncSession) -> None:
         reminders_skipped=base.reminders_skipped,
         channels_imported=base.channels_imported,
         channels_skipped=base.channels_skipped,
+        relationship_types_imported=base.relationship_types_imported,
+        relationship_types_skipped=base.relationship_types_skipped,
+        member_relationships_imported=base.member_relationships_imported,
+        member_relationships_skipped=base.member_relationships_skipped,
+        group_relationships_imported=base.group_relationships_imported,
+        group_relationships_skipped=base.group_relationships_skipped,
         images_imported=result.images_imported,
     )
     for warning in result.warnings:

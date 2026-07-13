@@ -82,6 +82,9 @@ def _summary_dict(p: SheafPreviewSummary) -> dict:
         "open_poll_count": p.open_poll_count,
         "reminder_count": p.reminder_count,
         "channel_count": p.channel_count,
+        "relationship_type_count": p.relationship_type_count,
+        "member_relationship_count": p.member_relationship_count,
+        "group_relationship_count": p.group_relationship_count,
         "limit_warnings": p.limit_warnings,
     }
 

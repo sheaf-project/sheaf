@@ -50,6 +50,11 @@ from sheaf.models.notification_channel import NotificationChannel
 from sheaf.models.notification_channel_group_rule import NotificationChannelGroupRule
 from sheaf.models.notification_channel_member_rule import NotificationChannelMemberRule
 from sheaf.models.poll import Poll, PollOption, PollVote, PollVoteEvent
+from sheaf.models.relationship import (
+    GroupRelationship,
+    MemberRelationship,
+    RelationshipType,
+)
 from sheaf.models.reminder import Reminder
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
@@ -317,6 +322,38 @@ CLASSIFICATION: dict[type, dict] = {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
             "deleted_at": "soft-delete tombstone; deleted rows are not exported",
+        },
+    },
+    RelationshipType: {
+        "exported": {"name", "symmetry", "forward_label", "reverse_label"},
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "system_id": _TENANT_FK,
+            "created_at": _ROW_CREATED,
+            "updated_at": _ROW_UPDATED,
+        },
+    },
+    MemberRelationship: {
+        # source_id/target_id/relationship_type_id carry the OLD uuids and are
+        # remapped onto the new member + type rows on import, exactly like
+        # CustomFieldValue.member_id.
+        "exported": {
+            "source_id", "target_id", "relationship_type_id", "mutual",
+            "visibility", "created_at",
+        },
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "system_id": _TENANT_FK,
+        },
+    },
+    GroupRelationship: {
+        "exported": {
+            "source_id", "target_id", "relationship_type_id", "mutual",
+            "visibility", "created_at",
+        },
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "system_id": _TENANT_FK,
         },
     },
 }

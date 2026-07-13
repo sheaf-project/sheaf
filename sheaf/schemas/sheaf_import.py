@@ -37,6 +37,9 @@ class SheafImportOptions(BaseModel):
     # Watch tokens + their channels + filter rules. Reminders reference a
     # channel, so importing reminders without notifications drops them.
     notifications: bool = True
+    # Relationship types + the member and group edges built on them. One flag
+    # gates all three: the edges reference the types, so they move together.
+    relationships: bool = True
 
 
 class SheafArchiveImportOptions(SheafImportOptions):

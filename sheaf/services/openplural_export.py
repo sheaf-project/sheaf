@@ -61,6 +61,13 @@ _EXT_PASSTHROUGH_SECTIONS = (
     "revisions",
     "watch_tokens",
     "uploaded_files",
+    # OpenPlural v0.1 has no relationship core record, so the types and both
+    # edge tables ride the file-level extensions.sheaf.* passthrough (NOT the
+    # reserved top-level `relationships` key, which is for foreign preserved
+    # modules; see _merge_preserved).
+    "relationship_types",
+    "member_relationships",
+    "group_relationships",
 )
 
 

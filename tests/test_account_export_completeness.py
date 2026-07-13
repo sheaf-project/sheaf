@@ -72,6 +72,19 @@ def test_export_version_bumped_to_2(auth_client: httpx.Client):
     assert export["version"] == "2"
 
 
+def test_export_includes_relationship_sections(auth_client: httpx.Client):
+    """The three relationship sections are always present as top-level lists,
+    even for a fresh system with no relationships."""
+    export = auth_client.get("/v1/export").json()
+    for key in (
+        "relationship_types",
+        "member_relationships",
+        "group_relationships",
+    ):
+        assert key in export, key
+        assert isinstance(export[key], list)
+
+
 # ---------------------------------------------------------------------------
 # Article 15: /v1/account/data
 # ---------------------------------------------------------------------------

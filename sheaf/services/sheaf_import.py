@@ -64,6 +64,13 @@ from sheaf.models.poll import (
     PollVoteAction,
     PollVoteEvent,
 )
+from sheaf.models.relationship import (
+    GroupRelationship,
+    MemberRelationship,
+    RelationshipSymmetry,
+    RelationshipType,
+    RelationshipVisibility,
+)
 from sheaf.models.reminder import Reminder, reminder_scope_members
 from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
@@ -82,16 +89,20 @@ from sheaf.services.import_content_dedup import (
     load_front_index,
     load_group_index,
     load_group_member_guard,
+    load_group_relationship_guard,
     load_journal_index,
+    load_member_relationship_guard,
     load_member_tag_guard,
     load_message_count_index,
     load_message_index,
     load_poll_index,
+    load_relationship_type_index,
     load_reminder_index,
     load_revision_index,
     load_tag_index,
     load_watch_token_index,
     normalize_front_interval,
+    relationship_pair_key,
 )
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -112,6 +123,7 @@ from sheaf.services.polls import (
     max_concurrent_open_for_tier,
     max_retention_days_for_tier,
 )
+from sheaf.services.relationships import canonicalize_pair
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -135,6 +147,24 @@ def _field_type(val: object) -> FieldType:
     if isinstance(val, str) and val in _VALID_FIELD_TYPE:
         return FieldType(val)
     return FieldType.TEXT
+
+
+_VALID_SYMMETRY = {e.value for e in RelationshipSymmetry}
+_VALID_REL_VISIBILITY = {e.value for e in RelationshipVisibility}
+
+
+def _symmetry(val: object) -> RelationshipSymmetry:
+    # Untrusted enum string from the import file; default to the safest mode
+    # (symmetric needs no reverse_label) rather than raising mid-import.
+    if isinstance(val, str) and val in _VALID_SYMMETRY:
+        return RelationshipSymmetry(val)
+    return RelationshipSymmetry.SYMMETRIC
+
+
+def _rel_visibility(val: object) -> RelationshipVisibility:
+    if isinstance(val, str) and val in _VALID_REL_VISIBILITY:
+        return RelationshipVisibility(val)
+    return RelationshipVisibility.PRIVATE
 
 
 _VALID_DATE_FORMAT = {e.value for e in DateFormat}
@@ -461,6 +491,9 @@ class SheafPreviewSummary:
         self.open_poll_count: int = 0
         self.reminder_count: int = 0
         self.channel_count: int = 0
+        self.relationship_type_count: int = 0
+        self.member_relationship_count: int = 0
+        self.group_relationship_count: int = 0
         # Fields/lists that exceed the schema caps and would be shortened on
         # import (so the user can cancel or continue). Mirrors what
         # run_import's clamp pass would record.
@@ -492,6 +525,12 @@ class SheafImportResult:
         self.reminders_skipped: int = 0
         self.channels_imported: int = 0
         self.channels_skipped: int = 0
+        self.relationship_types_imported: int = 0
+        self.relationship_types_skipped: int = 0
+        self.member_relationships_imported: int = 0
+        self.member_relationships_skipped: int = 0
+        self.group_relationships_imported: int = 0
+        self.group_relationships_skipped: int = 0
         self.warnings: list[str] = []
 
 
@@ -587,6 +626,12 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
             s(rm.get("title"), il.REMINDER_TITLE)
             s(rm.get("body"), il.REMINDER_BODY)
 
+    for rt in _as_list(data.get("relationship_types")):
+        if isinstance(rt, dict):
+            s(rt.get("name"), il.REL_TYPE_NAME)
+            s(rt.get("forward_label"), il.REL_TYPE_LABEL)
+            s(rt.get("reverse_label"), il.REL_TYPE_LABEL)
+
 
 def preview(data: dict) -> SheafPreviewSummary:
     """Parse Sheaf export JSON and return a summary for user review."""
@@ -615,6 +660,9 @@ def preview(data: dict) -> SheafPreviewSummary:
     summary.channel_count = sum(
         len(t.get("channels", [])) for t in data.get("watch_tokens", [])
     )
+    summary.relationship_type_count = len(data.get("relationship_types", []))
+    summary.member_relationship_count = len(data.get("member_relationships", []))
+    summary.group_relationship_count = len(data.get("group_relationships", []))
 
     report = ClampReport()
     measure_native_payload(data, report)
@@ -628,6 +676,9 @@ def preview(data: dict) -> SheafPreviewSummary:
             "groups": summary.group_count,
             "tags": summary.tag_count,
             "custom_fields": summary.custom_field_count,
+            "relationship_types": summary.relationship_type_count,
+            "member_relationships": summary.member_relationship_count,
+            "group_relationships": summary.group_relationship_count,
         }
     )
     summary.limit_warnings += _group_depth_warnings(data.get("groups", []))
@@ -723,6 +774,7 @@ async def run_import(
     polls: bool = True,
     reminders: bool = True,
     notifications: bool = True,
+    relationships: bool = True,
     image_key_map: dict[str, str] | None = None,
     used_image_keys: set[str] | None = None,
 ) -> SheafImportResult:
@@ -1009,6 +1061,15 @@ async def run_import(
             "custom_fields": (
                 len(data.get("custom_fields", [])) if custom_fields else 0
             ),
+            "relationship_types": (
+                len(data.get("relationship_types", [])) if relationships else 0
+            ),
+            "member_relationships": (
+                len(data.get("member_relationships", [])) if relationships else 0
+            ),
+            "group_relationships": (
+                len(data.get("group_relationships", [])) if relationships else 0
+            ),
         }
     )
 
@@ -1272,6 +1333,91 @@ async def run_import(
                     f"{cycle_moved} group(s) had a looping parent reference and "
                     "were moved to the top level."
                 )
+
+    # --- Relationships (types + member/group edges) ---
+    # Types dedupe by name (like tags/groups). Edges resolve their endpoints
+    # and type through the old->new id maps built above (members always, groups
+    # only if that section ran); an edge whose endpoints or type didn't import
+    # is dropped, self-edges are skipped, and the pair guard - keyed on the
+    # unordered (type, endpoints) pair to match the functional unique index -
+    # drops a re-import or in-file inverse duplicate instead of hitting an
+    # IntegrityError. canonicalize_pair fixes the stored order for symmetric
+    # types so it lines up with that index.
+    if relationships:
+        rel_type_index = (
+            await load_relationship_type_index(db, system.id)
+            if dedupe
+            else ContentMatchIndex()
+        )
+        old_rtid_to_type: dict[str, RelationshipType] = {}
+        for rt_data in data.get("relationship_types", []):
+            old_rtid = rt_data.get("id", "")
+            name = clamp_str(
+                rt_data.get("name") or "relationship",
+                il.REL_TYPE_NAME,
+                report=report,
+            )
+            existing_type = rel_type_index.get(name) if dedupe else None
+            if existing_type is not None:
+                old_rtid_to_type[old_rtid] = existing_type
+                result.relationship_types_skipped += 1
+                continue
+            rtype = RelationshipType(
+                id=uuid.uuid4(),
+                system_id=system.id,
+                name=name,
+                symmetry=_symmetry(rt_data.get("symmetry")),
+                forward_label=clamp_str(
+                    rt_data.get("forward_label") or name,
+                    il.REL_TYPE_LABEL,
+                    report=report,
+                ),
+                reverse_label=clamp_str(
+                    rt_data.get("reverse_label"), il.REL_TYPE_LABEL, report=report
+                ),
+            )
+            db.add(rtype)
+            rel_type_index.register(name, rtype)
+            old_rtid_to_type[old_rtid] = rtype
+            result.relationship_types_imported += 1
+
+        await db.flush()
+
+        member_rel_guard = (
+            await load_member_relationship_guard(db, system.id)
+            if dedupe
+            else PairGuard()
+        )
+        m_imp, m_skip = _import_relationship_edges(
+            db,
+            system,
+            data.get("member_relationships", []),
+            endpoint_map=old_id_to_member,
+            type_map=old_rtid_to_type,
+            model=MemberRelationship,
+            guard=member_rel_guard,
+        )
+        result.member_relationships_imported += m_imp
+        result.member_relationships_skipped += m_skip
+
+        group_rel_guard = (
+            await load_group_relationship_guard(db, system.id)
+            if dedupe
+            else PairGuard()
+        )
+        g_imp, g_skip = _import_relationship_edges(
+            db,
+            system,
+            data.get("group_relationships", []),
+            endpoint_map=old_gid_to_group,
+            type_map=old_rtid_to_type,
+            model=GroupRelationship,
+            guard=group_rel_guard,
+        )
+        result.group_relationships_imported += g_imp
+        result.group_relationships_skipped += g_skip
+
+        await db.flush()
 
     # --- Fronts ---
     if fronts:
@@ -1991,6 +2137,62 @@ async def run_import(
     # the per-record warnings in the job log.
     result.warnings = warnings + report.to_warnings()
     return result
+
+
+def _import_relationship_edges(
+    db: AsyncSession,
+    system: System,
+    edges: object,
+    *,
+    endpoint_map: dict,
+    type_map: dict,
+    model: type,
+    guard: PairGuard,
+) -> tuple[int, int]:
+    """Build member/group relationship edges, returning (imported, skipped).
+
+    Shared by both edge tables (they differ only in the endpoint map and ORM
+    model). For each edge: resolve the type and both endpoints through the
+    old->new maps, drop the edge if any didn't import, skip self-edges, then
+    canonicalize the pair for the type's symmetry and dedupe on the unordered
+    (type, endpoints) key (matching the functional unique index) so a
+    re-import or in-file inverse duplicate is skipped rather than raising.
+    ``db.add`` only; the caller flushes. Not a coroutine - it enqueues rows
+    on the session without awaiting.
+    """
+    imported = 0
+    skipped = 0
+    for e_data in _as_list(edges):
+        if not isinstance(e_data, dict):
+            continue
+        rtype = type_map.get(e_data.get("relationship_type_id"))
+        if rtype is None:
+            continue
+        source = endpoint_map.get(e_data.get("source_id"))
+        target = endpoint_map.get(e_data.get("target_id"))
+        if source is None or target is None:
+            continue
+        if source.id == target.id:
+            continue
+        src_id, tgt_id = canonicalize_pair(rtype.symmetry, source.id, target.id)
+        if not guard.add(relationship_pair_key(rtype.id, src_id, tgt_id)):
+            skipped += 1
+            continue
+        edge = model(
+            id=uuid.uuid4(),
+            system_id=system.id,
+            source_id=src_id,
+            target_id=tgt_id,
+            relationship_type_id=rtype.id,
+            mutual=bool(e_data.get("mutual", False)),
+            visibility=_rel_visibility(e_data.get("visibility")),
+        )
+        created = _parse_iso(e_data.get("created_at"))
+        if created:
+            edge.created_at = created
+        db.add(edge)
+        imported += 1
+    return imported, skipped
 
 
 def _trunc(val: str | None, max_len: int) -> str | None:

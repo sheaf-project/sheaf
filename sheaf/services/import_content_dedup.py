@@ -53,6 +53,11 @@ from sheaf.models.member import front_members, group_members, member_tags
 from sheaf.models.message import Message
 from sheaf.models.notification_channel import NotificationChannel
 from sheaf.models.poll import Poll
+from sheaf.models.relationship import (
+    GroupRelationship,
+    MemberRelationship,
+    RelationshipType,
+)
 from sheaf.models.reminder import Reminder
 from sheaf.models.tag import Tag
 from sheaf.models.watch_token import WatchToken
@@ -356,3 +361,64 @@ async def load_member_tag_guard(
         ).where(Tag.system_id == system_id)
     )
     return PairGuard({(r.tag_id, r.member_id) for r in rows})
+
+
+async def load_relationship_type_index(
+    db: AsyncSession, system_id: uuid.UUID
+) -> ContentMatchIndex:
+    """Relationship types keyed by name (like tags/groups) - a re-import
+    reuses a same-named type so its edges land on the existing row."""
+    rows = await db.execute(
+        select(RelationshipType).where(RelationshipType.system_id == system_id)
+    )
+    return ContentMatchIndex({rt.name: rt for rt in rows.scalars().all()})
+
+
+def relationship_pair_key(
+    type_id: uuid.UUID, source_id: uuid.UUID, target_id: uuid.UUID
+) -> tuple:
+    """Guard key matching the functional unique index on member/group edges:
+    (type, least(source, target), greatest(source, target)). Uniqueness is
+    over the UNORDERED pair per type, so direction doesn't change the key."""
+    lo, hi = (source_id, target_id) if source_id <= target_id else (target_id, source_id)
+    return (type_id, lo, hi)
+
+
+async def load_member_relationship_guard(
+    db: AsyncSession, system_id: uuid.UUID
+) -> PairGuard:
+    """Existing member-edge unordered pairs per type - the functional unique
+    index makes a blind re-insert (or an in-file inverse duplicate) a hard
+    error, so importers consult this before adding an edge."""
+    rows = await db.execute(
+        select(
+            MemberRelationship.relationship_type_id,
+            MemberRelationship.source_id,
+            MemberRelationship.target_id,
+        ).where(MemberRelationship.system_id == system_id)
+    )
+    return PairGuard(
+        {
+            relationship_pair_key(r.relationship_type_id, r.source_id, r.target_id)
+            for r in rows
+        }
+    )
+
+
+async def load_group_relationship_guard(
+    db: AsyncSession, system_id: uuid.UUID
+) -> PairGuard:
+    """Group-edge counterpart of load_member_relationship_guard."""
+    rows = await db.execute(
+        select(
+            GroupRelationship.relationship_type_id,
+            GroupRelationship.source_id,
+            GroupRelationship.target_id,
+        ).where(GroupRelationship.system_id == system_id)
+    )
+    return PairGuard(
+        {
+            relationship_pair_key(r.relationship_type_id, r.source_id, r.target_id)
+            for r in rows
+        }
+    )
