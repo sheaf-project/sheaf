@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowLeftRight, ArrowRight } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -9,7 +10,11 @@ import {
   useCreateGroupRelationship,
   useDeleteGroupRelationship,
 } from "@/hooks/use-relationships";
-import type { RelationshipEdgeCreate, RelationshipType } from "@/types/api";
+import type {
+  RelationshipDirection,
+  RelationshipEdgeCreate,
+  RelationshipType,
+} from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -26,6 +31,22 @@ type Role = "forward" | "reverse";
 export interface RelationshipNode {
   id: string;
   name: string;
+}
+
+/**
+ * At-a-glance direction glyph for an existing edge: a two-way arrow for a
+ * mutual / symmetric relationship, a one-way arrow otherwise (pointing away
+ * from this node when it is the source, toward it when it is the target).
+ */
+function DirectionIcon({ direction }: { direction: RelationshipDirection }) {
+  const cls = "h-3.5 w-3.5 shrink-0 text-muted-foreground";
+  if (direction === "outgoing") {
+    return <ArrowRight className={cls} aria-label="one-way, from this one" />;
+  }
+  if (direction === "incoming") {
+    return <ArrowLeft className={cls} aria-label="one-way, toward this one" />;
+  }
+  return <ArrowLeftRight className={cls} aria-label="mutual" />;
 }
 
 /**
@@ -141,9 +162,12 @@ export function RelationshipsEditor({
               key={edge.id}
               className="flex items-center justify-between gap-2 rounded-md border px-2 py-1 text-sm"
             >
-              <span className="min-w-0 truncate">
-                <span className="text-muted-foreground">{edge.label}:</span>{" "}
-                {nodeName(edge.other_id)}
+              <span className="flex min-w-0 items-center gap-1.5 truncate">
+                <DirectionIcon direction={edge.direction} />
+                <span className="min-w-0 truncate">
+                  <span className="text-muted-foreground">{edge.label}:</span>{" "}
+                  {nodeName(edge.other_id)}
+                </span>
               </span>
               <Button
                 variant="ghost"
