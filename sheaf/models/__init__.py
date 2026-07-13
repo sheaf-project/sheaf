@@ -48,6 +48,13 @@ from sheaf.models.poll import (
     PollVoteEvent,
 )
 from sheaf.models.push_device_token import PushDeviceToken, PushPlatform
+from sheaf.models.relationship import (
+    GroupRelationship,
+    MemberRelationship,
+    RelationshipSymmetry,
+    RelationshipType,
+    RelationshipVisibility,
+)
 from sheaf.models.reminder import Reminder, ReminderPending, reminder_scope_members
 from sheaf.models.retention_trim_notice import RetentionTrimNotice, RetentionTrimStatus
 from sheaf.models.safety_change_request import SafetyChangeRequest, SafetyChangeStatus
@@ -113,6 +120,11 @@ __all__ = [
     "PrivacyLevel",
     "PushDeviceToken",
     "PushPlatform",
+    "GroupRelationship",
+    "MemberRelationship",
+    "RelationshipSymmetry",
+    "RelationshipType",
+    "RelationshipVisibility",
     "Reminder",
     "ReminderPending",
     "RetentionTrimNotice",

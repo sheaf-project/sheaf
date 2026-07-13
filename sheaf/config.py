@@ -169,6 +169,12 @@ class Settings(BaseSettings):
     import_max_groups: int = 10000
     import_max_tags: int = 10000
     import_max_custom_fields: int = 10000
+    # Relationship types are a small vocabulary like tags/groups; the member
+    # and group edges built on them can scale with the roster, so they get the
+    # larger edge-style ceiling (fronts/messages scale).
+    import_max_relationship_types: int = 10000
+    import_max_member_relationships: int = 100000
+    import_max_group_relationships: int = 100000
 
     # Revision-history retention caps per tier. 0 = unlimited.
     # Covers both journal entries and member bios under a single cap.

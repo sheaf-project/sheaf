@@ -41,6 +41,11 @@ from sheaf.models.group import Group
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
 from sheaf.models.notification_channel import NotificationChannel
+from sheaf.models.relationship import (
+    GroupRelationship,
+    MemberRelationship,
+    RelationshipType,
+)
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
@@ -371,6 +376,28 @@ async def export_all(
     )
     messages_rows = list(msgs_result.scalars().all())
 
+    # Relationships - user-defined relationship types plus the member and
+    # group edges built on them. No encrypted columns, so no decryption.
+    # Old member/group/type uuids are emitted so the importer can remap.
+    rel_types_result = await db.execute(
+        select(RelationshipType).where(RelationshipType.system_id == system.id)
+    )
+    relationship_types = list(rel_types_result.scalars().all())
+
+    member_rels_result = await db.execute(
+        select(MemberRelationship).where(
+            MemberRelationship.system_id == system.id
+        )
+    )
+    member_relationships = list(member_rels_result.scalars().all())
+
+    group_rels_result = await db.execute(
+        select(GroupRelationship).where(
+            GroupRelationship.system_id == system.id
+        )
+    )
+    group_relationships = list(group_rels_result.scalars().all())
+
     native = {
         "version": "2",
         "system": _system_dict(system),
@@ -462,6 +489,22 @@ async def export_all(
         "reminders": [_reminder_dict(r) for r in reminders],
         "polls": [_poll_dict(p) for p in polls],
         "messages": [_message_dict(m) for m in messages_rows],
+        "relationship_types": [
+            {
+                "id": str(rt.id),
+                "name": rt.name,
+                "symmetry": rt.symmetry.value,
+                "forward_label": rt.forward_label,
+                "reverse_label": rt.reverse_label,
+            }
+            for rt in relationship_types
+        ],
+        "member_relationships": [
+            _relationship_dict(r) for r in member_relationships
+        ],
+        "group_relationships": [
+            _relationship_dict(r) for r in group_relationships
+        ],
     }
     return _maybe_openplural(native, format)
 
@@ -497,6 +540,23 @@ def _empty_export() -> dict:
         "reminders": [],
         "polls": [],
         "messages": [],
+        "relationship_types": [],
+        "member_relationships": [],
+        "group_relationships": [],
+    }
+
+
+def _relationship_dict(rel: MemberRelationship | GroupRelationship) -> dict:
+    """One member/group relationship edge. source/target/type carry the OLD
+    uuids (member or group depending on the table); the importer remaps them.
+    No encrypted columns, so nothing to decrypt."""
+    return {
+        "source_id": str(rel.source_id),
+        "target_id": str(rel.target_id),
+        "relationship_type_id": str(rel.relationship_type_id),
+        "mutual": rel.mutual,
+        "visibility": rel.visibility.value,
+        "created_at": rel.created_at.isoformat(),
     }
 
 

@@ -78,6 +78,111 @@ def test_sheaf_runner_roundtrip_from_export(auth_client: httpx.Client):
     assert len([m for m in members if m["name"] == "RoundtripMember"]) == 1
 
 
+def test_sheaf_runner_roundtrips_relationships(auth_client: httpx.Client):
+    """Relationship types (symmetric / directional / either) and both member
+    and group edges import, and a re-export carries them back with correct
+    orientation + mutual. A second import must not duplicate any edge."""
+    export = {
+        "version": "2",
+        "system": {"name": "Rel System"},
+        "members": [
+            {"id": "m1", "name": "RelAlice"},
+            {"id": "m2", "name": "RelBob"},
+            {"id": "m3", "name": "RelCass"},
+        ],
+        "groups": [
+            {"id": "g1", "name": "RelGroupOne", "member_ids": []},
+            {"id": "g2", "name": "RelGroupTwo", "member_ids": []},
+        ],
+        "relationship_types": [
+            {
+                "id": "rt-sym", "name": "Partner", "symmetry": "symmetric",
+                "forward_label": "partner", "reverse_label": None,
+            },
+            {
+                "id": "rt-dir", "name": "Parent", "symmetry": "directional",
+                "forward_label": "parent", "reverse_label": "child",
+            },
+            {
+                "id": "rt-either", "name": "Protector", "symmetry": "either",
+                "forward_label": "protector", "reverse_label": "protectee",
+            },
+        ],
+        "member_relationships": [
+            {
+                "source_id": "m1", "target_id": "m2",
+                "relationship_type_id": "rt-sym", "mutual": False,
+                "visibility": "private",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "source_id": "m1", "target_id": "m3",
+                "relationship_type_id": "rt-dir", "mutual": False,
+                "visibility": "private",
+                "created_at": "2026-01-02T00:00:00+00:00",
+            },
+            {
+                "source_id": "m2", "target_id": "m3",
+                "relationship_type_id": "rt-either", "mutual": True,
+                "visibility": "private",
+                "created_at": "2026-01-03T00:00:00+00:00",
+            },
+        ],
+        "group_relationships": [
+            {
+                "source_id": "g1", "target_id": "g2",
+                "relationship_type_id": "rt-sym", "mutual": False,
+                "visibility": "private",
+                "created_at": "2026-01-04T00:00:00+00:00",
+            },
+        ],
+        "fronts": [],
+        "tags": [],
+        "custom_fields": [],
+    }
+    job = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    dump = auth_client.get("/v1/export").json()
+    types = {t["name"]: t for t in dump["relationship_types"]}
+    assert {"Partner", "Parent", "Protector"} <= set(types), types
+    assert types["Partner"]["symmetry"] == "symmetric"
+    assert types["Partner"]["reverse_label"] is None
+    assert types["Parent"]["symmetry"] == "directional"
+    assert types["Protector"]["symmetry"] == "either"
+
+    m_id = {m["name"]: m["id"] for m in dump["members"]}
+    type_id = {t["name"]: t["id"] for t in dump["relationship_types"]}
+
+    medges = dump["member_relationships"]
+    assert len(medges) == 3, medges
+
+    # Directional edge keeps its orientation: Alice (parent) -> Cass (child).
+    parent = [e for e in medges if e["relationship_type_id"] == type_id["Parent"]]
+    assert len(parent) == 1
+    assert parent[0]["source_id"] == m_id["RelAlice"]
+    assert parent[0]["target_id"] == m_id["RelCass"]
+
+    # The either-edge round-trips its mutual flag.
+    prot = [e for e in medges if e["relationship_type_id"] == type_id["Protector"]]
+    assert len(prot) == 1
+    assert prot[0]["mutual"] is True
+
+    assert len(dump["group_relationships"]) == 1
+
+    # Re-import the same export: dedup means nothing is duplicated.
+    job2 = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner()
+    final2 = wait_for_terminal(auth_client, job2["id"])
+    assert final2["status"] == "complete", final2
+    dump2 = auth_client.get("/v1/export").json()
+    assert len(dump2["member_relationships"]) == 3
+    assert len(dump2["group_relationships"]) == 1
+    assert len(dump2["relationship_types"]) == len(dump["relationship_types"])
+
+
 def test_sheaf_runner_roundtrips_notify_prefs_and_coalesce(auth_client: httpx.Client):
     """Per-member notify_on_front_* prefs and the system coalesce preference
     survive a re-import. The notify_on_front_member_ids cross-reference is

@@ -118,6 +118,12 @@ DISPOSITION: dict[str, dict[str, object]] = {
     "PollOption": "_all_ext",
     "PollVote": "_all_ext",
     "PollVoteEvent": "_all_ext",
+    # Relationship types + both edge tables carry verbatim under the file-level
+    # extensions.sheaf.<section> passthrough (OpenPlural v0.1 has no
+    # relationship core record).
+    "RelationshipType": "_all_ext",
+    "MemberRelationship": "_all_ext",
+    "GroupRelationship": "_all_ext",
 }
 
 
