@@ -28,6 +28,7 @@ from sheaf.api.v1 import (
     pluralspace_import,
     polls,
     prism_import,
+    relationships,
     reminders,
     retention,
     sheaf_import,
@@ -119,6 +120,10 @@ v1_router.include_router(
 v1_router.include_router(
     journals.router,
     dependencies=[Depends(require_scope("journals:read"))],
+)
+v1_router.include_router(
+    relationships.router,
+    dependencies=[Depends(require_scope("relationships:read"))],
 )
 v1_router.include_router(
     retention.router,

@@ -110,6 +110,7 @@ _VALID_SCOPES = {
     "notifications:read", "notifications:write", "notifications:delete",
     "polls:read", "polls:write", "polls:delete",
     "messages:read", "messages:write", "messages:delete",
+    "relationships:read", "relationships:write", "relationships:delete",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
