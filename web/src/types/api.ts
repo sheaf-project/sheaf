@@ -1005,3 +1005,117 @@ export interface PollServerConfig {
   // 0 means unlimited
   max_concurrent_open_polls: number;
 }
+
+// --- Relationships --------------------------------------------------------
+
+/** How a relationship type reads from each endpoint. `symmetric`: one label
+ *  both ways (partner). `directional`: forward + reverse labels (parent/child).
+ *  `either`: both - an edge is directional unless marked mutual, when both ends
+ *  read the forward label (protector). */
+export type RelationshipSymmetry = "symmetric" | "directional" | "either";
+
+/** Reserved for the future access-control primitive; only `private` today. */
+export type RelationshipVisibility = "private";
+
+export interface RelationshipType {
+  id: string;
+  system_id: string;
+  name: string;
+  symmetry: RelationshipSymmetry;
+  forward_label: string;
+  reverse_label: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RelationshipTypeCreate {
+  name: string;
+  symmetry: RelationshipSymmetry;
+  forward_label: string;
+  reverse_label?: string | null;
+}
+
+export interface RelationshipTypeUpdate {
+  name?: string;
+  forward_label?: string;
+  reverse_label?: string | null;
+}
+
+export interface RelationshipEdgeCreate {
+  source_id: string;
+  target_id: string;
+  relationship_type_id: string;
+  mutual?: boolean;
+  visibility?: RelationshipVisibility;
+}
+
+export interface RelationshipEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  relationship_type_id: string;
+  mutual: boolean;
+  visibility: RelationshipVisibility;
+  created_at: string;
+}
+
+/** Direction of an edge as read from one node's viewpoint. */
+export type RelationshipDirection = "none" | "outgoing" | "incoming";
+
+/** One edge as it reads from a single member/group's perspective. The API
+ *  resolves the label + direction server-side, so the client just displays it. */
+export interface RelationshipFromViewpoint {
+  id: string;
+  relationship_type_id: string;
+  type_name: string;
+  other_id: string;
+  label: string;
+  direction: RelationshipDirection;
+  mutual: boolean;
+  visibility: RelationshipVisibility;
+}
+
+export interface RelationshipGraphNode {
+  id: string;
+  name: string;
+  avatar_url: string | null;
+  color: string | null;
+}
+
+export interface RelationshipGraphEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  relationship_type_id: string;
+  type_name: string;
+  source_label: string;
+  target_label: string;
+  mutual: boolean;
+  directed: boolean;
+}
+
+export interface RelationshipGraph {
+  nodes: RelationshipGraphNode[];
+  edges: RelationshipGraphEdge[];
+}
+
+/** Client-side preset templates for the type editor. Selecting one populates
+ *  the new-type form; the user then tweaks and saves. These are NOT seeded on
+ *  the server - a system's types start empty. */
+export interface RelationshipPreset {
+  label: string;
+  name: string;
+  symmetry: RelationshipSymmetry;
+  forward_label: string;
+  reverse_label: string | null;
+}
+
+export const RELATIONSHIP_PRESETS: RelationshipPreset[] = [
+  { label: "Partner", name: "Partner", symmetry: "symmetric", forward_label: "partner", reverse_label: null },
+  { label: "Friend", name: "Friend", symmetry: "symmetric", forward_label: "friend", reverse_label: null },
+  { label: "Sibling", name: "Sibling", symmetry: "symmetric", forward_label: "sibling", reverse_label: null },
+  { label: "Parent / Child", name: "Parent", symmetry: "directional", forward_label: "parent", reverse_label: "child" },
+  { label: "Protector / Protectee", name: "Protector", symmetry: "either", forward_label: "protector", reverse_label: "protectee" },
+  { label: "Caretaker", name: "Caretaker", symmetry: "either", forward_label: "caretaker", reverse_label: "cared for" },
+  { label: "Split from", name: "Split", symmetry: "directional", forward_label: "split from", reverse_label: "split off" },
+];

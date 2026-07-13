@@ -31,6 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { ColorDot } from "@/components/color-dot";
 import { ContentRevisionList } from "@/components/content-revision-list";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { RelationshipsEditor } from "@/components/relationships-editor";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiErrorMessage, showApiErrorToast } from "@/lib/api-errors";
@@ -1264,6 +1265,13 @@ export function MembersPage() {
                 submitLabel="Save"
               />
               <MemberFieldValues memberId={editing.id} />
+              <RelationshipsEditor
+                nodeId={editing.id}
+                scope="member"
+                nodes={(members ?? [])
+                  .filter((m) => m.id !== editing.id && !m.is_custom_front)
+                  .map((m) => ({ id: m.id, name: m.display_name || m.name }))}
+              />
               <div className="mt-2 flex flex-wrap gap-2">
                 {editing.archived_at == null ? (
                   <Button

@@ -19,6 +19,7 @@ import {
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { MemberSelect } from "@/components/member-select";
+import { RelationshipsEditor } from "@/components/relationships-editor";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { Button } from "@/components/ui/button";
@@ -413,6 +414,16 @@ export function GroupsPage() {
           </form>
 
           {editing && <GroupMembersEditor groupId={editing.id} />}
+
+          {editing && (
+            <RelationshipsEditor
+              nodeId={editing.id}
+              scope="group"
+              nodes={allGroups
+                .filter((g) => g.id !== editing.id)
+                .map((g) => ({ id: g.id, name: g.name }))}
+            />
+          )}
 
           <Button
             variant="destructive"
