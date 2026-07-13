@@ -11,8 +11,30 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { useRelationshipGraph } from "@/hooks/use-relationships";
-import type { RelationshipGraph } from "@/types/api";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  useCreateGroupRelationship,
+  useCreateMemberRelationship,
+  useRelationshipGraph,
+  useRelationshipTypes,
+} from "@/hooks/use-relationships";
+import type { RelationshipEdgeCreate, RelationshipGraph } from "@/types/api";
 
 const NODE_R = 22;
 
@@ -42,11 +64,22 @@ function clamp(v: number, lo: number, hi: number) {
 /** d3-force layout rendered as React-controlled SVG, with hand-rolled pan
  *  (drag the background), zoom (wheel), and node drag (which nudges the
  *  simulation and then lets the node settle back into the organic layout). */
-function GraphCanvas({ graph }: { graph: RelationshipGraph }) {
+function GraphCanvas({
+  graph,
+  scope,
+}: {
+  graph: RelationshipGraph;
+  scope: "members" | "groups";
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState({ w: 800, h: 560 });
   const [transform, setTransform] = useState<Transform>({ k: 1, tx: 0, ty: 0 });
+  // "Add relationship" mode: click a source node then a target node.
+  const [addMode, setAddMode] = useState(false);
+  const [pending, setPending] = useState<SimNode | null>(null);
+  const [target, setTarget] = useState<SimNode | null>(null);
+  const nodeNoun = scope === "members" ? "member" : "group";
 
   // d3 mutates node x/y in place; each tick publishes fresh array wrappers to
   // state so the SVG re-renders (reading live refs during render is disallowed
@@ -139,9 +172,22 @@ function GraphCanvas({ graph }: { graph: RelationshipGraph }) {
 
   function onNodePointerDown(e: React.PointerEvent, node: SimNode) {
     e.stopPropagation();
+    if (addMode) {
+      // Pick source, then a distinct target opens the add dialog.
+      if (!pending) setPending(node);
+      else if (pending.id === node.id) setPending(null);
+      else setTarget(node);
+      return;
+    }
     (e.target as Element).setPointerCapture?.(e.pointerId);
     drag.current = { mode: "node", node };
     simRef.current?.alphaTarget(0.3).restart();
+  }
+
+  function toggleAddMode() {
+    setAddMode((m) => !m);
+    setPending(null);
+    setTarget(null);
   }
 
   function onBackgroundPointerDown(e: React.PointerEvent) {
@@ -203,16 +249,48 @@ function GraphCanvas({ graph }: { graph: RelationshipGraph }) {
 
   const { nodes, links } = sim;
 
+  // Fan out multiple relationships between the same pair: group by unordered
+  // node pair and give each edge a slot so it draws as its own curve instead of
+  // overlapping (which otherwise hid all but one).
+  const edgeSlot = new Map<string, { slot: number; count: number }>();
+  {
+    const counts = new Map<string, number>();
+    const pairKey = (l: SimLink) =>
+      [(l.source as SimNode).id, (l.target as SimNode).id].sort().join("|");
+    for (const l of links) counts.set(pairKey(l), (counts.get(pairKey(l)) ?? 0) + 1);
+    const seen = new Map<string, number>();
+    for (const l of links) {
+      const key = pairKey(l);
+      const slot = seen.get(key) ?? 0;
+      seen.set(key, slot + 1);
+      edgeSlot.set(l.id, { slot, count: counts.get(key) ?? 1 });
+    }
+  }
+
   return (
     <div
       ref={containerRef}
       className="relative h-[70vh] w-full overflow-hidden rounded-lg border bg-muted/10"
     >
-      <div className="absolute right-2 top-2 z-10">
+      <div className="absolute right-2 top-2 z-10 flex gap-2">
+        <Button
+          variant={addMode ? "default" : "outline"}
+          size="sm"
+          onClick={toggleAddMode}
+        >
+          {addMode ? "Adding relationships" : "Add relationship"}
+        </Button>
         <Button variant="outline" size="sm" onClick={resetView}>
           Reset view
         </Button>
       </div>
+      {addMode && (
+        <div className="absolute left-2 top-2 z-10 rounded-md border bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+          {pending
+            ? `${pending.name} selected. Click another ${nodeNoun} to connect them.`
+            : `Click a ${nodeNoun} to start.`}
+        </div>
+      )}
       <svg
         ref={svgRef}
         width={size.w}
@@ -247,32 +325,48 @@ function GraphCanvas({ graph }: { graph: RelationshipGraph }) {
             const s = l.source as SimNode;
             const t = l.target as SimNode;
             if (s.x == null || s.y == null || t.x == null || t.y == null) return null;
-            const dx = t.x - s.x;
-            const dy = t.y - s.y;
-            const dist = Math.hypot(dx, dy) || 1;
-            const ux = dx / dist;
-            const uy = dy / dist;
-            // Trim the ends to the node boundary so the arrowhead sits nicely.
-            const x1 = s.x + ux * NODE_R;
-            const y1 = s.y + uy * NODE_R;
-            const x2 = t.x - ux * NODE_R;
-            const y2 = t.y - uy * NODE_R;
+            const { slot, count } = edgeSlot.get(l.id) ?? { slot: 0, count: 1 };
+            const offset = (slot - (count - 1) / 2) * 26;
+
+            // Trim the ends to the node boundary along the straight chord.
+            const sdx = t.x - s.x;
+            const sdy = t.y - s.y;
+            const sdist = Math.hypot(sdx, sdy) || 1;
+            const sux = sdx / sdist;
+            const suy = sdy / sdist;
+            const x1 = s.x + sux * NODE_R;
+            const y1 = s.y + suy * NODE_R;
+            const x2 = t.x - sux * NODE_R;
+            const y2 = t.y - suy * NODE_R;
+
+            // Curve control + label apex, offset perpendicular from a canonical
+            // orientation (min id -> max id) so every edge in the pair fans to a
+            // consistent side. offset 0 (a lone edge) yields a straight line.
+            const [a, b] = s.id < t.id ? [s, t] : [t, s];
+            const cdx = (b.x ?? 0) - (a.x ?? 0);
+            const cdy = (b.y ?? 0) - (a.y ?? 0);
+            const cdist = Math.hypot(cdx, cdy) || 1;
+            const perpX = -cdy / cdist;
+            const perpY = cdx / cdist;
             const mx = (x1 + x2) / 2;
             const my = (y1 + y2) / 2;
+            const cx = mx + perpX * offset * 2;
+            const cy = my + perpY * offset * 2;
+            const apexX = mx + perpX * offset;
+            const apexY = my + perpY * offset;
+
             return (
               <g key={l.id}>
-                <line
-                  x1={x1}
-                  y1={y1}
-                  x2={x2}
-                  y2={y2}
+                <path
+                  d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
+                  fill="none"
                   className="stroke-muted-foreground/40"
                   strokeWidth={1.5}
                   markerEnd={l.directed ? "url(#rel-arrow)" : undefined}
                 />
                 <text
-                  x={mx}
-                  y={my}
+                  x={apexX}
+                  y={apexY}
                   dy={-3}
                   textAnchor="middle"
                   className="fill-muted-foreground text-[10px]"
@@ -291,9 +385,17 @@ function GraphCanvas({ graph }: { graph: RelationshipGraph }) {
               <g
                 key={n.id}
                 transform={`translate(${n.x} ${n.y})`}
-                className="cursor-grab"
+                className={addMode ? "cursor-pointer" : "cursor-grab"}
                 onPointerDown={(e) => onNodePointerDown(e, n)}
               >
+                {pending?.id === n.id && (
+                  <circle
+                    r={NODE_R + 4}
+                    fill="none"
+                    className="stroke-primary"
+                    strokeWidth={2}
+                  />
+                )}
                 <circle
                   r={NODE_R}
                   fill={n.color ?? "var(--muted)"}
@@ -334,7 +436,136 @@ function GraphCanvas({ graph }: { graph: RelationshipGraph }) {
           })}
         </g>
       </svg>
+      {addMode && pending && target && (
+        <AddEdgeDialog
+          scope={scope}
+          source={{ id: pending.id, name: pending.name }}
+          target={{ id: target.id, name: target.name }}
+          onClose={() => {
+            setTarget(null);
+            setPending(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** The little form shown once two nodes are picked in "add relationship" mode.
+ *  Mirrors the direction/mutual logic of the per-node editor, but source and
+ *  target are the two explicitly-picked nodes. */
+function AddEdgeDialog({
+  scope,
+  source,
+  target,
+  onClose,
+}: {
+  scope: "members" | "groups";
+  source: { id: string; name: string };
+  target: { id: string; name: string };
+  onClose: () => void;
+}) {
+  const { data: types } = useRelationshipTypes();
+  const createMember = useCreateMemberRelationship();
+  const createGroup = useCreateGroupRelationship();
+  const create = scope === "members" ? createMember : createGroup;
+
+  const [typeId, setTypeId] = useState("");
+  const [role, setRole] = useState<"forward" | "reverse">("forward");
+  const [mutual, setMutual] = useState(false);
+
+  const type = types?.find((t) => t.id === typeId);
+  const symmetry = type?.symmetry;
+  const showRole = symmetry === "directional" || symmetry === "either";
+  const showMutual = symmetry === "either";
+  const roleHidden = showMutual && mutual;
+
+  function onTypeChange(v: string) {
+    setTypeId(v);
+    setRole("forward");
+    setMutual(false);
+  }
+
+  function submit() {
+    if (!type) return;
+    let payload: RelationshipEdgeCreate;
+    if (symmetry === "symmetric") {
+      payload = { source_id: source.id, target_id: target.id, relationship_type_id: type.id };
+    } else if (showMutual && mutual) {
+      payload = { source_id: source.id, target_id: target.id, relationship_type_id: type.id, mutual: true };
+    } else if (role === "forward") {
+      payload = { source_id: source.id, target_id: target.id, relationship_type_id: type.id };
+    } else {
+      payload = { source_id: target.id, target_id: source.id, relationship_type_id: type.id };
+    }
+    create.mutate(payload, { onSuccess: onClose });
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add relationship</DialogTitle>
+          <DialogDescription>
+            Between {source.name} and {target.name}.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Type</Label>
+            <Select value={typeId} onValueChange={onTypeChange}>
+              <SelectTrigger>
+                <SelectValue placeholder="Choose a type..." />
+              </SelectTrigger>
+              <SelectContent>
+                {(types ?? []).map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {types && types.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Define a relationship type in Settings &gt; Relationships first.
+              </p>
+            )}
+          </div>
+          {showRole && !roleHidden && type && (
+            <div className="space-y-1">
+              <Label className="text-xs">Direction</Label>
+              <Select value={role} onValueChange={(v) => setRole(v as "forward" | "reverse")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="forward">
+                    {source.name} is the {type.forward_label}
+                  </SelectItem>
+                  <SelectItem value="reverse">
+                    {source.name} is the {type.reverse_label}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {showMutual && type && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={mutual}
+                onCheckedChange={(v) => setMutual(v === true)}
+              />
+              Mutual (both are {type.forward_label})
+            </label>
+          )}
+        </div>
+        <DialogFooter>
+          <Button onClick={submit} disabled={!typeId || create.isPending}>
+            {create.isPending ? "Adding..." : "Add"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -376,7 +607,7 @@ export function RelationshipsPage() {
           they will map out here.
         </div>
       ) : (
-        <GraphCanvas graph={graph} />
+        <GraphCanvas graph={graph} scope={scope} />
       )}
     </div>
   );
