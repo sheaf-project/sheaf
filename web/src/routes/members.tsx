@@ -940,6 +940,7 @@ function MemberView({
 }) {
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(member.id);
+  const { data: allMembers } = useMembers();
   const { data: safety } = useQuery({ queryKey: ["system-safety"], queryFn: getSystemSafety });
   const { formatBirthday } = useDateFormatters();
   const [showRevisions, setShowRevisions] = useState(false);
@@ -1102,6 +1103,16 @@ function MemberView({
               ))}
             </div>
           )}
+
+          {/* Relationships (read-only; managed from the editor) */}
+          <RelationshipsEditor
+            nodeId={member.id}
+            scope="member"
+            readOnly
+            nodes={(allMembers ?? [])
+              .filter((m) => m.id !== member.id)
+              .map((m) => ({ id: m.id, name: m.display_name || m.name }))}
+          />
 
           {/* Tags */}
           <MemberTagsEditor memberId={member.id} />
@@ -1269,8 +1280,14 @@ export function MembersPage() {
                 nodeId={editing.id}
                 scope="member"
                 nodes={(members ?? [])
-                  .filter((m) => m.id !== editing.id && !m.is_custom_front)
-                  .map((m) => ({ id: m.id, name: m.display_name || m.name }))}
+                  .filter((m) => m.id !== editing.id)
+                  .map((m) => ({
+                    id: m.id,
+                    name: m.display_name || m.name,
+                    // Custom fronts resolve names in existing edges but aren't
+                    // offered as new relationship targets.
+                    selectable: !m.is_custom_front,
+                  }))}
               />
               <div className="mt-2 flex flex-wrap gap-2">
                 {editing.archived_at == null ? (
