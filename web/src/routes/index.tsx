@@ -6,6 +6,7 @@ import { MembersPage } from "./members";
 import { FrontsPage } from "./fronts";
 import { AnalyticsPage } from "./analytics";
 import { GroupsPage } from "./groups";
+import { RelationshipsPage } from "./relationships";
 import { SettingsLayout } from "./settings/_layout";
 import { SettingsIndex } from "./settings/index";
 import { SettingsSystemPage } from "./settings/system";
@@ -80,6 +81,7 @@ export const router = createBrowserRouter([
       { path: "fronts", element: <FrontsPage /> },
       { path: "analytics", element: <AnalyticsPage /> },
       { path: "groups", element: <GroupsPage /> },
+      { path: "relationships", element: <RelationshipsPage /> },
       { path: "notifications", element: <NotificationsPage /> },
       { path: "notifications/:channelId", element: <NotificationChannelPage /> },
       { path: "reminders", element: <RemindersPage /> },

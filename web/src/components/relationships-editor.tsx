@@ -31,6 +31,9 @@ type Role = "forward" | "reverse";
 export interface RelationshipNode {
   id: string;
   name: string;
+  /** False to keep this node out of the add-picker while still resolving its
+   *  name in existing edges (e.g. custom-front pseudo-members). Defaults true. */
+  selectable?: boolean;
 }
 
 /**
@@ -58,10 +61,14 @@ export function RelationshipsEditor({
   nodeId,
   scope,
   nodes,
+  readOnly = false,
 }: {
   nodeId: string;
   scope: "member" | "group";
   nodes: RelationshipNode[];
+  /** Display-only (member/group profile view): show the list, no add form or
+   *  remove buttons, and render nothing when there are no relationships. */
+  readOnly?: boolean;
 }) {
   const isMember = scope === "member";
   const noun = isMember ? "member" : "group";
@@ -81,7 +88,9 @@ export function RelationshipsEditor({
   const createEdge = isMember ? createMemberEdge : createGroupEdge;
   const deleteEdge = isMember ? deleteMemberEdge : deleteGroupEdge;
 
-  const others = nodes.filter((n) => n.id !== nodeId);
+  // The full list resolves names in existing edges; the picker excludes
+  // self and non-selectable nodes (e.g. custom fronts).
+  const others = nodes.filter((n) => n.id !== nodeId && n.selectable !== false);
   const nodeName = (id: string) =>
     nodes.find((n) => n.id === id)?.name ?? id.slice(0, 8);
 
@@ -151,6 +160,9 @@ export function RelationshipsEditor({
     createEdge.mutate(payload, { onSuccess: reset });
   }
 
+  // On a profile (read-only) with no relationships, render nothing.
+  if (readOnly && edges.length === 0) return null;
+
   return (
     <div className="space-y-3 border-t pt-3">
       <p className="text-sm font-medium text-muted-foreground">Relationships</p>
@@ -169,15 +181,17 @@ export function RelationshipsEditor({
                   {nodeName(edge.other_id)}
                 </span>
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 shrink-0 text-xs text-destructive hover:text-destructive"
-                onClick={() => deleteEdge.mutate(edge.id)}
-                disabled={deleteEdge.isPending}
-              >
-                Remove
-              </Button>
+              {!readOnly && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 text-xs text-destructive hover:text-destructive"
+                  onClick={() => deleteEdge.mutate(edge.id)}
+                  disabled={deleteEdge.isPending}
+                >
+                  Remove
+                </Button>
+              )}
             </div>
           ))}
         </div>
@@ -185,7 +199,7 @@ export function RelationshipsEditor({
         <p className="text-xs text-muted-foreground">No relationships yet.</p>
       )}
 
-      {!types || types.length === 0 ? (
+      {readOnly ? null : !types || types.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           Define a relationship type in Settings &gt; Relationships first.
         </p>
