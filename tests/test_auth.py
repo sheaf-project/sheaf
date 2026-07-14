@@ -6,6 +6,7 @@ import pyotp
 import pytest
 
 from tests._totp_helpers import clear_totp_replay
+from tests.test_api_keys import _create_key
 
 
 def test_register(client: httpx.Client):
@@ -328,6 +329,56 @@ def test_secondary_session_change_password_keeps_paired_watch(
         "/v1/auth/me", headers={"Authorization": f"Bearer {watch_access}"},
     )
     assert me_gone.status_code == 401
+
+
+def test_scoped_key_with_arbitrary_session_cookie_cannot_mint_secondary(
+    client: httpx.Client, auth_client: httpx.Client
+):
+    """Regression (session-escalation fix): a scoped API key request that
+    smuggles in an arbitrary sheaf_session cookie must NOT be able to mint a
+    secondary session. Before the fix the cookie value was stamped onto
+    request.state.session_id unconditionally, so a read-only key plus any
+    cookie could seed an unrestricted child session; now such a request is
+    refused with 400 and mints nothing."""
+    scoped_key = _create_key(auth_client, scopes=["members:read"])["key"]
+    # Smuggle an arbitrary (attacker-chosen) session cookie alongside the key.
+    client.cookies.set("sheaf_session", f"arbitrary-{uuid.uuid4().hex}")
+    resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {scoped_key}"},
+        json={},
+    )
+    assert resp.status_code == 400, resp.text
+    # No tokens handed back: nothing was minted.
+    assert "access_token" not in resp.json()
+
+
+def test_scoped_key_with_valid_session_cookie_cannot_mint_secondary(
+    client: httpx.Client, auth_client: httpx.Client
+):
+    """Stronger form of the above: even when the smuggled cookie is a REAL,
+    valid session id (here a throwaway account's), an API-key-authenticated
+    request is still refused. The api_key guard is the belt-and-braces backstop
+    that doesn't depend on the cookie merely failing validation."""
+    email = f"escalation-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = client.post(
+        "/v1/auth/register",
+        json={"email": email, "password": "securepassword"},
+    )
+    assert reg.status_code == 201, reg.text
+    valid_sid = client.cookies.get("sheaf_session")
+    assert valid_sid, "register should set a sheaf_session cookie"
+
+    # `client` now carries that valid session cookie; authenticate the request
+    # with a scoped API key on top of it.
+    scoped_key = _create_key(auth_client, scopes=["members:read"])["key"]
+    resp = client.post(
+        "/v1/auth/sessions/secondary",
+        headers={"Authorization": f"Bearer {scoped_key}"},
+        json={},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "access_token" not in resp.json()
 
 
 def _mint_secondary(
