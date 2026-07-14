@@ -10,8 +10,9 @@ a handful of journals with edit history.
 
 Since expanded again to cover the rest of the docs surface: notification
 channels (all pointing at .invalid hosts, so nothing real gets traffic),
-reminders, polls with votes cast, message-board posts and replies, a couple
-of archived members, generated member avatars, one inactive server
+reminders, polls with votes cast, message-board posts and replies, typed
+member relationships, a couple of archived members, generated member
+avatars, one inactive server
 announcement (needs an admin account; skipped with a log line otherwise),
 and - opt-in - two extra small accounts so the admin Users table shows a
 multi-user instance.
@@ -208,6 +209,27 @@ AGE_VALUES = ["~12", "~16", "~20", "~25", "~30", "~35", "~50", "ageless"]
 FOOD_VALUES = [
     "ramen", "sourdough", "miso soup", "roasted vegetables", "pho",
     "chocolate", "fresh bread", "iced coffee", "tea + biscuits",
+]
+
+# The relationship-type presets the editor offers, minus parent/child (its
+# implications get awkward fast in a demo system). Symmetric types omit a
+# reverse label; directional / either types carry one.
+RELATIONSHIP_TYPE_SPECS = [
+    {"name": "Partner", "symmetry": "symmetric", "forward_label": "partner"},
+    {"name": "Friend", "symmetry": "symmetric", "forward_label": "friend"},
+    {"name": "Sibling", "symmetry": "symmetric", "forward_label": "sibling"},
+    {
+        "name": "Protector", "symmetry": "either",
+        "forward_label": "protector", "reverse_label": "protectee",
+    },
+    {
+        "name": "Caretaker", "symmetry": "either",
+        "forward_label": "caretaker", "reverse_label": "cared for",
+    },
+    {
+        "name": "Split", "symmetry": "directional",
+        "forward_label": "split from", "reverse_label": "split off",
+    },
 ]
 
 
@@ -676,6 +698,45 @@ def main():
         ]
         request("PUT", f"/v1/members/{mid}/fields", values, token)
     print(f"Populated custom-field values on {len(populated)} members")
+
+    # Relationships. Define the preset types, then draw a web of edges between
+    # random member pairs. `either` types are made mutual ~40% of the time; the
+    # rest (and directional) are left one-directional. Dedup on the unordered
+    # (type, pair) so we never hit the server's uniqueness 409.
+    # Type names are unique per system, so reuse any that already exist (from a
+    # prior run or manual testing) rather than 409ing and aborting.
+    existing_types = {
+        t["name"]: t["id"]
+        for t in request("GET", "/v1/relationship-types", None, token)
+    }
+    rel_type_ids: dict[str, str] = {}
+    for spec in RELATIONSHIP_TYPE_SPECS:
+        if spec["name"] in existing_types:
+            rel_type_ids[spec["name"]] = existing_types[spec["name"]]
+        else:
+            rt = request("POST", "/v1/relationship-types", spec, token)
+            rel_type_ids[spec["name"]] = rt["id"]
+    print(f"Ensured {len(rel_type_ids)} relationship types")
+
+    seen_rel: set[tuple[str, frozenset]] = set()
+    target_rels = len(member_ids)
+    made_rels = 0
+    attempts = 0
+    while made_rels < target_rels and attempts < target_rels * 4:
+        attempts += 1
+        a, b = random.sample(member_ids, 2)
+        spec = random.choice(RELATIONSHIP_TYPE_SPECS)
+        type_id = rel_type_ids[spec["name"]]
+        key = (type_id, frozenset({a, b}))
+        if key in seen_rel:
+            continue
+        seen_rel.add(key)
+        body = {"source_id": a, "target_id": b, "relationship_type_id": type_id}
+        if spec["symmetry"] == "either" and random.random() < 0.4:
+            body["mutual"] = True
+        request("POST", "/v1/member-relationships", body, token)
+        made_rels += 1
+    print(f"Created {made_rels} member relationships")
 
     # Front history. A previous run leaves its newest front open; close it
     # first, or replaying history from 30 days back would try to end it
