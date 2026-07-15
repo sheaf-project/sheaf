@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Import from Ampersand.** You can now migrate an Ampersand system into Sheaf: on the Import page, choose Ampersand and upload the JSON export (Settings > Import/Export in Ampersand). It brings across members and custom fronts, custom fields, tags (and member roles), fronting history, journals, system notes, board messages with their polls, and reminders, and decodes the avatars embedded in the export. Each Ampersand system becomes a Sheaf group, with nested subsystems preserved. Ampersand features Sheaf has no equivalent for (the shared asset library, cosmetic name/avatar styling, per-front presence timelines, and journal comments) are skipped, with a note on the import's detail page explaining what was dropped.
+
 ## [1.2.2] - 2026-07-14
 
 ### Added

@@ -7,6 +7,7 @@ from sheaf.api.v1 import (
     admin_emergency,
     admin_security,
     admin_small_actions,
+    ampersand_import,
     analytics,
     announcements,
     auth,
@@ -162,6 +163,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     prism_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    ampersand_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 # Unified async-job import router. Replaces the per-source legacy

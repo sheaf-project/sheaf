@@ -39,6 +39,9 @@ class ImportJobSource(enum.StrEnum):
     # zip magic; both translate to the native shape and reuse the Sheaf
     # JSON / archive importers underneath.
     OPENPLURAL_FILE = "openplural_file"
+    # Ampersand JSON export ({revision, config, database}). Base64 images
+    # inline as data URIs; decoded + stored like the archive importers.
+    AMPERSAND_FILE = "ampersand_file"
 
 
 class ImportJobStatus(enum.StrEnum):
