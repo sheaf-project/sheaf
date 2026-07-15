@@ -40,13 +40,26 @@ import {
   previewOpenpluralImport,
 } from "@/lib/openplural-import";
 import {
+  type AmpersandPreviewSummary,
+  previewImport as previewAmpersand,
+} from "@/lib/ampersand-import";
+import {
   createApiImport,
   createFileImport,
   newIdempotencyKey,
 } from "@/lib/imports";
 import { Input } from "@/components/ui/input";
 
-type Source = "choose" | "sheaf" | "sp" | "pk" | "tb" | "ps" | "prism" | "op";
+type Source =
+  | "choose"
+  | "sheaf"
+  | "sp"
+  | "pk"
+  | "tb"
+  | "ps"
+  | "prism"
+  | "op"
+  | "amp";
 // "importing" shows a brief spinner while the enqueue POST is in
 // flight; on success the flow navigates to /imports/:id, which owns
 // the running/done UI. There's no "done" step here any more.
@@ -84,6 +97,9 @@ export function ImportPage() {
       )}
       {source === "op" && (
         <OPImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "amp" && (
+        <AmpersandImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -197,6 +213,24 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
             OpenPlural-compatible app. Upload the <code>.json</code>{" "}
             document, or the <code>.openplural.zip</code> bundle (the
             bundle restores avatars and embedded images too).
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("amp")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from Ampersand</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Upload an Ampersand JSON export (Settings &gt; Import/Export).
+            Brings across members, custom fronts, custom fields, tags,
+            fronting history, journals, notes, board messages and polls,
+            and decodes the embedded avatars. Each Ampersand system becomes
+            a Sheaf group; the shared asset library and cosmetic name/avatar
+            styling have no Sheaf equivalent and are dropped.
           </p>
         </CardContent>
       </Card>
@@ -1905,6 +1939,217 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
 // exceed Sheaf's business caps and would be shortened on import. Amber
 // (not destructive) tone: the import still succeeds, data is just
 // clamped. Renders nothing when there's nothing to warn about.
+// ---------------------------------------------------------------------------
+// Ampersand import flow
+// ---------------------------------------------------------------------------
+
+function AmpersandImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<AmpersandPreviewSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
+
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
+  const [customFronts, setCustomFronts] = useState(true);
+  const [tags, setTags] = useState(true);
+  const [customFields, setCustomFields] = useState(true);
+  const [groups, setGroups] = useState(true);
+  const [frontHistory, setFrontHistory] = useState(true);
+  const [journals, setJournals] = useState(true);
+  const [notes, setNotes] = useState(true);
+  const [boardMessages, setBoardMessages] = useState(true);
+  const [reminders, setReminders] = useState(true);
+  const [images, setImages] = useState(true);
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewAmpersand(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to parse export"));
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const job = await createFileImport({
+        source: "ampersand_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          conflict_strategy: conflictStrategy,
+          custom_fronts: customFronts,
+          tags,
+          custom_fields: customFields,
+          groups,
+          front_history: frontHistory,
+          journals,
+          notes,
+          board_messages: boardMessages,
+          reminders,
+          images,
+        },
+      });
+      navigate(`/imports/${job.id}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Import failed"));
+      setStep("preview");
+    }
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload Ampersand export</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              In Ampersand, go to Settings &gt; Import/Export and export as
+              JSON (the third-party migration format). Upload the resulting{" "}
+              <code>.json</code> here.
+            </p>
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={onBack}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>Custom fronts: <strong>{preview.custom_front_count}</strong></div>
+              <div>
+                Systems (as groups): <strong>{preview.system_count}</strong>
+              </div>
+              <div>Tags: <strong>{preview.tag_count}</strong></div>
+              <div>Custom fields: <strong>{preview.custom_field_count}</strong></div>
+              <div>Fronting entries: <strong>{preview.front_history_count}</strong></div>
+              <div>Journal posts: <strong>{preview.journal_count}</strong></div>
+              <div>Notes: <strong>{preview.note_count}</strong></div>
+              <div>Board messages: <strong>{preview.board_message_count}</strong></div>
+              <div>Polls: <strong>{preview.poll_count}</strong></div>
+              <div>Reminders: <strong>{preview.reminder_count}</strong></div>
+              {preview.asset_count > 0 && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  {preview.asset_count} asset-library image
+                  {preview.asset_count === 1 ? "" : "s"} will be skipped:
+                  Sheaf has no shared asset library.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="Custom fronts"
+                checked={customFronts}
+                onChange={setCustomFronts}
+              />
+              <Checkbox
+                label="Systems as groups (nested)"
+                checked={groups}
+                onChange={setGroups}
+              />
+              <Checkbox
+                label="Tags (and member roles)"
+                checked={tags}
+                onChange={setTags}
+              />
+              <Checkbox
+                label="Custom fields (and member age)"
+                checked={customFields}
+                onChange={setCustomFields}
+              />
+              <Checkbox
+                label="Fronting history"
+                checked={frontHistory}
+                onChange={setFrontHistory}
+              />
+              <Checkbox
+                label="Journal posts"
+                checked={journals}
+                onChange={setJournals}
+              />
+              <Checkbox
+                label="Notes (as system journal entries)"
+                checked={notes}
+                onChange={setNotes}
+              />
+              <Checkbox
+                label="Board messages and polls"
+                checked={boardMessages}
+                onChange={setBoardMessages}
+              />
+              <Checkbox
+                label="Reminders (bound to a disabled placeholder channel)"
+                checked={reminders}
+                onChange={setReminders}
+              />
+              <Checkbox
+                label="Images (avatars and journal covers)"
+                checked={images}
+                onChange={setImages}
+              />
+
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
+              <p className="text-xs text-muted-foreground">
+                Members are matched by name; journals, notes, polls and
+                reminders are created fresh, so re-importing the same file
+                duplicates those. Import once into a fresh system for best
+                results.
+              </p>
+
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
+              <ImportSubmit
+                incoming={preview.member_count}
+                onImport={handleImport}
+              />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+    </>
+  );
+}
+
 function ImportLimitWarnings({ warnings }: { warnings: string[] }) {
   if (warnings.length === 0) return null;
   return (
