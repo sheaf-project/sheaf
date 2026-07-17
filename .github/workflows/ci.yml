@@ -65,10 +65,62 @@ jobs:
       - name: Run test suite
         run: ./run_tests.sh
 
+  # Fast pre-checks for a tagged release, BEFORE the approval gate, so an
+  # obviously-bad tag (not on main, or a version mismatch) fails in seconds
+  # without bothering the approver.
+  preflight:
+    name: Release preflight
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # ancestor check needs full history
+
+      - name: Validate tag is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tagged commit $GITHUB_SHA is not on main - merge first, then tag"
+            exit 1
+          fi
+
+      - name: Verify pyproject.toml version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PY=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "(.*)"/\1/')
+          if [ "$TAG" != "$PY" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PY}"
+            exit 1
+          fi
+          echo "ok: tag ${GITHUB_REF_NAME} matches pyproject.toml ${PY}"
+
+  # Manual-approval gate for a tagged release, placed at the START of the
+  # release flow (right after preflight) so approval is not blocked behind the
+  # ~15-minute test run. Configure repo Settings -> Environments -> "release"
+  # with required reviewers. The build/publish jobs below wait on this for tag
+  # pushes; on a branch push it is skipped and they proceed normally.
+  approve-release:
+    name: Approve release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - run: echo "Release ${{ github.ref_name }} approved."
+
   docker:
     runs-on: ubuntu-latest
-    needs: [lint, test]
-    if: github.event_name == 'push'
+    needs: [lint, test, approve-release]
+    # Any push, once lint + test pass. A tag push additionally waits for the
+    # approval gate above; on a branch push approve-release is skipped, which
+    # the skipped-result check tolerates.
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      needs.lint.result == 'success' &&
+      needs.test.result == 'success' &&
+      (needs.approve-release.result == 'success' || needs.approve-release.result == 'skipped')
     permissions:
       contents: read
       packages: write
@@ -90,23 +142,15 @@ jobs:
             image: sheaf-web
             dockerfile: Dockerfile.web
             build_args: ""
+          - name: sheaf-aio
+            image: sheaf-aio
+            dockerfile: Dockerfile.aio
+            build_args: ""
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # ancestor check on tag pushes needs full history
 
-      # Tag pushes must point at a commit already on main. GitHub's deployment
-      # branch policy is name-pattern only and can't enforce this; checking
-      # here means a v* tag pushed from an unmerged branch fails before any
-      # image is built or signed.
-      - name: Validate tag is on main
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          git fetch origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::tagged commit $GITHUB_SHA is not on main — merge first, then tag"
-            exit 1
-          fi
+      # Tag validity (on main, version matches) is checked in the preflight
+      # job that gates this one on tag pushes, so no per-image check here.
 
       - uses: docker/setup-qemu-action@v3
 
@@ -214,30 +258,19 @@ jobs:
             --type custom \
             "$REF"
 
-  # Manual-approval gate for tag pushes. Image signing happens unconditionally
-  # in the docker job above; this job pauses for human approval before
-  # publishing the GitHub release page and uploading verifiable artefacts.
-  # Configure repo Settings → Environments → "release" with required reviewers.
+  # Publishes the GitHub release page + verifiable artefacts. The manual
+  # approval gate now runs up front (see the approve-release job), and preflight
+  # already checked the tag, so by the time this runs the release is approved
+  # and validated; it just needs the signed images from the docker job.
   release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [docker]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Verify pyproject.toml version matches tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PY=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "(.*)"/\1/')
-          if [ "$TAG" != "$PY" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PY}"
-            exit 1
-          fi
-          echo "ok: tag ${GITHUB_REF_NAME} matches pyproject.toml ${PY}"
 
       - uses: actions/setup-node@v4
         with:

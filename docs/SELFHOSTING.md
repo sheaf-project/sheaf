@@ -10,7 +10,57 @@ cp .env.example .env
 docker compose up -d
 ```
 
-API at `http://localhost:8000`, docs at `http://localhost:8000/v1/docs`.
+API at `http://localhost:8000`, docs at `http://localhost:8000/v1/docs`. This compose serves the backend API only - you build/serve the frontend and terminate TLS yourself (see [Frontend](#frontend)). For a batteries-included single container, use the all-in-one image below.
+
+---
+
+## Quick start (all-in-one)
+
+For a small single-instance self-host, the **all-in-one image** bundles the backend, the web UI, and a Caddy reverse proxy (with automatic HTTPS) in one container, alongside a Postgres container. It generates its own secrets on first start, so a public HTTPS deploy is close to a one-liner:
+
+```bash
+cp .env.aio.example .env
+# set AIO_DOMAIN=sheaf.example.com in .env, and point that domain's DNS here
+docker compose -f docker-compose.aio.yml up -d --build
+```
+
+Publish ports 80 and 443; Caddy fetches and renews a Let's Encrypt certificate for `AIO_DOMAIN` automatically (that automatic-HTTPS path is why the image uses Caddy). Set `AIO_ACME_EMAIL` for expiry notices, or `AIO_ACME_CA` to the [LE staging endpoint](https://letsencrypt.org/docs/staging-environment/) to dry-run issuance first. Leave `AIO_DOMAIN` unset to serve plain HTTP on port 80 (LAN, or behind your own TLS proxy).
+
+### Run from home (Cloudflare Tunnel)
+
+No public IP, behind CGNAT, or can't forward ports? A Cloudflare Tunnel lets the box serve to the internet over an outbound-only connection - nothing to forward, and Cloudflare terminates TLS for you. The all-in-one image bundles `cloudflared`; you just supply a tunnel token. You need a domain whose DNS is managed by Cloudflare (a free plan is fine).
+
+1. In the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com/): **Networks -> Tunnels -> Create a tunnel -> Cloudflared**. Name it, then copy the **tunnel token** it shows (the long string after `--token`).
+2. On the tunnel's **Public Hostname** tab, add a hostname: pick your subdomain + domain (e.g. `sheaf.example.com`), set **Type** to `HTTP` and **URL** to `localhost:80`. Save - Cloudflare creates the DNS record for you.
+3. In `.env`:
+
+   ```env
+   CF_TUNNEL_TOKEN=<the token from step 1>
+   AIO_DOMAIN=sheaf.example.com
+   ```
+
+   `AIO_DOMAIN` here just makes links and cookies use the public host; TLS is Cloudflare's job, so no Let's Encrypt or open ports are involved.
+4. Start it:
+
+   ```bash
+   docker compose -f docker-compose.aio.yml up -d --build
+   ```
+
+You do not need to publish or forward ports 80/443 at all in this mode - cloudflared dials out. Your instance is reachable at `https://sheaf.example.com` once the tunnel connects (a few seconds; check `docker compose -f docker-compose.aio.yml logs app | grep cloudflared`).
+
+Other tunnel providers (Tailscale Funnel, ngrok, etc.) work the same way if you run them alongside and point them at the container's port 80; only Cloudflare is bundled today.
+
+### What is bundled, and what is not
+
+- **In the app container:** the backend, the web UI, Caddy, and a small redis (transient session / rate-limit / cache state only; a restart just re-authenticates users). Point `REDIS_URL` at an external server to skip the bundled one.
+- **A separate container:** Postgres - its data must outlive the app. Point `DATABASE_URL` at an external database to drop the bundled one.
+- **Filesystem storage** on a volume by default; set `STORAGE_BACKEND=s3` for object storage.
+
+First-boot secrets (the Postgres password and JWT key) are generated into the `secrets` volume, and the encryption key into the app-data volume - you do not set them by hand. **Back up the `pgdata`, `appdata`, and `secrets` volumes** (see [Backups](#backups)); losing `secrets`/`appdata` is losing the ability to decrypt and to log in.
+
+Everything else in this guide applies to the all-in-one too - the same env vars, set in the `.env` next to `docker-compose.aio.yml`. The image builds from source by default; to run a published image, set `image: ghcr.io/sheaf-project/sheaf-aio:X.Y.Z` on the `app` and `init` services and drop their `build:` blocks (see [Updating Sheaf](#updating-sheaf)).
+
+**Scope:** the all-in-one is for small deployments and is not horizontally scalable. If you outgrow it, move to the split `sheaf` + `sheaf-web` images with your own reverse proxy.
 
 ---
 
@@ -56,6 +106,76 @@ Sheaf refuses to start in `saas` mode if this is left at the default, and logs a
 - **Rotating it** requires re-encrypting the email ciphertext AND re-computing every `email_hash` row (see `alembic/versions/k1l2m3n4o5p6_rehash_email_blind_index.py` for the pattern). Don't rotate this casually.
 
 **If not set**, a key is auto-generated on first startup and saved to `data/encryption.key` inside the Docker volume. **Back this file up.** Prefer setting `SHEAF_ENCRYPTION_KEY` explicitly so the key isn't tied to a single volume.
+
+---
+
+## Updating Sheaf
+
+Sheaf runs its database migrations automatically: on every start the container runs `alembic upgrade head` before launching the app. Updating is therefore just "get the new version and recreate the app container" - there is no separate migration step to run by hand.
+
+### Published images
+
+CI publishes multi-arch (amd64 + arm64) images to the GitHub Container Registry on every tagged release and every push to `main`:
+
+| Image | Contents |
+|-------|----------|
+| `ghcr.io/sheaf-project/sheaf` | Backend: API, job runner, notification dispatcher, import runner |
+| `ghcr.io/sheaf-project/sheaf-web` | Prebuilt frontend (nginx serving the static SPA). Still needs your reverse proxy to route `/v1` to the backend and to add the SPA security headers - see [Frontend](#frontend). |
+
+Tags:
+
+| Tag | Meaning |
+|-----|---------|
+| `X.Y.Z` | An exact release, e.g. `1.2.3`. **Pin this in production.** |
+| `X.Y` | The latest patch on a minor line, e.g. `1.2`. |
+| `latest` | The newest tagged release. |
+| `head` | Tip of `main` - unreleased, may be unstable. |
+| `sha-<commit>` | An exact build, by full commit SHA. |
+
+The shipped `docker-compose.yml` builds the backend from source (`build:`) rather than pulling a published image. To run a published image instead, set `image: ghcr.io/sheaf-project/sheaf:X.Y.Z` on the `app` service and remove its `build:` block.
+
+### Before you update
+
+- **Back up first.** See [Backups](#backups) - at minimum the database and the encryption key. Migrations are applied forward on start and are not automatically reversed, so a clean rollback means restoring the pre-update database, not just re-pulling the old image.
+- **Read the [changelog](../CHANGELOG.md)** for the version you are moving to. Note anything under Security, and any migration that rewrites a large table (the entry will say so).
+
+### Update
+
+Building from source (the default compose file):
+
+```bash
+git pull
+docker compose build app
+docker compose up -d app       # recreates the container; migrations run on start
+docker compose logs -f app     # watch the "alembic upgrade" lines, then a clean boot
+```
+
+Running a pinned published image - bump the tag in your compose file, then:
+
+```bash
+docker compose pull app
+docker compose up -d app
+```
+
+If you also run the `sheaf-web` image, update it to the same version.
+
+### Verify
+
+`GET /v1/version` reports the running version, commit, and build time:
+
+```bash
+curl https://your-instance/v1/version
+```
+
+Confirm it matches what you deployed, and that the startup logs show migrations applied without error.
+
+### Rollback
+
+If an update misbehaves, roll back by restoring the pre-update **database backup** and running the **previous image tag** together - the two must match, because a newer migration may already have changed the schema and Sheaf does not auto-downgrade it. This is why the back-up-first step matters.
+
+### Multiple app replicas
+
+Migrations run on each container's start. Alembic takes a lock so concurrent starts cannot corrupt the schema, but to avoid a startup race, roll replicas one at a time (or scale to a single app process, update, then scale back up). Background work is already single-leader (see [Multi-instance deploys](#multi-instance-deploys)); this only concerns the migration step.
 
 ---
 
@@ -939,7 +1059,7 @@ CI publishes a separate variant built with `INCLUDE_DEV_TOOLS=true`:
 
 ```
 ghcr.io/sheaf-project/sheaf-devtools:head      # tip of main
-ghcr.io/sheaf-project/sheaf-devtools:vX.Y.Z    # pinned release
+ghcr.io/sheaf-project/sheaf-devtools:X.Y.Z     # pinned release (no leading "v")
 ghcr.io/sheaf-project/sheaf-devtools:latest    # latest release
 ```
 
@@ -1007,7 +1127,9 @@ The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_
 
 ## Frontend
 
-The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only — you need to build and serve the frontend separately.
+The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only - you build and serve the frontend separately, either from a local build (below) or from the prebuilt image.
+
+CI publishes a prebuilt frontend image, `ghcr.io/sheaf-project/sheaf-web` (nginx serving the static bundle; see [Updating Sheaf](#updating-sheaf) for the tag scheme). It saves the local `npm` build, but it is static-only: you still need the reverse proxy described below to route `/v1` to the backend and to add the SPA security headers. Build it yourself instead when you want to serve the bundle straight from your own nginx/Caddy.
 
 ### Building
 
