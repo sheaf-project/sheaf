@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenPlural import now restores avatars carried inline.** An OpenPlural JSON export whose images ride inline on the asset records (the spec's `data_uri` / `data_base64` fields, or a `data:` URI a producer placed in the `uri` field) now has those avatars decoded and stored through the normal image pipeline, the same as an `.openplural.zip` bundle. Previously only bundled or genuinely external avatar URLs came through, so a bare JSON with inline images imported its members without their avatars.
+
 ## [1.2.3] - 2026-07-15
 
 ### Added

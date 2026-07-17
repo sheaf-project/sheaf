@@ -40,11 +40,11 @@ from sheaf.services.openplural_archive import (
     unpack_residual,
 )
 from sheaf.services.openplural_import import (
+    build_json_import,
     inherited_lineage,
     looks_like_zip,
     parse_bundle_async,
     parse_json,
-    to_native,
 )
 
 logger = logging.getLogger("sheaf.imports.openplural")
@@ -154,8 +154,6 @@ async def handle_openplural_file(job: ImportJob, db: AsyncSession) -> None:
 
 
 async def _run_json(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
-    from sheaf.services.sheaf_import import run_import as sheaf_run_import
-
     envelope = parse_json(blob)
     append_event(
         job,
@@ -164,7 +162,32 @@ async def _run_json(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
         message=f"parsed {len(blob)} bytes of OpenPlural JSON",
     )
     _note_lineage(job, envelope)
-    native = to_native(envelope)
+    native, inline_archive = build_json_import(envelope)
+
+    # A bare JSON that inlines its avatars (data_uri / data_base64 assets)
+    # restores them through the archive importer's image pipeline instead
+    # of the plain JSON path, which only keeps external avatar URLs.
+    if inline_archive is not None:
+        append_event(
+            job,
+            level="info",
+            stage="parse",
+            message=f"{len(inline_archive.image_keys)} inline asset(s) to restore",
+        )
+        await _run_archive(
+            job,
+            db,
+            inline_archive,
+            envelope,
+            missing_label=(
+                "inline asset could not be restored (unreadable or over the "
+                "per-asset size limit)"
+            ),
+        )
+        return
+
+    from sheaf.services.sheaf_import import run_import as sheaf_run_import
+
     options = parse_options(job.payload_metadata, SheafImportOptions)
     system = await load_user_system(db, job.user_id)
 
@@ -204,8 +227,6 @@ async def _run_json(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
 
 
 async def _run_bundle(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
-    from sheaf.services.sheaf_archive_import import run_import as archive_run_import
-
     parsed, envelope = await parse_bundle_async(blob)
     append_event(
         job,
@@ -217,6 +238,27 @@ async def _run_bundle(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
         ),
     )
     _note_lineage(job, envelope)
+    await _run_archive(
+        job,
+        db,
+        parsed,
+        envelope,
+        missing_label=(
+            "asset missing from the bundle (or over the per-asset size limit)"
+        ),
+    )
+
+
+async def _run_archive(
+    job: ImportJob, db: AsyncSession, parsed, envelope: dict, *, missing_label: str
+) -> None:
+    """Import a native dict whose images are restored from blobs (an
+    ``.openplural.zip`` bundle or an inline-asset bare JSON), delegating to
+    ``sheaf_archive_import`` for the image pipeline plus every section
+    guard. ``missing_label`` phrases the per-asset "couldn't restore this"
+    warning for the payload shape."""
+    from sheaf.services.sheaf_archive_import import run_import as archive_run_import
+
     options = parse_options(job.payload_metadata, SheafArchiveImportOptions)
     system = await load_user_system(db, job.user_id)
     user = await db.get(User, job.user_id)
@@ -252,10 +294,7 @@ async def _run_bundle(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
             job,
             level="warning",
             stage="images",
-            message=(
-                "asset missing from the bundle (or over the per-asset size "
-                f"limit); reference removed from: {sites}"[:500]
-            ),
+            message=f"{missing_label}; reference removed from: {sites}"[:500],
             record_ref=key[:200],
         )
     _preserve_residual(job, system, envelope)

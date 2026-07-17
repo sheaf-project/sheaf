@@ -11,6 +11,7 @@ member-cap precheck, and the zip guards inherited from the archive path.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import uuid
@@ -152,6 +153,88 @@ def test_bundle_round_trip_restores_avatar(auth_client: httpx.Client):
     iris = next(m for m in auth_client.get("/v1/members").json() if m["name"] == "OpIris")
     avatar_key = (iris["avatar_url"] or "").removeprefix("/v1/files/")
     assert avatar_key in files, iris["avatar_url"]
+
+
+def _inline_asset_envelope(*, carrier: str) -> bytes:
+    """A bare-JSON OpenPlural envelope from a foreign producer whose avatar
+    bytes ride inline on the asset (not in a bundle). ``carrier`` selects
+    where the bytes sit: ``uri_data`` (a ``data:`` URI a producer put in
+    the ``uri`` field, as pluralport does), ``data_uri`` (the spec field),
+    or ``data_base64``."""
+    b64 = base64.b64encode(_TINY_PNG).decode()
+    asset_id = str(uuid.uuid4())
+    asset: dict = {"id": asset_id, "kind": "avatar", "mime_type": "image/png"}
+    if carrier == "uri_data":
+        asset["uri"] = f"data:image/png;base64,{b64}"
+    elif carrier == "data_uri":
+        asset["data_uri"] = f"data:image/png;base64,{b64}"
+    else:
+        asset["data_base64"] = b64
+    env = {
+        "openplural_version": "0.1",
+        "exported_at": _EXPORTED_AT,
+        "producer": {"app": "Pluralport", "app_id": "pluralport"},
+        "systems": [{"id": "s1", "name": "OP System", "privacy": "public"}],
+        "members": [
+            {"id": "m1", "name": "OpIris", "avatar_asset_id": asset_id},
+            {"id": "m2", "name": "OpJay"},
+        ],
+        "assets": [asset],
+    }
+    return json.dumps(env).encode("utf-8")
+
+
+def _assert_inline_avatar_restored(client: httpx.Client, job_id: str) -> None:
+    final = wait_for_terminal(client, job_id)
+    assert final["status"] == "complete", final
+    assert final["counts"].get("images_imported", 0) == 1, final["counts"]
+    files = {f["key"] for f in _files_list(client)}
+    members = {m["name"]: m for m in client.get("/v1/members").json()}
+    iris_key = (members["OpIris"]["avatar_url"] or "").removeprefix("/v1/files/")
+    assert iris_key in files, members["OpIris"]["avatar_url"]
+    # The member with no avatar asset stays avatar-less.
+    assert not members["OpJay"]["avatar_url"]
+
+
+def test_json_inline_data_in_uri_restores_avatar(auth_client: httpx.Client):
+    """A bare JSON whose avatar is a ``data:`` URI stuffed in the asset
+    ``uri`` (pluralport's shape) decodes and stores it, instead of dropping
+    it as an unusable external URL."""
+    job = _post(auth_client, _inline_asset_envelope(carrier="uri_data"))
+    drive_import_runner()
+    _assert_inline_avatar_restored(auth_client, job["id"])
+
+
+def test_json_inline_data_uri_field_restores_avatar(auth_client: httpx.Client):
+    """The spec-correct inline carrier (``data_uri``) also restores."""
+    job = _post(auth_client, _inline_asset_envelope(carrier="data_uri"))
+    drive_import_runner()
+    _assert_inline_avatar_restored(auth_client, job["id"])
+
+
+def test_json_inline_data_base64_field_restores_avatar(auth_client: httpx.Client):
+    """The other spec inline carrier (``data_base64``) also restores."""
+    job = _post(auth_client, _inline_asset_envelope(carrier="data_base64"))
+    drive_import_runner()
+    _assert_inline_avatar_restored(auth_client, job["id"])
+
+
+def test_json_inline_asset_images_off_imports_member_without_avatar(
+    auth_client: httpx.Client,
+):
+    """With images disabled the member still imports; the inline avatar is
+    dropped rather than left as a broken synthetic key."""
+    job = _post(
+        auth_client,
+        _inline_asset_envelope(carrier="uri_data"),
+        options={"images": False},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("images_imported", 0) == 0, final["counts"]
+    iris = next(m for m in auth_client.get("/v1/members").json() if m["name"] == "OpIris")
+    assert not iris["avatar_url"], iris
 
 
 def test_preview_reports_counts_and_lineage(auth_client: httpx.Client):
