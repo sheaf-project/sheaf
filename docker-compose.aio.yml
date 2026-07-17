@@ -1,0 +1,95 @@
+# All-in-one Sheaf: backend + web + Caddy (automatic HTTPS) + a bundled redis
+# in one container, with Postgres alongside. For small single-instance
+# self-hosts that want a near one-liner deploy. See docs/SELFHOSTING.md
+# ("Quick start (all-in-one)").
+#
+#   AIO_DOMAIN=sheaf.example.com docker compose -f docker-compose.aio.yml up -d --build
+#
+# Point that domain's DNS at this host and publish 80 + 443; Caddy fetches and
+# renews a Let's Encrypt certificate automatically. Leave AIO_DOMAIN unset for
+# plain HTTP on port 80 (LAN, or behind your own TLS proxy).
+#
+# Secrets (Postgres password, JWT key) are generated on first start into the
+# `secrets` volume; the encryption key is generated into `appdata`. Back up
+# BOTH volumes (and pgdata). To run a published image instead of building, set
+# `image:` on the app + init services to ghcr.io/sheaf-project/sheaf-aio:X.Y.Z
+# and drop their `build:` blocks.
+
+services:
+  # One-shot: generate the shared first-boot secrets before db/app start.
+  # No-op on subsequent runs (the files already exist).
+  init:
+    image: sheaf-aio:local
+    build:
+      context: .
+      dockerfile: Dockerfile.aio
+    command: ["generate-secrets"]
+    volumes:
+      - secrets:/secrets
+    restart: "no"
+
+  db:
+    image: postgres:16-alpine
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: sheaf
+      POSTGRES_USER: sheaf
+      POSTGRES_PASSWORD_FILE: /secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - secrets:/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sheaf"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    image: sheaf-aio:local
+    build:
+      context: .
+      dockerfile: Dockerfile.aio
+      args:
+        GIT_COMMIT: "${GIT_COMMIT:-}"
+        GIT_TAG: "${GIT_TAG:-}"
+        BUILD_TIME: "${BUILD_TIME:-}"
+        PIP_INDEX_URL: "${PIP_INDEX_URL:-}"
+        PIP_EXTRA_INDEX_URL: "${PIP_EXTRA_INDEX_URL:-}"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      # Set AIO_DOMAIN for automatic HTTPS; leave unset for plain HTTP on :80.
+      AIO_DOMAIN: "${AIO_DOMAIN:-}"
+      AIO_ACME_EMAIL: "${AIO_ACME_EMAIL:-}"
+      AIO_ACME_CA: "${AIO_ACME_CA:-}"
+      # Cloudflare Tunnel: set this to run from home with no ports forwarded.
+      # When set, TLS is Cloudflare's job and no ports need publishing.
+      CF_TUNNEL_TOKEN: "${CF_TUNNEL_TOKEN:-}"
+      SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - appdata:/app/data
+      - secrets:/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  appdata:
+  secrets:
