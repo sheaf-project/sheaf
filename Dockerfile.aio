@@ -1,0 +1,106 @@
+# All-in-one Sheaf image: backend + web bundle + Caddy (auto-TLS) + a
+# bundled redis, supervised in one container. For SMALL single-instance
+# self-hosts that want a near one-liner deploy. Not horizontally scalable;
+# outgrow it -> move to the split sheaf + sheaf-web images. See
+# docs/SELFHOSTING.md ("Quick start (all-in-one)") and
+# ../sheaf-design-docs/aio-docker-image.md.
+#
+# Postgres is NOT in this image - it runs as a separate container (see
+# docker-compose.aio.yml). Redis IS bundled (transient state only), and is
+# skipped when REDIS_URL points at an external server.
+
+# --- Stage 1: build the web SPA --------------------------------------------
+FROM node:22-slim AS webbuild
+WORKDIR /build
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+ARG GIT_COMMIT=
+ARG GIT_TAG=
+ARG BUILD_TIME=
+ENV VITE_GIT_COMMIT=${GIT_COMMIT}
+ENV VITE_GIT_TAG=${GIT_TAG}
+ENV VITE_BUILD_TIME=${BUILD_TIME}
+RUN npm run build
+
+# --- Stage 2: the runtime image --------------------------------------------
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN addgroup --system sheaf && adduser --system --ingroup sheaf sheaf
+
+# redis-server (transient state), tini (PID 1 zombie reaper), curl (compose
+# healthcheck). Caddy is a static Go binary copied from its official image
+# (no libc dependency, so the alpine->debian copy is safe); redis is glibc
+# so it comes from debian apt.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends redis-server tini curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=caddy:2 /usr/bin/caddy /usr/bin/caddy
+# cloudflared for optional Cloudflare Tunnel mode (outbound-only ingress, no
+# port-forwarding). Also a static Go binary, so the copy is libc-independent.
+COPY --from=cloudflare/cloudflared:latest /usr/local/bin/cloudflared /usr/local/bin/cloudflared
+
+# --- Backend: install exactly what uv.lock pins ----------------------------
+# Kept in sync with Dockerfile.backend; same rationale (reproducible,
+# no dependency-tree re-resolution). supervisor rides along for process
+# supervision.
+COPY pyproject.toml uv.lock ./
+COPY sheaf/ sheaf/
+COPY alembic.ini .
+COPY alembic/ alembic/
+
+ARG PIP_INDEX_URL=
+ARG PIP_EXTRA_INDEX_URL=
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+
+RUN pip install --no-cache-dir uv \
+ && uv export --frozen --no-dev --no-emit-project --no-hashes \
+      --extra s3 --extra ses --extra smtp --extra sendgrid \
+      -o /tmp/requirements.lock.txt \
+ && pip install --no-cache-dir -r /tmp/requirements.lock.txt \
+ && pip install --no-cache-dir --no-deps . \
+ && pip install --no-cache-dir supervisor \
+ && pip uninstall -y uv \
+ && rm -f /tmp/requirements.lock.txt
+
+RUN mkdir -p /app/data /home/sheaf && chown sheaf:sheaf /app/data /home/sheaf
+RUN mkdir -p /var/run/prometheus-multiproc && chown sheaf:sheaf /var/run/prometheus-multiproc
+ENV PROMETHEUS_MULTIPROC_DIR=/var/run/prometheus-multiproc
+
+# --- AIO runtime: web bundle, Caddy, supervisor, entrypoints ---------------
+COPY --from=webbuild /build/dist /srv/web
+COPY docker/aio/Caddyfile /etc/caddy/Caddyfile
+COPY docker/aio/supervisord.conf /etc/supervisor/supervisord.conf
+# redis + cloudflared are available-but-not-active programs; the entrypoint
+# links each into conf.d only when it applies (bundled redis when no external
+# REDIS_URL; cloudflared when CF_TUNNEL_TOKEN is set).
+COPY docker/aio/redis.conf /etc/supervisor/available/redis.conf
+COPY docker/aio/cloudflared.conf /etc/supervisor/available/cloudflared.conf
+COPY docker/aio/entrypoint.sh /usr/local/bin/aio-entrypoint.sh
+COPY docker/aio/app-start.sh /usr/local/bin/aio-app-start.sh
+COPY docker/aio/init-secrets.sh /usr/local/bin/aio-init-secrets.sh
+RUN chmod +x /usr/local/bin/aio-entrypoint.sh /usr/local/bin/aio-app-start.sh \
+      /usr/local/bin/aio-init-secrets.sh \
+ && mkdir -p /etc/supervisor/available /etc/supervisor/conf.d
+
+ARG GIT_COMMIT=
+ARG GIT_TAG=
+ARG BUILD_TIME=
+ENV SHEAF_GIT_COMMIT=${GIT_COMMIT}
+ENV SHEAF_GIT_TAG=${GIT_TAG}
+ENV SHEAF_BUILD_TIME=${BUILD_TIME}
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+LABEL org.opencontainers.image.version=${GIT_TAG}
+LABEL org.opencontainers.image.source=https://github.com/sheaf-project/sheaf
+
+# Caddy serves 80/443; uvicorn stays on loopback (never exposed directly).
+EXPOSE 80 443
+
+# tini as PID 1 reaps zombies; the entrypoint generates first-boot secrets
+# (when running the app) then execs supervisord, which runs redis + the
+# backend + Caddy. Runs as root so Caddy can bind 80/443; supervisord drops
+# each program to its own user.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/aio-entrypoint.sh"]

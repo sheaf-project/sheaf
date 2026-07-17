@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **All-in-one Docker image for small self-hosts.** A new `sheaf-aio` image bundles the backend, the web UI, and a Caddy reverse proxy (with automatic Let's Encrypt HTTPS) in one container, alongside Postgres. It generates its own secrets on first start, so a public HTTPS deploy is close to a one-liner: set your domain and `docker compose -f docker-compose.aio.yml up -d`. It can also run from home with no public IP or port-forwarding via a Cloudflare Tunnel (set `CF_TUNNEL_TOKEN`). A small redis is bundled (override with `REDIS_URL`); Postgres stays a separate container; storage defaults to the filesystem. Intended for small single-instance deployments - outgrow it and you move to the split `sheaf` + `sheaf-web` images. See docs/SELFHOSTING.md.
+
 ## [1.2.3] - 2026-07-15
 
 ### Added
