@@ -68,8 +68,8 @@ class Poll(UUIDMixin, TimestampMixin, Base):
     )
 
     # Encrypted at rest.
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False, info={"encrypted": True})
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
 
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     results_visibility: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -121,7 +121,7 @@ class PollOption(UUIDMixin, Base):
         index=True,
     )
     # Encrypted at rest.
-    text: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False, info={"encrypted": True})
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 
     poll: Mapped[Poll] = relationship(back_populates="options")

@@ -98,6 +98,7 @@ ShieldDirection = Literal["activated", "deactivated"]
 DecryptField = Literal[
     "email", "totp_secret", "recovery_codes", "channel_config", "other"
 ]
+FieldDecryptVersion = Literal["v1", "v2"]
 
 TierLimit = Literal[
     "members",
@@ -467,6 +468,14 @@ decrypt_failures_total = _C(
     "indicates key drift or corruption.",
     ["field"],
 )
+field_decrypts_total = _C(
+    "sheaf_field_decrypts_total",
+    "Successful field decrypts by ciphertext format version. Tracks the "
+    "v1 (no-AAD) -> v2 (AAD-bound) migration: v2 should climb and v1 fall "
+    "as rows are rewritten; a v1 floor that never reaches zero flags cells "
+    "no converted write path is touching.",
+    ["version"],
+)
 tier_limit_hits_total = _C(
     "sheaf_tier_limit_hits_total",
     "Quota-rejection callsites by limit category and account tier. "
@@ -824,6 +833,9 @@ def prewarm_metrics() -> None:
     # the absence alert can detect a non-zero rate as soon as it appears.
     for field in ("email", "totp_secret", "recovery_codes", "channel_config", "other"):
         decrypt_failures_total.labels(field=field).inc(0)
+
+    for version in ("v1", "v2"):
+        field_decrypts_total.labels(version=version).inc(0)
 
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)

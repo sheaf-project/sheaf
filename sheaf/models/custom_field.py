@@ -70,7 +70,7 @@ class CustomFieldValue(UUIDMixin, Base):
         index=True,
     )
 
-    value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    value: Mapped[dict | None] = mapped_column(JSONB, nullable=True, info={"encrypted": True})
 
     # Relationships
     field_definition: Mapped["CustomFieldDefinition"] = relationship(back_populates="values")

@@ -292,6 +292,7 @@ currently engaged, else 0. Use it to alert on "shield-mode active for
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_decrypt_failures_total` | counter | `field` |
+| `sheaf_field_decrypts_total` | counter | `version` |
 | `sheaf_users_total` | gauge | - |
 | `sheaf_users_pending_delete` | gauge | - |
 | `sheaf_tier_limit_hits_total` | counter | `limit`, `tier` |
@@ -309,6 +310,14 @@ suggests the free cap needs revisiting.
 
 Should always be zero. Pre-warmed at startup so an absence-alert can
 detect non-zero from the first scrape.
+
+`sheaf_field_decrypts_total` counts successful field decrypts by ciphertext
+format `version` ∈ {v1, v2}. v1 is the legacy no-AAD SecretBox format; v2 is
+the AAD-bound XChaCha20-Poly1305 format. During the migration v2 should climb
+and v1 fall as rows are rewritten; a v1 floor that never reaches zero flags
+cells no converted write path is touching. Decrypt *failures* (including an
+AAD mismatch from a relocated v2 ciphertext, which is an indistinguishable
+nacl CryptoError) still land on `sheaf_decrypt_failures_total`.
 
 ### Data shape
 

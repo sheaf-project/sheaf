@@ -34,17 +34,19 @@ class User(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "users"
 
     # Encrypted at application level — store ciphertext
-    email: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False, info={"encrypted": True})
     # Blind index for lookups (keyed HMAC-SHA-256 of normalised email)
     email_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
 
     # TOTP 2FA — encrypted at application level
-    totp_secret: Mapped[str | None] = mapped_column(String, nullable=True)
+    totp_secret: Mapped[str | None] = mapped_column(String, nullable=True, info={"encrypted": True})
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Recovery codes — encrypted JSON array of hashed codes
-    recovery_codes: Mapped[str | None] = mapped_column(String, nullable=True)
+    recovery_codes: Mapped[str | None] = mapped_column(
+        String, nullable=True, info={"encrypted": True}
+    )
 
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

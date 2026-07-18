@@ -43,7 +43,7 @@ class System(UUIDMixin, TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Free-text scratchpad note. Same shape as Member.note: encrypted at
     # rest, lightweight, no revisions or System Safety integration.
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
     tag: Mapped[str | None] = mapped_column(String(8), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
@@ -168,7 +168,9 @@ class System(UUIDMixin, TimestampMixin, Base):
     # Sheaf-in-the-middle round-trip does not silently drop it. Stored
     # encrypted (it can carry message bodies) and zlib-compressed; see
     # services/openplural_archive.py. NULL when nothing was preserved.
-    openplural_archive: Mapped[str | None] = mapped_column(Text, nullable=True)
+    openplural_archive: Mapped[str | None] = mapped_column(
+        Text, nullable=True, info={"encrypted": True}
+    )
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="system")
