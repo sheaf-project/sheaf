@@ -24,8 +24,11 @@ of things that round-trip via ``extensions.sheaf.*``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import io
 import zipfile
+from dataclasses import dataclass
 
 from sheaf.services.import_parsing import ImportPayloadError, expect_dict, safe_json_loads
 from sheaf.services.openplural_export import EXT_NS
@@ -98,19 +101,66 @@ def _birthday_to_native(b: object) -> str | None:
     return None
 
 
+def _b64decode(value: str) -> bytes | None:
+    """Strict base64 -> bytes, or None on malformed input."""
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _decode_inline_asset(asset: dict) -> bytes | None:
+    """Decoded bytes for an asset that carries its payload inline, else None.
+
+    Per the OpenPlural Asset spec an asset populates at least one of
+    ``uri`` (external URL), ``data_base64``, or ``data_uri``
+    (``data:<mime>;base64,<...>``). This handles the two inline carriers,
+    plus the common producer slip of putting a ``data:`` URI in the
+    ``uri`` field. External ``http(s)`` URLs and bundle refs return None -
+    they are resolved elsewhere. An over-cap payload returns None (the
+    asset is skipped, surfaced later as a removed reference)."""
+    data_uri = asset.get("data_uri")
+    if not (isinstance(data_uri, str) and data_uri.startswith("data:")):
+        uri = asset.get("uri")
+        data_uri = uri if isinstance(uri, str) and uri.startswith("data:") else None
+
+    raw: bytes | None = None
+    if data_uri is not None:
+        b64 = data_uri.partition(";base64,")[2]
+        if b64:
+            raw = _b64decode(b64)
+    if raw is None:
+        data_b64 = asset.get("data_base64")
+        if isinstance(data_b64, str) and data_b64:
+            raw = _b64decode(data_b64)
+    if raw is None or len(raw) > _MAX_ASSET_DECOMPRESSED:
+        return None
+    return raw
+
+
 class _AssetMap:
     """asset id -> native image reference, built from the envelope's assets.
 
-    For a bare-JSON import the reference is the asset's ``uri`` (an
-    external URL the native importer treats like any other). For a bundle
-    it is still the ``uri`` (a ``/v1/files/<key>`` form), and the bare
-    storage key parsed from ``bundle_path`` is what the archive restore
-    keys its blobs by.
+    An asset resolves one of three ways:
+
+    * Inline bytes (``data_uri`` / ``data_base64``, or a ``data:`` URI a
+      producer put in ``uri``): decoded into :attr:`inline` and referenced
+      by a synthetic bare key (the asset id). A bare-JSON import with any
+      inline asset is routed through ``sheaf_archive_import`` so the bytes
+      go through the shared image pipeline (quota, EXIF strip, dimension
+      cap), exactly like a bundle.
+    * A bundle asset: the ``uri`` is a ``/v1/files/<key>`` form and the
+      bare storage key parsed from ``bundle_path`` is what the archive
+      restore keys its blobs by.
+    * An external ``http(s)`` ``uri``: passed through as a URL the native
+      importer treats like any other (fragile, per the spec).
     """
 
     def __init__(self, envelope: dict) -> None:
         self.by_id: dict[str, str] = {}
         self.bundle_keys: set[str] = set()
+        # Synthetic-key -> decoded bytes, for inline assets in a bare JSON.
+        self.inline: dict[str, bytes] = {}
         for a in envelope.get("assets", []) or []:
             if not isinstance(a, dict):
                 continue
@@ -119,7 +169,14 @@ class _AssetMap:
                 continue
             uri = a.get("uri")
             bundle_path = _ext(a).get("bundle_path")
-            if isinstance(uri, str) and uri:
+            raw = _decode_inline_asset(a)
+            if raw is not None:
+                # Self-contained inline bytes win over a fragile external
+                # URL. The asset id doubles as the synthetic storage key the
+                # inline-archive import restores under.
+                self.by_id[aid] = aid
+                self.inline[aid] = raw
+            elif isinstance(uri, str) and uri:
                 self.by_id[aid] = uri
             if isinstance(bundle_path, str) and bundle_path.startswith(_ASSET_PREFIX):
                 self.bundle_keys.add(bundle_path[len(_ASSET_PREFIX):])
@@ -130,13 +187,37 @@ class _AssetMap:
         return None
 
 
-def to_native(envelope: dict) -> dict:
+@dataclass
+class _InlineAssetArchive:
+    """A ``ParsedArchive``-compatible view over inline JSON asset bytes.
+
+    ``sheaf_archive_import.run_import`` only needs ``data`` / ``image_keys``
+    / ``read_image``; this serves the decoded bytes from memory instead of
+    a zip so a bare-JSON export with inline ``data_uri`` assets restores
+    through the same pipeline (quota, scrub-on-failure, unused-key discard)
+    as an ``.openplural.zip`` bundle.
+    """
+
+    data: dict
+    image_keys: set[str]
+    inline: dict[str, bytes]
+
+    def read_image(self, key: str) -> bytes | None:
+        if key not in self.image_keys:
+            return None
+        return self.inline.get(key)
+
+
+def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
     """Translate an OpenPlural v0.1 envelope into the native export dict.
 
     Pure transform: no DB, no IO. Mirrors ``openplural_export.build_envelope``.
+    Pass a prebuilt ``assets`` map to reuse its inline-asset decode (the
+    JSON runner does, to route inline images through the archive path).
     """
     _check_version(envelope)
-    assets = _AssetMap(envelope)
+    if assets is None:
+        assets = _AssetMap(envelope)
 
     native: dict = {"version": "2"}
 
@@ -466,6 +547,25 @@ def parse_json(blob: bytes) -> dict:
     envelope = expect_dict(safe_json_loads(blob), descriptor="OpenPlural export")
     _check_version(envelope)
     return envelope
+
+
+def build_json_import(envelope: dict) -> tuple[dict, _InlineAssetArchive | None]:
+    """Translate a bare-JSON envelope for import.
+
+    Returns ``(native, inline_archive)``. When the file carries inline
+    image bytes (``data_uri`` / ``data_base64`` assets), ``inline_archive``
+    is a read_image-compatible view to hand to
+    ``sheaf_archive_import.run_import`` so the avatars restore through the
+    shared image pipeline; otherwise it is None and the caller uses the
+    plain ``sheaf_import.run_import`` path.
+    """
+    assets = _AssetMap(envelope)
+    native = to_native(envelope, assets=assets)
+    if assets.inline:
+        return native, _InlineAssetArchive(
+            data=native, image_keys=set(assets.inline), inline=assets.inline
+        )
+    return native, None
 
 
 def parse_bundle(blob: bytes):

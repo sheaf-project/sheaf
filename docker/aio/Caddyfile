@@ -1,0 +1,43 @@
+# AIO front proxy. Serves the SPA, reverse-proxies the API to uvicorn on
+# loopback, and (when AIO_SITE_ADDRESS is a domain) provisions a Let's Encrypt
+# certificate automatically. The entrypoint sets AIO_SITE_ADDRESS to the
+# domain, or ":80" for plain HTTP. Cert/state storage is XDG_DATA_HOME
+# (/app/data), set on the Caddy program so certs survive a container recreate.
+
+{
+	# No runtime reconfiguration needed; keeps the admin API off localhost:2019.
+	admin off
+
+	# Automatic HTTPS. When AIO_SITE_ADDRESS is a domain, Caddy provisions and
+	# renews a certificate on its own - the reason this image uses Caddy. The
+	# ACME endpoint (AIO_ACME_CA) and optional contact email (AIO_ACME_EMAIL)
+	# are rendered by the entrypoint into acme.conf, so an unset email is simply
+	# omitted rather than emitting an empty (and invalid) `email` directive.
+	import /etc/caddy/acme.conf
+}
+
+{$AIO_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# API + health check -> the backend on loopback. /metrics is deliberately
+	# NOT proxied: it is unauthenticated and stays in-container.
+	@backend path /v1/* /health
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Everything else -> the single-page app. Sheaf only sets security headers
+	# on its own /v1/* responses, so the SPA document needs them here (mirrors
+	# the reverse-proxy examples in docs/SELFHOSTING.md).
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+		header {
+			X-Frame-Options "DENY"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+		}
+	}
+}
