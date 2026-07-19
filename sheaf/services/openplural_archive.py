@@ -28,6 +28,7 @@ import json
 import zlib
 
 from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import system_openplural_archive_aad
 
 # The reserved namespace Sheaf owns; everything else under file-level
 # `extensions` is foreign and gets preserved.
@@ -144,13 +145,19 @@ def merge_residual(existing: dict, incoming: dict) -> dict:
     return merged
 
 
-def pack_residual(residual: dict, *, max_bytes: int) -> tuple[str | None, str | None]:
+def pack_residual(
+    residual: dict, *, system_id, max_bytes: int
+) -> tuple[str | None, str | None]:
     """Compress + encrypt a residual for storage.
 
     Returns ``(token, warning)``. ``token`` is None when there is nothing
     to store or when the raw JSON exceeds ``max_bytes`` (in which case
     ``warning`` explains the drop). The size check is on the uncompressed
     JSON: it bounds what we are willing to retain, not the on-disk size.
+
+    ``system_id`` is the owning system's id; the ciphertext is AAD-bound to
+    the ``systems.openplural_archive`` cell so it cannot be relocated to
+    another system's row.
     """
     if not residual:
         return None, None
@@ -162,20 +169,26 @@ def pack_residual(residual: dict, *, max_bytes: int) -> tuple[str | None, str | 
             "(OPENPLURAL_MAX_PRESERVED_MB); it was not retained"
         )
     compressed = zlib.compress(raw, 9)
-    token = encrypt(base64.b64encode(compressed).decode("ascii"))
+    token = encrypt(
+        base64.b64encode(compressed).decode("ascii"),
+        aad=system_openplural_archive_aad(system_id),
+    )
     return token, None
 
 
-def unpack_residual(token: str | None) -> dict:
+def unpack_residual(token: str | None, *, system_id) -> dict:
     """Inverse of ``pack_residual``. Returns {} for NULL/empty/corrupt.
 
     Tolerant by design: a residual that fails to decode must never break
     an export. A corrupt blob yields an empty residual (the export is
-    simply missing the preserved data, not failed)."""
+    simply missing the preserved data, not failed). ``system_id`` supplies
+    the AAD for v2 tokens; a v1 token still decrypts with it ignored."""
     if not token:
         return {}
     try:
-        compressed = base64.b64decode(decrypt(token))
+        compressed = base64.b64decode(
+            decrypt(token, aad=system_openplural_archive_aad(system_id))
+        )
         data = json.loads(zlib.decompress(compressed))
     except Exception:  # noqa: BLE001 - corrupt archive must not break export
         return {}

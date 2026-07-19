@@ -8,6 +8,7 @@ from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import system_note_aad, user_totp_secret_aad
 from sheaf.files import owned_avatar_url, owned_description_urls
 from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.user import User
@@ -22,7 +23,9 @@ def _system_to_read(system: System) -> SystemRead:
     System.note is the only encrypted-at-rest field on System (description
     is plaintext for historical reasons), so we just patch it through here
     rather than building a parallel `decrypt_system_for_read` helper."""
-    plaintext_note = decrypt(system.note) if system.note else None
+    plaintext_note = (
+        decrypt(system.note, aad=system_note_aad(system.id)) if system.note else None
+    )
     return SystemRead.model_validate(
         {**system.__dict__, "note": plaintext_note}
     )
@@ -72,7 +75,7 @@ async def update_own_system(
             if value is None or value == "":
                 system.note = None
             else:
-                system.note = encrypt(value)
+                system.note = encrypt(value, aad=system_note_aad(system.id))
         else:
             setattr(system, key, value)
     await db.commit()
@@ -110,7 +113,7 @@ async def update_delete_confirmation(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="TOTP code required",
             )
-        secret = decrypt(user.totp_secret)
+        secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, secret, body.totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")

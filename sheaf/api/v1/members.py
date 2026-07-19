@@ -10,6 +10,11 @@ from sqlalchemy.orm import selectinload
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.crypto import blind_index, encrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import (
+    member_description_aad,
+    member_name_aad,
+    member_note_aad,
+)
 from sheaf.files import owned_avatar_url, owned_description_urls
 from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
@@ -187,15 +192,21 @@ async def create_member(
     data["avatar_url"] = owned_avatar_url(data.get("avatar_url"), user.id)
     data["banner_url"] = owned_avatar_url(data.get("banner_url"), user.id)
     plaintext_description = owned_description_urls(plaintext_description, user.id)
+    # Pre-allocate the id (UUIDMixin's default only fires at flush) so the
+    # encrypted cells can be bound to the row before it is inserted.
+    member_id = uuid.uuid4()
     member = Member(
+        id=member_id,
         system_id=system.id,
-        name=encrypt(plaintext_name),
+        name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
         name_hash=blind_index(plaintext_name),
         description=(
-            encrypt(plaintext_description) if plaintext_description is not None else None
+            encrypt(plaintext_description, aad=member_description_aad(member_id))
+            if plaintext_description is not None
+            else None
         ),
         note=(
-            encrypt(plaintext_note)
+            encrypt(plaintext_note, aad=member_note_aad(member_id))
             if plaintext_note is not None and plaintext_note != ""
             else None
         ),
@@ -366,17 +377,21 @@ async def update_member(
         )
     for key, value in update_data.items():
         if key == "name":
-            member.name = encrypt(value)
+            member.name = encrypt(value, aad=member_name_aad(member.id))
             member.name_hash = blind_index(value)
         elif key == "description":
-            member.description = encrypt(value) if value is not None else None
+            member.description = (
+                encrypt(value, aad=member_description_aad(member.id))
+                if value is not None
+                else None
+            )
         elif key == "note":
             # Empty string clears the column. Notes are deliberately
             # overwrite-only; no revision capture here.
             if value is None or value == "":
                 member.note = None
             else:
-                member.note = encrypt(value)
+                member.note = encrypt(value, aad=member_note_aad(member.id))
         else:
             setattr(member, key, value)
     await db.commit()

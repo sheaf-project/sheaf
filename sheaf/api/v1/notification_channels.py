@@ -15,6 +15,7 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.crypto import encrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import webhook_secret_aad
 from sheaf.models.group import Group
 from sheaf.models.member import Member
 from sheaf.models.notification_channel import (
@@ -371,7 +372,9 @@ async def create_channel(
     )
 
     if body.destination_type == DestinationType.WEBHOOK.value and body.webhook_secret:
-        channel.webhook_secret_encrypted = encrypt(body.webhook_secret)
+        channel.webhook_secret_encrypted = encrypt(
+            body.webhook_secret, aad=webhook_secret_aad(channel.id)
+        )
 
     activation_url = None
     activation_expires = None
@@ -536,7 +539,9 @@ async def update_channel(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="webhook_secret only valid for webhook channels",
             )
-        channel.webhook_secret_encrypted = encrypt(body.webhook_secret)
+        channel.webhook_secret_encrypted = encrypt(
+            body.webhook_secret, aad=webhook_secret_aad(channel.id)
+        )
     # Re-check the pushover debounce floor against the merged config +
     # whichever debounce ends up applying after this PATCH. Either could
     # change independently — caller might raise debounce while keeping the

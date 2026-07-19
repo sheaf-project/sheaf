@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
 from sheaf.crypto import decrypt
+from sheaf.encrypted_fields import webhook_secret_aad
 from sheaf.models.notification_channel import (
     DestinationType,
     NotificationChannel,
@@ -243,7 +244,10 @@ async def _deliver_webhook(
     # cloud frontends.
     if fmt in ("json", "plaintext") and channel.webhook_secret_encrypted is not None:
         try:
-            secret = decrypt(channel.webhook_secret_encrypted)
+            secret = decrypt(
+                channel.webhook_secret_encrypted,
+                aad=webhook_secret_aad(channel.id),
+            )
         except Exception as exc:  # noqa: BLE001
             return permanent(f"webhook secret decryption failed: {exc}")
         timestamp = str(int(time.time()))

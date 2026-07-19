@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user
 from sheaf.crypto import encrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import import_credential_aad
 from sheaf.models.import_job import ImportJob, ImportJobStatus
 from sheaf.models.user import User
 from sheaf.schemas.imports import (
@@ -216,7 +217,9 @@ async def create_file_import(
         if body.options is not None:
             metadata["options"] = body.options
         if credential:
-            metadata["encrypted_credential"] = encrypt(credential)
+            metadata["encrypted_credential"] = encrypt(
+                credential, aad=import_credential_aad(job_id)
+            )
 
     job = ImportJob(
         id=job_id,
@@ -270,11 +273,12 @@ async def create_api_import(
     if existing is not None:
         return ImportJobRead.model_validate(existing)
 
-    encrypted_token = encrypt(body.pk_token)
-
     # Explicit id so the post-commit race check can compare against it
-    # (the UUIDMixin default is only applied at flush time).
+    # (the UUIDMixin default is only applied at flush time) and so the
+    # credential ciphertext can be AAD-bound to the job row it lives on.
     new_id = uuid.uuid4()
+    encrypted_token = encrypt(body.pk_token, aad=import_credential_aad(new_id))
+
     job = ImportJob(
         id=new_id,
         user_id=user.id,

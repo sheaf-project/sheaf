@@ -32,6 +32,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import (
+    front_custom_status_aad,
+    journal_body_aad,
+    journal_title_aad,
+    member_description_aad,
+    member_name_aad,
+    poll_option_text_aad,
+    poll_question_aad,
+)
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
 from sheaf.models.group import Group
@@ -83,6 +92,9 @@ from sheaf.services.import_media import (
     user_can_upload_images,
 )
 from sheaf.services.member_limits import enforce_import_member_cap
+from sheaf.services.messages import encrypt_body
+from sheaf.services.polls import encrypt_text
+from sheaf.services.reminders import encrypt_title_body
 
 logger = logging.getLogger("sheaf.imports.ampersand")
 
@@ -297,12 +309,17 @@ async def run_import(
             if sys_ref:
                 amp_id_to_system[amp_id] = sys_ref
         plaintext_desc = _coerce_str(amp_m.get("description"))
+        member_id = uuid.uuid4()
         member = Member(
-            id=uuid.uuid4(),
+            id=member_id,
             system_id=system.id,
-            name=encrypt(plaintext_name),
+            name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
             name_hash=blind_index(plaintext_name),
-            description=encrypt(plaintext_desc) if plaintext_desc is not None else None,
+            description=(
+                encrypt(plaintext_desc, aad=member_description_aad(member_id))
+                if plaintext_desc is not None
+                else None
+            ),
             pronouns=clamp_str(
                 _coerce_str(amp_m.get("pronouns")) or None, il.M_PRONOUNS, report=report
             ),
@@ -713,12 +730,13 @@ async def _import_custom_fields(
             if pair in seen:
                 continue
             seen.add(pair)
+            cfv_id = uuid.uuid4()
             db.add(
                 CustomFieldValue(
-                    id=uuid.uuid4(),
+                    id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value({"v": value}),
+                    value=encrypt_field_value({"v": value}, cfv_id),
                 )
             )
 
@@ -756,12 +774,17 @@ async def _import_fronts(
             front_index.register(fkey)
 
         custom_status = _coerce_str(amp_f.get("customStatus"))
+        front_id = uuid.uuid4()
         front = Front(
-            id=uuid.uuid4(),
+            id=front_id,
             system_id=system.id,
             started_at=started,
             ended_at=ended,
-            custom_status=encrypt(custom_status) if custom_status else None,
+            custom_status=(
+                encrypt(custom_status, aad=front_custom_status_aad(front_id))
+                if custom_status
+                else None
+            ),
         )
         db.add(front)
         await db.flush()
@@ -838,16 +861,20 @@ async def _import_journals(
                         result.images_imported += 1
 
             j_title = _coerce_str(amp_j.get("title"))
+            entry_id = uuid.uuid4()
             entry = JournalEntry(
-                id=uuid.uuid4(),
+                id=entry_id,
                 system_id=system.id,
                 member_id=member_objs[0].id if len(member_objs) == 1 else None,
                 title=(
-                    encrypt(clamp_str(j_title, il.JOURNAL_TITLE, report=report))
+                    encrypt(
+                        clamp_str(j_title, il.JOURNAL_TITLE, report=report),
+                        aad=journal_title_aad(entry_id),
+                    )
                     if j_title
                     else None
                 ),
-                body=encrypt(body),
+                body=encrypt(body, aad=journal_body_aad(entry_id)),
                 visibility="system",
                 author_user_id=system.user_id,
                 author_member_ids=[str(m.id) for m in member_objs],
@@ -866,16 +893,20 @@ async def _import_journals(
         for amp_n in _coll(data, "notes"):
             title = _coerce_str(amp_n.get("title"))
             content = _coerce_str(amp_n.get("content")) or ""
+            entry_id = uuid.uuid4()
             entry = JournalEntry(
-                id=uuid.uuid4(),
+                id=entry_id,
                 system_id=system.id,
                 member_id=None,
                 title=(
-                    encrypt(clamp_str(title, il.JOURNAL_TITLE, report=report))
+                    encrypt(
+                        clamp_str(title, il.JOURNAL_TITLE, report=report),
+                        aad=journal_title_aad(entry_id),
+                    )
                     if title
                     else None
                 ),
-                body=encrypt(content),
+                body=encrypt(content, aad=journal_body_aad(entry_id)),
                 visibility="system",
                 author_user_id=system.user_id,
                 author_member_ids=[],
@@ -919,13 +950,16 @@ async def _import_board(
         title = _coerce_str(amp_b.get("title"))
         raw_body = _coerce_str(amp_b.get("body")) or ""
         body = f"**{title}**\n\n{raw_body}".strip() if title else raw_body
+        message_id = uuid.uuid4()
         message = Message(
-            id=uuid.uuid4(),
+            id=message_id,
             system_id=system.id,
             board_kind=BoardKind.SYSTEM.value,
             board_member_id=None,
             author_member_id=author.id if author else None,
-            body=encrypt(clamp_str(body, il.MESSAGE_BODY, report=report) or ""),
+            body=encrypt_body(
+                clamp_str(body, il.MESSAGE_BODY, report=report) or "", message_id
+            ),
         )
         created = _parse_iso(amp_b.get("date"))
         if created:
@@ -940,13 +974,17 @@ async def _import_board(
                 continue
             c_author = amp_id_to_member.get(_coerce_str(amp_c.get("member")) or "")
             c_body = _coerce_str(amp_c.get("comment")) or ""
+            reply_id = uuid.uuid4()
             reply = Message(
-                id=uuid.uuid4(),
+                id=reply_id,
                 system_id=system.id,
                 board_kind=BoardKind.SYSTEM.value,
                 board_member_id=None,
                 author_member_id=c_author.id if c_author else None,
-                body=encrypt(clamp_str(c_body, il.MESSAGE_BODY, report=report) or ""),
+                body=encrypt_body(
+                    clamp_str(c_body, il.MESSAGE_BODY, report=report) or "",
+                    reply_id,
+                ),
                 parent_message_id=message.id,
             )
             c_created = _parse_iso(amp_c.get("date"))
@@ -984,10 +1022,14 @@ async def _import_poll(
         return False
 
     now = datetime.now(UTC)
+    poll_id = uuid.uuid4()
     poll = Poll(
-        id=uuid.uuid4(),
+        id=poll_id,
         system_id=system.id,
-        question=encrypt(clamp_str("Imported poll", il.POLL_QUESTION, report=report)),
+        question=encrypt_text(
+            clamp_str("Imported poll", il.POLL_QUESTION, report=report),
+            poll_question_aad(poll_id),
+        ),
         description=None,
         kind=(
             PollKind.MULTI_CHOICE.value
@@ -1008,10 +1050,14 @@ async def _import_poll(
         if not isinstance(entry, dict):
             continue
         text = _coerce_str(entry.get("choice")) or f"Option {position + 1}"
+        option_id = uuid.uuid4()
         option = PollOption(
-            id=uuid.uuid4(),
+            id=option_id,
             poll_id=poll.id,
-            text=encrypt(clamp_str(text, il.POLL_OPTION, report=report) or ""),
+            text=encrypt_text(
+                clamp_str(text, il.POLL_OPTION, report=report) or "",
+                poll_option_text_aad(option_id),
+            ),
             position=position,
         )
         db.add(option)
@@ -1085,17 +1131,23 @@ async def _import_reminders(
         # single "any member" reminder.
         targets: list[Member | None] = member_refs if member_refs else [None]
         for target in targets:
-            reminder = Reminder(
-                id=uuid.uuid4(),
-                system_id=system.id,
-                channel_id=channel.id,
-                name=clamp_str(title, il.REMINDER_NAME, report=report),
-                title=encrypt(clamp_str(title, il.REMINDER_TITLE, report=report) or ""),
-                body=(
-                    encrypt(clamp_str(message_body, il.REMINDER_BODY, report=report))
+            reminder_id = uuid.uuid4()
+            enc_title, enc_body = encrypt_title_body(
+                clamp_str(title, il.REMINDER_TITLE, report=report) or "",
+                (
+                    clamp_str(message_body, il.REMINDER_BODY, report=report)
                     if message_body
                     else None
                 ),
+                reminder_id,
+            )
+            reminder = Reminder(
+                id=reminder_id,
+                system_id=system.id,
+                channel_id=channel.id,
+                name=clamp_str(title, il.REMINDER_NAME, report=report),
+                title=enc_title,
+                body=enc_body,
                 enabled=enabled,
                 trigger_type="automated",
                 trigger_member_id=target.id if target else None,

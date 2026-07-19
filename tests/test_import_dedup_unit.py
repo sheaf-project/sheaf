@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import uuid
 
+from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import member_name_aad
 from sheaf.models.member import Member
 from sheaf.services.import_dedup import (
     ImportConflictStrategy,
@@ -22,9 +24,16 @@ from sheaf.services.import_dedup import (
 
 
 def _m(name_hash: str, *, pk_id: str | None = None, is_cf: bool = False, **extra):
-    """A detached Member carrying just the attrs dedup reads."""
+    """A detached Member carrying just the attrs dedup reads.
+
+    The encrypted name is bound to the pre-allocated id, the same shape every
+    importer produces for real candidates, so _apply_update's re-bind path
+    runs against realistic rows.
+    """
+    mid = uuid.uuid4()
     return Member(
-        id=uuid.uuid4(),
+        id=mid,
+        name=encrypt(name_hash, aad=member_name_aad(mid)),
         name_hash=name_hash,
         pluralkit_id=pk_id,
         is_custom_front=is_cf,
@@ -105,6 +114,9 @@ def test_update_overwrites_set_fields_preserves_unset():
     assert existing.display_name == "new"      # candidate had a value -> overwrite
     assert existing.pronouns == "they/them"    # candidate None -> preserved
     assert existing.emoji == "star"            # candidate set -> filled in
+    # The candidate's encrypted name was re-bound to the existing row's AAD,
+    # not ciphertext-copied: it must decrypt under the existing id.
+    assert decrypt(existing.name, aad=member_name_aad(existing.id)) == "dup"
 
 
 def test_no_match_creates_and_registers_for_intra_batch():

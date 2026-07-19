@@ -142,7 +142,7 @@ async def _to_read(
         parent_message_id=msg.parent_message_id,
         parent_preview=parent_preview,
         parent_author_member_name=parent_author,
-        body=decrypt_body(msg.body),
+        body=decrypt_body(msg.body, msg.id),
         created_at=msg.created_at,
         updated_at=msg.updated_at,
         pending_delete_at=pending_delete_at,
@@ -188,7 +188,7 @@ async def _render_messages(
         if msg.parent_message_id is not None:
             parent = parents.get(msg.parent_message_id)
             if parent is not None and parent.deleted_at is None:
-                parent_preview = preview_for(decrypt_body(parent.body))
+                parent_preview = preview_for(decrypt_body(parent.body, parent.id))
                 parent_author = _name(parent.author_member_id)
         pending_at = (
             pending_delete_at_by_id.get(msg.id)
@@ -205,7 +205,7 @@ async def _render_messages(
             parent_message_id=msg.parent_message_id,
             parent_preview=parent_preview,
             parent_author_member_name=parent_author,
-            body=decrypt_body(msg.body),
+            body=decrypt_body(msg.body, msg.id),
             created_at=msg.created_at,
             updated_at=msg.updated_at,
             pending_delete_at=pending_at,
@@ -480,14 +480,15 @@ async def post_message(
                 detail="parent_message_id must reference a live message on the same board.",
             )
 
+    msg_id = uuid.uuid4()
     msg = Message(
-        id=uuid.uuid4(),
+        id=msg_id,
         system_id=system.id,
         board_kind=kind,
         board_member_id=board_member_id,
         author_member_id=body.author_member_id,
         parent_message_id=body.parent_message_id,
-        body=encrypt_body(body.body),
+        body=encrypt_body(body.body, msg_id),
     )
     db.add(msg)
     await db.commit()
@@ -519,7 +520,7 @@ async def edit_message(
     system = await _get_user_system(user, db)
     msg = await _get_owned_message(message_id, system, db)
 
-    current_plaintext = decrypt_body(msg.body)
+    current_plaintext = decrypt_body(msg.body, msg.id)
     if body.body == current_plaintext:
         return await _to_read(msg, db)
 
@@ -532,7 +533,7 @@ async def edit_message(
         title=None,
         body=current_plaintext,
     )
-    msg.body = encrypt_body(body.body)
+    msg.body = encrypt_body(body.body, msg.id)
     await db.commit()
     await db.refresh(msg)
     return await _to_read(msg, db)
@@ -851,7 +852,7 @@ def _summarise_message(msg: Message) -> str:
     target label. Decrypts a preview of the body."""
     from sheaf.services.messages import preview_for
 
-    body_pt = decrypt_body(msg.body)
+    body_pt = decrypt_body(msg.body, msg.id)
     return preview_for(body_pt) or "(empty message)"
 
 

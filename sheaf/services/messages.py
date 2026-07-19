@@ -18,6 +18,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import (
+    member_name_aad,
+    message_body_aad,
+    revision_body_aad,
+)
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.member import Member
 from sheaf.models.message import BoardKind, Message, MessageReadState
@@ -29,14 +34,14 @@ from sheaf.schemas.message import BoardSummary
 # ---------------------------------------------------------------------------
 
 
-def encrypt_body(plaintext: str) -> str:
-    return encrypt(plaintext)
+def encrypt_body(plaintext: str, message_id) -> str:
+    return encrypt(plaintext, aad=message_body_aad(message_id))
 
 
-def decrypt_body(ciphertext: str | None) -> str:
+def decrypt_body(ciphertext: str | None, message_id) -> str:
     if not ciphertext:
         return ""
-    return decrypt(ciphertext)
+    return decrypt(ciphertext, aad=message_body_aad(message_id))
 
 
 # Body shown inline as "Replying to X: <preview>". Plaintext, truncated.
@@ -210,6 +215,7 @@ _BOARD_AGG_SQL = text(
         SELECT DISTINCT ON (m.board_kind, m.board_member_id)
                m.board_kind,
                m.board_member_id,
+               m.id AS last_message_id,
                m.body AS last_body
         FROM messages m
         WHERE m.system_id = :system_id AND m.deleted_at IS NULL
@@ -219,6 +225,7 @@ _BOARD_AGG_SQL = text(
            agg.board_member_id,
            agg.total_count,
            agg.last_at,
+           latest.last_message_id,
            latest.last_body,
            agg.unread_count,
            agg.has_read_state
@@ -255,11 +262,14 @@ async def board_summaries(
     )
     per_board: dict[
         tuple[str, uuid.UUID | None],
-        tuple[int, datetime | None, bytes | None, int, bool],
+        tuple[int, datetime | None, uuid.UUID | None, str | None, int, bool],
     ] = {}
-    for board_kind, board_member_id, total, last_at, last_body, unread, has_rs in agg_rows:
+    for (
+        board_kind, board_member_id, total, last_at,
+        last_msg_id, last_body, unread, has_rs,
+    ) in agg_rows:
         per_board[(board_kind, board_member_id)] = (
-            total, last_at, last_body, unread, has_rs,
+            total, last_at, last_msg_id, last_body, unread, has_rs,
         )
 
     members_result = await db.execute(
@@ -278,7 +288,9 @@ async def board_summaries(
             *((BoardKind.MEMBER.value, m.id) for m in members),
         }
         seen_keys = {
-            key for key, (_t, _la, _lb, _u, has_rs) in per_board.items() if has_rs
+            key
+            for key, (_t, _la, _mid, _lb, _u, has_rs) in per_board.items()
+            if has_rs
         }
         # Also consider boards that exist as read_state rows but have
         # no messages: the per_board aggregation only surfaces boards
@@ -316,13 +328,17 @@ async def board_summaries(
                 message_count=0,
                 unread_count=0,
             )
-        total, last_at, last_body, unread, has_rs = row
+        total, last_at, last_msg_id, last_body, unread, has_rs = row
         return BoardSummary(
             board_kind=key[0],
             board_member_id=key[1],
             member_name=member_name,
             last_message_at=last_at,
-            last_message_preview=preview_for(decrypt_body(last_body)) if last_body else None,
+            last_message_preview=(
+                preview_for(decrypt_body(last_body, last_msg_id))
+                if last_body
+                else None
+            ),
             message_count=total,
             # Caller has no read_state row yet → unread is 0 (baseline
             # was just established above; subsequent posts will count).
@@ -350,7 +366,11 @@ async def board_summaries(
 def display_name(member: Member) -> str:
     if member.display_name:
         return member.display_name
-    return decrypt(member.name) if member.name else "(unnamed)"
+    return (
+        decrypt(member.name, aad=member_name_aad(member.id))
+        if member.name
+        else "(unnamed)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +473,7 @@ async def fetch_parent_preview(
     parent = await db.get(Message, parent_id)
     if parent is None or parent.deleted_at is not None:
         return None, None, parent_id
-    body_pt = decrypt_body(parent.body)
+    body_pt = decrypt_body(parent.body, parent.id)
     author_name: str | None = None
     if parent.author_member_id is not None:
         author = await db.get(Member, parent.author_member_id)
@@ -501,9 +521,9 @@ async def restore_message_revision(
     `restore_member_bio_revision`: capture the current body as a fresh
     revision, then overwrite `message.body` with the revision's content.
     """
-    from sheaf.services.journals import capture_revision, revision_plaintext
+    from sheaf.services.journals import capture_revision
 
-    current_body = decrypt_body(message.body)
+    current_body = decrypt_body(message.body, message.id)
     await capture_revision(
         db=db,
         target_type=ContentRevisionTarget.MESSAGE,
@@ -513,8 +533,14 @@ async def restore_message_revision(
         title=None,
         body=current_body,
     )
-    _, revision_body = revision_plaintext(revision)
-    message.body = encrypt_body(revision_body or "")
+    # The revision's stored body is bound to the revision row, so read it
+    # with the revision aad; the message side re-binds to the message row.
+    revision_body = (
+        decrypt(revision.body, aad=revision_body_aad(revision.id))
+        if revision.body
+        else ""
+    )
+    message.body = encrypt_body(revision_body, message.id)
     return message
 
 

@@ -170,6 +170,10 @@ def test_pending_action_content_encrypted_at_rest(client: httpx.Client):
     import json
 
     from sheaf.crypto import decrypt
+    from sheaf.encrypted_fields import (
+        pending_fronting_names_aad,
+        pending_target_label_aad,
+    )
 
     email, _ = _register(client)
     _set_system_safety_via_db(
@@ -192,11 +196,16 @@ def test_pending_action_content_encrypted_at_rest(client: httpx.Client):
     raw_label, raw_names = _read_pending_row_raw(pending_id)
     assert raw_label != "Victim Member"
     assert "Victim Member" not in raw_label
-    assert decrypt(raw_label) == "Victim Member"
+    assert (
+        decrypt(raw_label, aad=pending_target_label_aad(pending_id))
+        == "Victim Member"
+    )
 
     assert raw_names != "Alice"
     assert "Alice" not in raw_names
-    assert json.loads(decrypt(raw_names)) == ["Alice"]
+    assert json.loads(
+        decrypt(raw_names, aad=pending_fronting_names_aad(pending_id))
+    ) == ["Alice"]
 
     # Read endpoint returns the decrypted plaintext.
     pending = client.get("/v1/system/safety").json()["pending_actions"][0]

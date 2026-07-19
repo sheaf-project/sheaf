@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import member_description_aad, member_name_aad
 from sheaf.models.group import Group
 from sheaf.models.member import Member, group_members
 from sheaf.models.system import PrivacyLevel, System
@@ -245,15 +246,20 @@ def _build_member(
     plaintext_name = clamp_str(plaintext_name, il.M_NAME, report=report)
     plaintext_description = _clean_str(tupper.get("description"))
 
+    member_id = uuid.uuid4()
     return Member(
-        id=uuid.uuid4(),
+        id=member_id,
         system_id=system_id,
-        name=encrypt(plaintext_name),
+        name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
         name_hash=blind_index(plaintext_name),
         display_name=clamp_str(
             _clean_str(tupper.get("nick")), il.M_DISPLAY_NAME, report=report
         ),
-        description=encrypt(plaintext_description) if plaintext_description else None,
+        description=(
+            encrypt(plaintext_description, aad=member_description_aad(member_id))
+            if plaintext_description
+            else None
+        ),
         pronouns=None,  # Tupperbox doesn't model pronouns.
         avatar_url=sanitize_external_avatar_url(_clean_str(tupper.get("avatar_url"))),
         color=None,  # Tupperbox doesn't model member colour.

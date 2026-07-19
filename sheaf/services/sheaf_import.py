@@ -36,6 +36,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import (
+    front_custom_status_aad,
+    journal_body_aad,
+    journal_title_aad,
+    member_description_aad,
+    member_name_aad,
+    member_note_aad,
+    poll_description_aad,
+    poll_option_text_aad,
+    poll_question_aad,
+    revision_body_aad,
+    revision_title_aad,
+    system_note_aad,
+)
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
@@ -119,11 +133,14 @@ from sheaf.services.import_image_strip import (
 )
 from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
 from sheaf.services.member_limits import enforce_import_member_cap
+from sheaf.services.messages import encrypt_body
 from sheaf.services.polls import (
+    encrypt_text,
     max_concurrent_open_for_tier,
     max_retention_days_for_tier,
 )
 from sheaf.services.relationships import canonicalize_pair
+from sheaf.services.reminders import encrypt_title_body
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -859,7 +876,11 @@ async def run_import(
                     il.SYS_NOTE,
                     report=report,
                 )
-                system.note = encrypt(note_val) if note_val else None
+                system.note = (
+                    encrypt(note_val, aad=system_note_aad(system.id))
+                    if note_val
+                    else None
+                )
             if sys_data.get("avatar_url") is not None:
                 # An avatar key like avatars/<old_user_id>/<uuid>.png points
                 # at the original account's storage; we can't fetch the
@@ -937,10 +958,14 @@ async def run_import(
                 )
 
                 merged = merge_residual(
-                    unpack_residual(system.openplural_archive), op_archive
+                    unpack_residual(
+                        system.openplural_archive, system_id=system.id
+                    ),
+                    op_archive,
                 )
                 token, _warn = pack_residual(
                     merged,
+                    system_id=system.id,
                     max_bytes=settings.openplural_max_preserved_mb * 1024 * 1024,
                 )
                 if token is not None:
@@ -978,21 +1003,25 @@ async def run_import(
             il.M_NOTE,
             report=report,
         )
+        member_id = uuid.uuid4()
         member = Member(
-            id=uuid.uuid4(),
+            id=member_id,
             system_id=system.id,
-            name=encrypt(plaintext_name),
+            name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
             name_hash=blind_index(plaintext_name),
             display_name=clamp_str(
                 m_data.get("display_name"), il.M_DISPLAY_NAME, report=report
             ),
             description=(
-                encrypt(plaintext_description)
+                encrypt(
+                    plaintext_description,
+                    aad=member_description_aad(member_id),
+                )
                 if plaintext_description is not None
                 else None
             ),
             note=(
-                encrypt(plaintext_note)
+                encrypt(plaintext_note, aad=member_note_aad(member_id))
                 if plaintext_note
                 else None
             ),
@@ -1217,11 +1246,12 @@ async def run_import(
                     continue
                 if not value_guard.add((field_def.id, member.id)):
                     continue
+                cfv_id = uuid.uuid4()
                 cfv = CustomFieldValue(
-                    id=uuid.uuid4(),
+                    id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value(v_data.get("value")),
+                    value=encrypt_field_value(v_data.get("value"), cfv_id),
                 )
                 db.add(cfv)
 
@@ -1459,13 +1489,17 @@ async def run_import(
                 front_index.register(fkey)
 
             plaintext_status = f_data.get("custom_status")
+            front_id = uuid.uuid4()
             front = Front(
-                id=uuid.uuid4(),
+                id=front_id,
                 system_id=system.id,
                 started_at=started_at,
                 ended_at=ended_at,
                 custom_status=(
-                    encrypt(plaintext_status)
+                    encrypt(
+                        plaintext_status,
+                        aad=front_custom_status_aad(front_id),
+                    )
                     if isinstance(plaintext_status, str) and plaintext_status
                     else None
                 ),
@@ -1521,13 +1555,19 @@ async def run_import(
             title = clamp_str(
                 j_data.get("title"), il.JOURNAL_TITLE, report=report
             )
+            entry_id = uuid.uuid4()
             entry = JournalEntry(
-                id=uuid.uuid4(),
+                id=entry_id,
                 system_id=system.id,
                 member_id=member.id if member else None,
-                title=encrypt(title) if title else None,
+                title=(
+                    encrypt(title, aad=journal_title_aad(entry_id))
+                    if title
+                    else None
+                ),
                 body=encrypt(
-                    _resolve_md(j_data.get("body")) or ""
+                    _resolve_md(j_data.get("body")) or "",
+                    aad=journal_body_aad(entry_id),
                 ),
                 visibility=j_data.get("visibility") or "system",
                 # The original authoring account is meaningless on this
@@ -1592,8 +1632,9 @@ async def run_import(
                 continue
             revision_index.register(rkey)
         title = clamp_str(r_data.get("title"), il.JOURNAL_TITLE, report=report)
+        revision_id = uuid.uuid4()
         revision = ContentRevision(
-            id=uuid.uuid4(),
+            id=revision_id,
             target_type=target_type,
             target_id=target.id,
             user_id=system.user_id,
@@ -1604,9 +1645,14 @@ async def run_import(
                 )
             ],
             editor_member_names=_str_list(r_data.get("editor_member_names")),
-            title=encrypt(title) if title else None,
+            title=(
+                encrypt(title, aad=revision_title_aad(revision_id))
+                if title
+                else None
+            ),
             body=encrypt(
-                _resolve_md(r_data.get("body")) or ""
+                _resolve_md(r_data.get("body")) or "",
+                aad=revision_body_aad(revision_id),
             ),
             image_keys=_resolve_image_keys(
                 _str_list(r_data.get("image_keys"))
@@ -1659,19 +1705,21 @@ async def run_import(
                 continue
             old_author = msg_data.get("author_member_id")
             author = old_id_to_member.get(old_author) if old_author else None
+            message_id = uuid.uuid4()
             message = Message(
-                id=uuid.uuid4(),
+                id=message_id,
                 system_id=system.id,
                 board_kind=board_kind,
                 board_member_id=board_member.id if board_member else None,
                 author_member_id=author.id if author else None,
-                body=encrypt(
+                body=encrypt_body(
                     clamp_str(
                         _resolve_md(msg_data.get("body")),
                         il.MESSAGE_BODY,
                         report=report,
                     )
-                    or ""
+                    or "",
+                    message_id,
                 ),
             )
             if created:
@@ -1759,16 +1807,22 @@ async def run_import(
             description = clamp_str(
                 p_data.get("description"), il.POLL_DESCRIPTION, report=report
             )
+            poll_id = uuid.uuid4()
             poll = Poll(
-                id=uuid.uuid4(),
+                id=poll_id,
                 system_id=system.id,
-                question=encrypt(
+                question=encrypt_text(
                     clamp_str(
                         p_data.get("question"), il.POLL_QUESTION, report=report
                     )
-                    or ""
+                    or "",
+                    poll_question_aad(poll_id),
                 ),
-                description=encrypt(description) if description else None,
+                description=(
+                    encrypt_text(description, poll_description_aad(poll_id))
+                    if description
+                    else None
+                ),
                 kind=p_data.get("kind") or PollKind.SINGLE_CHOICE.value,
                 results_visibility=(
                     p_data.get("results_visibility")
@@ -1801,12 +1855,14 @@ async def run_import(
             for o_data in clamp_list(
                 p_data.get("options", []), il.POLL_OPTIONS_COUNT, report=report
             ):
+                option_id = uuid.uuid4()
                 option = PollOption(
-                    id=uuid.uuid4(),
+                    id=option_id,
                     poll_id=poll.id,
-                    text=encrypt(
+                    text=encrypt_text(
                         clamp_str(o_data.get("text"), il.POLL_OPTION, report=report)
-                        or ""
+                        or "",
+                        poll_option_text_aad(option_id),
                     ),
                     position=_coerce_int(
                         o_data.get("position"), default=0, minimum=0
@@ -2074,8 +2130,15 @@ async def run_import(
                 il.REMINDER_BODY,
                 report=report,
             )
+            reminder_id = uuid.uuid4()
+            enc_title, enc_body = encrypt_title_body(
+                clamp_str(rm_data.get("title"), il.REMINDER_TITLE, report=report)
+                or "",
+                body,
+                reminder_id,
+            )
             reminder = Reminder(
-                id=uuid.uuid4(),
+                id=reminder_id,
                 system_id=system.id,
                 channel_id=channel.id,
                 name=clamp_str(
@@ -2083,13 +2146,8 @@ async def run_import(
                     il.REMINDER_NAME,
                     report=report,
                 ),
-                title=encrypt(
-                    clamp_str(
-                        rm_data.get("title"), il.REMINDER_TITLE, report=report
-                    )
-                    or ""
-                ),
-                body=encrypt(body) if body else None,
+                title=enc_title,
+                body=enc_body,
                 enabled=bool(rm_data.get("enabled", True)),
                 trigger_type=rm_data.get("trigger_type") or "repeated",
                 trigger_member_id=trigger_member.id if trigger_member else None,

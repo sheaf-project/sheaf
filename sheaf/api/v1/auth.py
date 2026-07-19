@@ -65,6 +65,11 @@ from sheaf.auth.trusted_devices import (
 from sheaf.config import SheafMode, read_custom_support_text, settings
 from sheaf.crypto import blind_index, decrypt, encrypt, hash_mail_token
 from sheaf.database import get_db
+from sheaf.encrypted_fields import (
+    user_email_aad,
+    user_recovery_codes_aad,
+    user_totp_secret_aad,
+)
 from sheaf.image_processing import animation_allowed
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.activity_event import ActivityAction
@@ -200,7 +205,9 @@ def _hash_recovery_code(code: str) -> str:
 def _store_recovery_codes(user: User, codes: list[str]) -> None:
     """Hash and store recovery codes as encrypted JSON."""
     hashed = [_hash_recovery_code(c) for c in codes]
-    user.recovery_codes = encrypt(json.dumps(hashed))
+    user.recovery_codes = encrypt(
+        json.dumps(hashed), aad=user_recovery_codes_aad(user.id)
+    )
 
 
 async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
@@ -215,7 +222,9 @@ async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
     if not old_blob:
         return False
     try:
-        hashed_codes = json.loads(decrypt(old_blob))
+        hashed_codes = json.loads(
+            decrypt(old_blob, aad=user_recovery_codes_aad(user.id))
+        )
     except Exception:
         return False
     code_hash = _hash_recovery_code(code)
@@ -223,7 +232,7 @@ async def _check_recovery_code(db: AsyncSession, user: User, code: str) -> bool:
         return False
 
     remaining = [c for c in hashed_codes if c != code_hash]
-    new_blob = encrypt(json.dumps(remaining))
+    new_blob = encrypt(json.dumps(remaining), aad=user_recovery_codes_aad(user.id))
 
     result = await db.execute(
         update(User)
@@ -366,8 +375,10 @@ async def register(
         else UserTier.SELF_HOSTED
     )
 
+    user_id = uuid.uuid4()
     user = User(
-        email=encrypt(body.email),
+        id=user_id,
+        email=encrypt(body.email, aad=user_email_aad(user_id)),
         email_hash=email_hash,
         password_hash=await hash_password(body.password),
         account_status=account_status,
@@ -525,7 +536,7 @@ async def resend_verification(
                 detail="Please wait before requesting another verification email",
             )
 
-    email = decrypt(user.email)
+    email = decrypt(user.email, aad=user_email_aad(user.id))
     await _send_verification_email(db, user, email)
     await db.commit()
     return {"sent": True}
@@ -577,7 +588,7 @@ async def revalidate_email(
                 detail="Please wait before requesting another verification email",
             )
 
-    email = decrypt(user.email)
+    email = decrypt(user.email, aad=user_email_aad(user.id))
     await _send_verification_email(db, user, email)
     await db.commit()
     return {"sent": True}
@@ -847,7 +858,7 @@ async def change_password(
                 detail="TOTP code required",
                 headers={"X-Sheaf-2FA": "required"},
             )
-        secret = decrypt(user.totp_secret)
+        secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, secret, body.totp_code)
         if totp_result is not TotpCheck.OK and not await _check_recovery_code(
             db, user, body.totp_code
@@ -916,7 +927,7 @@ async def change_email(
     Other sessions are revoked, same as change-password.
     """
     new_email = body.new_email.strip().lower()
-    current_email = decrypt(user.email).strip().lower()
+    current_email = decrypt(user.email, aad=user_email_aad(user.id)).strip().lower()
     if new_email == current_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -941,7 +952,7 @@ async def change_email(
                 detail="TOTP code required",
                 headers={"X-Sheaf-2FA": "required"},
             )
-        secret = decrypt(user.totp_secret)
+        secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, secret, body.totp_code)
         if totp_result is not TotpCheck.OK and not await _check_recovery_code(
             db, user, body.totp_code
@@ -961,7 +972,7 @@ async def change_email(
             detail="Email already in use",
         )
 
-    user.email = encrypt(new_email)
+    user.email = encrypt(new_email, aad=user_email_aad(user.id))
     user.email_hash = new_hash
     user.email_verified = False
     user.email_verification_token = None
@@ -1127,7 +1138,7 @@ async def login(
                     detail="TOTP code required",
                     headers={"X-Sheaf-2FA": "required"},
                 )
-            secret = decrypt(user.totp_secret)
+            secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
             # check_code_once consumes the code (anti-replay): a code
             # seen by a shoulder-surfer or proxy can't be reused at any
             # TOTP gate inside its validity window, and a replayed one is
@@ -1685,7 +1696,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         )
     return UserRead(
         id=user.id,
-        email=decrypt(user.email),
+        email=decrypt(user.email, aad=user_email_aad(user.id)),
         totp_enabled=user.totp_enabled,
         is_admin=user.is_admin,
         tier=user.tier.value,
@@ -1743,7 +1754,7 @@ async def update_me(
         )
     return UserRead(
         id=user.id,
-        email=decrypt(user.email),
+        email=decrypt(user.email, aad=user_email_aad(user.id)),
         totp_enabled=user.totp_enabled,
         is_admin=user.is_admin,
         tier=user.tier.value,
@@ -1803,12 +1814,12 @@ async def totp_setup(
         )
 
     secret = generate_secret()
-    email = decrypt(user.email)
+    email = decrypt(user.email, aad=user_email_aad(user.id))
     uri = get_provisioning_uri(secret, email)
     recovery_codes = generate_recovery_codes()
 
     # Store encrypted secret and recovery codes (not yet enabled — needs verification)
-    user.totp_secret = encrypt(secret)
+    user.totp_secret = encrypt(secret, aad=user_totp_secret_aad(user.id))
     _store_recovery_codes(user, recovery_codes)
     await db.commit()
 
@@ -1835,7 +1846,7 @@ async def totp_verify(
             detail="Run /totp/setup first",
         )
 
-    secret = decrypt(user.totp_secret)
+    secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
     totp_result = await check_code_once(user.id, secret, body.code)
     if totp_result is not TotpCheck.OK:
         raise HTTPException(
@@ -1880,7 +1891,7 @@ async def totp_disable(
             detail="TOTP code required to disable 2FA",
         )
 
-    secret = decrypt(user.totp_secret)
+    secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
     totp_result = await check_code_once(user.id, secret, body.totp_code)
     if totp_result is not TotpCheck.OK and not await _check_recovery_code(
         db, user, body.totp_code
@@ -1938,7 +1949,7 @@ async def regenerate_recovery_codes(
 
     ensure_not_locked(user)
 
-    secret = decrypt(user.totp_secret)
+    secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
     totp_result = await check_code_once(user.id, secret, body.code)
     if totp_result is not TotpCheck.OK:
         await record_login_failure(db, user, reason="totp_failures")
@@ -2125,7 +2136,7 @@ async def request_account_deletion(
                 detail="TOTP code required",
                 headers={"X-Sheaf-2FA": "required"},
             )
-        totp_secret = decrypt(user.totp_secret)
+        totp_secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, totp_secret, body.totp_code)
         if totp_result is not TotpCheck.OK and not await _check_recovery_code(
             db, user, body.totp_code
@@ -2149,7 +2160,7 @@ async def request_account_deletion(
             from sheaf.services.email import send_email
             from sheaf.services.email_templates import deletion_confirmation_email
 
-            email = decrypt(user.email)
+            email = decrypt(user.email, aad=user_email_aad(user.id))
             # Render the deadline in the account's display timezone (UTC when
             # "automatic") so a user west/east of UTC sees the correct local
             # calendar date rather than the UTC one. Month is spelled out, so

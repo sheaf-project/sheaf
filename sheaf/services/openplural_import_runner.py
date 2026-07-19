@@ -86,10 +86,10 @@ def _preserve_residual(job: ImportJob, system, envelope: dict) -> None:
     residual = extract_residual(envelope)
     if not residual:
         return
-    existing = unpack_residual(system.openplural_archive)
+    existing = unpack_residual(system.openplural_archive, system_id=system.id)
     merged = merge_residual(existing, residual)
     max_bytes = settings.openplural_max_preserved_mb * 1024 * 1024
-    token, warning = pack_residual(merged, max_bytes=max_bytes)
+    token, warning = pack_residual(merged, system_id=system.id, max_bytes=max_bytes)
     if warning:
         append_event(job, level="warning", stage="preserve", message=warning)
         return

@@ -31,6 +31,18 @@ from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import (
+    front_custom_status_aad,
+    member_note_aad,
+    message_body_aad,
+    poll_description_aad,
+    poll_option_text_aad,
+    poll_question_aad,
+    reminder_body_aad,
+    reminder_title_aad,
+    system_note_aad,
+    user_totp_secret_aad,
+)
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.activity_event import ActivityAction
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
@@ -63,7 +75,7 @@ router = APIRouter(prefix="/export", tags=["export"])
 logger = logging.getLogger("sheaf.export")
 
 
-def _safe_decrypt(value: str | None) -> str | None:
+def _safe_decrypt(value: str | None, aad: bytes) -> str | None:
     """Decrypt an encrypted field for the export, tolerating a single
     unreadable value instead of sinking the whole dump.
 
@@ -74,11 +86,15 @@ def _safe_decrypt(value: str | None) -> str | None:
     Returns None for a None input, or None when decryption fails. The
     warning lets an operator see it happened without leaking the field's
     plaintext or ciphertext into the logs.
+
+    `aad` is the per-cell associated data for the field (from a helper in
+    `sheaf.encrypted_fields`); it binds a v2 ciphertext to its row and is
+    ignored for legacy v1 tokens.
     """
     if value is None:
         return None
     try:
-        return decrypt(value)
+        return decrypt(value, aad=aad)
     except Exception:
         logger.warning(
             "An encrypted field could not be decrypted during export; "
@@ -416,7 +432,9 @@ async def export_all(
                 "emoji": m.emoji,
                 "is_custom_front": m.is_custom_front,
                 "privacy": m.privacy.value,
-                "note": _safe_decrypt(m.note) if m.note else None,
+                "note": (
+                    _safe_decrypt(m.note, member_note_aad(m.id)) if m.note else None
+                ),
                 "quick_switch_pin": m.quick_switch_pin,
                 "notify_on_front_global": m.notify_on_front_global,
                 "notify_on_front_self": m.notify_on_front_self,
@@ -435,7 +453,9 @@ async def export_all(
                 "ended_at": f.ended_at.isoformat() if f.ended_at else None,
                 "member_ids": [str(m.id) for m in f.members],
                 "custom_status": (
-                    _safe_decrypt(f.custom_status) if f.custom_status else None
+                    _safe_decrypt(f.custom_status, front_custom_status_aad(f.id))
+                    if f.custom_status
+                    else None
                 ),
             }
             for f in fronts
@@ -565,7 +585,11 @@ def _system_dict(system: System) -> dict:
         "id": str(system.id),
         "name": system.name,
         "description": system.description,
-        "note": _safe_decrypt(system.note) if system.note else None,
+        "note": (
+            _safe_decrypt(system.note, system_note_aad(system.id))
+            if system.note
+            else None
+        ),
         "tag": system.tag,
         "avatar_url": system.avatar_url,
         "color": system.color,
@@ -603,7 +627,9 @@ def _system_dict(system: System) -> dict:
         # OpenPlural import residual (foreign data Sheaf cannot model),
         # decrypted to a plain dict so it rides the portability export and
         # is re-merged on a Sheaf OpenPlural export. None when empty.
-        "openplural_archive": unpack_residual(system.openplural_archive) or None,
+        "openplural_archive": (
+            unpack_residual(system.openplural_archive, system_id=system.id) or None
+        ),
     }
 
 
@@ -735,8 +761,16 @@ def _reminder_dict(reminder) -> dict:
     pending queue) is omitted and the channel_id is just the original UUID
     so a re-import on a fresh instance won't resolve unless the channels
     were imported there too."""
-    title = _safe_decrypt(reminder.title) if reminder.title else ""
-    body = _safe_decrypt(reminder.body) if reminder.body else None
+    title = (
+        _safe_decrypt(reminder.title, reminder_title_aad(reminder.id))
+        if reminder.title
+        else ""
+    )
+    body = (
+        _safe_decrypt(reminder.body, reminder_body_aad(reminder.id))
+        if reminder.body
+        else None
+    )
     return {
         "id": str(reminder.id),
         "channel_id": str(reminder.channel_id),
@@ -778,7 +812,9 @@ def _message_dict(msg) -> dict:
         "parent_message_id": (
             str(msg.parent_message_id) if msg.parent_message_id else None
         ),
-        "body": _safe_decrypt(msg.body) if msg.body else "",
+        "body": (
+            _safe_decrypt(msg.body, message_body_aad(msg.id)) if msg.body else ""
+        ),
         "created_at": msg.created_at.isoformat(),
         "updated_at": msg.updated_at.isoformat(),
     }
@@ -791,8 +827,16 @@ def _poll_dict(poll) -> dict:
     they're meaningful again."""
     return {
         "id": str(poll.id),
-        "question": _safe_decrypt(poll.question) if poll.question else "",
-        "description": _safe_decrypt(poll.description) if poll.description else None,
+        "question": (
+            _safe_decrypt(poll.question, poll_question_aad(poll.id))
+            if poll.question
+            else ""
+        ),
+        "description": (
+            _safe_decrypt(poll.description, poll_description_aad(poll.id))
+            if poll.description
+            else None
+        ),
         "kind": poll.kind,
         "results_visibility": poll.results_visibility,
         "closes_at": poll.closes_at.isoformat(),
@@ -803,7 +847,11 @@ def _poll_dict(poll) -> dict:
         "options": [
             {
                 "id": str(opt.id),
-                "text": _safe_decrypt(opt.text) if opt.text else "",
+                "text": (
+                    _safe_decrypt(opt.text, poll_option_text_aad(opt.id))
+                    if opt.text
+                    else ""
+                ),
                 "position": opt.position,
             }
             for opt in sorted(poll.options, key=lambda o: o.position)
@@ -909,7 +957,7 @@ async def create_export_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="TOTP code required",
             )
-        secret = decrypt(user.totp_secret)
+        secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, secret, body.totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")

@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
+from sheaf.encrypted_fields import user_email_aad
 from sheaf.models.admin_audit_event import (
     AdminAuditAction,
     AdminAuditEvent,
@@ -34,7 +35,7 @@ def _safe_decrypt_email(user: User) -> str | None:
     via admin_user_id + before_json attribution.
     """
     try:
-        return decrypt(user.email)
+        return decrypt(user.email, aad=user_email_aad(user.id))
     except Exception:
         return None
 

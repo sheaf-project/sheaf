@@ -19,6 +19,11 @@ from sqlalchemy.orm import selectinload
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.database import get_db
+from sheaf.encrypted_fields import (
+    poll_description_aad,
+    poll_option_text_aad,
+    poll_question_aad,
+)
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.poll import Poll, PollOption, PollVote, PollVoteEvent
 from sheaf.models.system import System
@@ -137,7 +142,7 @@ def _to_read(
     options = [
         PollOptionRead(
             id=opt.id,
-            text=decrypt_text(opt.text) or "",
+            text=decrypt_text(opt.text, poll_option_text_aad(opt.id)) or "",
             position=opt.position,
         )
         for opt in sorted(poll.options, key=lambda o: o.position)
@@ -165,8 +170,8 @@ def _to_read(
     return PollRead(
         id=poll.id,
         system_id=poll.system_id,
-        question=decrypt_text(poll.question) or "",
-        description=decrypt_text(poll.description),
+        question=decrypt_text(poll.question, poll_question_aad(poll.id)) or "",
+        description=decrypt_text(poll.description, poll_description_aad(poll.id)),
         kind=poll.kind,
         results_visibility=poll.results_visibility,
         closes_at=poll.closes_at,
@@ -294,11 +299,16 @@ async def create_poll(
                 ),
             )
 
+    poll_id = uuid.uuid4()
     poll = Poll(
-        id=uuid.uuid4(),
+        id=poll_id,
         system_id=system.id,
-        question=encrypt_text(body.question),
-        description=encrypt_text(body.description) if body.description else None,
+        question=encrypt_text(body.question, poll_question_aad(poll_id)),
+        description=(
+            encrypt_text(body.description, poll_description_aad(poll_id))
+            if body.description
+            else None
+        ),
         kind=body.kind,
         results_visibility=body.results_visibility,
         closes_at=body.closes_at,
@@ -307,10 +317,11 @@ async def create_poll(
         restrict_voting_to_fronters=body.restrict_voting_to_fronters,
     )
     for index, opt in enumerate(body.options):
+        opt_id = uuid.uuid4()
         poll.options.append(
             PollOption(
-                id=uuid.uuid4(),
-                text=encrypt_text(opt.text),
+                id=opt_id,
+                text=encrypt_text(opt.text, poll_option_text_aad(opt_id)),
                 position=index,
             )
         )
@@ -369,7 +380,10 @@ async def delete_poll(
             user=user,
             action_type=PendingActionType.POLL_DELETE,
             target_id=poll.id,
-            target_label=decrypt_text(poll.question) or "(unnamed poll)",
+            target_label=(
+                decrypt_text(poll.question, poll_question_aad(poll.id))
+                or "(unnamed poll)"
+            ),
         )
         await db.commit()
         await db.refresh(pending)

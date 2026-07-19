@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.crypto import decrypt
+from sheaf.encrypted_fields import front_custom_status_aad
 from sheaf.models.front import Front
 from sheaf.models.system import System
 from sheaf.services.members import member_plaintext
@@ -73,7 +74,11 @@ async def load_front_history(db: AsyncSession, system: System) -> list[dict[str,
                 "started_at": f.started_at,
                 "ended_at": f.ended_at,
                 "members": names,
-                "custom_status": decrypt(f.custom_status) if f.custom_status else None,
+                "custom_status": (
+                    decrypt(f.custom_status, aad=front_custom_status_aad(f.id))
+                    if f.custom_status
+                    else None
+                ),
             }
         )
     return rows

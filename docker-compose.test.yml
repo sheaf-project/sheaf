@@ -18,6 +18,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: test-jwt-secret-not-for-production
       SHEAF_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      # Exercise the AAD-bound v2 write path (the post-bridge steady state)
+      # so the encryption relocation-attack tests write real v2 ciphertext.
+      # The write gate defaults off in production for a rollback-safe
+      # rollout; the test stack runs the enabled state on purpose.
+      FIELD_ENCRYPTION_WRITE_V2: "true"
       SHEAF_BASE_URL: "http://localhost:8001"
       SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
       ADMIN_AUTH_LEVEL: "${ADMIN_AUTH_LEVEL:-none}"

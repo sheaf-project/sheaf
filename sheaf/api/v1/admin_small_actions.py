@@ -87,6 +87,7 @@ from sheaf.auth.sessions import (
 )
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
+from sheaf.encrypted_fields import user_email_aad
 from sheaf.models.admin_audit_event import (
     AdminAuditAction,
     AdminAuditEvent,
@@ -175,7 +176,7 @@ async def explain_account(
         )
 
     try:
-        email = decrypt_field(target.email, "email")
+        email = decrypt_field(target.email, "email", aad=user_email_aad(target.id))
     except Exception:
         email = "<encrypted>"
 
@@ -590,7 +591,7 @@ async def bulk_approve(
                     if target is None:
                         continue
                     try:
-                        addr = decrypt_field(target.email, "email")
+                        addr = decrypt_field(target.email, "email", aad=user_email_aad(target.id))
                         await send_email(addr, subject, html, text)
                     except Exception:
                         logger.exception(
@@ -901,7 +902,7 @@ async def export_user_dossier(
         )
 
     try:
-        email = decrypt_field(target.email, "email")
+        email = decrypt_field(target.email, "email", aad=user_email_aad(target.id))
     except Exception:
         email = "<encrypted>"
 

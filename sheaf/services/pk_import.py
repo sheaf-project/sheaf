@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import member_description_aad, member_name_aad
 from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
@@ -214,15 +215,20 @@ def build_member(
 
     pk_hid = _clean_str(pk_m.get("id"))
 
+    member_id = uuid.uuid4()
     return Member(
-        id=uuid.uuid4(),
+        id=member_id,
         system_id=system_id,
-        name=encrypt(plaintext_name),
+        name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
         name_hash=blind_index(plaintext_name),
         display_name=clamp_str(
             _clean_str(pk_m.get("display_name")), il.M_DISPLAY_NAME, report=report
         ),
-        description=encrypt(plaintext_description) if plaintext_description else None,
+        description=(
+            encrypt(plaintext_description, aad=member_description_aad(member_id))
+            if plaintext_description
+            else None
+        ),
         pronouns=clamp_str(
             _clean_str(pk_m.get("pronouns")), il.M_PRONOUNS, report=report
         ),

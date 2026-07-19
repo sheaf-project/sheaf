@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
+from sheaf.encrypted_fields import member_description_aad
 from sheaf.files import _to_internal_key
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
@@ -94,20 +95,23 @@ async def find_orphaned_files(
     for (avatar_url,) in result:
         referenced.update(_key_from_avatar(avatar_url))
 
-    # Member avatars, banners, and bios
+    # Member avatars, banners, and bios. Member.id is projected so the
+    # description ciphertext can be decrypted under its per-cell aad.
     result = await db.execute(
-        select(Member.avatar_url, Member.banner_url, Member.description)
+        select(Member.id, Member.avatar_url, Member.banner_url, Member.description)
         .join(System)
         .join(User)
         .where(User.id == user_id)
     )
-    for avatar_url, banner_url, description in result:
+    for member_id, avatar_url, banner_url, description in result:
         referenced.update(_key_from_avatar(avatar_url))
         referenced.update(_key_from_avatar(banner_url))
         # Member.description is encrypted at rest; decrypt for the markdown
         # scan. This runs in the app container which has the key.
         if description is not None:
-            description = decrypt(description)
+            description = decrypt(
+                description, aad=member_description_aad(member_id)
+            )
         referenced.update(_extract_keys_from_markdown(description))
 
     # Journal entries for this user's system. image_keys is pre-extracted
