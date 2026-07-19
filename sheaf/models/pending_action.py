@@ -49,7 +49,7 @@ class PendingAction(UUIDMixin, Base):
     # land in any DB dump taken during the grace window. Text because
     # ciphertext is longer than the 200-char plaintext bound. Written via
     # encrypt() in queue_pending_action; decrypted defensively on read.
-    target_label: Mapped[str] = mapped_column(Text, nullable=False)
+    target_label: Mapped[str] = mapped_column(Text, nullable=False, info={"encrypted": True})
 
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -73,7 +73,9 @@ class PendingAction(UUIDMixin, Base):
     # decrypted member names. Stored as encrypt(json.dumps(list_of_names))
     # in a Text column. No server_default - the app sets the value on every
     # write and the encrypting migration backfills existing rows.
-    fronting_member_names: Mapped[str] = mapped_column(Text, nullable=False)
+    fronting_member_names: Mapped[str] = mapped_column(
+        Text, nullable=False, info={"encrypted": True}
+    )
 
     status: Mapped[str] = mapped_column(
         String(16),

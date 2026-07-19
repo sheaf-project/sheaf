@@ -83,7 +83,7 @@ class Message(UUIDMixin, TimestampMixin, Base):
 
     # Body is markdown, encrypted at rest. Soft cap at 5000 plaintext
     # characters in the schema layer.
-    body: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False, info={"encrypted": True})
 
     # Soft delete: set when a message is removed. Reads filter on
     # `deleted_at IS NULL`. Hard delete happens via System Safety queue

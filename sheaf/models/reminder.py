@@ -76,8 +76,8 @@ class Reminder(UUIDMixin, TimestampMixin, Base):
     # title + body are encrypted at rest (matching the encryption discipline
     # used for member descriptions and journal entries — both are free-text
     # user content).
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, info={"encrypted": True})
+    body: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
 
     enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="true"

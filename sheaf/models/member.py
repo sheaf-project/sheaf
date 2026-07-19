@@ -79,7 +79,7 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # Encrypted at application level — store ciphertext.
     # Length is generous to accommodate the base64-encoded
     # nonce+ciphertext+tag for a 100-char plaintext.
-    name: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False, info={"encrypted": True})
     # Blind index on the *plaintext* name (keyed HMAC-SHA-256, normalised).
     # Used for exact-match lookups within a system (e.g. autocomplete dedup).
     # Not unique — duplicate names within a system are allowed.
@@ -88,7 +88,7 @@ class Member(UUIDMixin, TimestampMixin, Base):
     )
     display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # Encrypted at application level — store ciphertext.
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
     pronouns: Mapped[str | None] = mapped_column(String(100), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Wide header image for the member profile. Same storage/trust model as
@@ -124,7 +124,7 @@ class Member(UUIDMixin, TimestampMixin, Base):
     # no sub-records — overwriting clears the previous content with no
     # history. For "trigger list / fav drink / current med doses" type
     # quick reference. Soft-capped at ~5kb plaintext at the schema layer.
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
 
     # Per-member opt-in toggles for the on-front-start "new board
     # messages" prompt. Off by default — opt-in surface, not push.

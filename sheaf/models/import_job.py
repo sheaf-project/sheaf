@@ -86,7 +86,9 @@ class ImportJob(UUIDMixin, TimestampMixin, Base):
     # Source-specific config: options dict, encrypted PK API token,
     # selected member ids, etc. Cleared on terminal state for any
     # credential-bearing fields.
-    payload_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    payload_metadata: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, info={"encrypted": "json"}
+    )
 
     # Running tallies, e.g.
     # {"members_imported": N, "members_failed": M, "switches_imported": ...}.

@@ -33,8 +33,8 @@ class JournalEntry(UUIDMixin, TimestampMixin, Base):
     # Encrypted at application level — store ciphertext.
     # title and body are encrypted; image_keys stays plaintext so orphan
     # cleanup and read-time URL rewrites don't require key access.
-    title: Mapped[str | None] = mapped_column(String, nullable=True)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(String, nullable=True, info={"encrypted": True})
+    body: Mapped[str] = mapped_column(Text, nullable=False, info={"encrypted": True})
 
     # v1 only honors "system". "member_private" and "public" are reserved
     # for forward compatibility and rejected by the API schema.

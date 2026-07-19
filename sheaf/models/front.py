@@ -31,7 +31,7 @@ class Front(UUIDMixin, Base):
     # it's exactly the kind of contextual narrative that the field-level
     # encryption model is meant to protect, matching the precedent set by
     # bios and journal entries.
-    custom_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom_status: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
 
     # Row-creation timestamp, distinct from the front's real-world `started_at`.
     # This is *when the row landed in this database* (created or imported), so

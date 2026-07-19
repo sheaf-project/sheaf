@@ -52,6 +52,25 @@ class Settings(BaseSettings):
     # Encryption
     sheaf_encryption_key: str | None = None
     sheaf_data_dir: Path = Path("data")
+    # Two independent knobs stage the v1 -> v2 (AAD-bound) field-encryption
+    # rollout so it survives a rolling deployment and a rollback.
+    #
+    # WRITE side. False = keep writing legacy v1 even where a call site
+    # supplies an aad; True = write v2. It defaults False so the release that
+    # introduces v2-capable code is a pure BRIDGE: it reads both formats but
+    # still writes v1, so it is a safe rollback target for the *next* release
+    # (which flips this True and starts emitting v2 that only v2-capable code
+    # can read). Never ship the read support and the write flip in the same
+    # release for a fleet that rolls back.
+    field_encryption_write_v2: bool = False
+    # READ side. Accept legacy (v1, no-AAD) ciphertexts on read. While true, a
+    # DB-write attacker can downgrade any AAD-bound v2 cell by overwriting it
+    # with a preserved v1 ciphertext, so the context-binding integrity
+    # guarantee only fully holds once this is false. Flip to false when no
+    # legitimate v1 cells remain: immediately on a fresh install, or after the
+    # re-encrypt sweep reports zero remaining. With it false, any v1 token
+    # fails closed on read.
+    field_encryption_accept_v1: bool = True
 
     # Auth
     jwt_secret_key: str = "changeme-in-production"
@@ -920,6 +939,29 @@ def _validate_settings() -> None:
         problems.append("JWT_SECRET_KEY is set to the default value")
     if "changeme" in settings.database_url:
         problems.append("DATABASE_URL contains default password")
+
+    if not settings.field_encryption_accept_v1:
+        # Deliberate and desirable once migration is done, but loud enough
+        # that an accidental flip (which fails every unmigrated cell closed)
+        # is traceable to this setting.
+        logger.warning(
+            "FIELD_ENCRYPTION_ACCEPT_V1=false: legacy v1 field ciphertexts "
+            "are rejected on read. Any cell not yet re-encrypted to the "
+            "AAD-bound v2 format will fail closed."
+        )
+    if not settings.field_encryption_write_v2 and not settings.field_encryption_accept_v1:
+        # Contradiction: this instance would write v1 (write_v2 off) but
+        # reject v1 on read (accept_v1 off), so it could not read back its
+        # own writes. This is guaranteed data loss on the next write, not a
+        # soft "insecure default", so hard-fail in every mode rather than
+        # deferring to the SaaS-only exit below.
+        logger.critical(
+            "REFUSING TO START: FIELD_ENCRYPTION_WRITE_V2=false with "
+            "FIELD_ENCRYPTION_ACCEPT_V1=false. The instance would write v1 "
+            "ciphertext it then refuses to read. Enable "
+            "FIELD_ENCRYPTION_WRITE_V2 to stop accepting v1."
+        )
+        sys.exit(1)
 
     if (
         settings.image_serving == "unsigned"

@@ -165,7 +165,9 @@ class NotificationChannel(UUIDMixin, TimestampMixin, Base):
     email_month_anchor: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Webhook secret stored encrypted (HMAC needs cleartext at dispatch).
-    webhook_secret_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    webhook_secret_encrypted: Mapped[str | None] = mapped_column(
+        String, nullable=True, info={"encrypted": True}
+    )
 
     # Bookkeeping for debounce checks (last successful delivery).
     last_delivered_at: Mapped[datetime | None] = mapped_column(
