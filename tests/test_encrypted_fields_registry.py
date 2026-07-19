@@ -238,10 +238,42 @@ def test_registry_and_schema_sets_are_identical():
     )
 
 
+# Pinned exact expected contents of CIPHERTEXT_COPIES. Kept literal so that
+# deleting an entry (which would silently drop it from the Phase 2 sweep and
+# strand its ciphertext copies on v1) fails this test rather than passing
+# vacuously. Adding a new stored-ciphertext-copy site is a conscious edit here.
+_EXPECTED_CIPHERTEXT_COPIES = {
+    (
+        "front_audit_events",
+        "before_snapshot.custom_status_encrypted",
+        "fronts.custom_status",
+    ),
+    (
+        "front_audit_events",
+        "after_snapshot.custom_status_encrypted",
+        "fronts.custom_status",
+    ),
+}
+
+
+def test_ciphertext_copies_match_pinned_set():
+    """CIPHERTEXT_COPIES is exactly the pinned set - guards against a silent
+    deletion making the sweep-coverage test below vacuous."""
+    assert set(encrypted_fields.CIPHERTEXT_COPIES) == _EXPECTED_CIPHERTEXT_COPIES, (
+        "CIPHERTEXT_COPIES drifted from the pinned set. If you are adding or "
+        "removing a stored ciphertext copy, update _EXPECTED_CIPHERTEXT_COPIES "
+        "and the Phase 2 re-encrypt sweep together."
+    )
+
+
 def test_ciphertext_copies_reference_real_marked_cells():
     """CIPHERTEXT_COPIES (stored ciphertext copies outside their owning
     cell, e.g. front audit snapshots) must point at real storage tables and
     real marked source cells, so the Phase 2 sweep can trust the constant."""
+    assert encrypted_fields.CIPHERTEXT_COPIES, (
+        "CIPHERTEXT_COPIES is empty; the front-audit snapshot copies must be "
+        "listed or the sweep will strand them on v1"
+    )
     for storage_table, storage_path, source_cell in (
         encrypted_fields.CIPHERTEXT_COPIES
     ):

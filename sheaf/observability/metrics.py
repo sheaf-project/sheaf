@@ -475,8 +475,9 @@ field_decrypts_total = _C(
     "counter, so the migration signal is the RATE of v1 reads trending to "
     "zero, not the total. Read volume cannot prove completeness (dormant "
     "cells are never read): the re-encrypt sweep's remaining-v1 count is "
-    "the completeness signal. Once FIELD_ENCRYPTION_ACCEPT_V1 is off, any "
-    "nonzero v1 rate here means a rejected legacy read (see failures).",
+    "the completeness signal. This counts only SUCCESSFUL decrypts; once "
+    "FIELD_ENCRYPTION_ACCEPT_V1 is off, rejected v1 reads never reach here "
+    "and are counted on field_decrypt_v1_rejected_total instead.",
     ["version"],
 )
 field_decrypt_v1_rejected_total = _C(
