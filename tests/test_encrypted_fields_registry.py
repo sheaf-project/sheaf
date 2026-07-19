@@ -88,14 +88,26 @@ def _resolve(table, logical):
     """Resolve a registry (table, logical_column) to a physical column.
 
     Returns (physical_column, None) on success or (None, reason) on failure.
-    Rule: exact column match, OR the logical name starts with
-    `physical_column + "."` and that physical column is marked
-    info={"encrypted": "json"}.
+    Rule: exact column match AND the column is marked exactly
+    info={"encrypted": True} (a "json"-marked column holds ciphertext at a
+    JSON *path*, so an exact-column helper on it is a mis-binding), OR the
+    logical name starts with `physical_column + "."` and that physical
+    column is marked info={"encrypted": "json"}. Requiring the strict marker
+    on the exact-match branch keeps the check two-way: a helper pointing at
+    a real but PLAINTEXT (or merely truthy-marked) column must fail, not
+    pass.
     """
     t = Base.metadata.tables.get(table)
     if t is None:
         return None, f"table {table!r} does not exist in Base.metadata"
     if logical in t.columns:
+        if t.columns[logical].info.get("encrypted") is not True:
+            return None, (
+                f"column {table}.{logical} exists but is not marked exactly "
+                f'info={{"encrypted": True}} - either the helper binds a '
+                f"plaintext or json-marked column, or the marker is missing "
+                f"in sheaf/models/"
+            )
         return logical, None
     if "." in logical:
         physical = logical.split(".", 1)[0]
@@ -153,6 +165,99 @@ def test_no_duplicate_registry_bindings():
             f"{table}.{column}; each cell must have exactly one helper."
         )
         seen[key] = fn_name
+
+
+# The golden binding map: every AAD helper and the exact (table, logical
+# column) its body must bind. Deliberately a full literal, not derived from
+# the module under test: the set-based checks above cannot see a helper whose
+# BODY binds the wrong cell while the overall cell set stays intact (e.g.
+# member_name_aad returning the members.note AAD while member_note_aad
+# returns members.name). Changing any binding must be a conscious edit here,
+# because the (table, column) strings are baked into the AAD of stored rows.
+_GOLDEN_BINDINGS = {
+    "user_email_aad": ("users", "email"),
+    "user_totp_secret_aad": ("users", "totp_secret"),
+    "user_recovery_codes_aad": ("users", "recovery_codes"),
+    "member_name_aad": ("members", "name"),
+    "member_description_aad": ("members", "description"),
+    "member_note_aad": ("members", "note"),
+    "system_note_aad": ("systems", "note"),
+    "system_openplural_archive_aad": ("systems", "openplural_archive"),
+    "front_custom_status_aad": ("fronts", "custom_status"),
+    "journal_title_aad": ("journal_entries", "title"),
+    "journal_body_aad": ("journal_entries", "body"),
+    "revision_title_aad": ("content_revisions", "title"),
+    "revision_body_aad": ("content_revisions", "body"),
+    "reminder_title_aad": ("reminders", "title"),
+    "reminder_body_aad": ("reminders", "body"),
+    "message_body_aad": ("messages", "body"),
+    "poll_question_aad": ("polls", "question"),
+    "poll_description_aad": ("polls", "description"),
+    "poll_option_text_aad": ("poll_options", "text"),
+    "custom_field_value_aad": ("custom_field_values", "value"),
+    "webhook_secret_aad": ("notification_channels", "webhook_secret_encrypted"),
+    "import_credential_aad": (
+        "import_jobs", "payload_metadata.encrypted_credential",
+    ),
+    "pending_target_label_aad": ("pending_actions", "target_label"),
+    "pending_fronting_names_aad": ("pending_actions", "fronting_member_names"),
+}
+
+
+def test_registry_matches_golden_binding_map():
+    """Every helper binds exactly the golden (table, logical column) - both
+    directions: no helper missing from the map, no map entry without a
+    helper, and no helper whose body produces a different cell's AAD."""
+    actual = {
+        fn_name: (table, column)
+        for fn_name, table, column in _registry_bindings()
+    }
+    assert actual == _GOLDEN_BINDINGS, (
+        f"helpers not in golden map: {sorted(actual.keys() - _GOLDEN_BINDINGS.keys())}; "
+        f"golden entries without a helper: {sorted(_GOLDEN_BINDINGS.keys() - actual.keys())}; "
+        f"mis-bound: "
+        f"{ {k: (actual[k], _GOLDEN_BINDINGS[k]) for k in actual.keys() & _GOLDEN_BINDINGS.keys() if actual[k] != _GOLDEN_BINDINGS[k]} }. "
+        f"A binding change rewrites the AAD baked into stored rows - only "
+        f"edit the golden map as a conscious, reviewed decision."
+    )
+
+
+def test_registry_and_schema_sets_are_identical():
+    """The resolved registry cells and the marked schema columns are the
+    same set - a direct two-way comparison on top of the per-item checks,
+    so nothing can slip through an asymmetry between them."""
+    resolved = set()
+    for _fn_name, table, column in _registry_bindings():
+        physical, reason = _resolve(table, column)
+        assert physical is not None, reason
+        resolved.add((table, physical))
+    marked = {(table, column) for table, column, _marker in _schema_marked()}
+    assert resolved == marked, (
+        f"registry-only: {sorted(resolved - marked)}; "
+        f"schema-only: {sorted(marked - resolved)}"
+    )
+
+
+def test_ciphertext_copies_reference_real_marked_cells():
+    """CIPHERTEXT_COPIES (stored ciphertext copies outside their owning
+    cell, e.g. front audit snapshots) must point at real storage tables and
+    real marked source cells, so the Phase 2 sweep can trust the constant."""
+    for storage_table, storage_path, source_cell in (
+        encrypted_fields.CIPHERTEXT_COPIES
+    ):
+        assert storage_table in Base.metadata.tables, (
+            f"CIPHERTEXT_COPIES storage table {storage_table!r} does not exist"
+        )
+        storage_col = storage_path.split(".", 1)[0]
+        assert storage_col in Base.metadata.tables[storage_table].columns, (
+            f"CIPHERTEXT_COPIES storage column "
+            f"{storage_table}.{storage_col!r} does not exist"
+        )
+        src_table, src_column = source_cell.split(".", 1)
+        physical, reason = _resolve(src_table, src_column)
+        assert physical is not None, (
+            f"CIPHERTEXT_COPIES source cell {source_cell!r}: {reason}"
+        )
 
 
 def test_marked_tables_have_single_uuid_id_primary_key():

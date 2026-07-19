@@ -293,6 +293,7 @@ currently engaged, else 0. Use it to alert on "shield-mode active for
 |---|---|---|
 | `sheaf_decrypt_failures_total` | counter | `field` |
 | `sheaf_field_decrypts_total` | counter | `version` |
+| `sheaf_field_decrypt_v1_rejected_total` | counter | - |
 | `sheaf_users_total` | gauge | - |
 | `sheaf_users_pending_delete` | gauge | - |
 | `sheaf_tier_limit_hits_total` | counter | `limit`, `tier` |
@@ -306,18 +307,30 @@ Tracks where users bump into per-tier caps. Useful for pricing and
 limit-adjustment decisions - a sustained `members{tier="free"}` rate
 suggests the free cap needs revisiting.
 
-`field` ∈ {email, totp_secret, recovery_codes, channel_config, other}.
+`field` ∈ {email, totp_secret, recovery_codes, channel_config, other,
+unlabelled}.
 
 Should always be zero. Pre-warmed at startup so an absence-alert can
 detect non-zero from the first scrape.
 
 `sheaf_field_decrypts_total` counts successful field decrypts by ciphertext
 format `version` ∈ {v1, v2}. v1 is the legacy no-AAD SecretBox format; v2 is
-the AAD-bound XChaCha20-Poly1305 format. During the migration v2 should climb
-and v1 fall as rows are rewritten; a v1 floor that never reaches zero flags
-cells no converted write path is touching. Decrypt *failures* (including an
-AAD mismatch from a relocated v2 ciphertext, which is an indistinguishable
-nacl CryptoError) still land on `sheaf_decrypt_failures_total`.
+the AAD-bound XChaCha20-Poly1305 format. This is a cumulative counter, so
+the migration signal is the *rate* of v1 reads trending toward zero as rows
+are rewritten - the totals never fall, and read volume cannot prove
+completeness (a dormant cell that is never read never shows here). The
+authoritative completeness signal is the re-encrypt sweep's remaining-v1
+count. After `FIELD_ENCRYPTION_ACCEPT_V1` is disabled, v1 reads fail closed
+and never reach this success counter - the rejection lands on
+`sheaf_field_decrypt_v1_rejected_total`, which counts reads of legacy v1
+ciphertext rejected under the cutoff. After migration that counter should
+be zero; a nonzero rate is an attempted legacy read or a v1 downgrade
+attack.
+Decrypt *failures* (including an AAD mismatch from a relocated v2
+ciphertext, which is an indistinguishable nacl CryptoError) land on
+`sheaf_decrypt_failures_total`; failure counting lives in `decrypt()`
+itself, labelled `unlabelled` when the call site does not use
+`decrypt_field`.
 
 ### Data shape
 

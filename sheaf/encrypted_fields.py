@@ -12,6 +12,12 @@ enumerate their work from it. If you add an encrypted column, add its helper
 here and wire it into the sweep, or the column stays on the legacy format
 forever and blocks the v1 removal.
 
+The registry alone is NOT the whole sweep surface: `CIPHERTEXT_COPIES` below
+lists places that store a copy of some cell's ciphertext outside that cell
+(currently the front audit snapshots). A sweep driven only by the helpers
+would miss those copies and leave a v1 long tail that breaks when v1 reads
+are disabled.
+
 Conventions:
 
 - `pk` is the owning row's UUID. All encrypted columns live on single-UUID-PK
@@ -148,3 +154,24 @@ def pending_target_label_aad(pending_id) -> bytes:
 
 def pending_fronting_names_aad(pending_id) -> bytes:
     return field_aad("pending_actions", "fronting_member_names", pending_id)
+
+
+# Ciphertext COPIES stored outside their owning cell. Each entry is
+# (storage_table, storage_path, source_cell): the stored bytes are a copy of
+# the source cell's ciphertext and decrypt under the SOURCE cell's AAD (the
+# copy is same-cell by construction - e.g. an audit snapshot of front X's
+# custom_status decrypts under front_custom_status_aad(X), and X never
+# changes). The Phase 2 sweep must rewrite these alongside the registry
+# cells, or the Phase 3 remaining-v1 preflight must count them.
+CIPHERTEXT_COPIES = (
+    (
+        "front_audit_events",
+        "before_snapshot.custom_status_encrypted",
+        "fronts.custom_status",
+    ),
+    (
+        "front_audit_events",
+        "after_snapshot.custom_status_encrypted",
+        "fronts.custom_status",
+    ),
+)

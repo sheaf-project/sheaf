@@ -96,7 +96,8 @@ PendingActionOutcome = Literal["completed", "cancelled", "errored"]
 ShieldDirection = Literal["activated", "deactivated"]
 
 DecryptField = Literal[
-    "email", "totp_secret", "recovery_codes", "channel_config", "other"
+    "email", "totp_secret", "recovery_codes", "channel_config", "other",
+    "unlabelled",
 ]
 FieldDecryptVersion = Literal["v1", "v2"]
 
@@ -470,11 +471,20 @@ decrypt_failures_total = _C(
 )
 field_decrypts_total = _C(
     "sheaf_field_decrypts_total",
-    "Successful field decrypts by ciphertext format version. Tracks the "
-    "v1 (no-AAD) -> v2 (AAD-bound) migration: v2 should climb and v1 fall "
-    "as rows are rewritten; a v1 floor that never reaches zero flags cells "
-    "no converted write path is touching.",
+    "Successful field decrypts by ciphertext format version. A cumulative "
+    "counter, so the migration signal is the RATE of v1 reads trending to "
+    "zero, not the total. Read volume cannot prove completeness (dormant "
+    "cells are never read): the re-encrypt sweep's remaining-v1 count is "
+    "the completeness signal. Once FIELD_ENCRYPTION_ACCEPT_V1 is off, any "
+    "nonzero v1 rate here means a rejected legacy read (see failures).",
     ["version"],
+)
+field_decrypt_v1_rejected_total = _C(
+    "sheaf_field_decrypt_v1_rejected_total",
+    "Reads of legacy v1 ciphertext rejected because "
+    "FIELD_ENCRYPTION_ACCEPT_V1 is disabled. After migration this should be "
+    "zero; a nonzero rate is an attempted legacy read or a v1 downgrade "
+    "attack.",
 )
 tier_limit_hits_total = _C(
     "sheaf_tier_limit_hits_total",
@@ -831,11 +841,16 @@ def prewarm_metrics() -> None:
 
     # decrypt_failures should always be zero; pre-touch each field so
     # the absence alert can detect a non-zero rate as soon as it appears.
-    for field in ("email", "totp_secret", "recovery_codes", "channel_config", "other"):
+    for field in (
+        "email", "totp_secret", "recovery_codes", "channel_config", "other",
+        "unlabelled",
+    ):
         decrypt_failures_total.labels(field=field).inc(0)
 
     for version in ("v1", "v2"):
         field_decrypts_total.labels(version=version).inc(0)
+
+    field_decrypt_v1_rejected_total.inc(0)
 
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)

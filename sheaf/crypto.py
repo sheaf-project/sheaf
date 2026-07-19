@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import os
 
+import nacl.exceptions
 import nacl.secret
 
 from sheaf.config import settings
@@ -92,16 +93,31 @@ def field_aad(table: str, column: str, pk) -> bytes:
 def encrypt(plaintext: str, *, aad: bytes | None = None) -> str:
     """Encrypt a string. Returns a URL-safe base64 token.
 
-    With `aad=None` this is the legacy v1 path: SecretBox, unprefixed
-    base64url, byte-for-byte identical to the pre-AAD behaviour. This path
-    stays until every call site passes an aad, at which point aad should
-    become mandatory and the v1 branch can go.
+    Which format is written depends on the aad AND the deployment's write
+    gate:
 
-    With an `aad`, this is v2: the Aead box under a fresh 24-byte nonce with
-    the aad as associated data, emitted as `"v2:" + base64url(nonce||ct||tag)`.
-    Pass `field_aad(table, column, pk)` so the ciphertext is bound to its cell.
+    - v2 (AAD-bound: Aead, `"v2:" + base64url(nonce||ct||tag)`) is written
+      only when an `aad` is supplied AND `FIELD_ENCRYPTION_WRITE_V2` is on.
+      Pass `field_aad(table, column, pk)` so the ciphertext binds to its cell.
+    - otherwise the legacy v1 path (SecretBox, unprefixed base64url,
+      byte-for-byte the pre-AAD behaviour) is written. This covers both a
+      call site that passes no aad and the bridge-release state where call
+      sites pass an aad but v2 writes are not yet enabled fleet-wide.
+
+    The write gate exists so the release that can *read* v2 ships before the
+    release that *writes* it, keeping a rolling deploy / rollback safe (see
+    `field_encryption_write_v2`). The v1 write path is refused only when
+    `FIELD_ENCRYPTION_ACCEPT_V1=false`, because writing a v1 token this
+    instance then refuses to read would be self-inflicted data loss (startup
+    validation already rejects write_v2=false + accept_v1=false; this guard
+    also covers a stray no-aad call under the cutoff).
     """
-    if aad is None:
+    if aad is None or not settings.field_encryption_write_v2:
+        if not settings.field_encryption_accept_v1:
+            raise ValueError(
+                "v1 encryption disabled: FIELD_ENCRYPTION_ACCEPT_V1=false "
+                "requires FIELD_ENCRYPTION_WRITE_V2=true and an aad"
+            )
         box = _get_box()
         nonce = os.urandom(nacl.secret.SecretBox.NONCE_SIZE)
         ct = box.encrypt(plaintext.encode(), nonce)
@@ -115,7 +131,7 @@ def encrypt(plaintext: str, *, aad: bytes | None = None) -> str:
     return _V2_PREFIX + base64.urlsafe_b64encode(ct).decode()
 
 
-def decrypt(token: str, *, aad: bytes | None = None) -> str:
+def decrypt(token: str, *, aad: bytes | None = None, field: str = "unlabelled") -> str:
     """Decrypt a token back to plaintext, dispatching on the format tag.
 
     A `v2:` token is decrypted with the Aead box and requires an `aad`: a v2
@@ -123,49 +139,71 @@ def decrypt(token: str, *, aad: bytes | None = None) -> str:
     falling through to any no-AAD path. A v1 (unprefixed) token uses the
     legacy SecretBox path; any `aad` passed for it is ignored, which is what
     lets a converted call site read old v1 rows during the dual-read window.
-    """
-    if token.startswith(_V2_PREFIX):
-        if aad is None:
-            raise ValueError("v2 ciphertext requires aad")
-        box = _get_aead_box()
-        raw = base64.urlsafe_b64decode(token[len(_V2_PREFIX):])
-        plaintext = box.decrypt(raw, aad).decode()
-        version = "v2"
-    else:
-        box = _get_box()
-        raw = base64.urlsafe_b64decode(token)
-        plaintext = box.decrypt(raw).decode()
-        version = "v1"
 
-    # Import here to avoid an import cycle (crypto is imported very early in
-    # the bootstrap path, before observability is ready).
+    The dual-read window is a real weakness, not just a convenience: while
+    v1 tokens are accepted, an attacker with DB write can DOWNGRADE any v2
+    cell by overwriting it with a preserved v1 ciphertext, whose plaintext
+    they chose by placement (the aad is never consulted). Setting
+    `FIELD_ENCRYPTION_ACCEPT_V1=false` closes this: v1 tokens then fail
+    closed. Only flip it once no legitimate v1 cells remain (fresh installs:
+    immediately; migrated installs: after the re-encrypt sweep reports zero).
+
+    Every failure is counted on `decrypt_failures_total` here, labelled by
+    `field` ("unlabelled" when the caller does not say - `decrypt_field` is
+    the field-labelling wrapper). An AAD mismatch (a relocated v2
+    ciphertext) surfaces as the same nacl CryptoError as key drift, so it
+    cannot be told apart at this layer; the failure counter is the alert
+    signal for both.
+    """
+    try:
+        if token.startswith(_V2_PREFIX):
+            if aad is None:
+                raise ValueError("v2 ciphertext requires aad")
+            box = _get_aead_box()
+            raw = base64.urlsafe_b64decode(token[len(_V2_PREFIX):])
+            plaintext = box.decrypt(raw, aad).decode()
+            version = "v2"
+        else:
+            if not settings.field_encryption_accept_v1:
+                # Count the rejection on its own dedicated counter (lazy
+                # import for the same bootstrap-cycle reason as below). After
+                # migration this should be zero; a nonzero rate is an
+                # attempted legacy read or a v1 downgrade attack.
+                from sheaf.observability.metrics import (
+                    field_decrypt_v1_rejected_total,
+                )
+                field_decrypt_v1_rejected_total.inc()
+                raise nacl.exceptions.CryptoError(
+                    "legacy v1 ciphertext rejected: FIELD_ENCRYPTION_ACCEPT_V1"
+                    " is disabled"
+                )
+            box = _get_box()
+            raw = base64.urlsafe_b64decode(token)
+            plaintext = box.decrypt(raw).decode()
+            version = "v1"
+    except Exception:
+        # Import here to avoid an import cycle (crypto is imported very
+        # early in the bootstrap path, before observability is ready).
+        from sheaf.observability.metrics import decrypt_failures_total
+        decrypt_failures_total.labels(field=field).inc()
+        raise
+
+    # Same lazy-import rationale as above.
     from sheaf.observability.metrics import field_decrypts_total
     field_decrypts_total.labels(version=version).inc()
     return plaintext
 
 
 def decrypt_field(token: str, field: str, *, aad: bytes | None = None) -> str:
-    """`decrypt()` wrapper that bumps the decrypt-failure metric on error.
+    """`decrypt()` with the failure metric labelled by `field`.
 
     `field` labels the failure so dashboards can answer "which field is
     drifting?" - should always be zero; non-zero indicates encryption-key
-    drift or storage corruption. `aad` is passed straight through to
-    `decrypt`. Re-raises the original exception so callers behave identically
-    to plain `decrypt()`.
-
-    An AAD mismatch (a relocated v2 ciphertext) surfaces as the same nacl
-    CryptoError as key drift, so it cannot be told apart at this layer and
-    gets no distinct label; this per-field failure counter stays the alert
-    signal for both.
+    drift, storage corruption, or a relocated ciphertext. Failure counting
+    itself lives in `decrypt()` (so unlabelled callers are counted too);
+    this wrapper only supplies the label.
     """
-    try:
-        return decrypt(token, aad=aad)
-    except Exception:
-        # Import here to avoid an import cycle (crypto is imported very
-        # early in the bootstrap path before observability is ready).
-        from sheaf.observability.metrics import decrypt_failures_total
-        decrypt_failures_total.labels(field=field).inc()
-        raise
+    return decrypt(token, aad=aad, field=field)
 
 
 _blind_index_key_cache: bytes | None = None
