@@ -90,8 +90,9 @@ Set in `.env`:
 JWT_SECRET_KEY=<generated>
 SHEAF_ENCRYPTION_KEY=<generated>
 POSTGRES_PASSWORD=<generated>
-DATABASE_URL=postgresql+asyncpg://sheaf:${POSTGRES_PASSWORD}@db:5432/sheaf
 ```
+
+`DATABASE_URL` is optional - the app builds it from `POSTGRES_PASSWORD` (plus the `POSTGRES_USER`/`POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB` defaults, which match the bundled db container), so the password only lives in one place and can't drift from what the database was created with. Set `DATABASE_URL` explicitly only to point at an external database or use custom driver options.
 
 ### What each key does — and what happens if you lose or change it
 
@@ -106,6 +107,12 @@ Sheaf refuses to start in `saas` mode if this is left at the default, and logs a
 - **Rotating it** requires re-encrypting the email ciphertext AND re-computing every `email_hash` row (see `alembic/versions/k1l2m3n4o5p6_rehash_email_blind_index.py` for the pattern). Don't rotate this casually.
 
 **If not set**, a key is auto-generated on first startup and saved to `data/encryption.key` inside the Docker volume. **Back this file up.** Prefer setting `SHEAF_ENCRYPTION_KEY` explicitly so the key isn't tied to a single volume.
+
+### Compose managers that don't use a `.env` file
+
+Some stack managers keep the environment in a differently-named file: OpenMediaVault's compose plugin writes `sheaf.env`, Portainer keeps stack env in its own database, and so on. Sheaf's `docker-compose.yml` loads the app's config from a file literally named `.env`, so if your manager uses another name the app receives none of its env-file settings and falls back to defaults. The classic symptom on a brand-new stack is `password authentication failed for user "sheaf"`: Postgres was created with your `POSTGRES_PASSWORD`, but the app never saw it.
+
+The database password itself now reaches the app either way - it's also passed through compose interpolation, so `POSTGRES_PASSWORD` from your manager's env file lands in the container and `DATABASE_URL` is derived from it. But the rest of the file (admin emails, registration mode, email backend, your own `JWT_SECRET_KEY` / `SHEAF_ENCRYPTION_KEY`) still needs loading. Make that file available as `.env`: create a `.env` next to the compose file that is a copy or symlink of your manager's env file (`ln -s sheaf.env .env`), or point the app service's `env_file:` at it.
 
 ---
 
