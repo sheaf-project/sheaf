@@ -4,7 +4,7 @@ from enum import StrEnum
 from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("sheaf")
@@ -16,8 +16,34 @@ class SheafMode(StrEnum):
 
 
 class Settings(BaseSettings):
-    # Database
-    database_url: str = "postgresql+asyncpg://sheaf:changeme@db:5432/sheaf"
+    # Database. DATABASE_URL is optional: leave it unset and it is assembled
+    # from the POSTGRES_* parts below - the same env vars the db container
+    # reads - so the Postgres password only has to be set in ONE place and
+    # can't drift between the app and the database. Set DATABASE_URL
+    # explicitly to point at an external database or use a custom
+    # driver/options. The compose default password ("changeme-in-production")
+    # matches the db service so a bare deploy connects (and trips the
+    # insecure-default guard) instead of failing on a password mismatch.
+    database_url: str = ""
+    postgres_user: str = "sheaf"
+    postgres_password: str = "changeme-in-production"
+    postgres_host: str = "db"
+    postgres_port: int = 5432
+    postgres_db: str = "sheaf"
+
+    @model_validator(mode="after")
+    def _assemble_database_url(self):
+        """Derive DATABASE_URL from the POSTGRES_* parts when it wasn't set,
+        URL-encoding the password so special characters can't break the URL."""
+        if not self.database_url:
+            from urllib.parse import quote
+
+            pw = quote(self.postgres_password, safe="")
+            self.database_url = (
+                f"postgresql+asyncpg://{self.postgres_user}:{pw}"
+                f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            )
+        return self
 
     # Connection pool. Single-process asyncio app: one pool is shared by the
     # request path and every background loop (job runner, dispatcher, import

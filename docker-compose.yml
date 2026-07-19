@@ -37,6 +37,12 @@ services:
         required: false
     environment:
       SHEAF_PORT: "${SHEAF_PORT:-8000}"
+      # The app builds DATABASE_URL from POSTGRES_PASSWORD when DATABASE_URL is
+      # unset (see sheaf/config.py). Pass it here via interpolation - not only
+      # env_file - so the db credential reaches the app container even under
+      # compose managers that don't load a .env into it (OMV names its env file
+      # sheaf.env, Portainer stack env, etc.). Same value the db service reads.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme-in-production}"
     volumes:
       - appdata:/app/data
     depends_on:
