@@ -6,10 +6,17 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-19
+
+### Security
+
+- **Field-level encryption is being upgraded to bind each encrypted value to its location.** Encrypted fields (member names and bios, journal entries, board messages, and other stored personal content, along with secrets such as TOTP keys) are moving to a format that cryptographically ties each stored value to the exact record and column it belongs to. The effect is that someone with direct write access to the database can no longer silently move an encrypted value from one record into another: a relocated value now fails to decrypt instead of being accepted as if it belonged there. This release ships the capability switched off: the server reads both the old and new formats but still writes the old one by default, so existing deployments are unaffected and no data migration runs. Enabling the new write format, migrating existing rows, and retiring the old format are separate opt-in steps controlled by the `FIELD_ENCRYPTION_WRITE_V2` and `FIELD_ENCRYPTION_ACCEPT_V1` settings; operator guidance will accompany the release that turns them on.
+
 ### Fixed
 
 - **Async data exports on filesystem storage no longer fail when the build directory and the exports directory are on different filesystems.** The export worker builds the zip in a temp directory (`/tmp` by default, which is frequently a separate tmpfs) and then moved it into `data/exports/` with a rename - which fails with "Invalid cross-device link" (EXDEV) when the two are on different filesystems, a common layout. The move now falls back to a copy when a rename can't cross the boundary (and is still a fast atomic rename when they share a filesystem).
 - **OpenPlural import now restores avatars carried inline.** An OpenPlural JSON export whose images ride inline on the asset records (the spec's `data_uri` / `data_base64` fields, or a `data:` URI a producer placed in the `uri` field) now has those avatars decoded and stored through the normal image pipeline, the same as an `.openplural.zip` bundle. Previously only bundled or genuinely external avatar URLs came through, so a bare JSON with inline images imported its members without their avatars.
+
 ### Added
 
 - **All-in-one Docker image for small self-hosts.** A new `sheaf-aio` image bundles the backend, the web UI, and a Caddy reverse proxy (with automatic Let's Encrypt HTTPS) in one container, alongside Postgres. It generates its own secrets on first start, so a public HTTPS deploy is close to a one-liner: set your domain and `docker compose -f docker-compose.aio.yml up -d`. It can also run from home with no public IP or port-forwarding via a Cloudflare Tunnel (set `CF_TUNNEL_TOKEN`). A small redis is bundled (override with `REDIS_URL`); Postgres stays a separate container; storage defaults to the filesystem. Intended for small single-instance deployments - outgrow it and you move to the split `sheaf` + `sheaf-web` images. See docs/SELFHOSTING.md.
