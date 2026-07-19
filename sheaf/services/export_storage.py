@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import uuid
 from functools import partial
 from pathlib import Path
@@ -142,10 +143,14 @@ async def put_path(
     """Persist a built export from a filesystem path.
 
     Avoids the bytes-in-RAM hop for big exports. On S3 we call
-    `upload_file` which transparently switches to multipart upload
-    once the file crosses ~8MB; on filesystem we rename the temp file
-    into place (same partition assumption — `tempfile` honours
-    `tmpdir` for cross-device safety).
+    `upload_file` which transparently switches to multipart upload once
+    the file crosses ~8MB. On filesystem we `shutil.move` the temp file
+    into place: an atomic rename when the build tmpdir and the exports
+    dir share a filesystem, falling back to copy-then-delete when they do
+    not. A plain rename raises EXDEV across devices - which is exactly the
+    default layout (build tmpdir on `/tmp`/tmpfs, exports on a data
+    volume). Point `export_build_tmp_dir` at the exports device to keep it
+    a fast rename for large exports.
     """
     if _is_s3():
         key = _key(user_id, job_id)
@@ -163,7 +168,7 @@ async def put_path(
         return key
     dest = _filesystem_path(user_id, job_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    await _run(os.replace, source_path, str(dest))
+    await _run(shutil.move, source_path, str(dest))
     return str(dest)
 
 

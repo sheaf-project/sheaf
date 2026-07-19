@@ -8,6 +8,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Fixed
 
+- **Async data exports on filesystem storage no longer fail when the build directory and the exports directory are on different filesystems.** The export worker builds the zip in a temp directory (`/tmp` by default, which is frequently a separate tmpfs) and then moved it into `data/exports/` with a rename - which fails with "Invalid cross-device link" (EXDEV) when the two are on different filesystems, a common layout. The move now falls back to a copy when a rename can't cross the boundary (and is still a fast atomic rename when they share a filesystem).
 - **OpenPlural import now restores avatars carried inline.** An OpenPlural JSON export whose images ride inline on the asset records (the spec's `data_uri` / `data_base64` fields, or a `data:` URI a producer placed in the `uri` field) now has those avatars decoded and stored through the normal image pipeline, the same as an `.openplural.zip` bundle. Previously only bundled or genuinely external avatar URLs came through, so a bare JSON with inline images imported its members without their avatars.
 ### Added
 
