@@ -23,6 +23,12 @@ from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import (
+    member_name_aad,
+    pending_fronting_names_aad,
+    pending_target_label_aad,
+    user_totp_secret_aad,
+)
 from sheaf.models.content_revision import ContentRevision
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.front import Front
@@ -187,7 +193,7 @@ async def verify_destructive_auth(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="TOTP code required",
             )
-        secret = decrypt(user.totp_secret)
+        secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, secret, totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
@@ -310,7 +316,10 @@ async def snapshot_current_fronts(
 
     return (
         [str(m.id) for m in members],
-        [m.display_name or decrypt(m.name) for m in members],
+        [
+            m.display_name or decrypt(m.name, aad=member_name_aad(m.id))
+            for m in members
+        ],
     )
 
 
@@ -344,16 +353,23 @@ async def queue_pending_action(
     # target_label and fronting_member_names hold decrypted user content, so
     # they are encrypted at rest here (the row is transient but lands in any
     # DB dump taken during the grace window). Read sites decrypt defensively.
+    # Pre-allocate the id (UUIDMixin's default only fires at flush) so the
+    # ciphertexts bind to the row before insert.
+    pending_id = uuid.uuid4()
     pending = PendingAction(
+        id=pending_id,
         system_id=system.id,
         action_type=action_type,
         target_id=target_id,
-        target_label=encrypt(target_label),
+        target_label=encrypt(target_label, aad=pending_target_label_aad(pending_id)),
         requested_at=now,
         requested_by_user_id=user.id,
         finalize_after=now + timedelta(days=system.safety_grace_period_days),
         fronting_member_ids=fronting_ids,
-        fronting_member_names=encrypt(json.dumps(fronting_names)),
+        fronting_member_names=encrypt(
+            json.dumps(fronting_names),
+            aad=pending_fronting_names_aad(pending_id),
+        ),
         status=PendingActionStatus.PENDING,
     )
     db.add(pending)

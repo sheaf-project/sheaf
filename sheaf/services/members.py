@@ -15,34 +15,47 @@ from __future__ import annotations
 from datetime import datetime
 
 from sheaf.crypto import blind_index, decrypt, encrypt
+from sheaf.encrypted_fields import (
+    member_description_aad,
+    member_name_aad,
+    member_note_aad,
+)
 from sheaf.models.member import Member
 from sheaf.schemas.member import MemberRead
 
 
 def member_name_plaintext(member: Member) -> str:
-    return decrypt(member.name)
+    return decrypt(member.name, aad=member_name_aad(member.id))
 
 
 def member_description_plaintext(member: Member) -> str | None:
     if member.description is None:
         return None
-    return decrypt(member.description)
+    return decrypt(member.description, aad=member_description_aad(member.id))
 
 
 def member_note_plaintext(member: Member) -> str | None:
     if member.note is None:
         return None
-    return decrypt(member.note)
+    return decrypt(member.note, aad=member_note_aad(member.id))
 
 
 def set_member_name(member: Member, plaintext: str) -> None:
-    """Encrypt + hash a new plaintext name onto a Member instance."""
-    member.name = encrypt(plaintext)
+    """Encrypt + hash a new plaintext name onto a Member instance.
+
+    The member must already carry its id (pre-allocated by the caller on an
+    insert path) so the ciphertext binds to the right cell.
+    """
+    member.name = encrypt(plaintext, aad=member_name_aad(member.id))
     member.name_hash = blind_index(plaintext)
 
 
 def set_member_description(member: Member, plaintext: str | None) -> None:
-    member.description = encrypt(plaintext) if plaintext is not None else None
+    member.description = (
+        encrypt(plaintext, aad=member_description_aad(member.id))
+        if plaintext is not None
+        else None
+    )
 
 
 def set_member_note(member: Member, plaintext: str | None) -> None:
@@ -52,7 +65,7 @@ def set_member_note(member: Member, plaintext: str | None) -> None:
     if plaintext is None or plaintext == "":
         member.note = None
     else:
-        member.note = encrypt(plaintext)
+        member.note = encrypt(plaintext, aad=member_note_aad(member.id))
 
 
 def decrypt_member_for_read(

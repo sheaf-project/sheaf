@@ -18,8 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.api.v1.members import _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import (
+    pending_fronting_names_aad,
+    pending_target_label_aad,
+)
 from sheaf.models.pending_action import PendingAction, PendingActionStatus
 from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
@@ -97,20 +102,38 @@ def _pending_action_to_read(a: PendingAction) -> PendingActionRead:
     write path both landed) is still plaintext, so fall back to treating the
     stored value as plaintext rather than 500ing. Mirrors the tolerant
     pattern of `decrypt_text` in sheaf/services/polls.py.
+
+    The plaintext fallback exists only for those pre-encryption rows, so it
+    is deliberately closed once the operator sets
+    FIELD_ENCRYPTION_ACCEPT_V1=false (which declares no legacy rows remain):
+    returning the raw stored value would then be an unauthenticated injection
+    channel, so a placeholder is substituted instead.
     """
     try:
-        target_label = decrypt(a.target_label)
+        target_label = decrypt(a.target_label, aad=pending_target_label_aad(a.id))
     except Exception:
-        target_label = a.target_label
+        # "[unreadable]" is the same stand-in string the data export uses
+        # for an unreadable required text field (sheaf/api/v1/export.py).
+        target_label = (
+            a.target_label
+            if settings.field_encryption_accept_v1
+            else "[unreadable]"
+        )
 
     try:
-        fronting_member_names = json.loads(decrypt(a.fronting_member_names))
+        fronting_member_names = json.loads(
+            decrypt(a.fronting_member_names, aad=pending_fronting_names_aad(a.id))
+        )
     except Exception:
-        # Legacy plaintext row: the pre-migration JSONB list, now stored as a
-        # JSON-array string in the Text column. Parse it if we can, else [].
-        try:
-            fronting_member_names = json.loads(a.fronting_member_names)
-        except Exception:
+        if settings.field_encryption_accept_v1:
+            # Legacy plaintext row: the pre-migration JSONB list, now stored
+            # as a JSON-array string in the Text column. Parse it if we can,
+            # else [].
+            try:
+                fronting_member_names = json.loads(a.fronting_member_names)
+            except Exception:
+                fronting_member_names = []
+        else:
             fronting_member_names = []
 
     return PendingActionRead(

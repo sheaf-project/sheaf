@@ -43,6 +43,12 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import (
+    member_description_aad,
+    member_name_aad,
+    member_note_aad,
+)
 from sheaf.models.member import Member
 
 
@@ -52,20 +58,21 @@ class ImportConflictStrategy(enum.StrEnum):
     UPDATE = "update"
 
 
-# Fields every importer always sets on a new Member, so UPDATE always
-# overwrites them. is_custom_front is deliberately NOT here: matching is
-# already scoped by it (a member only matches a member, a custom front
+# Plaintext fields every importer always sets on a new Member, so UPDATE
+# always overwrites them. is_custom_front is deliberately NOT here: matching
+# is already scoped by it (a member only matches a member, a custom front
 # only a custom front), so a match always agrees, and some importers
 # leave it None on the candidate (relying on the column server-default),
-# which would null out the existing row's NOT NULL column.
-_ALWAYS_OVERWRITE = ("name", "name_hash", "privacy")
-# Optional fields: UPDATE overwrites only when the candidate carries a
-# value, so a re-import never nulls a field the source format doesn't
-# model (e.g. PluralKit has no emoji, so a PK update must not wipe an
-# emoji the user set after the first import).
+# which would null out the existing row's NOT NULL column. The encrypted
+# `name` is handled separately (see `_ENCRYPTED_ALWAYS`); `name_hash` is a
+# blind index (not encrypted) and is copied verbatim.
+_ALWAYS_OVERWRITE = ("name_hash", "privacy")
+# Optional plaintext fields: UPDATE overwrites only when the candidate
+# carries a value, so a re-import never nulls a field the source format
+# doesn't model (e.g. PluralKit has no emoji, so a PK update must not wipe
+# an emoji the user set after the first import).
 _OVERWRITE_IF_SET = (
     "display_name",
-    "description",
     "pronouns",
     "avatar_url",
     "banner_url",
@@ -73,8 +80,19 @@ _OVERWRITE_IF_SET = (
     "birthday",
     "pluralkit_id",
     "emoji",
-    "note",
 )
+# Encrypted fields: their ciphertext is AAD-bound to the owning row's id, so
+# an UPDATE cannot copy the candidate's ciphertext onto the existing row -
+# it would stay bound to the candidate's id and become undecryptable on the
+# existing row. Each is decrypted under the candidate's AAD and re-encrypted
+# under the existing row's AAD instead (a legitimate cross-row move). `name`
+# is always re-bound; `description`/`note` only when the candidate carries a
+# value, mirroring the plaintext always/if-set split.
+_ENCRYPTED_ALWAYS = {"name": member_name_aad}
+_ENCRYPTED_IF_SET = {
+    "description": member_description_aad,
+    "note": member_note_aad,
+}
 
 
 @dataclass
@@ -130,6 +148,14 @@ class Resolution:
     disposition: str  # "created" | "skipped" | "updated"
 
 
+def _rebind(ciphertext: str, src_aad: bytes, dst_aad: bytes) -> str:
+    """Move an encrypted value between rows: decrypt under the source row's
+    AAD, re-encrypt under the destination's. A v1 candidate ciphertext still
+    decrypts (its AAD is ignored), so old rows re-bind cleanly and land on v2.
+    """
+    return encrypt(decrypt(ciphertext, aad=src_aad), aad=dst_aad)
+
+
 def _apply_update(existing: Member, candidate: Member) -> None:
     for fld in _ALWAYS_OVERWRITE:
         setattr(existing, fld, getattr(candidate, fld))
@@ -137,6 +163,26 @@ def _apply_update(existing: Member, candidate: Member) -> None:
         val = getattr(candidate, fld, None)
         if val is not None:
             setattr(existing, fld, val)
+    # Encrypted fields: re-bind the ciphertext from the candidate's AAD to the
+    # existing row's AAD rather than copying it (see the field-list comments).
+    for fld, aad_for in _ENCRYPTED_ALWAYS.items():
+        setattr(
+            existing,
+            fld,
+            _rebind(
+                getattr(candidate, fld),
+                aad_for(candidate.id),
+                aad_for(existing.id),
+            ),
+        )
+    for fld, aad_for in _ENCRYPTED_IF_SET.items():
+        val = getattr(candidate, fld, None)
+        if val is not None:
+            setattr(
+                existing,
+                fld,
+                _rebind(val, aad_for(candidate.id), aad_for(existing.id)),
+            )
 
 
 def resolve_member(

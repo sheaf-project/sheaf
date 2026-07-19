@@ -66,6 +66,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import (
+    front_custom_status_aad,
+    journal_body_aad,
+    journal_title_aad,
+    member_description_aad,
+    member_name_aad,
+    message_body_aad,
+    poll_description_aad,
+    poll_option_text_aad,
+    poll_question_aad,
+)
 from sheaf.models.custom_field import (
     CustomFieldDefinition,
     CustomFieldValue,
@@ -528,10 +539,11 @@ async def run_import(
         # uncapped, matching the create API; only `note` carries M_NOTE and
         # PluralSpace exports have no note-equivalent field to map.
         plaintext_description = _clean_str(m_data.get("description"))
+        member_id = uuid.uuid4()
         member = Member(
-            id=uuid.uuid4(),
+            id=member_id,
             system_id=system.id,
-            name=encrypt(plaintext_name),
+            name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
             name_hash=blind_index(plaintext_name),
             display_name=clamp_str(
                 _clean_str(m_data.get("display_name")),
@@ -539,7 +551,9 @@ async def run_import(
                 report=report,
             ),
             description=(
-                encrypt(plaintext_description) if plaintext_description else None
+                encrypt(plaintext_description, aad=member_description_aad(member_id))
+                if plaintext_description
+                else None
             ),
             pronouns=clamp_str(
                 _clean_str(m_data.get("pronouns")), il.M_PRONOUNS, report=report
@@ -1069,11 +1083,12 @@ async def _import_custom_fields(
         if not value_guard.add((field_id, member_id)):
             continue
         joined = "\n".join(values)
+        cfv_id = uuid.uuid4()
         cfv = CustomFieldValue(
-            id=uuid.uuid4(),
+            id=cfv_id,
             field_id=field_id,
             member_id=member_id,
-            value=encrypt_field_value(joined),
+            value=encrypt_field_value(joined, cfv_id),
         )
         db.add(cfv)
 
@@ -1141,12 +1156,17 @@ async def _import_fronts(
         if ftype and ftype != "front":
             unknown_types.add(ftype)
         comment = _clean_str(f_data.get("comment"))
+        front_id = uuid.uuid4()
         front = Front(
-            id=uuid.uuid4(),
+            id=front_id,
             system_id=system_id,
             started_at=started_at,
             ended_at=ended_at,
-            custom_status=encrypt(comment) if comment else None,
+            custom_status=(
+                encrypt(comment, aad=front_custom_status_aad(front_id))
+                if comment
+                else None
+            ),
         )
         db.add(front)
         await db.flush()
@@ -1238,12 +1258,13 @@ async def _import_journals(
                 continue
             journal_index.register(jkey)
 
+        entry_id = uuid.uuid4()
         entry = JournalEntry(
-            id=uuid.uuid4(),
+            id=entry_id,
             system_id=system.id,
             member_id=per_member_id,
-            title=encrypt(title) if title else None,
-            body=encrypt(body),
+            title=encrypt(title, aad=journal_title_aad(entry_id)) if title else None,
+            body=encrypt(body, aad=journal_body_aad(entry_id)),
             visibility="system",
             author_user_id=system.user_id,
             author_member_ids=author_ids,
@@ -1324,13 +1345,14 @@ async def _import_chat(
             author = member_name_to_member.get(author_name) if author_name else None
             if author_name and author is None:
                 missing_authors += 1
+            message_id = uuid.uuid4()
             message = Message(
-                id=uuid.uuid4(),
+                id=message_id,
                 system_id=system_id,
                 board_kind=BoardKind.SYSTEM.value,
                 board_member_id=None,
                 author_member_id=author.id if author else None,
-                body=encrypt(body),
+                body=encrypt(body, aad=message_body_aad(message_id)),
             )
             if created:
                 message.created_at = created
@@ -1415,11 +1437,16 @@ async def _import_polls(
             closes_at = base + timedelta(days=365)
             open_ended_count += 1
 
+        poll_row_id = uuid.uuid4()
         poll = Poll(
-            id=uuid.uuid4(),
+            id=poll_row_id,
             system_id=system_id,
-            question=encrypt(question),
-            description=encrypt(description) if description else None,
+            question=encrypt(question, aad=poll_question_aad(poll_row_id)),
+            description=(
+                encrypt(description, aad=poll_description_aad(poll_row_id))
+                if description
+                else None
+            ),
             kind=(
                 PollKind.MULTI_CHOICE.value
                 if allow_multi
@@ -1444,15 +1471,17 @@ async def _import_polls(
         for position, o_data in enumerate(options_in):
             if not isinstance(o_data, dict):
                 continue
+            option_row_id = uuid.uuid4()
             option = PollOption(
-                id=uuid.uuid4(),
+                id=option_row_id,
                 poll_id=poll.id,
                 text=encrypt(
                     clamp_str(
                         _clean_str(o_data.get("text")) or "",
                         il.POLL_OPTION,
                         report=report,
-                    )
+                    ),
+                    aad=poll_option_text_aad(option_row_id),
                 ),
                 position=position,
             )

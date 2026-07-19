@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.config import settings
 from sheaf.crypto import decrypt
 from sheaf.database import async_session_factory
+from sheaf.encrypted_fields import user_email_aad
 from sheaf.models.activity_event import ActivityAction, ActivityActorType
 from sheaf.models.export_job import ExportJob, ExportJobStatus
 from sheaf.models.uploaded_file import UploadedFile
@@ -202,7 +203,10 @@ async def _build(job_id: uuid.UUID) -> None:
 
     # Email notification — best-effort, don't fail the job on send error.
     try:
-        await _send_completion_email(user_email=decrypt(user.email), job_id=job.id)
+        await _send_completion_email(
+            user_email=decrypt(user.email, aad=user_email_aad(user.id)),
+            job_id=job.id,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("Export completion email failed for job %s", job_id)
 

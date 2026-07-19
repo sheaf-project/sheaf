@@ -5,6 +5,8 @@ size cap, merge, per-record detection, and re-merge on export.
 
 from __future__ import annotations
 
+import uuid
+
 from sheaf.services.openplural_archive import (
     extract_residual,
     has_per_record_foreign_extensions,
@@ -68,23 +70,26 @@ def test_extract_residual_empty_for_native_file():
 
 def test_pack_unpack_round_trip():
     res = extract_residual(_foreign_envelope())
-    token, warning = pack_residual(res, max_bytes=8 * 1024 * 1024)
+    system_id = uuid.uuid4()
+    token, warning = pack_residual(res, max_bytes=8 * 1024 * 1024, system_id=system_id)
     assert warning is None
     assert isinstance(token, str) and token
-    assert unpack_residual(token) == res
+    assert unpack_residual(token, system_id=system_id) == res
 
 
 def test_pack_respects_size_cap():
     big = {"extensions": {"prism": {"blob": "x" * 5000}}}
-    token, warning = pack_residual(big, max_bytes=1024)
+    token, warning = pack_residual(big, max_bytes=1024, system_id=uuid.uuid4())
     assert token is None
     assert warning is not None and "exceeds" in warning
 
 
 def test_pack_empty_is_noop():
-    assert pack_residual({}, max_bytes=1024) == (None, None)
-    assert unpack_residual(None) == {}
-    assert unpack_residual("not-a-real-token") == {}  # corrupt -> empty, no raise
+    system_id = uuid.uuid4()
+    assert pack_residual({}, max_bytes=1024, system_id=system_id) == (None, None)
+    assert unpack_residual(None, system_id=system_id) == {}
+    # corrupt -> empty, no raise
+    assert unpack_residual("not-a-real-token", system_id=system_id) == {}
 
 
 def test_merge_residual_unions_namespaces():

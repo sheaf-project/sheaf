@@ -15,6 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
 from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import (
+    journal_body_aad,
+    journal_title_aad,
+    member_description_aad,
+    member_name_aad,
+    revision_body_aad,
+    revision_title_aad,
+)
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.journal_entry import JournalEntry
 from sheaf.models.member import Member
@@ -194,8 +202,6 @@ async def capture_revision(
         effective_revision_caps(user, system)[0] if system is not None else 0
     )
 
-    enc_title = encrypt(title) if title is not None else None
-    enc_body = encrypt(body)
     image_keys = extract_image_keys(body)
 
     debounce_minutes = settings.revision_debounce_minutes
@@ -206,12 +212,17 @@ async def capture_revision(
             and latest.pinned_at is None
             and _within_debounce_window(latest.inserted_at, debounce_minutes)
         ):
-            # Replace the newest checkpoint in place. Reuse the same encrypt()
-            # calls as the append path so nothing plaintext is ever stored;
-            # image_keys stays the plaintext-extracted list, as today. Leave
-            # inserted_at untouched on purpose (see docstring).
-            latest.title = enc_title
-            latest.body = enc_body
+            # Replace the newest checkpoint in place. Encrypt bound to the
+            # existing revision row's own id (the cell being overwritten) so
+            # nothing plaintext is ever stored; image_keys stays the
+            # plaintext-extracted list, as today. Leave inserted_at untouched
+            # on purpose (see docstring).
+            latest.title = (
+                encrypt(title, aad=revision_title_aad(latest.id))
+                if title is not None
+                else None
+            )
+            latest.body = encrypt(body, aad=revision_body_aad(latest.id))
             latest.image_keys = image_keys
             latest.editor_member_ids = editor_ids
             latest.editor_member_names = editor_names
@@ -230,14 +241,23 @@ async def capture_revision(
     if existing_count == 0 and system is not None and system.auto_pin_first_revision:
         pinned_at = datetime.now(UTC)
 
+    # Append a new revision. Pre-allocate its id (UUIDMixin's default only
+    # fires at flush) so the ciphertext binds to this revision row, not the
+    # revised target.
+    rev_id = uuid.uuid4()
     revision = ContentRevision(
+        id=rev_id,
         target_type=target_type_str,
         target_id=target_id,
         user_id=user.id,
         editor_member_ids=editor_ids,
         editor_member_names=editor_names,
-        title=enc_title,
-        body=enc_body,
+        title=(
+            encrypt(title, aad=revision_title_aad(rev_id))
+            if title is not None
+            else None
+        ),
+        body=encrypt(body, aad=revision_body_aad(rev_id)),
         image_keys=image_keys,
         pinned_at=pinned_at,
     )
@@ -344,8 +364,16 @@ def unpin_revision_immediate(revision: ContentRevision) -> ContentRevision:
 
 def revision_plaintext(revision: ContentRevision) -> tuple[str | None, str]:
     """Decrypt a revision's title/body to plaintext."""
-    title = decrypt(revision.title) if revision.title is not None else None
-    body = decrypt(revision.body) if revision.body else ""
+    title = (
+        decrypt(revision.title, aad=revision_title_aad(revision.id))
+        if revision.title is not None
+        else None
+    )
+    body = (
+        decrypt(revision.body, aad=revision_body_aad(revision.id))
+        if revision.body
+        else ""
+    )
     return title, body
 
 
@@ -369,8 +397,14 @@ def decrypt_revision_for_read(revision: ContentRevision) -> dict:
 
 def entry_plaintext(entry: JournalEntry) -> tuple[str | None, str]:
     """Decrypt a journal entry's title/body to plaintext."""
-    title = decrypt(entry.title) if entry.title is not None else None
-    body = decrypt(entry.body) if entry.body else ""
+    title = (
+        decrypt(entry.title, aad=journal_title_aad(entry.id))
+        if entry.title is not None
+        else None
+    )
+    body = (
+        decrypt(entry.body, aad=journal_body_aad(entry.id)) if entry.body else ""
+    )
     return title, body
 
 
@@ -473,7 +507,10 @@ async def resolve_author_snapshot(
         # display_name is plaintext; name is ciphertext — decrypt for the
         # snapshot. Author-name snapshots are display strings, not lookups,
         # so we store them in plaintext (same as how they're shown to users).
-        names.append(member.display_name or decrypt(member.name))
+        names.append(
+            member.display_name
+            or decrypt(member.name, aad=member_name_aad(member.id))
+        )
     return ids, names
 
 
@@ -510,11 +547,19 @@ async def create_journal_entry(
         )
     else:
         author_ids, author_names = await snapshot_current_fronts(system.id, db)
+    # Pre-allocate the id (UUIDMixin's default only fires at flush) so the
+    # encrypted cells bind to the row before insert.
+    entry_id = uuid.uuid4()
     entry = JournalEntry(
+        id=entry_id,
         system_id=system.id,
         member_id=member_id,
-        title=encrypt(title) if title is not None else None,
-        body=encrypt(body),
+        title=(
+            encrypt(title, aad=journal_title_aad(entry_id))
+            if title is not None
+            else None
+        ),
+        body=encrypt(body, aad=journal_body_aad(entry_id)),
         visibility=visibility,
         author_user_id=user.id,
         author_member_ids=author_ids,
@@ -560,9 +605,9 @@ async def update_journal_entry(
             body=current_body,
         )
     if title is not None:
-        entry.title = encrypt(title)
+        entry.title = encrypt(title, aad=journal_title_aad(entry.id))
     if body is not None:
-        entry.body = encrypt(body)
+        entry.body = encrypt(body, aad=journal_body_aad(entry.id))
         entry.image_keys = extract_image_keys(body)
     if visibility is not None:
         entry.visibility = visibility
@@ -600,8 +645,12 @@ async def restore_journal_revision(
         body=current_body,
     )
     revision_title, revision_body = revision_plaintext(revision)
-    entry.title = encrypt(revision_title) if revision_title is not None else None
-    entry.body = encrypt(revision_body)
+    entry.title = (
+        encrypt(revision_title, aad=journal_title_aad(entry.id))
+        if revision_title is not None
+        else None
+    )
+    entry.body = encrypt(revision_body, aad=journal_body_aad(entry.id))
     entry.image_keys = extract_image_keys(revision_body)
     entry.updated_at = datetime.now(UTC)
     return entry
@@ -622,7 +671,9 @@ async def restore_member_bio_revision(
     revision rows themselves (the member table has no `image_keys` column).
     """
     current_description = (
-        decrypt(member.description) if member.description is not None else ""
+        decrypt(member.description, aad=member_description_aad(member.id))
+        if member.description is not None
+        else ""
     )
     await capture_revision(
         db=db,
@@ -634,5 +685,9 @@ async def restore_member_bio_revision(
         body=current_description,
     )
     _, revision_body = revision_plaintext(revision)
-    member.description = encrypt(revision_body) if revision_body else None
+    member.description = (
+        encrypt(revision_body, aad=member_description_aad(member.id))
+        if revision_body
+        else None
+    )
     return member

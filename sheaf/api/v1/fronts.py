@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import front_custom_status_aad
 from sheaf.middleware.rate_limit import check_front_switch_rate, write_rate_limit
 from sheaf.models.front import Front
 from sheaf.models.front_audit_event import FrontAuditEvent
@@ -102,7 +103,11 @@ def _front_to_read(
         started_at=front.started_at,
         ended_at=front.ended_at,
         member_ids=[m.id for m in front.members],
-        custom_status=decrypt(front.custom_status) if front.custom_status else None,
+        custom_status=(
+            decrypt(front.custom_status, aad=front_custom_status_aad(front.id))
+            if front.custom_status
+            else None
+        ),
         member_since=member_since,
         member_since_capped=member_since_capped or [],
         has_audit_history=has_audit_history,
@@ -488,10 +493,18 @@ async def create_front(
                     ),
                 )
 
+    # Pre-allocate the id (UUIDMixin's default only fires at flush) so the
+    # custom_status ciphertext binds to the row before insert.
+    front_id = uuid.uuid4()
     front = Front(
+        id=front_id,
         system_id=system.id,
         started_at=new_started_at,
-        custom_status=encrypt(body.custom_status) if body.custom_status else None,
+        custom_status=(
+            encrypt(body.custom_status, aad=front_custom_status_aad(front_id))
+            if body.custom_status
+            else None
+        ),
         members=members,
     )
     db.add(front)
@@ -520,9 +533,15 @@ def _front_snapshot_for_audit(front: Front) -> dict:
     }
 
 
-def _audit_snapshot_to_read(snapshot: dict) -> FrontSnapshot:
-    """Inverse of `_front_snapshot_for_audit` for the audit-list endpoint —
-    decrypts custom_status the same way the live front read does."""
+def _audit_snapshot_to_read(snapshot: dict, front_id: uuid.UUID) -> FrontSnapshot:
+    """Inverse of `_front_snapshot_for_audit` for the audit-list endpoint -
+    decrypts custom_status the same way the live front read does.
+
+    The snapshot stores a copy of the live front's custom_status ciphertext,
+    so it was bound to that front's cell; decrypt under the same
+    `front_custom_status_aad(front_id)`. v1 snapshots ignore the aad and still
+    read, which keeps pre-conversion audit rows legible.
+    """
     ciphertext = snapshot.get("custom_status_encrypted")
     return FrontSnapshot(
         started_at=datetime.fromisoformat(snapshot["started_at"]),
@@ -532,7 +551,11 @@ def _audit_snapshot_to_read(snapshot: dict) -> FrontSnapshot:
             else None
         ),
         member_ids=[uuid.UUID(m) for m in snapshot.get("member_ids", [])],
-        custom_status=decrypt(ciphertext) if ciphertext else None,
+        custom_status=(
+            decrypt(ciphertext, aad=front_custom_status_aad(front_id))
+            if ciphertext
+            else None
+        ),
     )
 
 
@@ -583,7 +606,9 @@ async def update_front(
 
     if "custom_status" in fields_set:
         front.custom_status = (
-            encrypt(body.custom_status) if body.custom_status else None
+            encrypt(body.custom_status, aad=front_custom_status_aad(front.id))
+            if body.custom_status
+            else None
         )
         has_explicit_change = True
 
@@ -734,8 +759,8 @@ async def list_front_audit(
             front_id=row.front_id,
             actor_user_id=row.actor_user_id,
             fronting_member_ids=[uuid.UUID(s) for s in (row.fronting_member_ids or [])],
-            before=_audit_snapshot_to_read(row.before_snapshot),
-            after=_audit_snapshot_to_read(row.after_snapshot),
+            before=_audit_snapshot_to_read(row.before_snapshot, row.front_id),
+            after=_audit_snapshot_to_read(row.after_snapshot, row.front_id),
             created_at=row.created_at,
         )
         for row in page

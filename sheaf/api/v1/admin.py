@@ -15,6 +15,7 @@ from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.config import settings
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
+from sheaf.encrypted_fields import user_email_aad, user_totp_secret_aad
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.admin_audit_event import AdminAuditAction, AdminAuditTargetType
 from sheaf.models.member import Member
@@ -118,7 +119,9 @@ async def verify_admin_step_up(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="TOTP code required"
             )
-        totp_secret = decrypt_field(user.totp_secret, "totp_secret")
+        totp_secret = decrypt_field(
+            user.totp_secret, "totp_secret", aad=user_totp_secret_aad(user.id)
+        )
         totp_result = await check_code_once(user.id, totp_secret, body.totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
@@ -266,7 +269,7 @@ async def list_users(
 
     def _decrypt_email(user: User) -> str:
         try:
-            return decrypt_field(user.email, "email")
+            return decrypt_field(user.email, "email", aad=user_email_aad(user.id))
         except Exception:
             return "<encrypted>"
 
@@ -389,7 +392,7 @@ async def update_user(
     )
 
     try:
-        email = decrypt_field(target.email, "email")
+        email = decrypt_field(target.email, "email", aad=user_email_aad(target.id))
     except Exception:
         email = "<encrypted>"
 
@@ -442,7 +445,7 @@ async def list_pending_approvals(
     users = []
     for user in result.scalars():
         try:
-            email = decrypt_field(user.email, "email")
+            email = decrypt_field(user.email, "email", aad=user_email_aad(user.id))
         except Exception:
             email = "<encrypted>"
         users.append(PendingUserRead(
@@ -487,7 +490,7 @@ async def approve_user(
 
     # Send approval notification email if configured
     try:
-        email = decrypt_field(target.email, "email")
+        email = decrypt_field(target.email, "email", aad=user_email_aad(target.id))
         from sheaf.config import settings as app_settings
 
         if app_settings.email_backend != "none":
@@ -536,7 +539,7 @@ async def reject_user(
 
     # Send rejection notification email if configured
     try:
-        email = decrypt_field(target.email, "email")
+        email = decrypt_field(target.email, "email", aad=user_email_aad(target.id))
         from sheaf.config import settings as app_settings
 
         if app_settings.email_backend != "none":
@@ -751,7 +754,9 @@ async def list_invites(
         )
         for uid, email_enc in users_result.all():
             try:
-                creators[uid] = decrypt_field(email_enc, "email")
+                creators[uid] = decrypt_field(
+                    email_enc, "email", aad=user_email_aad(uid)
+                )
             except Exception:
                 creators[uid] = "<encrypted>"
 
@@ -813,7 +818,7 @@ async def create_invite(
 
     admin_email: str | None = None
     try:
-        admin_email = decrypt_field(admin.email, "email")
+        admin_email = decrypt_field(admin.email, "email", aad=user_email_aad(admin.id))
     except Exception:
         admin_email = "<encrypted>"
 
@@ -1131,7 +1136,7 @@ async def admin_change_email(
             detail="Email already in use by another account",
         )
 
-    target.email = encrypt(normalized_email)
+    target.email = encrypt(normalized_email, aad=user_email_aad(target.id))
     target.email_hash = new_hash
     target.email_verified = True
     # Clear any pending verification tokens

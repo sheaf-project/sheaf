@@ -23,6 +23,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import (
+    member_description_aad,
+    member_name_aad,
+    message_body_aad,
+)
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue, FieldType
 from sheaf.models.front import Front
 from sheaf.models.group import Group
@@ -440,10 +445,11 @@ async def run_import(
         if sp_id:
             sp_id_to_name[sp_id] = plaintext_name
         plaintext_description = _coerce_str(sp_m.get("desc"))
+        member_id = uuid.uuid4()
         member = Member(
-            id=uuid.uuid4(),
+            id=member_id,
             system_id=system.id,
-            name=encrypt(plaintext_name),
+            name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
             name_hash=blind_index(plaintext_name),
             display_name=clamp_str(
                 _coerce_str(sp_m.get("displayName")) or None,
@@ -451,7 +457,7 @@ async def run_import(
                 report=report,
             ),
             description=(
-                encrypt(plaintext_description)
+                encrypt(plaintext_description, aad=member_description_aad(member_id))
                 if plaintext_description is not None
                 else None
             ),
@@ -481,13 +487,17 @@ async def run_import(
             if sp_id:
                 sp_id_to_name[sp_id] = plaintext_cf_name
             plaintext_cf_description = _coerce_str(sp_cf.get("desc"))
+            member_id = uuid.uuid4()
             member = Member(
-                id=uuid.uuid4(),
+                id=member_id,
                 system_id=system.id,
-                name=encrypt(plaintext_cf_name),
+                name=encrypt(plaintext_cf_name, aad=member_name_aad(member_id)),
                 name_hash=blind_index(plaintext_cf_name),
                 description=(
-                    encrypt(plaintext_cf_description)
+                    encrypt(
+                        plaintext_cf_description,
+                        aad=member_description_aad(member_id),
+                    )
                     if plaintext_cf_description is not None
                     else None
                 ),
@@ -636,11 +646,12 @@ async def run_import(
                     continue
                 if not value_guard.add((field_def.id, member.id)):
                     continue
+                cfv_id = uuid.uuid4()
                 cfv = CustomFieldValue(
-                    id=uuid.uuid4(),
+                    id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value({"v": str(raw_value)}),
+                    value=encrypt_field_value({"v": str(raw_value)}, cfv_id),
                 )
                 db.add(cfv)
         if unknown_field_refs:
@@ -943,13 +954,14 @@ async def _import_messages(
         author = all_sp_to_member.get(sender) if sender else None
         if sender and author is None:
             missing_authors += 1
+        message_id = uuid.uuid4()
         message = Message(
-            id=uuid.uuid4(),
+            id=message_id,
             system_id=system.id,
             board_kind=BoardKind.SYSTEM.value,
             board_member_id=None,
             author_member_id=author.id if author else None,
-            body=encrypt(body),
+            body=encrypt(body, aad=message_body_aad(message_id)),
         )
         if created:
             message.created_at = created

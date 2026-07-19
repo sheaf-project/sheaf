@@ -40,7 +40,7 @@ def _value_read(v: CustomFieldValue) -> CustomFieldValueRead:
     return CustomFieldValueRead.model_validate({
         "field_id": v.field_id,
         "member_id": v.member_id,
-        "value": decrypt_field_value(v.value),
+        "value": decrypt_field_value(v.value, v.id),
     })
 
 router = APIRouter(tags=["custom fields"])
@@ -300,15 +300,16 @@ async def set_member_field_values(
             )
         )
         value = existing.scalar_one_or_none()
-        encrypted = encrypt_field_value(item.value)
         if value is not None:
-            value.value = encrypted
+            value.value = encrypt_field_value(item.value, value.id)
         else:
+            vid = uuid.uuid4()
             db.add(
                 CustomFieldValue(
+                    id=vid,
                     field_id=item.field_id,
                     member_id=member_id,
-                    value=encrypted,
+                    value=encrypt_field_value(item.value, vid),
                 )
             )
 

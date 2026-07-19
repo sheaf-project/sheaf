@@ -20,8 +20,14 @@ from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passwords import verify_password
 from sheaf.auth.sessions import list_user_sessions
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
+from sheaf.config import settings
 from sheaf.crypto import blind_index, decrypt
 from sheaf.database import get_db
+from sheaf.encrypted_fields import (
+    pending_target_label_aad,
+    user_email_aad,
+    user_totp_secret_aad,
+)
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.activity_event import ActivityEvent
 from sheaf.models.api_key import ApiKey
@@ -151,7 +157,7 @@ async def get_account_data(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="TOTP code required",
             )
-        secret = decrypt(user.totp_secret)
+        secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
         totp_result = await check_code_once(user.id, secret, body.totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
@@ -206,7 +212,7 @@ async def get_account_data(
     # for both the suppression blind-index lookup AND the response body
     # (the user requesting their own data obviously already knows their
     # email, but dumping ciphertext would be misleading + useless).
-    plaintext_email = decrypt(user.email)
+    plaintext_email = decrypt(user.email, aad=user_email_aad(user.id))
 
     email_suppression_result = await db.execute(
         select(EmailSuppression).where(
@@ -386,7 +392,7 @@ async def get_account_data(
                 "id": str(a.id),
                 "action_type": a.action_type,
                 "target_id": str(a.target_id),
-                "target_label": _decrypt_pending_label(a.target_label),
+                "target_label": _decrypt_pending_label(a.target_label, a.id),
                 "requested_at": _iso(a.requested_at),
                 "finalize_after": _iso(a.finalize_after),
                 "status": a.status,
@@ -437,15 +443,25 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _decrypt_pending_label(value: str) -> str:
+def _decrypt_pending_label(value: str, pending_id) -> str:
     """Defensively decrypt a PendingAction.target_label for the data export.
 
     The column is encrypted at rest (see queue_pending_action). A row written
     by the old code during the deploy transition is still plaintext, so fall
     back to the stored value on any decrypt failure rather than exporting
     ciphertext or 500ing. Mirrors decrypt_text in sheaf/services/polls.py.
+
+    That fallback exists only for those pre-encryption rows and is
+    deliberately closed once FIELD_ENCRYPTION_ACCEPT_V1=false (no legacy
+    rows remain): returning the raw stored value would then be an
+    unauthenticated injection channel, so the export's unreadable-field
+    placeholder is substituted instead.
     """
     try:
-        return decrypt(value)
+        return decrypt(value, aad=pending_target_label_aad(pending_id))
     except Exception:
-        return value
+        if settings.field_encryption_accept_v1:
+            return value
+        # Same stand-in string the data export uses for an unreadable
+        # required text field (sheaf/api/v1/export.py).
+        return "[unreadable]"

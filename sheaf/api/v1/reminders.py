@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.encrypted_fields import reminder_body_aad, reminder_title_aad
 from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.member import Member
 from sheaf.models.notification_channel import NotificationChannel
@@ -302,9 +303,10 @@ async def create_reminder(
         body.scope_member_ids, system, db
     )
 
-    title_ct, body_ct = encrypt_title_body(body.title, body.body)
+    reminder_id = uuid.uuid4()
+    title_ct, body_ct = encrypt_title_body(body.title, body.body, reminder_id)
     reminder = Reminder(
-        id=uuid.uuid4(),
+        id=reminder_id,
         system_id=system.id,
         channel_id=body.channel_id,
         name=body.name,
@@ -391,11 +393,14 @@ async def update_reminder(
 
     # Encrypt title/body when they change. Other fields just `setattr`.
     if "title" in update_data or "body" in update_data:
-        new_title = update_data.get("title", _decrypted(reminder.title) or "")
-        new_body = update_data.get(
-            "body", _decrypted(reminder.body)
+        new_title = update_data.get(
+            "title",
+            _decrypted(reminder.title, reminder_title_aad(reminder.id)) or "",
         )
-        title_ct, body_ct = encrypt_title_body(new_title, new_body)
+        new_body = update_data.get(
+            "body", _decrypted(reminder.body, reminder_body_aad(reminder.id))
+        )
+        title_ct, body_ct = encrypt_title_body(new_title, new_body, reminder.id)
         reminder.title = title_ct
         reminder.body = body_ct
         update_data.pop("title", None)
@@ -479,10 +484,10 @@ async def get_next_fire(
 # --- Internal helpers -----------------------------------------------------
 
 
-def _decrypted(ciphertext: str | None) -> str | None:
+def _decrypted(ciphertext: str | None, aad: bytes) -> str | None:
     from sheaf.crypto import decrypt
 
-    return decrypt(ciphertext) if ciphertext else None
+    return decrypt(ciphertext, aad=aad) if ciphertext else None
 
 
 def _reminder_dict(reminder: Reminder) -> dict:

@@ -21,6 +21,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
+from sheaf.encrypted_fields import import_credential_aad
 from sheaf.models.import_job import ImportJob, ImportJobSource
 from sheaf.models.member import Member
 from sheaf.schemas.pk_import import PKImportOptions
@@ -291,7 +292,7 @@ async def handle_pluralkit_api(job: ImportJob, db: AsyncSession) -> None:
             "the token may have already been wiped by a prior run"
         )
     try:
-        token = decrypt(encrypted)
+        token = decrypt(encrypted, aad=import_credential_aad(job.id))
     except Exception as exc:
         raise ImportPayloadError(
             "could not decrypt the stored PluralKit token"

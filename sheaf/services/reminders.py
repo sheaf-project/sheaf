@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.crypto import decrypt, encrypt
+from sheaf.encrypted_fields import reminder_body_aad, reminder_title_aad
 from sheaf.models.front import Front
 from sheaf.models.notification_channel import (
     DestinationState,
@@ -71,8 +72,8 @@ _DOW_BITS = [1 << i for i in range(7)]
 # --- Helpers ---------------------------------------------------------------
 
 
-def _decrypt_or_none(value: str | None) -> str | None:
-    return decrypt(value) if value else None
+def _decrypt_or_none(value: str | None, aad: bytes) -> str | None:
+    return decrypt(value, aad=aad) if value else None
 
 
 def _zone(name: str | None) -> ZoneInfo:
@@ -185,8 +186,8 @@ def _reminder_payload(
     return {
         "kind": "reminder_single",
         "reminder_id": str(reminder.id),
-        "title": _decrypt_or_none(reminder.title) or "",
-        "body": _decrypt_or_none(reminder.body),
+        "title": _decrypt_or_none(reminder.title, reminder_title_aad(reminder.id)) or "",
+        "body": _decrypt_or_none(reminder.body, reminder_body_aad(reminder.id)),
         "scheduled_for": (
             scheduled_for.astimezone(UTC).isoformat()
             if scheduled_for is not None
@@ -219,8 +220,8 @@ def _digest_payload(
     return {
         "kind": "reminder_digest",
         "reminder_id": str(reminder.id),
-        "title": _decrypt_or_none(reminder.title) or "",
-        "body": _decrypt_or_none(reminder.body),
+        "title": _decrypt_or_none(reminder.title, reminder_title_aad(reminder.id)) or "",
+        "body": _decrypt_or_none(reminder.body, reminder_body_aad(reminder.id)),
         "missed_count": len(rows),
         "first_missed_at": rows[0].scheduled_for.astimezone(UTC).isoformat()
         if rows
@@ -558,16 +559,21 @@ def _channel_is_active(channel: NotificationChannel | None) -> bool:
 # --- Encryption helpers (used by API layer) -------------------------------
 
 
-def encrypt_title_body(title: str, body: str | None) -> tuple[str, str | None]:
+def encrypt_title_body(
+    title: str, body: str | None, reminder_id
+) -> tuple[str, str | None]:
     """Encrypt a reminder's title and body for storage."""
-    return encrypt(title), (encrypt(body) if body else None)
+    return (
+        encrypt(title, aad=reminder_title_aad(reminder_id)),
+        encrypt(body, aad=reminder_body_aad(reminder_id)) if body else None,
+    )
 
 
 def decrypt_for_read(reminder: Reminder) -> dict:
     """Build the decrypted, scope-resolved view used by the read API."""
     return {
-        "title": _decrypt_or_none(reminder.title) or "",
-        "body": _decrypt_or_none(reminder.body),
+        "title": _decrypt_or_none(reminder.title, reminder_title_aad(reminder.id)) or "",
+        "body": _decrypt_or_none(reminder.body, reminder_body_aad(reminder.id)),
         "scope_member_ids": [m.id for m in reminder.scope_members],
         "pending_count": len(reminder.pending),
         "next_fire_at": compute_next_fire(reminder),

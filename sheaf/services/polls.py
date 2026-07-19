@@ -131,15 +131,15 @@ def validate_close_window(
 # ---------------------------------------------------------------------------
 
 
-def encrypt_text(plaintext: str) -> str:
-    return encrypt(plaintext)
+def encrypt_text(plaintext: str, aad: bytes) -> str:
+    return encrypt(plaintext, aad=aad)
 
 
-def decrypt_text(ciphertext: str | None) -> str | None:
+def decrypt_text(ciphertext: str | None, aad: bytes) -> str | None:
     if ciphertext is None:
         return None
     try:
-        return decrypt(ciphertext)
+        return decrypt(ciphertext, aad=aad)
     except Exception:
         logger.warning("poll content failed to decrypt; returning empty string")
         return ""

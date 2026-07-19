@@ -13,6 +13,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.crypto import decrypt
+from sheaf.encrypted_fields import import_credential_aad
 from sheaf.models.import_job import ImportJob, ImportJobSource
 from sheaf.models.user import User
 from sheaf.schemas.prism_import import PrismImportOptions
@@ -50,7 +51,7 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
             "with its decryption passphrase via the credential form field."
         )
     try:
-        passphrase = decrypt(encrypted_credential)
+        passphrase = decrypt(encrypted_credential, aad=import_credential_aad(job.id))
     except Exception as exc:  # noqa: BLE001 — Fernet raises InvalidToken
         raise ImportPayloadError(
             "stored passphrase ciphertext failed to decrypt; the job "

@@ -313,11 +313,15 @@ def test_two_edits_within_window_collapse_to_one_revision(
     asyncio.run(_run())
 
     from sheaf.crypto import decrypt
+    from sheaf.encrypted_fields import revision_body_aad
 
     rows = _revisions_for(entry_id)
     assert len(rows) == 1
-    # The single revision holds the LATER outgoing content (encrypted at rest).
-    assert decrypt(rows[0]["body"]) == "outgoing-2"
+    # The single revision holds the LATER outgoing content (encrypted at rest,
+    # bound to the revision row that was replaced in place).
+    assert decrypt(
+        rows[0]["body"], aad=revision_body_aad(rows[0]["id"])
+    ) == "outgoing-2"
 
 
 def test_replace_does_not_move_inserted_at(client: httpx.Client, monkeypatch):
@@ -483,6 +487,7 @@ def test_pinned_most_recent_is_never_replaced(client: httpx.Client, monkeypatch)
     assert result["appended_new_row"]
 
     from sheaf.crypto import decrypt
+    from sheaf.encrypted_fields import revision_body_aad
 
     rows = _revisions_for(entry_id)
     assert len(rows) == 2
@@ -490,4 +495,6 @@ def test_pinned_most_recent_is_never_replaced(client: httpx.Client, monkeypatch)
     pinned_rows = [r for r in rows if r["pinned_at"] is not None]
     assert len(pinned_rows) == 1
     assert str(pinned_rows[0]["id"]) == result["pinned_id"]
-    assert decrypt(pinned_rows[0]["body"]) == "pinned-body"
+    assert decrypt(
+        pinned_rows[0]["body"], aad=revision_body_aad(pinned_rows[0]["id"])
+    ) == "pinned-body"

@@ -73,6 +73,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
 from sheaf.crypto import blind_index, encrypt
+from sheaf.encrypted_fields import (
+    journal_body_aad,
+    journal_title_aad,
+    member_description_aad,
+    member_name_aad,
+    message_body_aad,
+    poll_description_aad,
+    poll_option_text_aad,
+    poll_question_aad,
+)
 from sheaf.models.custom_field import (
     CustomFieldDefinition,
     CustomFieldValue,
@@ -418,14 +428,17 @@ async def run_import(
         display_name = _clean_str(m.get("displayName")) or _clean_str(
             m.get("pluralkitDisplayName")
         )
+        member_id = uuid.uuid4()
         member = Member(
-            id=uuid.uuid4(),
+            id=member_id,
             system_id=system.id,
-            name=encrypt(plaintext_name),
+            name=encrypt(plaintext_name, aad=member_name_aad(member_id)),
             name_hash=blind_index(plaintext_name),
             display_name=clamp_str(display_name, il.M_DISPLAY_NAME, report=report),
             description=(
-                encrypt(plaintext_description) if plaintext_description else None
+                encrypt(plaintext_description, aad=member_description_aad(member_id))
+                if plaintext_description
+                else None
             ),
             pronouns=clamp_str(
                 _clean_str(m.get("pronouns")), il.M_PRONOUNS, report=report
@@ -882,11 +895,12 @@ async def _import_custom_fields(
             continue
         if not value_guard.add((field_def.id, handle.member.id)):
             continue
+        cfv_id = uuid.uuid4()
         cfv = CustomFieldValue(
-            id=uuid.uuid4(),
+            id=cfv_id,
             field_id=field_def.id,
             member_id=handle.member.id,
-            value=encrypt_field_value(raw_value),
+            value=encrypt_field_value(raw_value, cfv_id),
         )
         db.add(cfv)
         values_imported += 1
@@ -1008,12 +1022,13 @@ async def _import_notes(
                 skipped += 1
                 continue
             journal_index.register(jkey)
+        entry_id = uuid.uuid4()
         entry = JournalEntry(
-            id=uuid.uuid4(),
+            id=entry_id,
             system_id=system.id,
             member_id=handle.member.id if handle else None,
-            title=encrypt(title) if title else None,
-            body=encrypt(body),
+            title=encrypt(title, aad=journal_title_aad(entry_id)) if title else None,
+            body=encrypt(body, aad=journal_body_aad(entry_id)),
             visibility="system",
             author_user_id=system.user_id,
             author_member_ids=author_ids,
@@ -1111,11 +1126,16 @@ async def _import_polls(
             base = created_at or now
             closes_at = base + timedelta(days=365)
             open_ended += 1
+        poll_row_id = uuid.uuid4()
         poll = Poll(
-            id=uuid.uuid4(),
+            id=poll_row_id,
             system_id=system_id,
-            question=encrypt(question),
-            description=encrypt(description) if description else None,
+            question=encrypt(question, aad=poll_question_aad(poll_row_id)),
+            description=(
+                encrypt(description, aad=poll_description_aad(poll_row_id))
+                if description
+                else None
+            ),
             kind=(
                 PollKind.MULTI_CHOICE.value
                 if allow_multi
@@ -1158,10 +1178,11 @@ async def _import_polls(
             display_text = text
             if response_texts:
                 display_text = f"{text}\n---\n" + "\n".join(response_texts)
+            option_row_id = uuid.uuid4()
             option = PollOption(
-                id=uuid.uuid4(),
+                id=option_row_id,
                 poll_id=poll.id,
-                text=encrypt(display_text),
+                text=encrypt(display_text, aad=poll_option_text_aad(option_row_id)),
                 position=position,
             )
             db.add(option)
@@ -1314,13 +1335,14 @@ async def _import_conversations(
         author_handle = ps_id_to_handle.get(author_id) if author_id else None
         if author_id and author_handle is None:
             missing_author += 1
+        message_id = uuid.uuid4()
         message = Message(
-            id=uuid.uuid4(),
+            id=message_id,
             system_id=system_id,
             board_kind=BoardKind.SYSTEM.value,
             board_member_id=None,
             author_member_id=author_handle.member.id if author_handle else None,
-            body=encrypt(body),
+            body=encrypt(body, aad=message_body_aad(message_id)),
         )
         if ts:
             message.created_at = ts
@@ -1386,15 +1408,16 @@ async def _import_member_board_posts(
             body = f"[audience: {audience}] {body}".rstrip()
         if title:
             body = f"**{title}**\n\n{body}"
+        message_id = uuid.uuid4()
         message = Message(
-            id=uuid.uuid4(),
+            id=message_id,
             system_id=system_id,
             board_kind=(
                 BoardKind.MEMBER.value if target_handle else BoardKind.SYSTEM.value
             ),
             board_member_id=target_handle.member.id if target_handle else None,
             author_member_id=author_handle.member.id if author_handle else None,
-            body=encrypt(body),
+            body=encrypt(body, aad=message_body_aad(message_id)),
         )
         if written:
             message.created_at = written

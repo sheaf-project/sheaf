@@ -386,6 +386,7 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
 async def _send_deletion_reminders(db: AsyncSession) -> dict:
     """Send reminder emails to users with pending deletions."""
     from sheaf.crypto import decrypt
+    from sheaf.encrypted_fields import user_email_aad
     from sheaf.models.user import AccountStatus, User
     from sheaf.services.email import send_email
     from sheaf.services.email_templates import deletion_reminder_email
@@ -434,7 +435,7 @@ async def _send_deletion_reminders(db: AsyncSession) -> dict:
                 continue
             if days_remaining <= reminder_day:
                 try:
-                    email = decrypt(user.email)
+                    email = decrypt(user.email, aad=user_email_aad(user.id))
                     subject, html, text = deletion_reminder_email(
                         max(days_remaining, 0)
                     )
