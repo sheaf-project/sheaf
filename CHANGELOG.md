@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped Pillow to 12.3.0** to patch eight image- and font-parsing vulnerabilities present in all earlier versions (a controlled heap out-of-bounds write, several decompression-bomb-check bypasses, a JPEG2000 decode denial of service, and out-of-bounds reads). Sheaf parses user-uploaded images (avatars, banners), so these were real attack surface. No configuration or behaviour change.
+
 ### Changed
 
 - **`DATABASE_URL` is now optional; the app derives it from `POSTGRES_PASSWORD`.** Previously the Postgres password had to be set in two places (`POSTGRES_PASSWORD` for the database, and embedded again in `DATABASE_URL` for the app), and the two defaults didn't even match - so a deploy that set one but not the other failed on startup with `password authentication failed for user "sheaf"`. Now setting `POSTGRES_PASSWORD` is enough: the app builds `DATABASE_URL` from it (URL-encoding the password) using the `POSTGRES_USER`/`POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB` parts, which match the bundled database, so the credential can't drift. The compose file also passes `POSTGRES_PASSWORD` to the app via interpolation, so it reaches the container even under stack managers that don't load a `.env` into it (OpenMediaVault's `sheaf.env`, Portainer, etc.), which was a common cause of that same startup failure. Set `DATABASE_URL` explicitly only for an external database or custom driver options. Existing deployments that set `DATABASE_URL` are unaffected.
