@@ -591,6 +591,24 @@ class Settings(BaseSettings):
     # Front-change notifications
     notifications_dispatch_interval_seconds: int = 5
 
+    # Realtime front-change stream (SSE). First-party live feed of an
+    # account's OWN front changes over GET /v1/fronts/stream, distinct from
+    # the third-party watch-token notification path. Off returns 404 for the
+    # endpoint; the per-account connection cap bounds the long-lived-
+    # connection resource cost on the hosted service (the real guard - see
+    # ../sheaf-design-docs/realtime-front-stream.md).
+    front_stream_enabled: bool = True
+    # Concurrent stream connections one account may hold. Keyed on the
+    # account, not the system, so it stays correct when one account maps to
+    # several systems.
+    front_stream_max_connections_per_account: int = 5
+    # How often an idle stream emits an SSE comment ping to keep proxies open
+    # and surface dead peers.
+    front_stream_heartbeat_seconds: int = 20
+    # How often a live stream re-validates its credential (API key revoked /
+    # expired, or session gone) and drops if it no longer authenticates.
+    front_stream_auth_recheck_seconds: int = 60
+
     # Import runner tick interval. Short by default because a user
     # who just clicked "import" expects something to happen within a
     # few seconds, not a minute. Empty-queue ticks are a single indexed

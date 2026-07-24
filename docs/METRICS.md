@@ -190,6 +190,39 @@ wedged dispatch can otherwise hide behind a healthy aggregate.
 enqueue to dispatch on successful deliveries, the distributional cousin
 of `oldest_pending_seconds`.
 
+### Realtime front-change stream (SSE)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_realtime_connections_active` | gauge | - |
+| `sheaf_realtime_connections_opened_total` | counter | - |
+| `sheaf_realtime_connections_closed_total` | counter | `reason` ∈ {client_closed, auth_revoked, auth_expired, backpressure, server_shutdown, error, connection_cap} |
+| `sheaf_realtime_handshake_failures_total` | counter | `reason` ∈ {missing_scope, connection_cap, disabled} |
+| `sheaf_realtime_events_published_total` | counter | - |
+| `sheaf_realtime_events_delivered_total` | counter | - |
+| `sheaf_realtime_events_dropped_total` | counter | `reason` ∈ {backpressure} |
+| `sheaf_realtime_publish_failures_total` | counter | - |
+| `sheaf_realtime_delivery_lag_seconds` | histogram | - |
+| `sheaf_realtime_connection_duration_seconds` | histogram | - |
+
+The first-party front-change SSE stream (`GET /v1/fronts/stream`). No
+`system_id` / per-account label - the cardinality rule holds here too.
+
+`delivery_lag_seconds` (emit at the front-switch commit to the client
+write) is the headline signal that the stream beats the 5-second
+notification poll. It is measured across replicas - a front change
+published on one process and delivered on another - so it carries any
+wall-clock skew between them.
+
+`connections_opened_total` minus the sum of `connections_closed_total`
+tracks alongside the `connections_active` gauge; a persistent gap between
+`events_published_total` and `events_delivered_total` is fanout plus
+drops. `connection_cap` appears on both `handshake_failures_total` (a
+connection rejected at the cap) and `connections_closed_total` (reserved
+for symmetry with the other close reasons). `publish_failures_total`
+counts Redis-publish failures at the emit point; publishing is
+best-effort and never fails the front switch.
+
 ### Email
 
 | Metric | Type | Labels |

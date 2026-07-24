@@ -28,6 +28,23 @@ RATE_DISTRIBUTION_BUCKETS = (
     1, 5, 10, 30, 60, 120, 300, 600, 1800,
 )
 
+# Realtime stream delivery lag (emit at the front-switch commit to the
+# client write on the SSE connection), in seconds. Starts sub-millisecond
+# because the Redis-pub/sub fast path should be well under the 5-second
+# notification poll it exists to beat, and the fine low buckets are what
+# prove that. Tops out at the poll interval so a stream that has degraded
+# to poll-latency is obvious.
+REALTIME_LAG_BUCKETS = (
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+)
+
+# Realtime stream connection lifetime, in seconds. Spans a reconnect storm
+# (sub-second churn) through a home-automation client that holds the
+# connection open for hours.
+REALTIME_CONNECTION_DURATION_BUCKETS = (
+    1, 5, 15, 30, 60, 300, 900, 1800, 3600, 7200, 21600,
+)
+
 # Export size, in bytes. Tier-bucket coverage from "tiny system, JSON
 # only" through "large system with images, multi-GB tarball".
 EXPORT_SIZE_BUCKETS = (
