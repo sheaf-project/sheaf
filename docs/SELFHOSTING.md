@@ -513,6 +513,21 @@ Two things this setting can **never** override:
 
 Two metrics track this: `sheaf_webhook_ssrf_rejections_total` (deliveries refused for pointing at a blocked internal address, a security signal) and `sheaf_webhook_private_target_allowed_total` (deliveries permitted specifically because they matched the allowlist). See [docs/METRICS.md](METRICS.md).
 
+### Realtime front-change stream (SSE)
+
+`GET /v1/fronts/stream` is a Server-Sent Events endpoint that pushes an account's own front changes as they happen, instead of making a client poll `GET /v1/fronts`. It is aimed at home-automation integrations (Home Assistant, Node-RED) and live updates in the web UI. It is authenticated like the rest of the API - an API key with the `fronts:read` scope, or a browser session - and exposes nothing a client could not already read from `GET /v1/fronts`; it is the same data, pushed. Because the client dials in and holds the connection open, it works for a LAN-only consumer with no inbound reachability, which a webhook to a private sink cannot always achieve. See the client contract in [the design docs](../../sheaf-design-docs/realtime-front-stream.md).
+
+It is on by default. The settings:
+
+```env
+FRONT_STREAM_ENABLED=true                     # off returns 404 for the endpoint
+FRONT_STREAM_MAX_CONNECTIONS_PER_ACCOUNT=5    # concurrent streams one account may hold
+FRONT_STREAM_HEARTBEAT_SECONDS=20             # keep-alive ping interval
+FRONT_STREAM_AUTH_RECHECK_SECONDS=60          # how often a live stream re-validates its key/session
+```
+
+Each open stream is a long-lived connection, so on a busy multi-account instance they are a real resource. The per-account cap bounds that; lower it if you are tight on connections, or set `FRONT_STREAM_ENABLED=false` to turn the endpoint off entirely. A revoked or expired API key drops its stream within `FRONT_STREAM_AUTH_RECHECK_SECONDS`. The `sheaf_realtime_*` metrics (active connections, delivery lag, drops, handshake failures) track it - see [docs/METRICS.md](METRICS.md).
+
 ### Dispatcher tuning
 
 ```env
