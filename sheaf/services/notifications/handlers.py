@@ -27,10 +27,16 @@ from sheaf.models.notification_channel import (
     DestinationType,
     NotificationChannel,
 )
-from sheaf.observability.metrics import tier_label, tier_limit_hits_total
+from sheaf.observability.metrics import (
+    tier_label,
+    tier_limit_hits_total,
+    webhook_private_target_allowed_total,
+    webhook_ssrf_rejections_total,
+)
 from sheaf.services.notifications.payload import RenderedMessage
 from sheaf.services.notifications.safe_http import (
     SsrfRejected,
+    SsrfResolutionError,
     pinned_requests_session,
     resolve_pinned,
     safe_client,
@@ -137,6 +143,10 @@ async def _deliver_web_push(
             pinned_requests_session, str(sub["endpoint"])
         )
     except SsrfRejected as exc:
+        # A transient resolution failure isn't a security signal; only count a
+        # definitive disallowed-address / scheme rejection.
+        if not isinstance(exc, SsrfResolutionError):
+            webhook_ssrf_rejections_total.labels(channel_type="web_push").inc()
         return permanent(f"SSRF rejection: {exc}")
 
     payload = json.dumps({"title": message.title, "body": message.body})
@@ -231,7 +241,11 @@ async def _deliver_webhook(
     try:
         pinned = await resolve_pinned(url)
     except SsrfRejected as exc:
+        if not isinstance(exc, SsrfResolutionError):
+            webhook_ssrf_rejections_total.labels(channel_type="webhook").inc()
         return permanent(f"SSRF rejection: {exc}")
+    if pinned.allowlisted_private:
+        webhook_private_target_allowed_total.labels(channel_type="webhook").inc()
 
     body, content_type = _build_webhook_payload(fmt, message, event_id)
     headers: dict[str, str] = {
@@ -300,7 +314,11 @@ async def _deliver_ntfy(
     try:
         pinned = await resolve_pinned(url)
     except SsrfRejected as exc:
+        if not isinstance(exc, SsrfResolutionError):
+            webhook_ssrf_rejections_total.labels(channel_type="ntfy").inc()
         return permanent(f"SSRF rejection: {exc}")
+    if pinned.allowlisted_private:
+        webhook_private_target_allowed_total.labels(channel_type="ntfy").inc()
 
     headers = {
         "Title": message.title,

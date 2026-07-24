@@ -32,6 +32,8 @@ from sheaf.observability.buckets import (
     EXPORT_SIZE_BUCKETS,
     HTTP_LATENCY_BUCKETS,
     RATE_DISTRIBUTION_BUCKETS,
+    REALTIME_CONNECTION_DURATION_BUCKETS,
+    REALTIME_LAG_BUCKETS,
 )
 from sheaf.observability.registry import get_metric_registry
 
@@ -70,6 +72,9 @@ ChannelType = Literal[
 DispatchOutcome = Literal[
     "success", "transient_failure", "permanent_failure", "filtered", "revoked", "dropped"
 ]
+# Subset of ChannelType whose targets are user-supplied URLs the SSRF guard
+# gates (webhook + ntfy resolve a host; web_push pins a browser endpoint).
+WebhookTargetChannel = Literal["webhook", "ntfy", "web_push"]
 
 EmailKind = Literal[
     "verification",
@@ -112,6 +117,18 @@ TierLabel = Literal["free", "plus", "self_hosted", "unknown"]
 
 DbPoolState = Literal["checked_in", "checked_out"]
 StatusClass = Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
+
+RealtimeCloseReason = Literal[
+    "client_closed",
+    "auth_revoked",
+    "auth_expired",
+    "backpressure",
+    "server_shutdown",
+    "error",
+    "connection_cap",
+]
+RealtimeHandshakeFailure = Literal["missing_scope", "connection_cap", "disabled"]
+RealtimeDropReason = Literal["backpressure"]
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +317,80 @@ notifications_subscriptions_active = _G(
     "sheaf_notifications_subscriptions_active",
     "Active notification channels by destination type.",
     ["channel_type"],
+)
+webhook_ssrf_rejections_total = _C(
+    "sheaf_webhook_ssrf_rejections_total",
+    "Outbound deliveries rejected by the SSRF guard because the target "
+    "resolved to a blocked internal / metadata address. A security signal: a "
+    "sustained non-zero rate means a channel is aimed at an internal IP.",
+    ["channel_type"],
+)
+webhook_private_target_allowed_total = _C(
+    "sheaf_webhook_private_target_allowed_total",
+    "Outbound deliveries permitted to a private / LAN address specifically "
+    "because the target matched WEBHOOK_ALLOWED_PRIVATE_CIDRS (the self-host "
+    "opt-in was exercised). Counted once per delivery, not per resolved IP.",
+    ["channel_type"],
+)
+
+# ---------------------------------------------------------------------------
+# Realtime front-change stream (SSE)
+# ---------------------------------------------------------------------------
+
+realtime_connections_active = _G(
+    "sheaf_realtime_connections_active",
+    "Open front-change SSE streams right now.",
+    multiprocess_mode="livesum",
+)
+realtime_connections_opened_total = _C(
+    "sheaf_realtime_connections_opened_total",
+    "Front-change SSE streams that passed the handshake and began streaming.",
+)
+realtime_connections_closed_total = _C(
+    "sheaf_realtime_connections_closed_total",
+    "Front-change SSE streams closed, by reason.",
+    ["reason"],
+)
+realtime_handshake_failures_total = _C(
+    "sheaf_realtime_handshake_failures_total",
+    "Front-change SSE connections rejected at the handshake, by reason.",
+    ["reason"],
+)
+realtime_events_published_total = _C(
+    "sheaf_realtime_events_published_total",
+    "Front-change events published to Redis pub/sub at the emit point. The "
+    "gap to sheaf_realtime_events_delivered_total shows fanout + drops.",
+)
+realtime_events_delivered_total = _C(
+    "sheaf_realtime_events_delivered_total",
+    "Front-change events written to a connected SSE client.",
+)
+realtime_events_dropped_total = _C(
+    "sheaf_realtime_events_dropped_total",
+    "Front-change events dropped rather than delivered, by reason.",
+    ["reason"],
+)
+realtime_publish_failures_total = _C(
+    "sheaf_realtime_publish_failures_total",
+    "Failures publishing a front-change event to Redis (e.g. Redis down). "
+    "Never fails the originating request; the stream is a best-effort fast "
+    "path over the durable outbox.",
+)
+realtime_delivery_lag_seconds = _H(
+    "sheaf_realtime_delivery_lag_seconds",
+    "Time from the front-change emit to the client write, seconds. The "
+    "headline 'faster than the 5s poll' signal. Measured across replicas, so "
+    "it inherits any wall-clock skew between the publishing and delivering "
+    "process.",
+    [],
+    buckets=REALTIME_LAG_BUCKETS,
+)
+realtime_connection_duration_seconds = _H(
+    "sheaf_realtime_connection_duration_seconds",
+    "Lifetime of a front-change SSE connection, seconds. A cluster of very "
+    "short durations flags a reconnect storm.",
+    [],
+    buckets=REALTIME_CONNECTION_DURATION_BUCKETS,
 )
 
 # ---------------------------------------------------------------------------
@@ -837,6 +928,10 @@ def prewarm_metrics() -> None:
     for endpoint in ("sendgrid", "cf_shield", "notification_dispatch"):
         webhook_signature_failures_total.labels(endpoint=endpoint).inc(0)
 
+    for channel_type in ("webhook", "ntfy", "web_push"):
+        webhook_ssrf_rejections_total.labels(channel_type=channel_type).inc(0)
+        webhook_private_target_allowed_total.labels(channel_type=channel_type).inc(0)
+
     for direction in ("activated", "deactivated"):
         cf_shield_engagements_total.labels(direction=direction).inc(0)
 
@@ -855,6 +950,19 @@ def prewarm_metrics() -> None:
 
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)
+
+    for reason in (
+        "client_closed", "auth_revoked", "auth_expired", "backpressure",
+        "server_shutdown", "error", "connection_cap",
+    ):
+        realtime_connections_closed_total.labels(reason=reason).inc(0)
+    for reason in ("missing_scope", "connection_cap", "disabled"):
+        realtime_handshake_failures_total.labels(reason=reason).inc(0)
+    realtime_events_dropped_total.labels(reason="backpressure").inc(0)
+    realtime_connections_opened_total.inc(0)
+    realtime_events_published_total.inc(0)
+    realtime_events_delivered_total.inc(0)
+    realtime_publish_failures_total.inc(0)
 
     for limit_name in (
         "members", "storage", "polls_concurrent",

@@ -16,6 +16,7 @@ from sheaf.api.v1 import (
     devices,
     export,
     files,
+    front_stream,
     fronts,
     groups,
     imports,
@@ -106,6 +107,10 @@ v1_router.include_router(
     analytics.router,
     dependencies=[Depends(require_scope("fronts:read"))],
 )
+# Realtime front-change SSE stream. No router-level scope dep: the endpoint
+# enforces fronts:read inline so a missing-scope rejection can be counted on
+# its handshake metric. Gated further by settings.front_stream_enabled.
+v1_router.include_router(front_stream.router)
 v1_router.include_router(
     groups.router,
     dependencies=[Depends(require_scope("groups:read"))],

@@ -156,6 +156,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Let live front-change SSE streams close cleanly (reason=server_shutdown)
+    # instead of looking like client drops as their tasks are cancelled.
+    from sheaf.services.front_stream import signal_shutdown
+
+    signal_shutdown()
+
     for task in background_tasks:
         task.cancel()
     for task in background_tasks:

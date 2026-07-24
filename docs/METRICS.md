@@ -166,8 +166,22 @@ percentiles means abuse.
 | `sheaf_notifications_outbox_depth` | gauge | - |
 | `sheaf_notifications_outbox_oldest_pending_seconds` | gauge | - |
 | `sheaf_notifications_subscriptions_active` | gauge | `channel_type` |
+| `sheaf_webhook_ssrf_rejections_total` | counter | `channel_type` ∈ {webhook, ntfy, web_push} |
+| `sheaf_webhook_private_target_allowed_total` | counter | `channel_type` ∈ {webhook, ntfy, web_push} |
 
 `channel_type` ∈ {web_push, mobile_push, webhook, ntfy, pushover, discord, email}.
+
+`webhook_ssrf_rejections_total` is a security signal: a delivery was refused
+because the target resolved to a blocked internal / cloud-metadata address.
+Sustained non-zero means a channel is pointed at an internal IP (a
+misconfiguration, or an attempt to reach the operator's network). Transient
+DNS failures are not counted here. `webhook_private_target_allowed_total`
+counts deliveries that were permitted to a private / LAN address *because* the
+target matched `WEBHOOK_ALLOWED_PRIVATE_CIDRS` - the self-host opt-in was
+actually exercised. It is incremented once per delivery (keyed off the single
+pinned address), not per resolved IP, so a multi-A-record LAN host doesn't
+inflate it. It stays flat at zero unless an operator has enabled the
+allowlist.
 
 `outbox_depth` shows pending volume; `outbox_oldest_pending_seconds`
 catches the "depth is fine but one row is stuck" case where a single
@@ -175,6 +189,39 @@ wedged dispatch can otherwise hide behind a healthy aggregate.
 `dispatch_lag_seconds` is the per-row distribution: time from outbox
 enqueue to dispatch on successful deliveries, the distributional cousin
 of `oldest_pending_seconds`.
+
+### Realtime front-change stream (SSE)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_realtime_connections_active` | gauge | - |
+| `sheaf_realtime_connections_opened_total` | counter | - |
+| `sheaf_realtime_connections_closed_total` | counter | `reason` ∈ {client_closed, auth_revoked, auth_expired, backpressure, server_shutdown, error, connection_cap} |
+| `sheaf_realtime_handshake_failures_total` | counter | `reason` ∈ {missing_scope, connection_cap, disabled} |
+| `sheaf_realtime_events_published_total` | counter | - |
+| `sheaf_realtime_events_delivered_total` | counter | - |
+| `sheaf_realtime_events_dropped_total` | counter | `reason` ∈ {backpressure} |
+| `sheaf_realtime_publish_failures_total` | counter | - |
+| `sheaf_realtime_delivery_lag_seconds` | histogram | - |
+| `sheaf_realtime_connection_duration_seconds` | histogram | - |
+
+The first-party front-change SSE stream (`GET /v1/fronts/stream`). No
+`system_id` / per-account label - the cardinality rule holds here too.
+
+`delivery_lag_seconds` (emit at the front-switch commit to the client
+write) is the headline signal that the stream beats the 5-second
+notification poll. It is measured across replicas - a front change
+published on one process and delivered on another - so it carries any
+wall-clock skew between them.
+
+`connections_opened_total` minus the sum of `connections_closed_total`
+tracks alongside the `connections_active` gauge; a persistent gap between
+`events_published_total` and `events_delivered_total` is fanout plus
+drops. `connection_cap` appears on both `handshake_failures_total` (a
+connection rejected at the cap) and `connections_closed_total` (reserved
+for symmetry with the other close reasons). `publish_failures_total`
+counts Redis-publish failures at the emit point; publishing is
+best-effort and never fails the front switch.
 
 ### Email
 

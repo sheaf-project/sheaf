@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -57,6 +58,11 @@ from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.resolution import (
     build_group_name_lookup,
     resolve_member_visibility,
+)
+from sheaf.services.notifications.safe_http import (
+    SsrfRejected,
+    SsrfResolutionError,
+    resolve_pinned,
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
@@ -275,21 +281,65 @@ def _validate_destination(body_type: str) -> None:
         )
 
 
-def _validate_direct_config(body_type: str, config: dict) -> None:
+async def _assert_target_deliverable(url: str) -> None:
+    """Reject a webhook/ntfy target the SSRF guard would refuse at delivery,
+    so the channel isn't silently accepted then auto-disabled on first send.
+
+    A non-http(s) scheme and a private/loopback resolution both 400 here. A
+    transient DNS failure is deliberately NOT fatal: delivery re-resolves, and
+    we don't want to punish a target that's merely unreachable at create time.
+    SsrfResolutionError (a subclass) distinguishes that transient case from a
+    definitive disallowed-address rejection.
+    """
+    scheme = urlparse(url).scheme
+    if scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"webhook/ntfy target must use http or https, not "
+                f"{scheme or 'an empty scheme'!r}"
+            ),
+        )
+    try:
+        await resolve_pinned(url)
+    except SsrfResolutionError:
+        return
+    except SsrfRejected:
+        host = urlparse(url).hostname or url
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Webhook target {host} resolves to a private or loopback "
+                f"address, which is blocked by default. If this is an "
+                f"intentional LAN integration on a self-hosted instance, add "
+                f"its range to WEBHOOK_ALLOWED_PRIVATE_CIDRS (see "
+                f"docs/SELFHOSTING.md)."
+            ),
+        ) from None
+
+
+async def _validate_direct_config(body_type: str, config: dict) -> None:
     """Direct types (webhook/ntfy/pushover) require the owner to provide
-    enough config to dispatch immediately."""
-    if body_type == DestinationType.WEBHOOK.value and not config.get("url"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="webhook destination requires destination_config.url",
-        )
-    if body_type == DestinationType.NTFY.value and (
-        not config.get("server_url") or not config.get("topic")
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ntfy destination requires server_url and topic",
-        )
+    enough config to dispatch immediately. Webhook + ntfy URLs are also run
+    through the SSRF guard so a target that would be rejected at delivery is
+    caught here with an actionable message."""
+    if body_type == DestinationType.WEBHOOK.value:
+        url = config.get("url")
+        if not url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="webhook destination requires destination_config.url",
+            )
+        await _assert_target_deliverable(url)
+    if body_type == DestinationType.NTFY.value:
+        server = config.get("server_url")
+        topic = config.get("topic")
+        if not server or not topic:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="ntfy destination requires server_url and topic",
+            )
+        await _assert_target_deliverable(f"{server.rstrip('/')}/{topic}")
     if body_type == DestinationType.PUSHOVER.value and not config.get("user_key"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -346,7 +396,7 @@ async def create_channel(
 
     _validate_destination(body.destination_type)
     if body.destination_type in _DIRECT_TYPES:
-        _validate_direct_config(body.destination_type, body.destination_config)
+        await _validate_direct_config(body.destination_type, body.destination_config)
     _validate_pushover_debounce(
         body.destination_type,
         body.destination_config or {},
@@ -531,7 +581,7 @@ async def update_channel(
         # Validate direct types still have required fields after merge.
         new_cfg = {**(channel.destination_config or {}), **body.destination_config}
         if channel.destination_type in _DIRECT_TYPES:
-            _validate_direct_config(channel.destination_type, new_cfg)
+            await _validate_direct_config(channel.destination_type, new_cfg)
         channel.destination_config = new_cfg
     if body.webhook_secret is not None:
         if channel.destination_type != DestinationType.WEBHOOK.value:
