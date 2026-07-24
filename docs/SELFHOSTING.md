@@ -491,6 +491,43 @@ WEBHOOK_USER_AGENT=Sheaf-Notifications/1.0
 
 Identifies Sheaf in webhook receiver logs. Bump the version if you fork or patch the dispatch code so receivers can tell.
 
+### Webhook egress to private / LAN targets
+
+By default Sheaf refuses to deliver a webhook or ntfy notification to any target that resolves to a non-public address. That covers RFC1918 / IPv6 ULA (`192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `fc00::/7`), loopback, link-local, CGN (`100.64.0.0/10`), reserved ranges, and cloud metadata (`169.254.169.254`). The guard runs at delivery time on the address the hostname actually resolves to (with DNS-rebinding protection), so a public hostname that points at an internal IP is caught too. This is an SSRF defence: without it, anyone who can configure a webhook could use your Sheaf instance to probe or reach services on the network it runs in.
+
+If you self-host and genuinely want notifications to reach a box on your own LAN (a Home Assistant instance, Node-RED, a local ntfy server), list the specific private range(s) to permit:
+
+```env
+# Allow delivery to a LAN Home Assistant on 192.168.1.x
+WEBHOOK_ALLOWED_PRIVATE_CIDRS=192.168.1.0/24
+```
+
+Comma-separate multiple ranges (`192.168.1.0/24,10.10.0.0/16`). A bad entry fails startup so a typo surfaces immediately. Keep the ranges as tight as the integration needs: allowing all of `10.0.0.0/8` when you only talk to one host widens the blast radius for no benefit.
+
+Two things this setting can **never** override:
+
+- **Cloud metadata stays blocked.** `169.254.169.254` (and the IPv6 `fd00:ec2::254`) hand out cloud credentials; no legitimate webhook targets them, so they are refused even if your allowlist CIDR would cover them.
+- **SaaS mode ignores it entirely.** On an instance running `SHEAF_MODE=saas` the allowlist is dropped and the setting logs a warning at startup. It only takes effect on a self-hosted instance.
+
+> **Shared-instance caveat.** This is an egress hole punched in an SSRF defence. On an instance with more than one user account, *anyone who can configure a webhook* can then aim it at the permitted range and reach your LAN. Only enable it if you trust every account holder. For a single-user or family instance that is usually fine; for a public multi-tenant instance it usually is not.
+
+Two metrics track this: `sheaf_webhook_ssrf_rejections_total` (deliveries refused for pointing at a blocked internal address, a security signal) and `sheaf_webhook_private_target_allowed_total` (deliveries permitted specifically because they matched the allowlist). See [docs/METRICS.md](METRICS.md).
+
+### Realtime front-change stream (SSE)
+
+`GET /v1/fronts/stream` is a Server-Sent Events endpoint that pushes an account's own front changes as they happen, instead of making a client poll `GET /v1/fronts`. It is aimed at home-automation integrations (Home Assistant, Node-RED) and live updates in the web UI. It is authenticated like the rest of the API - an API key with the `fronts:read` scope, or a browser session - and exposes nothing a client could not already read from `GET /v1/fronts`; it is the same data, pushed. Because the client dials in and holds the connection open, it works for a LAN-only consumer with no inbound reachability, which a webhook to a private sink cannot always achieve. See the client contract in [the design docs](../../sheaf-design-docs/realtime-front-stream.md).
+
+It is on by default. The settings:
+
+```env
+FRONT_STREAM_ENABLED=true                     # off returns 404 for the endpoint
+FRONT_STREAM_MAX_CONNECTIONS_PER_ACCOUNT=5    # concurrent streams one account may hold
+FRONT_STREAM_HEARTBEAT_SECONDS=20             # keep-alive ping interval
+FRONT_STREAM_AUTH_RECHECK_SECONDS=60          # how often a live stream re-validates its key/session
+```
+
+Each open stream is a long-lived connection, so on a busy multi-account instance they are a real resource. The per-account cap bounds that; lower it if you are tight on connections, or set `FRONT_STREAM_ENABLED=false` to turn the endpoint off entirely. A revoked or expired API key drops its stream within `FRONT_STREAM_AUTH_RECHECK_SECONDS`. The `sheaf_realtime_*` metrics (active connections, delivery lag, drops, handshake failures) track it - see [docs/METRICS.md](METRICS.md).
+
 ### Dispatcher tuning
 
 ```env

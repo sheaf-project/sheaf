@@ -304,6 +304,7 @@ All resource endpoints require authentication. With API keys, the appropriate sc
 | PATCH | `/fronts/{id}` | `fronts:write` |
 | DELETE | `/fronts/{id}` | `fronts:delete` |
 | GET | `/fronts/{id}/audit` | `fronts:read` |
+| GET | `/fronts/stream` | `fronts:read` (SSE; see below) |
 | GET | `/groups` | `groups:read` |
 | POST | `/groups` | `groups:write` |
 | PATCH | `/groups/{id}` | `groups:write` |
@@ -355,6 +356,8 @@ Reminders ride a notification channel for delivery (`channel_id`). Two trigger t
 
 Repeated reminders can be scope-limited to specific members. When the schedule fires while no scoped member is fronting and `digest_when_absent=true`, the missed firing queues (capped at 5 per reminder, oldest dropped). On the next front-start of a scoped member, the queue drains as a digest notification. Title and body are encrypted at rest.
 
+A `webhook` or `ntfy` channel whose URL resolves to a private/LAN address (a self-hosted Home Assistant, ntfy, etc.) is refused by the SSRF guard by default: creating it returns a `400` that names the setting, and it would otherwise fail at delivery. A self-host operator can permit specific ranges via `WEBHOOK_ALLOWED_PRIVATE_CIDRS` (see SELFHOSTING.md); this is never available on the hosted service. For pushing front changes to a LAN consumer, prefer the front-change stream above - it needs no inbound reachability.
+
 ### Front editing + audit log
 
 `PATCH /v1/fronts/{id}` accepts partial updates to `started_at`, `ended_at`, `member_ids`, and `custom_status`. Presence-in-body determines effect: an omitted field is unchanged, `null` is an explicit clear (which only `ended_at` and `custom_status` accept — `ended_at: null` reopens a closed front, `custom_status: null` clears the status), and a value replaces. `started_at: null` is rejected.
@@ -376,6 +379,22 @@ Every explicit edit that produces a different snapshot appends a row to `front_a
 ```
 
 `custom_status` is decrypted in the response (same scope gate as the live front read). Audit rows are bound to the entry via `ON DELETE CASCADE`; deleting the front entry purges its history too.
+
+### Realtime front-change stream (SSE)
+
+`GET /v1/fronts/stream` is a Server-Sent Events feed of the caller's own front changes, so a client (a home-automation integration, a live dashboard) can react as they happen instead of polling `GET /v1/fronts`. Same data, pushed; same auth as everything else (an API key with `fronts:read`, or a session cookie). Because the client dials in and holds the connection open, it works from a LAN with no inbound reachability, which a webhook to a private box cannot always achieve.
+
+On connect you get one `snapshot` event (apply as truth), then `front_change` events as they happen, with `: ` comment heartbeats in between (ignore them):
+
+```
+event: snapshot
+data: {"system_id":"...","fronting":["<member_id>", ...],"event_id":"..."}
+
+event: front_change
+data: {"system_id":"...","before":[...],"after":[...],"changed_at":"<iso8601>","event_id":"...","emit_ts":<float>}
+```
+
+`fronting`/`before`/`after` are arrays of member-id strings (resolve names via the members API). `after` is the new authoritative fronting set. There is no replay buffer: SSE auto-reconnects and the server re-sends a fresh `snapshot`, so a reconnecting client is always correct (re-apply the snapshot rather than resuming from `Last-Event-ID`). Responses: `404` if the operator disabled the stream (`FRONT_STREAM_ENABLED`), `403` if the key lacks `fronts:read`, `429` if the account is over its concurrent-connection cap (back off and retry). Full contract: `sheaf-design-docs/realtime-front-stream.md`.
 
 ### Notes
 

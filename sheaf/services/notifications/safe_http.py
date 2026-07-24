@@ -25,35 +25,73 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+from sheaf.config import settings
+
 _DNS_TIMEOUT_SECONDS = 5.0
+
+# CGN / shared address space (RFC 6598).
+_CGN_NETWORK = ipaddress.IPv4Network("100.64.0.0/10")
 
 
 class SsrfRejected(Exception):
     """Raised when an outbound URL resolves to a disallowed address."""
 
 
+class SsrfResolutionError(SsrfRejected):
+    """Raised when an outbound URL's host could not be resolved (DNS failure,
+    timeout, or an empty answer) - a transient condition, distinct from a
+    definitive disallowed-scheme / disallowed-address rejection. Subclasses
+    SsrfRejected so delivery-time handlers (which fail the whole batch on any
+    SsrfRejected) are unchanged; callers that must tell "try again later" from
+    "never deliver here" - e.g. config-time validation - catch this first."""
+
+
+def _is_hard_never(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Addresses that are NEVER deliverable, even if an operator's allowlist
+    CIDR would cover them: cloud metadata (hands out cloud credentials, no
+    webhook legitimately targets it), the unspecified address, and multicast."""
+    if str(addr) in ("169.254.169.254", "fd00:ec2::254"):
+        return True
+    return addr.is_unspecified or addr.is_multicast
+
+
+def _default_blocked(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """The default deny set an operator allowlist may override: private
+    (RFC1918 / ULA), loopback, link-local, reserved, and CGN."""
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+        return True
+    return isinstance(addr, ipaddress.IPv4Address) and addr in _CGN_NETWORK
+
+
+def _allowlisted(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True if `addr` falls in an operator-permitted private range. The
+    property is [] in SaaS mode, so this is always False there."""
+    return any(addr in net for net in settings.webhook_allowed_private_networks)
+
+
+def allowlist_override_applies(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """True when `addr` is deliverable ONLY because the operator allowlist
+    permits an otherwise-blocked private range. The signal for the
+    "self-host opt-in was actually exercised" metric: excludes public
+    addresses (allowed regardless) and hard-never addresses (never allowed)."""
+    return (
+        not _is_hard_never(addr) and _allowlisted(addr) and _default_blocked(addr)
+    )
+
+
 def _is_disallowed(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if addr.is_private:
+    # Hard-never: cloud metadata + unspecified + multicast are NEVER allowed,
+    # even if an operator's allowlist CIDR would cover them.
+    if _is_hard_never(addr):
         return True
-    if addr.is_loopback:
-        return True
-    if addr.is_link_local:
-        return True
-    if addr.is_multicast:
-        return True
-    if addr.is_reserved:
-        return True
-    if addr.is_unspecified:
-        return True
-    # CGN / shared address space (RFC 6598)
-    if isinstance(addr, ipaddress.IPv4Address):
-        if addr in ipaddress.IPv4Network("100.64.0.0/10"):
-            return True
-        # IPv4 IMDS, also caught by is_link_local but spell it out
-        if str(addr) == "169.254.169.254":
-            return True
-    # IPv6 IMDS
-    return isinstance(addr, ipaddress.IPv6Address) and str(addr) == "fd00:ec2::254"
+    # Operator opt-in (self-host only; the property is [] in SaaS mode): an
+    # explicitly-allowed private range overrides the default blocks below.
+    if _allowlisted(addr):
+        return False
+    # Default deny set: private, loopback, link-local, reserved, CGN.
+    return _default_blocked(addr)
 
 
 def assert_url_safe(url: str) -> None:
@@ -106,6 +144,11 @@ class PinnedRequest:
     url: str
     headers: dict[str, str] = field(default_factory=dict)
     extensions: dict[str, str] = field(default_factory=dict)
+    # True when the pinned address was deliverable only because it fell in an
+    # operator-permitted private range (WEBHOOK_ALLOWED_PRIVATE_CIDRS). Set once
+    # per resolution so the delivery site can count the opt-in without
+    # double-counting per resolved IP.
+    allowlisted_private: bool = False
 
 
 async def resolve_pinned(url: str) -> PinnedRequest:
@@ -132,7 +175,9 @@ async def resolve_pinned(url: str) -> PinnedRequest:
     if addr is not None:
         if _is_disallowed(addr):
             raise SsrfRejected(f"address {host} is disallowed")
-        return PinnedRequest(url=url)
+        return PinnedRequest(
+            url=url, allowlisted_private=allowlist_override_applies(addr)
+        )
 
     loop = asyncio.get_running_loop()
     try:
@@ -142,9 +187,9 @@ async def resolve_pinned(url: str) -> PinnedRequest:
                 type=socket.SOCK_STREAM,
             )
     except TimeoutError as exc:
-        raise SsrfRejected(f"DNS resolution timed out for {host}") from exc
+        raise SsrfResolutionError(f"DNS resolution timed out for {host}") from exc
     except socket.gaierror as exc:
-        raise SsrfRejected(f"DNS resolution failed for {host}") from exc
+        raise SsrfResolutionError(f"DNS resolution failed for {host}") from exc
 
     addrs: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for info in infos:
@@ -158,7 +203,9 @@ async def resolve_pinned(url: str) -> PinnedRequest:
             )
         addrs.append(candidate)
     if not addrs:
-        raise SsrfRejected(f"DNS resolution returned no addresses for {host}")
+        raise SsrfResolutionError(
+            f"DNS resolution returned no addresses for {host}"
+        )
 
     pinned = addrs[0]
     ip_str = (
@@ -180,6 +227,7 @@ async def resolve_pinned(url: str) -> PinnedRequest:
         url=pinned_url,
         headers={"Host": host_header},
         extensions=extensions,
+        allowlisted_private=allowlist_override_applies(pinned),
     )
 
 
@@ -242,7 +290,7 @@ def resolve_pinned_ip(url: str) -> tuple[str, str]:
             type=socket.SOCK_STREAM,
         )
     except socket.gaierror as exc:
-        raise SsrfRejected(f"DNS resolution failed for {host}") from exc
+        raise SsrfResolutionError(f"DNS resolution failed for {host}") from exc
 
     chosen: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
     for info in infos:
@@ -257,7 +305,9 @@ def resolve_pinned_ip(url: str) -> tuple[str, str]:
         if chosen is None:
             chosen = candidate
     if chosen is None:
-        raise SsrfRejected(f"DNS resolution returned no addresses for {host}")
+        raise SsrfResolutionError(
+            f"DNS resolution returned no addresses for {host}"
+        )
 
     lit = f"[{chosen}]" if isinstance(chosen, ipaddress.IPv6Address) else str(chosen)
     return host, lit

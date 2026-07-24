@@ -27,6 +27,7 @@ from sheaf.schemas.front import (
     FrontUpdate,
 )
 from sheaf.schemas.member import MemberDeleteConfirm
+from sheaf.services.front_stream import publish_front_change
 from sheaf.services.notifications.events import (
     emit_front_change,
     snapshot_front_state,
@@ -517,6 +518,9 @@ async def create_front(
 
     await db.commit()
     fronts_created_total.inc()
+    # Realtime stream fast path: publish AFTER commit so a rolled-back switch
+    # can't emit a phantom event. Best-effort - never fails the request.
+    await publish_front_change(system.id, before_state, after_state)
     await db.refresh(front, ["members"])
     return _front_to_read(front)
 
@@ -661,6 +665,8 @@ async def update_front(
     )
 
     await db.commit()
+    # Realtime stream fast path: publish AFTER commit (see create_front).
+    await publish_front_change(system.id, before_state, after_state)
     await db.refresh(front, ["members"])
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.FRONT_DELETE
