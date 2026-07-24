@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-07-24
+
 ### Fixed
 
 - **Holding a front-change stream open no longer blocks other requests that use the same API key.** Authenticating a request recorded the key's `last_used_at` inside the request's own database transaction. On a long-lived request like an SSE stream that transaction stays open for the whole connection, so the write held a row lock on the key and any concurrent request using the same key blocked on it until it timed out (a 500). The `last_used_at` write is now committed immediately in its own transaction, so it never holds a lock. (Follow-up to the 1.3.2 stream connection-pool fix.)
