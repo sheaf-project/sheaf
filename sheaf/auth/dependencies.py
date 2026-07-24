@@ -60,10 +60,29 @@ async def get_current_user(
         request.state.api_key_id = api_key.id
         request.state.auth_method = "api_key"
 
-        # Fire-and-forget last_used_at update
+        # last_used_at is a fire-and-forget metric write, done in its own
+        # short-lived, immediately-committed session rather than by dirtying
+        # the request-session `api_key`. On a long-lived request (an SSE
+        # stream) the request transaction stays open for the whole connection,
+        # so an UPDATE flushed into it would hold a write lock on the api_keys
+        # row for the entire stream and block every other request using the
+        # same key, timing them out (statement_timeout) to a 500.
         from datetime import UTC, datetime
 
-        api_key.last_used_at = datetime.now(UTC)
+        from sqlalchemy import update
+
+        from sheaf.database import async_session_factory
+
+        try:
+            async with async_session_factory() as _touch_db:
+                await _touch_db.execute(
+                    update(ApiKey)
+                    .where(ApiKey.id == api_key.id)
+                    .values(last_used_at=datetime.now(UTC))
+                )
+                await _touch_db.commit()
+        except Exception:
+            pass  # best-effort: never fail authentication on a metric write
 
         user_id = api_key.user_id
 
