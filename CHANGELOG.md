@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-07-24
+
 ### Fixed
 
 - **The realtime front-change stream no longer holds a database connection open for its whole lifetime.** The `GET /v1/fronts/stream` endpoint (added in 1.3.0) pinned a pooled Postgres connection (idle in a transaction) for as long as each stream stayed connected, so enough concurrent streams could exhaust the connection pool and make other requests hang until a stream closed. The stream now resolves what it needs up front and holds no database connection while it is open.
