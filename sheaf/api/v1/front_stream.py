@@ -20,12 +20,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.sessions import get_redis, get_session_user_id
 from sheaf.config import settings
-from sheaf.database import async_session_factory, get_db
+from sheaf.database import async_session_factory
 from sheaf.models.user import User
 from sheaf.observability.metrics import (
     realtime_connection_duration_seconds,
@@ -203,16 +202,18 @@ async def _stream(
         # state), never missed.
         reader = asyncio.create_task(_pubsub_reader(pubsub, queue, state))
 
-        # Snapshot in the generator's own DB session (the request session has
-        # closed by now) so the client is correct with no race, then deltas.
+        # Snapshot in a short-lived session CLOSED before we start yielding, so
+        # no DB connection is held while the stream is open. Building the whole
+        # snapshot first also means a slow client cannot pin the connection.
         async with async_session_factory() as db:
-            for sid in system_ids:
-                snap = build_snapshot_payload(
-                    sid, await snapshot_front_state(db, sid)
-                )
-                yield format_sse(
-                    json.dumps(snap), event="snapshot", id=snap["event_id"]
-                )
+            snapshots = [
+                build_snapshot_payload(sid, await snapshot_front_state(db, sid))
+                for sid in system_ids
+            ]
+        for snap in snapshots:
+            yield format_sse(
+                json.dumps(snap), event="snapshot", id=snap["event_id"]
+            )
 
         now = time.monotonic()
         next_heartbeat = now + heartbeat
@@ -292,7 +293,6 @@ async def _stream(
 async def stream_fronts(
     request: Request,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """Open a Server-Sent Events stream of this account's front changes.
 
@@ -309,7 +309,14 @@ async def stream_fronts(
 
     _ensure_fronts_read_scope(request)
 
-    system_ids = await authorized_front_system_ids(user, db)
+    # Resolve the authorized systems in a SHORT-LIVED session closed before the
+    # StreamingResponse is returned. A `Depends(get_db)` session would be held
+    # for the ENTIRE stream lifetime: FastAPI tears down a yield-dependency only
+    # after the response finishes, and a stream finishes only when it closes, so
+    # the pooled Postgres connection would sit idle-in-transaction for the whole
+    # connection and eventually exhaust the pool, blocking every other request.
+    async with async_session_factory() as db:
+        system_ids = await authorized_front_system_ids(user, db)
     account_key = str(user.id)
     auth_ctx = _auth_context(request)
 

@@ -228,6 +228,32 @@ def _read_sse_event(line_iter, *, skip_comments: bool = True) -> dict:
     raise AssertionError("stream ended before a complete SSE event arrived")
 
 
+def test_stream_handler_holds_no_request_lifetime_db_session():
+    """Regression: the SSE handler must NOT depend on `get_db`.
+
+    `get_db` is a yield-dependency, torn down only after the response finishes,
+    and a StreamingResponse finishes only when the stream closes. So a
+    request-scoped session would pin a pooled Postgres connection
+    idle-in-transaction for the entire stream and exhaust the pool, blocking
+    every other request that needs the DB (this shipped once). The handler must
+    resolve what it needs in a short-lived `async_session_factory()` session
+    instead. A future re-add of `Depends(get_db)` here fails this test.
+    """
+    import inspect
+
+    from sheaf.api.v1 import front_stream
+    from sheaf.database import get_db
+
+    deps = [
+        getattr(p.default, "dependency", None)
+        for p in inspect.signature(front_stream.stream_fronts).parameters.values()
+    ]
+    assert get_db not in deps, (
+        "stream_fronts depends on get_db; a request-lifetime DB session pins a "
+        "pooled connection for the whole stream. Use async_session_factory()."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Integration: snapshot + delta, scope, cap, disabled
 # ---------------------------------------------------------------------------
