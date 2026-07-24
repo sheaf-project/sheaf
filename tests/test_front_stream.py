@@ -285,6 +285,35 @@ def test_integration_stream_sends_snapshot_then_front_change(auth_client: httpx.
         assert member in change["data"]["after"]
 
 
+def test_integration_stream_does_not_block_same_key_requests(auth_client: httpx.Client):
+    """Regression: holding a stream open must not block other requests that use
+    the SAME API key.
+
+    get_current_user used to bump api_keys.last_used_at in the request session,
+    which stays open for the whole stream - so the UPDATE held a write lock on
+    the api_keys row, and a concurrent request with the same key blocked on it
+    to a statement-timeout 500. last_used_at is now written in a separate
+    committed session, so no lock is held. (The earlier snapshot+delta test
+    missed this because its concurrent request used a different credential.)
+    """
+    _create_member(auth_client, f"K-{uuid.uuid4().hex[:6]}")
+    key = _create_key(auth_client, ["fronts:read"])
+    headers = {"Authorization": f"Bearer {key}"}
+
+    with httpx.Client(base_url=BASE_URL) as stream_client, stream_client.stream(
+        "GET", "/v1/fronts/stream", headers=headers, timeout=15.0
+    ) as resp:
+        assert resp.status_code == 200
+        assert _read_sse_event(resp.iter_lines())["event"] == "snapshot"
+
+        # While the stream is held open, a request with the SAME key must not
+        # block on the api_keys row lock. Bounded tightly so the old lock-hold
+        # (statement_timeout) fails fast rather than hanging the suite.
+        with httpx.Client(base_url=BASE_URL) as poll_client:
+            r = poll_client.get("/v1/fronts", headers=headers, timeout=10.0)
+        assert r.status_code == 200, r.text
+
+
 def test_integration_stream_requires_fronts_read_scope(auth_client: httpx.Client):
     # A key with an unrelated scope must be rejected with 403.
     key = _create_key(auth_client, ["members:read"])
