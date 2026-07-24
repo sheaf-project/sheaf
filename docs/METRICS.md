@@ -166,8 +166,22 @@ percentiles means abuse.
 | `sheaf_notifications_outbox_depth` | gauge | - |
 | `sheaf_notifications_outbox_oldest_pending_seconds` | gauge | - |
 | `sheaf_notifications_subscriptions_active` | gauge | `channel_type` |
+| `sheaf_webhook_ssrf_rejections_total` | counter | `channel_type` ∈ {webhook, ntfy, web_push} |
+| `sheaf_webhook_private_target_allowed_total` | counter | `channel_type` ∈ {webhook, ntfy, web_push} |
 
 `channel_type` ∈ {web_push, mobile_push, webhook, ntfy, pushover, discord, email}.
+
+`webhook_ssrf_rejections_total` is a security signal: a delivery was refused
+because the target resolved to a blocked internal / cloud-metadata address.
+Sustained non-zero means a channel is pointed at an internal IP (a
+misconfiguration, or an attempt to reach the operator's network). Transient
+DNS failures are not counted here. `webhook_private_target_allowed_total`
+counts deliveries that were permitted to a private / LAN address *because* the
+target matched `WEBHOOK_ALLOWED_PRIVATE_CIDRS` - the self-host opt-in was
+actually exercised. It is incremented once per delivery (keyed off the single
+pinned address), not per resolved IP, so a multi-A-record LAN host doesn't
+inflate it. It stays flat at zero unless an operator has enabled the
+allowlist.
 
 `outbox_depth` shows pending volume; `outbox_oldest_pending_seconds`
 catches the "depth is fine but one row is stuck" case where a single

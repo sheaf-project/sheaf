@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Webhook and ntfy delivery to private/LAN addresses, opt-in, self-hosted only.** By default Sheaf blocks outbound webhook and ntfy delivery to private, loopback, and link-local addresses to prevent server-side request forgery. Self-hosters who want to drive a service on their own network - a local Home Assistant, Node-RED, or ntfy - can now list specific private ranges in the new `WEBHOOK_ALLOWED_PRIVATE_CIDRS` setting (e.g. `192.168.1.0/24`). Cloud metadata endpoints stay blocked regardless of the setting, it is ignored entirely on the hosted service, and a target that would be rejected is now reported when you save the channel instead of silently failing on first delivery. Only enable it if you trust everyone with an account on your instance, since any of them could then point a webhook at your network. See docs/SELFHOSTING.md.
+
 ### Changed
 
 - **`DATABASE_URL` is now optional; the app derives it from `POSTGRES_PASSWORD`.** Previously the Postgres password had to be set in two places (`POSTGRES_PASSWORD` for the database, and embedded again in `DATABASE_URL` for the app), and the two defaults didn't even match - so a deploy that set one but not the other failed on startup with `password authentication failed for user "sheaf"`. Now setting `POSTGRES_PASSWORD` is enough: the app builds `DATABASE_URL` from it (URL-encoding the password) using the `POSTGRES_USER`/`POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB` parts, which match the bundled database, so the credential can't drift. The compose file also passes `POSTGRES_PASSWORD` to the app via interpolation, so it reaches the container even under stack managers that don't load a `.env` into it (OpenMediaVault's `sheaf.env`, Portainer, etc.), which was a common cause of that same startup failure. Set `DATABASE_URL` explicitly only for an external database or custom driver options. Existing deployments that set `DATABASE_URL` are unaffected.

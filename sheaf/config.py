@@ -494,6 +494,58 @@ class Settings(BaseSettings):
             if entry.strip()
         ]
 
+    # Webhook / ntfy egress to private / LAN targets (self-host only).
+    # Normally every private (RFC1918 / ULA), loopback, link-local, CGN, and
+    # reserved target is blocked by the SSRF guard. This lists specific private
+    # ranges to PERMIT so a self-hosted instance can reach LAN integrations
+    # (Home Assistant, Node-RED, a local ntfy). Comma-separated CIDRs, e.g.
+    # "192.168.1.0/24". Cloud metadata (169.254.169.254) stays blocked
+    # regardless. IGNORED in SaaS mode. Shared-instance caveat: on an instance
+    # with more than one account, anyone who can configure a webhook could then
+    # reach the operator's LAN - only enable it if every account holder is
+    # trusted. See docs/SELFHOSTING.md.
+    webhook_allowed_private_cidrs: str = ""
+
+    @field_validator("webhook_allowed_private_cidrs")
+    @classmethod
+    def _validate_webhook_allowed_private_cidrs(cls, v: str) -> str:
+        """Fail fast at startup if any entry isn't a valid IP or CIDR."""
+        if not v:
+            return v
+        for entry in v.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid entry in WEBHOOK_ALLOWED_PRIVATE_CIDRS: {entry!r}. "
+                    f"Expected an IP or CIDR (e.g. 192.168.1.0/24). "
+                    f"Parse error: {exc}"
+                ) from exc
+        return v
+
+    @property
+    def webhook_allowed_private_networks(self) -> list[IPv4Network | IPv6Network]:
+        """Private ranges the SSRF guard may deliver webhooks/ntfy to, parsed
+        to ip_network objects.
+
+        Returns [] in SaaS mode regardless of the env var: the hosted instance
+        must never honor a LAN allowlist. Self-host only. A bare IP parses as a
+        /32 (or /128), so membership checks uniformly use `in` against this
+        list.
+        """
+        if self.sheaf_mode == SheafMode.SAAS:
+            return []
+        if not self.webhook_allowed_private_cidrs:
+            return []
+        return [
+            ip_network(entry.strip(), strict=False)
+            for entry in self.webhook_allowed_private_cidrs.split(",")
+            if entry.strip()
+        ]
+
     # Extra origins allowed to make cookie-authenticated mutations,
     # comma-separated (e.g. "https://app.example.net"). Same-host requests
     # and SHEAF_BASE_URL are always allowed; this is the escape hatch for
@@ -1138,6 +1190,19 @@ def _validate_settings() -> None:
             "it in both the backend env and the operator's SSM parameter."
         )
         sys.exit(1)
+
+    if settings.webhook_allowed_private_cidrs:
+        if settings.sheaf_mode == SheafMode.SAAS:
+            logger.warning(
+                "WEBHOOK_ALLOWED_PRIVATE_CIDRS is set but IGNORED in SaaS mode: "
+                "the hosted instance never delivers webhooks to private ranges."
+            )
+        else:
+            logger.info(
+                "WEBHOOK_ALLOWED_PRIVATE_CIDRS: outbound webhook/ntfy delivery is "
+                "permitted to these private ranges: %s",
+                settings.webhook_allowed_private_cidrs,
+            )
 
     if settings.sheaf_mode == SheafMode.SAAS and problems:
         logger.critical("REFUSING TO START IN SAAS MODE WITH INSECURE DEFAULTS:")

@@ -70,6 +70,9 @@ ChannelType = Literal[
 DispatchOutcome = Literal[
     "success", "transient_failure", "permanent_failure", "filtered", "revoked", "dropped"
 ]
+# Subset of ChannelType whose targets are user-supplied URLs the SSRF guard
+# gates (webhook + ntfy resolve a host; web_push pins a browser endpoint).
+WebhookTargetChannel = Literal["webhook", "ntfy", "web_push"]
 
 EmailKind = Literal[
     "verification",
@@ -299,6 +302,20 @@ notifications_outbox_oldest_pending_seconds = _G(
 notifications_subscriptions_active = _G(
     "sheaf_notifications_subscriptions_active",
     "Active notification channels by destination type.",
+    ["channel_type"],
+)
+webhook_ssrf_rejections_total = _C(
+    "sheaf_webhook_ssrf_rejections_total",
+    "Outbound deliveries rejected by the SSRF guard because the target "
+    "resolved to a blocked internal / metadata address. A security signal: a "
+    "sustained non-zero rate means a channel is aimed at an internal IP.",
+    ["channel_type"],
+)
+webhook_private_target_allowed_total = _C(
+    "sheaf_webhook_private_target_allowed_total",
+    "Outbound deliveries permitted to a private / LAN address specifically "
+    "because the target matched WEBHOOK_ALLOWED_PRIVATE_CIDRS (the self-host "
+    "opt-in was exercised). Counted once per delivery, not per resolved IP.",
     ["channel_type"],
 )
 
@@ -836,6 +853,10 @@ def prewarm_metrics() -> None:
 
     for endpoint in ("sendgrid", "cf_shield", "notification_dispatch"):
         webhook_signature_failures_total.labels(endpoint=endpoint).inc(0)
+
+    for channel_type in ("webhook", "ntfy", "web_push"):
+        webhook_ssrf_rejections_total.labels(channel_type=channel_type).inc(0)
+        webhook_private_target_allowed_total.labels(channel_type=channel_type).inc(0)
 
     for direction in ("activated", "deactivated"):
         cf_shield_engagements_total.labels(direction=direction).inc(0)
