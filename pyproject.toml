@@ -29,7 +29,7 @@ dependencies = [
     "pywebpush>=2.0.0",
     "croniter>=2.0.0",
     "prometheus-client>=0.20.0",
-    "Pillow>=11.0.0",
+    "Pillow>=12.3.0",  # 12.3.0 patches 8 image/font-parsing CVEs; all <12.3.0 vulnerable
     "nh3>=0.2.18",
     # Bundled IANA tz database so zoneinfo works deterministically regardless of
     # the container base image (python:3.12-slim does not reliably ship

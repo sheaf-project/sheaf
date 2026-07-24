@@ -6,6 +6,9 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped Pillow to 12.3.0** to patch eight image- and font-parsing vulnerabilities present in all earlier versions (a controlled heap out-of-bounds write, several decompression-bomb-check bypasses, a JPEG2000 decode denial of service, and out-of-bounds reads). Sheaf parses user-uploaded images (avatars, banners), so these were real attack surface. No configuration or behaviour change.
 ### Added
 
 - **Realtime front-change stream (Server-Sent Events).** A new `GET /v1/fronts/stream` endpoint pushes your own front changes to you as they happen, instead of making you poll for them - aimed at home-automation integrations like Home Assistant and Node-RED, and at future live updates in the web UI. It is authenticated the same way as the rest of the API: an API key with the `fronts:read` scope, or a browser session. On connect it sends a snapshot of who is currently fronting (so you are correct with no race), then streams the changes, with periodic keep-alive pings. It exposes nothing you could not already read from `GET /v1/fronts` - it is the same data, pushed. Because the client dials in and holds the connection open, it needs no inbound reachability, so it works for a LAN-only consumer that a webhook could never reach. It runs behind the `FRONT_STREAM_ENABLED` setting (on by default) with a per-account limit on how many streams one account can hold open at once.
