@@ -9,6 +9,7 @@ an expired suspension fires. Centralising here keeps the audit row's
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.sessions import delete_all_user_sessions
 from sheaf.models.user import AccountStatus, User
+
+logger = logging.getLogger("sheaf")
 
 
 async def apply_suspend(
@@ -52,6 +55,13 @@ async def apply_suspend(
         # Surfacing the failure to the caller would falsely roll back
         # the DB-side suspension.
         revoked = -1
+        # A suspended user keeping a live session is a real gap; the -1 marker
+        # in the audit row is not something anyone watches, so make it alertable.
+        logger.exception(
+            "suspend: failed to revoke sessions for user=%s; suspension "
+            "applied but live sessions may persist until they expire",
+            target.id,
+        )
     before["_sessions_revoked"] = revoked
     return before
 

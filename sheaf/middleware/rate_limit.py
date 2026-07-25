@@ -538,6 +538,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         try:
             r = await _get_redis()
         except Exception:
+            # Fail OPEN so a Redis blip doesn't take the whole site down, but
+            # say so: the global per-IP abuse backstop is off until Redis is
+            # back. The per-endpoint checks log their own fail-open/closed.
+            logger.warning(
+                "Redis unavailable - global per-IP rate-limit backstop is "
+                "open (path=%s)",
+                request.url.path,
+            )
             return await call_next(request)
 
         ip = _client_ip(request)

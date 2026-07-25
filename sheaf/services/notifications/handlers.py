@@ -118,11 +118,16 @@ async def _deliver_web_push(
     # Server-side config issues are transient: fixing the env var should
     # let pending deliveries through, not require manual channel re-enable.
     if not settings.vapid_public_key or not settings.vapid_private_key:
+        # Deployment-wide misconfig: every web-push delivery requeues forever
+        # with no other signal. Log it so an operator who forgot the keys sees
+        # why nothing is going out.
+        logger.warning("web push disabled: VAPID keys not configured")
         return transient("VAPID keys not configured")
 
     try:
         from pywebpush import WebPushException, webpush
     except ImportError:
+        logger.warning("web push disabled: pywebpush not installed")
         return transient("pywebpush not installed")
 
     sub = channel.destination_config or {}
@@ -147,6 +152,11 @@ async def _deliver_web_push(
         # definitive disallowed-address / scheme rejection.
         if not isinstance(exc, SsrfResolutionError):
             webhook_ssrf_rejections_total.labels(channel_type="web_push").inc()
+        logger.warning(
+            "web-push delivery blocked by SSRF guard: channel=%s reason=%s",
+            channel.id,
+            exc,
+        )
         return permanent(f"SSRF rejection: {exc}")
 
     payload = json.dumps({"title": message.title, "body": message.body})
@@ -243,9 +253,24 @@ async def _deliver_webhook(
     except SsrfRejected as exc:
         if not isinstance(exc, SsrfResolutionError):
             webhook_ssrf_rejections_total.labels(channel_type="webhook").inc()
+        # Security signal: a delivery aimed at a private/blocked/metadata
+        # address. The exception carries host + resolved IP + reason (no
+        # URL/creds), which is what an operator needs to act.
+        logger.warning(
+            "webhook delivery blocked by SSRF guard: channel=%s reason=%s",
+            channel.id,
+            exc,
+        )
         return permanent(f"SSRF rejection: {exc}")
     if pinned.allowlisted_private:
         webhook_private_target_allowed_total.labels(channel_type="webhook").inc()
+        # A normally-blocked private target was delivered to only because
+        # WEBHOOK_ALLOWED_PRIVATE_CIDRS permits it - a security-sensitive allow
+        # worth an audit line, not just a counter.
+        logger.warning(
+            "webhook delivered to an allowlisted private/LAN target: channel=%s",
+            channel.id,
+        )
 
     body, content_type = _build_webhook_payload(fmt, message, event_id)
     headers: dict[str, str] = {
@@ -263,6 +288,15 @@ async def _deliver_webhook(
                 aad=webhook_secret_aad(channel.id),
             )
         except Exception as exc:  # noqa: BLE001
+            # Internal crypto/config fault (key rotation, AAD, corruption), not
+            # a remote failure - it silently disables the channel, so warrants
+            # a distinct operator signal. Never log the secret or plaintext.
+            logger.error(
+                "webhook secret decryption failed (channel will be disabled): "
+                "channel=%s error=%s",
+                channel.id,
+                type(exc).__name__,
+            )
             return permanent(f"webhook secret decryption failed: {exc}")
         timestamp = str(int(time.time()))
         signed = f"{timestamp}.{body}".encode()
@@ -316,9 +350,18 @@ async def _deliver_ntfy(
     except SsrfRejected as exc:
         if not isinstance(exc, SsrfResolutionError):
             webhook_ssrf_rejections_total.labels(channel_type="ntfy").inc()
+        logger.warning(
+            "ntfy delivery blocked by SSRF guard: channel=%s reason=%s",
+            channel.id,
+            exc,
+        )
         return permanent(f"SSRF rejection: {exc}")
     if pinned.allowlisted_private:
         webhook_private_target_allowed_total.labels(channel_type="ntfy").inc()
+        logger.warning(
+            "ntfy delivered to an allowlisted private/LAN target: channel=%s",
+            channel.id,
+        )
 
     headers = {
         "Title": message.title,
@@ -373,7 +416,13 @@ async def _deliver_pushover(
     if not app_token:
         # No token at all (BYO empty AND server not configured). Transient
         # so a later config fix lets pending deliveries through without
-        # auto-disabling the channel.
+        # auto-disabling the channel. Log it, or a shared-app misconfig stalls
+        # every Pushover delivery with no visible reason.
+        logger.warning(
+            "pushover delivery deferred: no app token (BYO empty and "
+            "PUSHOVER_APP_TOKEN unset): channel=%s",
+            channel.id,
+        )
         return transient("Pushover app token not configured")
 
     if using_shared:

@@ -8,6 +8,7 @@ telemetry that doesn't belong in a portable export.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -40,12 +41,16 @@ from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
     SafetyChangeStatus,
 )
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.request import client_ip
 from sheaf.schemas.activity import ActivityEventRead
-from sheaf.services.security_events import events_for_user
+from sheaf.services.security_events import events_for_user, record_security_event
+
+logger = logging.getLogger("sheaf")
 
 router = APIRouter(prefix="/account", tags=["account"])
 
@@ -143,10 +148,32 @@ async def get_account_data(
     # gates the highest-value read.
     ensure_not_locked(user)
 
+    # Durable trail for the account-data (Article 15) step-up gate. Repeated
+    # failures here are someone with a live session trying to exfiltrate the
+    # full account bundle; success is recorded too given how sensitive the read
+    # is. Best-effort, never raises.
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.ACCOUNT_DATA_ACCESS,
+            outcome=outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     if not await verify_password(body.password, user.password_hash):
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         await record_login_failure(db, user)
+        await _sec("password_incorrect")
+        logger.warning(
+            "account-data step-up failed (wrong password): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Password incorrect",
@@ -161,11 +188,18 @@ async def get_account_data(
         totp_result = await check_code_once(user.id, secret, body.totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
+            await _sec("totp_invalid")
+            logger.warning(
+                "account-data step-up failed (bad TOTP): user=%s ip=%s",
+                user.id,
+                event_ip,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=totp_error_detail(totp_result),
             )
 
+    await _sec("success")
     sessions_raw = await list_user_sessions(user.id)
 
     api_keys_result = await db.execute(

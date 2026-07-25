@@ -95,10 +95,13 @@ def _safe_decrypt(value: str | None, aad: bytes) -> str | None:
         return None
     try:
         return decrypt(value, aad=aad)
-    except Exception:
+    except Exception as exc:
+        # The crypto layer logs which field/format failed; this adds the
+        # export context + error class so a key-drift spike is correlatable.
         logger.warning(
             "An encrypted field could not be decrypted during export; "
-            "exporting it as null"
+            "exporting it as null (error=%s)",
+            type(exc).__name__,
         )
         return None
 
@@ -123,10 +126,11 @@ def _safe_plaintext(fn: Callable, *, fallback):
     """
     try:
         return fn()
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "An encrypted field could not be decrypted during export; "
-            "substituting a fallback value"
+            "substituting a fallback value (error=%s)",
+            type(exc).__name__,
         )
         return fallback
 

@@ -10,6 +10,7 @@ Contains:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -53,6 +54,8 @@ from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+
+logger = logging.getLogger("sheaf")
 
 # Categories that safety can apply to — kept in one place so the API,
 # schemas, and finalize dispatcher all agree on the set.
@@ -445,6 +448,14 @@ async def finalize_pending_action(
         pending.status = PendingActionStatus.ERRORED
         pending.error_message = f"Unknown action_type: {pending.action_type}"
         pending.completed_at = datetime.now(UTC)
+        # Background finalize: an errored action just stops completing with no
+        # alert until someone reads the row, so surface it.
+        logger.warning(
+            "pending-action finalize errored: unknown action_type=%s "
+            "pending_action=%s",
+            pending.action_type,
+            pending.id,
+        )
         return
 
     target = await db.get(model, pending.target_id)
@@ -496,12 +507,21 @@ async def finalize_pending_action(
             # the immediate-delete path does the same. An orphaned blob from a
             # storage failure is recoverable; a stuck pending action isn't.
             if pending.action_type == PendingActionType.IMAGE_DELETE:
-                import contextlib
-
                 from sheaf.storage import get_storage
 
-                with contextlib.suppress(Exception):
+                try:
                     await get_storage().delete(target.key)
+                except Exception:
+                    # An orphaned blob is recoverable, but a persistent failure
+                    # leaks the user-confirmed-deleted image with no trace; the
+                    # orphan sweep logs the same case, so match it here.
+                    logger.warning(
+                        "pending-action finalize: failed to delete image blob "
+                        "%s (pending_action=%s); orphan sweep will retry",
+                        target.key,
+                        pending.id,
+                        exc_info=True,
+                    )
             await db.delete(target)
 
     pending.status = PendingActionStatus.COMPLETED

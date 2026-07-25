@@ -99,6 +99,9 @@ async def sendgrid_events(
         signature = request.headers.get(_SIG_HEADER, "")
         timestamp = request.headers.get(_TS_HEADER, "")
         if not signature or not timestamp:
+            logger.warning(
+                "Rejected SendGrid webhook: missing signature/timestamp header"
+            )
             webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
@@ -121,6 +124,9 @@ async def sendgrid_events(
         # SENDGRID_WEBHOOK_PUBLIC_KEY and enable the signed webhook.
         token = request.query_params.get("token", "")
         if not secrets.compare_digest(token, settings.sendgrid_webhook_secret):
+            logger.warning(
+                "Rejected SendGrid webhook: shared-secret token mismatch"
+            )
             webhook_signature_failures_total.labels(endpoint="sendgrid").inc()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
@@ -254,6 +260,7 @@ async def smtp2go_events(
 
     token = request.query_params.get("token", "")
     if not secrets.compare_digest(token, settings.smtp2go_webhook_secret):
+        logger.warning("Rejected SMTP2GO webhook: token mismatch")
         webhook_signature_failures_total.labels(endpoint="smtp2go").inc()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 

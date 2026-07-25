@@ -791,6 +791,14 @@ async def ban_user(
         # best-effort, the auth gate still rejects on the next request
         # regardless. Don't roll back the DB-side ban on a Redis blip.
         revoked = -1
+        # A banned user keeping a live session is a real security gap; the -1
+        # marker in the audit row is not something anyone watches, so make it
+        # alertable.
+        logger.exception(
+            "ban: failed to revoke sessions for user=%s; ban applied but live "
+            "sessions may persist until they expire",
+            user_id,
+        )
     before["_sessions_revoked"] = revoked
 
     await log_admin_action(

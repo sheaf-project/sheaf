@@ -19,12 +19,15 @@ from sheaf.encrypted_fields import user_email_aad, user_totp_secret_aad
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.admin_audit_event import AdminAuditAction, AdminAuditTargetType
 from sheaf.models.member import Member
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import System
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import AccountStatus, User, UserTier
+from sheaf.request import client_ip
 from sheaf.services.admin_audit import log_admin_action
 from sheaf.services.file_cleanup import cleanup_orphaned_files
 from sheaf.services.front_retention import sweep_front_retention
+from sheaf.services.security_events import record_security_event
 
 logger = logging.getLogger("sheaf.admin")
 
@@ -88,6 +91,22 @@ async def verify_admin_step_up(
 
     level = settings.admin_auth_level
 
+    # Durable trail for the admin-dashboard step-up gate: a failed re-auth on a
+    # live session is an admin-privilege brute/probe signal, and success is
+    # worth recording given the surface it unlocks. record_security_event is
+    # best-effort and never raises.
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.ADMIN_STEP_UP,
+            outcome=outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     # Step-up verifies brute-forceable credentials, so it feeds the same
     # unified lockout state as login/TOTP — otherwise a hijacked admin
     # session could brute the password here without ever tripping it.
@@ -102,6 +121,12 @@ async def verify_admin_step_up(
         from sheaf.auth.passwords import verify_password
         if not await verify_password(body.password, user.password_hash):
             await record_login_failure(db, user)
+            await _sec("password_incorrect")
+            logger.warning(
+                "admin step-up failed (wrong password): user=%s ip=%s",
+                user.id,
+                event_ip,
+            )
             # 403: caller is already authenticated; this step-up gate
             # denies the action. 401 would falsely trigger the frontend's
             # silent-refresh-and-retry path.
@@ -125,12 +150,19 @@ async def verify_admin_step_up(
         totp_result = await check_code_once(user.id, totp_secret, body.totp_code)
         if totp_result is not TotpCheck.OK:
             await record_login_failure(db, user, reason="totp_failures")
+            await _sec("totp_invalid")
+            logger.warning(
+                "admin step-up failed (bad TOTP): user=%s ip=%s",
+                user.id,
+                event_ip,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=totp_error_detail(totp_result),
             )
 
     await set_admin_step_up(user.id, session_id)
+    await _sec("success")
     return {"verified": True}
 
 

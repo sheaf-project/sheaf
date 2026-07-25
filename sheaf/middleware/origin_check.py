@@ -28,6 +28,7 @@ server-side, and the host is the part an attacker's origin can't fake.
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlparse
 
 from fastapi import Request
@@ -35,6 +36,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf.config import settings
+from sheaf.request import client_ip
+
+logger = logging.getLogger("sheaf")
 
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _AUTH_COOKIES = ("sheaf_session", "sheaf_refresh")
@@ -70,6 +74,20 @@ class OriginCheckMiddleware(BaseHTTPMiddleware):
                 if not origin_netloc or origin_netloc not in _allowed_netlocs(
                     request
                 ):
+                    # CSRF tripwire: a cookie-authed unsafe request from an
+                    # origin we don't trust (or `Origin: null`). A burst is an
+                    # active attack signal or a misconfigured legit origin;
+                    # either way it was invisible before. Origin/host are not
+                    # secrets.
+                    logger.warning(
+                        "cross-origin request rejected (CSRF guard): "
+                        "method=%s path=%s origin=%s host=%s ip=%s",
+                        request.method,
+                        request.url.path,
+                        origin,
+                        request.headers.get("host"),
+                        client_ip(request),
+                    )
                     return JSONResponse(
                         status_code=403,
                         content={
