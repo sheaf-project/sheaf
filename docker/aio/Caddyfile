@@ -17,7 +17,24 @@
 }
 
 {$AIO_SITE_ADDRESS::80} {
-	encode zstd gzip
+	# Compress everything EXCEPT the realtime SSE stream. Compressing a live
+	# text/event-stream buffers it into compressible blocks, so a client
+	# (Home Assistant, Node-RED) stalls for seconds on connect before the
+	# initial snapshot arrives. Note the app also sends X-Accel-Buffering: no,
+	# but that is an nginx convention and does nothing in Caddy, so the stream
+	# must be excluded here explicitly.
+	@compressible not path /v1/fronts/stream
+	encode @compressible zstd gzip
+
+	# Realtime SSE stream: flush each event straight through with no buffering.
+	# reverse_proxy already auto-streams text/event-stream, but pin it so a
+	# future default can't reintroduce the stall. Must precede @backend below,
+	# since /v1/fronts/stream also matches /v1/* (handle blocks are first-match).
+	handle /v1/fronts/stream {
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
+	}
 
 	# API + health check -> the backend on loopback. /metrics is deliberately
 	# NOT proxied: it is unauthenticated and stays in-container.
