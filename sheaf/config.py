@@ -598,10 +598,14 @@ class Settings(BaseSettings):
     # connection resource cost on the hosted service (the real guard - see
     # ../sheaf-design-docs/realtime-front-stream.md).
     front_stream_enabled: bool = True
-    # Concurrent stream connections one account may hold. Keyed on the
-    # account, not the system, so it stays correct when one account maps to
-    # several systems.
-    front_stream_max_connections_per_account: int = 5
+    # Concurrent stream connections one account may hold, per tier. Keyed on
+    # the account, not the system, so it stays correct when one account maps to
+    # several systems. 0 = unlimited. Self-hosted is unlimited by default
+    # because the default tier is SELF_HOSTED; the hosted service sets
+    # FREE / PLUS. Mirrors the member_limit_* / storage_quota_* tier triples.
+    front_stream_max_connections_free: int = 5
+    front_stream_max_connections_plus: int = 10
+    front_stream_max_connections_selfhosted: int = 0  # unlimited
     # How often an idle stream emits an SSE comment ping to keep proxies open
     # and surface dead peers.
     front_stream_heartbeat_seconds: int = 20

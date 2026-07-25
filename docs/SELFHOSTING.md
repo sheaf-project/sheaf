@@ -521,12 +521,16 @@ It is on by default. The settings:
 
 ```env
 FRONT_STREAM_ENABLED=true                     # off returns 404 for the endpoint
-FRONT_STREAM_MAX_CONNECTIONS_PER_ACCOUNT=5    # concurrent streams one account may hold
+FRONT_STREAM_MAX_CONNECTIONS_FREE=5           # concurrent streams a free-tier account may hold (0 = unlimited)
+FRONT_STREAM_MAX_CONNECTIONS_PLUS=10          # ... a plus-tier account
+FRONT_STREAM_MAX_CONNECTIONS_SELFHOSTED=0     # ... a self-hosted account (0 = unlimited)
 FRONT_STREAM_HEARTBEAT_SECONDS=20             # keep-alive ping interval
 FRONT_STREAM_AUTH_RECHECK_SECONDS=60          # how often a live stream re-validates its key/session
 ```
 
-Each open stream is a long-lived connection, so on a busy multi-account instance they are a real resource. The per-account cap bounds that; lower it if you are tight on connections, or set `FRONT_STREAM_ENABLED=false` to turn the endpoint off entirely. A revoked or expired API key drops its stream within `FRONT_STREAM_AUTH_RECHECK_SECONDS`. The `sheaf_realtime_*` metrics (active connections, delivery lag, drops, handshake failures) track it - see [docs/METRICS.md](METRICS.md).
+Each open stream is a long-lived connection, so on a busy multi-account instance they are a real resource. The per-account cap bounds that, and it is per user tier (`0` means unlimited). On a self-hosted instance accounts default to the self-hosted tier, which is unlimited out of the box; set `FRONT_STREAM_MAX_CONNECTIONS_SELFHOSTED` to a positive number if you want to bound it, or set `FRONT_STREAM_ENABLED=false` to turn the endpoint off entirely. A revoked or expired API key drops its stream within `FRONT_STREAM_AUTH_RECHECK_SECONDS`. The `sheaf_realtime_*` metrics (active connections, delivery lag, drops, handshake failures) track it - see [docs/METRICS.md](METRICS.md).
+
+If you put the endpoint behind your own reverse proxy, you must disable response buffering for it or clients see a multi-second stall on connect (for nginx, `proxy_buffering off` on the stream location; the app also sends `X-Accel-Buffering: no`).
 
 ### Dispatcher tuning
 

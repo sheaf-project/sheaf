@@ -6,6 +6,18 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **The realtime front-change stream's per-account connection cap no longer sticks at "full" after connections die.** The cap was enforced with a single Redis counter incremented per connection and decremented on disconnect. If a connection died without its cleanup running - worker processes killed on a deploy before their streams drained, a dropped disconnect, a hard crash - the counter was never decremented, so the leaked slot counted against the cap forever (the endpoint returned 429 with fewer, or zero, connections actually live). This especially bit always-on integrations like Home Assistant, which hold a stream open indefinitely. The cap is now tracked as a set of individual connections, each carrying its own expiry that a live connection refreshes on every heartbeat; acquiring a slot first prunes any whose owner has stopped refreshing. A slot leaked by a dead connection is therefore reclaimed on its own within a heartbeat window or two, independently of any other live connection on the same account. A failure to release a slot on disconnect is now also logged rather than swallowed silently.
+
+### Changed
+
+- **The front-change stream connection limit is now per user tier.** It was a single `FRONT_STREAM_MAX_CONNECTIONS_PER_ACCOUNT` value for everyone; it is now `FRONT_STREAM_MAX_CONNECTIONS_FREE` (default 5), `_PLUS` (default 10), and `_SELFHOSTED` (default 0 = unlimited), matching how the other per-tier limits work. Self-hosted accounts are unlimited by default, so self-hosters who did not set the old value are unaffected; anyone who did set it should move to the `_SELFHOSTED` variant. See docs/SELFHOSTING.md.
+
+### Added
+
+- **More logging on the realtime stream.** Handshake rejections (missing `fronts:read` scope, connection-cap hits) and mid-stream closes (credential revoked/expired, slow-client backpressure) now emit a log line naming the account/key, so an operator can see *which* account is affected rather than only a metric climbing. No secrets or tokens are logged.
+
 ## [1.3.3] - 2026-07-24
 
 ### Fixed
