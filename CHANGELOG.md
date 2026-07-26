@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-07-25
+
 ### Added
 
 - **A durable security-event trail for the sensitive re-authentication (step-up) gates.** A failed re-auth on the admin dashboard, the full account-data export, and the email-change / 2FA-enrolment / 2FA-disable / recovery-code-regeneration / account-deletion actions now records a security event (and a log line), instead of only advancing the lockout counter - so a responder can see attempts to take over an account from a live session. Successful step-ups are recorded too. This adds new security-event types and a database migration.
