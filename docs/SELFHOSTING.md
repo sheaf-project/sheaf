@@ -521,12 +521,16 @@ It is on by default. The settings:
 
 ```env
 FRONT_STREAM_ENABLED=true                     # off returns 404 for the endpoint
-FRONT_STREAM_MAX_CONNECTIONS_PER_ACCOUNT=5    # concurrent streams one account may hold
+FRONT_STREAM_MAX_CONNECTIONS_FREE=5           # concurrent streams a free-tier account may hold (0 = unlimited)
+FRONT_STREAM_MAX_CONNECTIONS_PLUS=10          # ... a plus-tier account
+FRONT_STREAM_MAX_CONNECTIONS_SELFHOSTED=0     # ... a self-hosted account (0 = unlimited)
 FRONT_STREAM_HEARTBEAT_SECONDS=20             # keep-alive ping interval
 FRONT_STREAM_AUTH_RECHECK_SECONDS=60          # how often a live stream re-validates its key/session
 ```
 
-Each open stream is a long-lived connection, so on a busy multi-account instance they are a real resource. The per-account cap bounds that; lower it if you are tight on connections, or set `FRONT_STREAM_ENABLED=false` to turn the endpoint off entirely. A revoked or expired API key drops its stream within `FRONT_STREAM_AUTH_RECHECK_SECONDS`. The `sheaf_realtime_*` metrics (active connections, delivery lag, drops, handshake failures) track it - see [docs/METRICS.md](METRICS.md).
+Each open stream is a long-lived connection, so on a busy multi-account instance they are a real resource. The per-account cap bounds that, and it is per user tier (`0` means unlimited). On a self-hosted instance accounts default to the self-hosted tier, which is unlimited out of the box; set `FRONT_STREAM_MAX_CONNECTIONS_SELFHOSTED` to a positive number if you want to bound it, or set `FRONT_STREAM_ENABLED=false` to turn the endpoint off entirely. A revoked or expired API key drops its stream within `FRONT_STREAM_AUTH_RECHECK_SECONDS`. The `sheaf_realtime_*` metrics (active connections, delivery lag, drops, handshake failures) track it - see [docs/METRICS.md](METRICS.md).
+
+If you put the endpoint behind your own reverse proxy, you must disable response buffering for it or clients see a multi-second stall on connect (for nginx, `proxy_buffering off` on the stream location; the app also sends `X-Accel-Buffering: no`).
 
 ### Dispatcher tuning
 
@@ -1192,6 +1196,14 @@ Serve the `web/dist/` directory with any static file server (nginx, Caddy, etc.)
 **Caddy example:**
 ```
 sheaf.example.com {
+    # Realtime SSE stream: forward each event immediately. Must precede
+    # /v1/* since it also matches that path. If you add `encode`, exclude
+    # this route from it - compressing a live stream re-buffers it.
+    handle /v1/fronts/stream {
+        reverse_proxy localhost:8000 {
+            flush_interval -1
+        }
+    }
     handle /v1/* {
         reverse_proxy localhost:8000
     }
@@ -1242,6 +1254,21 @@ server {
     # 110m fits the 100MB import limit plus multipart overhead.
     client_max_body_size 110m;
 
+    # Realtime SSE stream (GET /v1/fronts/stream). nginx buffers proxied
+    # responses by default, which stalls a live stream on connect; turn it
+    # off for this endpoint. The long read timeout suits the long-lived
+    # connection (the app heartbeats to keep it from idling out).
+    location = /v1/fronts/stream {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+
     # API
     location /v1/ {
         proxy_pass http://localhost:8000;
@@ -1265,6 +1292,10 @@ server {
 ```
 
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
+
+**Streaming endpoints (SSE).** The realtime front-change stream (`GET /v1/fronts/stream`, Server-Sent Events) needs your proxy to forward each event as it arrives rather than buffering the response - otherwise clients (Home Assistant, Node-RED) stall for seconds on connect before the first event. The examples above disable buffering for that path (`proxy_buffering off` for nginx, `flush_interval -1` for Caddy). The app also sends `X-Accel-Buffering: no`, which nginx honours to disable buffering per-response, but Caddy and some other proxies ignore it, so set it explicitly for whatever proxy you run. For Traefik, HAProxy, or others, disable response buffering (enable streaming/flush) for that route, and make sure the route is not gzipped - compressing a live stream re-buffers it. A revoked or expired key drops its stream on its own, so the long read timeout in the nginx example is just to stop an idle-looking (but heartbeating) connection being cut.
+
+**Do not expose `/metrics`.** The Prometheus endpoint is unauthenticated and is meant to be reachable only from your monitoring network. The examples above route only `/v1/` and the SPA, so `/metrics` is never proxied to the public internet; if you add routes, keep it that way and scrape it from inside your network instead.
 
 Two notes on the SPA CSP:
 - `script-src` needs `'unsafe-inline'` because `index.html` carries a small inline script that applies the saved theme before first paint. A stricter hash-based policy would break on every release that touches that script.

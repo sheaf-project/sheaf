@@ -354,6 +354,13 @@ async def _add_openplural_assets(zf: zipfile.ZipFile, envelope: dict) -> None:
             logger.warning("Skipping unreadable asset %s in OpenPlural export", key)
             continue
         if blob is None:
+            # Row references a blob absent from storage: the export.json still
+            # lists it, so the archive is internally inconsistent (missing on
+            # restore). Distinct from the unreadable case above.
+            logger.warning(
+                "OpenPlural export: asset %s missing from storage, omitted "
+                "though still referenced", key,
+            )
             continue
         with zf.open(f"assets/{key}", "w") as dest:
             dest.write(blob)
@@ -386,6 +393,13 @@ async def _add_images(
             logger.warning("Skipping unreadable image %s in export", f.key)
             continue
         if blob is None:
+            # Row references a blob absent from storage: the export still lists
+            # it in uploaded_files[], so the archive is internally inconsistent
+            # (image missing on restore). Distinct from the unreadable case.
+            logger.warning(
+                "export: image %s missing from storage, omitted though still "
+                "referenced (user=%s)", f.key, user.id,
+            )
             continue
         # Use the stored key as the filename inside the zip; keys are
         # opaque UUIDs so they preserve cross-reference uniqueness.

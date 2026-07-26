@@ -337,6 +337,15 @@ async def _deliver_or_retry(
 
     if outcome.permanent:
         channel.destination_state = DestinationState.DISABLED.value
+        # A user's channel is being turned off; the reason lived only in the
+        # metric (channel_type) + the row's last_error column before.
+        logger.warning(
+            "notification channel disabled after permanent failure: "
+            "channel=%s type=%s error=%s",
+            channel.id,
+            ct,
+            outcome.error,
+        )
         await _drop(
             db, row, f"permanent: {outcome.error}",
             channel_type=ct, outcome="permanent_failure",
@@ -355,6 +364,18 @@ async def _deliver_or_retry(
     notifications_dispatched_total.labels(
         channel_type=ct, outcome="transient_failure",
     ).inc()
+    # Attempts are not capped, so a permanently-broken target churns forever;
+    # logging the attempt count makes that visible (a rising attempt= is the
+    # signal to look at the channel). A hard retry cap is a separate decision.
+    logger.warning(
+        "notification delivery failed (will retry): channel=%s type=%s "
+        "attempt=%s backoff=%ss error=%s",
+        channel.id,
+        ct,
+        row.failed_attempts,
+        backoff,
+        outcome.error,
+    )
 
 
 async def _load_row(

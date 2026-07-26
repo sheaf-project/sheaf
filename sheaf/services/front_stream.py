@@ -24,7 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.sessions import get_redis
-from sheaf.models.user import User
+from sheaf.config import settings
+from sheaf.models.user import User, UserTier
 from sheaf.observability.metrics import (
     realtime_events_published_total,
     realtime_publish_failures_total,
@@ -62,11 +63,98 @@ def front_channel(system_id: uuid.UUID) -> str:
     return f"sheaf:fronts:{system_id}"
 
 
-def connection_count_key(account_key: str) -> str:
-    """Redis key holding an account's live-stream connection count. Keyed on
-    the account, never the system, so the cap stays correct once one account
-    maps to several systems."""
-    return f"sheaf:stream:conns:{account_key}"
+def connection_slots_key(account_key: str) -> str:
+    """Redis key holding an account's live front-stream connections as a sorted
+    set: member = a per-connection token, score = that connection's expiry
+    deadline. Keyed on the account, never the system, so the cap stays correct
+    once one account maps to several systems.
+
+    Note the key name differs from the old integer-counter key so a deploy from
+    the counter version does not hit WRONGTYPE against a leftover INCR value -
+    the old key simply ages out on its own TTL."""
+    return f"sheaf:stream:slots:{account_key}"
+
+
+# Acquire a connection slot atomically. The cap is enforced over a sorted set
+# scored by each connection's expiry deadline: we prune expired members
+# (ZREMRANGEBYSCORE) BEFORE counting, so a slot whose owner died without
+# releasing it (hard crash, worker SIGKILL, a disconnect whose teardown never
+# ran) is reclaimed independently of any other live connection on the same
+# account. The old single-counter design could not do that - one leaked slot
+# could wedge the cap indefinitely for a client that stays connected 24/7,
+# which is the intended use. Done in one EVAL so concurrent acquires cannot
+# both pass the cap check (the count and the add are atomic).
+_ACQUIRE_SLOT_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local member = ARGV[2]
+local score = tonumber(ARGV[3])
+local cap = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
+local count = redis.call('ZCARD', key)
+if cap > 0 and count >= cap then
+    return {0, count}
+end
+redis.call('ZADD', key, score, member)
+redis.call('EXPIRE', key, ttl)
+return {1, count + 1}
+"""
+
+
+async def acquire_stream_slot(
+    r, account_key: str, cap: int, now: float, ttl: int
+) -> tuple[bool, int, str]:
+    """Try to take a connection slot for `account_key`.
+
+    Returns (accepted, live_count, member). `cap <= 0` means unlimited. On
+    rejection nothing is added. `member` identifies this connection so it can
+    refresh and release its own slot later. `now` is wall-clock seconds
+    (time.time()), matching the score scale the prune compares against."""
+    member = uuid.uuid4().hex
+    accepted, count = await r.eval(
+        _ACQUIRE_SLOT_LUA,
+        1,
+        connection_slots_key(account_key),
+        now,
+        member,
+        now + ttl,
+        cap,
+        ttl,
+    )
+    return bool(accepted), int(count), member
+
+
+async def refresh_stream_slot(
+    r, account_key: str, member: str, now: float, ttl: int
+) -> None:
+    """Extend this connection's slot (called on each heartbeat) and prune any
+    slots whose owners have died, so the live count stays honest for everyone
+    else on the account. `now` is wall-clock seconds (time.time())."""
+    key = connection_slots_key(account_key)
+    await r.zadd(key, {member: now + ttl})
+    await r.zremrangebyscore(key, "-inf", now)
+    await r.expire(key, ttl)
+
+
+async def release_stream_slot(r, account_key: str, member: str) -> None:
+    """Drop this connection's slot on disconnect. Best-effort: if it does not
+    run (hard kill), the member's score lapses and the next acquire/heartbeat
+    on the account prunes it."""
+    await r.zrem(connection_slots_key(account_key), member)
+
+
+def max_front_stream_connections_for_tier(tier: UserTier | str) -> int:
+    """Per-account concurrent front-stream connection cap for the tier.
+
+    0 = unlimited. Self-hosted is unlimited by default (the default tier is
+    SELF_HOSTED); the hosted service sets FREE / PLUS. Mirrors the other
+    per-tier caps (member_limit_*, storage_quota_*, poll caps)."""
+    if tier == UserTier.PLUS:
+        return settings.front_stream_max_connections_plus
+    if tier == UserTier.SELF_HOSTED:
+        return settings.front_stream_max_connections_selfhosted
+    return settings.front_stream_max_connections_free
 
 
 # ---------------------------------------------------------------------------

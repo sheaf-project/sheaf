@@ -39,12 +39,15 @@ function:
 import base64
 import hashlib
 import hmac
+import logging
 import os
 
 import nacl.exceptions
 import nacl.secret
 
 from sheaf.config import settings
+
+logger = logging.getLogger("sheaf")
 
 # Marker prefix for v2 (AEAD-with-associated-data) tokens. base64url never
 # emits ':', so its presence at the front is an unambiguous format tag.
@@ -181,11 +184,21 @@ def decrypt(token: str, *, aad: bytes | None = None, field: str = "unlabelled") 
             raw = base64.urlsafe_b64decode(token)
             plaintext = box.decrypt(raw).decode()
             version = "v1"
-    except Exception:
+    except Exception as exc:
         # Import here to avoid an import cycle (crypto is imported very
         # early in the bootstrap path, before observability is ready).
         from sheaf.observability.metrics import decrypt_failures_total
         decrypt_failures_total.labels(field=field).inc()
+        # Security/ops relevant: key drift, corruption, or - for a rejected v1
+        # or an AAD-mismatched v2 - a possible downgrade/relocation attempt.
+        # Log the field, attempted format, and error class so a spike is
+        # actionable; never the token, key, aad, or plaintext.
+        logger.warning(
+            "field decrypt failed: field=%s format=%s error=%s",
+            field,
+            "v2" if token.startswith(_V2_PREFIX) else "v1",
+            type(exc).__name__,
+        )
         raise
 
     # Same lazy-import rationale as above.

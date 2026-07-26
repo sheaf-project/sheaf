@@ -9,6 +9,7 @@ Split into:
     exercise the live endpoint through the shared test stack.
 """
 
+import asyncio
 import contextlib
 import json
 import os
@@ -19,14 +20,16 @@ import httpx
 import pytest
 
 from sheaf.config import Settings
+from sheaf.models.user import UserTier
 from sheaf.services.front_stream import (
     authorized_front_system_ids,
     build_change_payload,
     build_snapshot_payload,
-    connection_count_key,
+    connection_slots_key,
     format_comment,
     format_sse,
     front_channel,
+    max_front_stream_connections_for_tier,
     serialize_front_state,
 )
 from sheaf.services.notifications.events import FrontState
@@ -86,8 +89,8 @@ def test_front_channel_is_per_system():
     assert front_channel(sid) == f"sheaf:fronts:{sid}"
 
 
-def test_connection_count_key_is_per_account():
-    assert connection_count_key("acct-123") == "sheaf:stream:conns:acct-123"
+def test_connection_slots_key_is_per_account():
+    assert connection_slots_key("acct-123") == "sheaf:stream:slots:acct-123"
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +102,28 @@ def test_front_stream_config_defaults():
     # test stack might carry.
     fields = Settings.model_fields
     assert fields["front_stream_enabled"].default is True
-    assert fields["front_stream_max_connections_per_account"].default == 5
+    assert fields["front_stream_max_connections_free"].default == 5
+    assert fields["front_stream_max_connections_plus"].default == 10
+    assert fields["front_stream_max_connections_selfhosted"].default == 0
     assert fields["front_stream_heartbeat_seconds"].default == 20
     assert fields["front_stream_auth_recheck_seconds"].default == 60
+
+
+def test_max_front_stream_connections_for_tier_maps_each_tier():
+    # Free/Plus are finite; self-hosted is unlimited (0) by default. Anything
+    # unrecognised falls through to the free cap (the conservative default).
+    assert (
+        max_front_stream_connections_for_tier(UserTier.FREE)
+        == Settings.model_fields["front_stream_max_connections_free"].default
+    )
+    assert (
+        max_front_stream_connections_for_tier(UserTier.PLUS)
+        == Settings.model_fields["front_stream_max_connections_plus"].default
+    )
+    assert (
+        max_front_stream_connections_for_tier(UserTier.SELF_HOSTED)
+        == Settings.model_fields["front_stream_max_connections_selfhosted"].default
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +345,49 @@ def test_integration_stream_requires_fronts_read_scope(auth_client: httpx.Client
         assert resp.status_code == 403
 
 
+def _set_tier(client: httpx.Client, tier: UserTier) -> None:
+    """Set the user's tier directly in the DB.
+
+    The per-account stream cap is tier-derived (no per-user override column),
+    and the selfhosted test stack registers users as SELF_HOSTED = unlimited,
+    so a cap test must pin a finite tier (FREE) to exercise the 429 path.
+    Mirrors _set_member_limit in the import tests.
+    """
+    email = client.get("/v1/auth/me").json()["email"]
+
+    async def _run() -> None:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.crypto import blind_index
+        from sheaf.models.user import User
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with session() as db:
+                result = await db.execute(
+                    select(User).where(User.email_hash == blind_index(email))
+                )
+                user = result.scalar_one()
+                user.tier = tier
+                await db.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
 def test_integration_stream_connection_cap(auth_client: httpx.Client):
-    # Default cap is 5; hold that many open, then the next handshake is 429.
+    # Pin FREE so the cap is finite even on the selfhosted stack (where the
+    # default SELF_HOSTED tier is unlimited): hold `cap` open, next is 429.
+    _set_tier(auth_client, UserTier.FREE)
+    cap = max_front_stream_connections_for_tier(UserTier.FREE)
     key = _create_key(auth_client, ["fronts:read"])
     headers = {"Authorization": f"Bearer {key}"}
-    cap = 5
 
     with httpx.Client(base_url=BASE_URL) as stream_client, ExitStack() as stack:
         for _ in range(cap):
@@ -337,13 +397,51 @@ def test_integration_stream_connection_cap(auth_client: httpx.Client):
                 )
             )
             assert resp.status_code == 200
-            # Read the snapshot so the connection is fully established (its
-            # INCR has landed) before opening the next.
+            # Read the snapshot so the connection is fully established (its slot
+            # has been acquired) before opening the next.
             _read_sse_event(resp.iter_lines())
 
         with httpx.Client(base_url=BASE_URL) as c:
             over = c.get("/v1/fronts/stream", headers=headers, timeout=10.0)
             assert over.status_code == 429
+
+
+def test_integration_stream_reclaims_dead_slots(auth_client: httpx.Client):
+    """A slot leaked by a hard-killed connection is reclaimed on the next
+    acquire, independently of any other live connection - so a 24/7 client
+    can't wedge the cap with stale slots.
+
+    We inject `cap` already-expired members straight into the account's slot
+    set (what hard-killed connections leave behind) and confirm a real
+    connection still gets 200 instead of 429: the acquire prunes the dead slots
+    first. A single counter could not tell live from dead and would 429.
+    """
+    import redis as _redis
+
+    _set_tier(auth_client, UserTier.FREE)
+    cap = max_front_stream_connections_for_tier(UserTier.FREE)
+    user_id = auth_client.get("/v1/auth/me").json()["id"]
+    key = _create_key(auth_client, ["fronts:read"])
+    headers = {"Authorization": f"Bearer {key}"}
+
+    slots_key = connection_slots_key(str(user_id))
+    r = _redis.from_url(
+        os.environ.get("SHEAF_TEST_REDIS_URL", "redis://localhost:6380/0")
+    )
+    try:
+        # Fill the cap with members scored in the distant past (epoch second 1),
+        # i.e. long expired, as hard-killed connections would leave behind.
+        r.zadd(slots_key, {f"dead-{i}": 1.0 for i in range(cap)})
+        assert r.zcard(slots_key) == cap  # sanity: cap dead slots present
+
+        with httpx.Client(base_url=BASE_URL) as stream_client, stream_client.stream(
+            "GET", "/v1/fronts/stream", headers=headers, timeout=15.0
+        ) as resp:
+            assert resp.status_code == 200
+            assert _read_sse_event(resp.iter_lines())["event"] == "snapshot"
+    finally:
+        r.delete(slots_key)
+        r.close()
 
 
 @pytest.mark.skipif(

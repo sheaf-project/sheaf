@@ -49,6 +49,17 @@ class SecurityEventType(enum.StrEnum):
     PASSWORD_RESET_REQUEST = "password_reset_request"
     PASSWORD_RESET_COMPLETE = "password_reset_complete"
     PASSWORD_CHANGE = "password_change"
+    # Sensitive re-auth (step-up) gates. Failures here are account-takeover
+    # attempt signals on a live session; success is recorded too because the
+    # actions they guard are high-value. Added values need a migration (this
+    # is a native Postgres enum) - see the matching alembic revision.
+    ADMIN_STEP_UP = "admin_step_up"
+    ACCOUNT_DATA_ACCESS = "account_data_access"
+    EMAIL_CHANGE = "email_change"
+    TOTP_ENROLL = "totp_enroll"
+    TOTP_DISABLE = "totp_disable"
+    RECOVERY_CODES_REGEN = "recovery_codes_regen"
+    ACCOUNT_DELETION = "account_deletion"
 
 
 class SecurityEvent(UUIDMixin, Base):

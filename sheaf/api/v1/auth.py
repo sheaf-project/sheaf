@@ -938,8 +938,29 @@ async def change_email(
     # feeds the same unified lockout as login.
     ensure_not_locked(user)
 
+    # Durable trail: the email-change gate is an account-takeover primitive, so
+    # a failed re-auth here is a takeover-attempt signal and success is a real
+    # account event. Best-effort, never raises.
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.EMAIL_CHANGE,
+            outcome=outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     if not await verify_password(body.current_password, user.password_hash):
         await record_login_failure(db, user)
+        await _sec("password_incorrect")
+        logger.warning(
+            "email-change step-up failed (wrong password): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
@@ -958,6 +979,12 @@ async def change_email(
             db, user, body.totp_code
         ):
             await record_login_failure(db, user, reason="totp_failures")
+            await _sec("totp_invalid")
+            logger.warning(
+                "email-change step-up failed (bad TOTP): user=%s ip=%s",
+                user.id,
+                event_ip,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=totp_error_detail(totp_result),
@@ -1001,6 +1028,7 @@ async def change_email(
         target_label=redact_email(new_email),
     )
     await db.commit()
+    await _sec("success")
 
     # Same as change-password: prefer the auth-bound session id so bearer
     # clients (no cookie) still revoke their other sessions, falling back to
@@ -1787,6 +1815,7 @@ async def update_me(
 )
 async def totp_setup(
     body: TOTPSetupRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1808,6 +1837,19 @@ async def totp_setup(
 
     if not await verify_password(body.password, user.password_hash):
         await record_login_failure(db, user)
+        event_ip = client_ip(request)
+        await record_security_event(
+            event_type=SecurityEventType.TOTP_ENROLL,
+            outcome="password_incorrect",
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=request.headers.get("user-agent"),
+        )
+        logger.warning(
+            "TOTP-enroll step-up failed (wrong password): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password",
@@ -1866,6 +1908,7 @@ async def totp_verify(
 )
 async def totp_disable(
     body: UserLogin,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1878,8 +1921,29 @@ async def totp_disable(
 
     ensure_not_locked(user)
 
+    # Durable trail: attempts to strip a victim's second factor are a classic
+    # takeover step, so failures are recorded and success (2FA actually
+    # removed) is too. Best-effort, never raises.
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.TOTP_DISABLE,
+            outcome=outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     if not await verify_password(body.password, user.password_hash):
         await record_login_failure(db, user)
+        await _sec("password_incorrect")
+        logger.warning(
+            "TOTP-disable step-up failed (wrong password): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password",
@@ -1897,6 +1961,12 @@ async def totp_disable(
         db, user, body.totp_code
     ):
         await record_login_failure(db, user, reason="totp_failures")
+        await _sec("totp_invalid")
+        logger.warning(
+            "TOTP-disable step-up failed (bad TOTP): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=totp_error_detail(totp_result),
@@ -1929,6 +1999,7 @@ async def totp_disable(
     await revoke_all_trusted_devices(db, user.id)
     await log_activity(db, user_id=user.id, action=ActivityAction.TOTP_DISABLED)
     await db.commit()
+    await _sec("success")
 
 
 @router.post(
@@ -1937,6 +2008,7 @@ async def totp_disable(
 )
 async def regenerate_recovery_codes(
     body: TOTPVerify,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1949,10 +2021,31 @@ async def regenerate_recovery_codes(
 
     ensure_not_locked(user)
 
+    # Durable trail: recovery-code regen mints a fresh 2FA-bypass credential,
+    # so a failed attempt is a takeover-attempt signal and success is recorded
+    # too. Best-effort, never raises; the codes themselves are never logged.
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.RECOVERY_CODES_REGEN,
+            outcome=outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     secret = decrypt(user.totp_secret, aad=user_totp_secret_aad(user.id))
     totp_result = await check_code_once(user.id, secret, body.code)
     if totp_result is not TotpCheck.OK:
         await record_login_failure(db, user, reason="totp_failures")
+        await _sec("totp_invalid")
+        logger.warning(
+            "recovery-code regen step-up failed (bad TOTP): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=totp_error_detail(totp_result),
@@ -1966,6 +2059,7 @@ async def regenerate_recovery_codes(
         db, user_id=user.id, action=ActivityAction.RECOVERY_CODES_REGENERATED
     )
     await db.commit()
+    await _sec("success")
     return {"recovery_codes": codes}
 
 
@@ -2105,6 +2199,7 @@ class DeleteAccountRequest(BaseModel):
 @router.post("/delete-account", dependencies=[rate_limit(3, 60, "user")])
 async def request_account_deletion(
     body: DeleteAccountRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -2119,8 +2214,29 @@ async def request_account_deletion(
     # same as login.
     ensure_not_locked(user)
 
+    # Durable trail: probing the account-destruction gate on a live session is
+    # a destructive-intent signal, so failures are recorded and the scheduled
+    # deletion is too. Best-effort, never raises.
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _sec(outcome: str) -> None:
+        await record_security_event(
+            event_type=SecurityEventType.ACCOUNT_DELETION,
+            outcome=outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+        )
+
     if not await verify_password(body.password, user.password_hash):
         await record_login_failure(db, user)
+        await _sec("password_incorrect")
+        logger.warning(
+            "account-deletion step-up failed (wrong password): user=%s ip=%s",
+            user.id,
+            event_ip,
+        )
         # 403: step-up auth denial. See system_safety.verify_destructive_auth
         # for full reasoning.
         raise HTTPException(
@@ -2142,6 +2258,12 @@ async def request_account_deletion(
             db, user, body.totp_code
         ):
             await record_login_failure(db, user, reason="totp_failures")
+            await _sec("totp_invalid")
+            logger.warning(
+                "account-deletion step-up failed (bad TOTP): user=%s ip=%s",
+                user.id,
+                event_ip,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=totp_error_detail(totp_result),
@@ -2181,6 +2303,7 @@ async def request_account_deletion(
         db, user_id=user.id, action=ActivityAction.ACCOUNT_DELETION_SCHEDULED
     )
     await db.commit()
+    await _sec("success")
 
     return {
         "deletion_scheduled_for": deletion_date.isoformat(),

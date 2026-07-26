@@ -118,6 +118,39 @@ def test_password_change_recorded(admin_client: httpx.Client):
     )
 
 
+def test_email_change_step_up_recorded(admin_client: httpx.Client):
+    # The email-change step-up gate is one of the sensitive re-auth gates that
+    # now record a security event: a failed re-auth (takeover-attempt signal)
+    # and the successful change are both in the trail.
+    email = f"sec-emailchange-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        reg = c.post(
+            "/v1/auth/register", json={"email": email, "password": PASSWORD}
+        )
+        assert reg.status_code == 201, reg.text
+        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        uid = _find_user_id(admin_client, email)
+
+        new_email = f"sec-emailnew-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        # Wrong current password -> rejected and recorded.
+        bad = c.post(
+            "/v1/auth/change-email",
+            json={"new_email": new_email, "current_password": "wrong-password"},
+        )
+        assert bad.status_code == 401, bad.text
+        # Correct password -> succeeds and is recorded.
+        ok = c.post(
+            "/v1/auth/change-email",
+            json={"new_email": new_email, "current_password": PASSWORD},
+        )
+        assert ok.status_code == 200, ok.text
+
+    events = _timeline(admin_client, uid)
+    outcomes = [e["outcome"] for e in events if e["event_type"] == "email_change"]
+    assert "password_incorrect" in outcomes
+    assert "success" in outcomes
+
+
 # ---------------------------------------------------------------------------
 # Privacy guard: unknown-user attempts
 # ---------------------------------------------------------------------------

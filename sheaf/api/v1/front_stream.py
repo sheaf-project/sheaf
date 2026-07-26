@@ -37,12 +37,15 @@ from sheaf.observability.metrics import (
     realtime_handshake_failures_total,
 )
 from sheaf.services.front_stream import (
+    acquire_stream_slot,
     authorized_front_system_ids,
     build_snapshot_payload,
-    connection_count_key,
     format_comment,
     format_sse,
     front_channel,
+    max_front_stream_connections_for_tier,
+    refresh_stream_slot,
+    release_stream_slot,
     shutdown_requested,
 )
 from sheaf.services.notifications.events import snapshot_front_state
@@ -78,6 +81,11 @@ def _ensure_fronts_read_scope(request: Request) -> None:
     ):
         return
     realtime_handshake_failures_total.labels(reason="missing_scope").inc()
+    logger.info(
+        "front-stream handshake rejected: missing fronts:read scope "
+        "(api_key_id=%s)",
+        getattr(request.state, "api_key_id", None),
+    )
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Missing scope: fronts:read",
@@ -164,22 +172,23 @@ async def _pubsub_reader(pubsub, queue: asyncio.Queue, state: dict) -> None:
 
 async def _stream(
     account_key: str,
+    slot_member: str,
     system_ids: list[uuid.UUID],
     auth_ctx: dict,
 ):
     """The SSE body. Guarantees, on every exit path (client disconnect,
     error, revocation, backpressure, shutdown), that the pub/sub connection
-    is closed, the connection-cap counter is decremented, the active-
-    connections gauge is decremented, and the duration + close reason are
-    recorded - all in the `finally`.
+    is closed, this connection's cap slot is released, the active-connections
+    gauge is decremented, and the duration + close reason are recorded - all in
+    the `finally`.
     """
     heartbeat = settings.front_stream_heartbeat_seconds
     authcheck = settings.front_stream_auth_recheck_seconds
-    # Refreshed each heartbeat so a live connection keeps its cap slot alive;
-    # if every connection for an account dies without running `finally` (hard
-    # crash), the counter self-heals when the key expires. Comfortably longer
-    # than the heartbeat that refreshes it.
-    cap_ttl = max(heartbeat * 5, 60)
+    # Refreshed each heartbeat so a live connection keeps its slot alive; if
+    # this connection dies without running `finally`, its slot's score lapses
+    # and the next acquire/heartbeat on the account prunes it. Comfortably
+    # longer than the heartbeat that refreshes it.
+    slot_ttl = max(heartbeat * 5, 60)
 
     r = await get_redis()
     pubsub = r.pubsub()
@@ -226,6 +235,11 @@ async def _stream(
             if state.get("overflow"):
                 realtime_events_dropped_total.labels(reason="backpressure").inc()
                 reason = "backpressure"
+                logger.info(
+                    "front-stream closing on backpressure (slow client): "
+                    "account=%s",
+                    account_key,
+                )
                 break
             if state.get("error"):
                 reason = "error"
@@ -254,13 +268,25 @@ async def _stream(
             now = time.monotonic()
             if now >= next_heartbeat:
                 yield format_comment()
-                # Keep the account's cap slot from expiring under us.
-                await r.expire(connection_count_key(account_key), cap_ttl)
+                # Keep our slot alive and prune any dead slots on the account.
+                # Wall-clock (time.time()) since slot scores are wall-clock
+                # deadlines; `now` here is monotonic and only schedules beats.
+                await refresh_stream_slot(
+                    r, account_key, slot_member, time.time(), slot_ttl
+                )
                 next_heartbeat = now + heartbeat
             if now >= next_authcheck:
                 ok, close_reason = await _recheck_auth(auth_ctx)
                 if not ok:
                     reason = close_reason or "auth_revoked"
+                    logger.info(
+                        "front-stream closing: credential %s mid-stream: "
+                        "account=%s auth=%s api_key_id=%s",
+                        reason,
+                        account_key,
+                        auth_ctx.get("method"),
+                        auth_ctx.get("api_key_id"),
+                    )
                     break
                 next_authcheck = now + authcheck
     except asyncio.CancelledError:
@@ -273,15 +299,25 @@ async def _stream(
     finally:
         # Suppress errors (and the CancelledError raised into the awaited
         # reader during teardown) so one failing cleanup step can't skip the
-        # rest of the finally - the cap DECR and gauge must always run.
+        # rest of the finally - the slot release and gauge must always run.
         if reader is not None:
             reader.cancel()
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await reader
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await pubsub.aclose()
-        with contextlib.suppress(Exception):
-            await r.decr(connection_count_key(account_key))
+        # Releasing the slot must never raise out of teardown; if it fails the
+        # slot's score still lapses and gets pruned later, but surface it rather
+        # than swallowing it silently.
+        try:
+            await release_stream_slot(r, account_key, slot_member)
+        except Exception:
+            logger.warning(
+                "front-stream failed to release connection slot "
+                "(slot ages out on its own): account=%s",
+                account_key,
+                exc_info=True,
+            )
         realtime_connections_active.dec()
         realtime_connection_duration_seconds.observe(
             time.monotonic() - started
@@ -320,24 +356,38 @@ async def stream_fronts(
     account_key = str(user.id)
     auth_ctx = _auth_context(request)
 
-    # Connection cap: INCR-then-check on the account counter. DECR happens in
-    # the generator's finally (below) on every exit path; a rejected handshake
-    # DECRs here immediately since no generator is started.
+    # Connection cap. Slots live in a per-account sorted set scored by each
+    # connection's expiry; acquiring prunes expired slots first, so a slot
+    # leaked by a hard-killed connection is reclaimed independently of any
+    # other live connection on the account (a single counter could not do that,
+    # and one stale slot could wedge the cap for a 24/7 client). The slot is
+    # released in the generator's finally on every exit path; a rejected
+    # handshake adds nothing to release.
     r = await get_redis()
-    cap = settings.front_stream_max_connections_per_account
-    conns_key = connection_count_key(account_key)
-    count = await r.incr(conns_key)
-    await r.expire(conns_key, max(settings.front_stream_heartbeat_seconds * 5, 60))
-    if cap > 0 and count > cap:
-        await r.decr(conns_key)
+    cap = max_front_stream_connections_for_tier(user.tier)
+    slot_ttl = max(settings.front_stream_heartbeat_seconds * 5, 60)
+    accepted, count, slot_member = await acquire_stream_slot(
+        r, account_key, cap, time.time(), slot_ttl
+    )
+    if not accepted:
         realtime_handshake_failures_total.labels(reason="connection_cap").inc()
+        # The metric can't carry the account by the cardinality rule, so log it.
+        logger.warning(
+            "front-stream connection cap reached: account=%s count=%s cap=%s "
+            "auth=%s api_key_id=%s",
+            account_key,
+            count,
+            cap,
+            auth_ctx.get("method"),
+            auth_ctx.get("api_key_id"),
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many concurrent front-stream connections for this account",
         )
 
     return StreamingResponse(
-        _stream(account_key, system_ids, auth_ctx),
+        _stream(account_key, slot_member, system_ids, auth_ctx),
         media_type="text/event-stream",
         headers={
             # Defeat proxy buffering / caching that would defeat a live stream.

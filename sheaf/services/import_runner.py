@@ -303,6 +303,11 @@ async def run_import_tick(db: AsyncSession) -> dict:
         async with async_session_factory() as fresh:
             fresh_job = await fresh.get(ImportJob, job_id)
             if fresh_job is None:
+                logger.error(
+                    "import job %s failed and its row vanished before the "
+                    "failure could be recorded (job lost from operator view)",
+                    job_id,
+                )
                 return {"items_processed": 1, "details": "job vanished mid-run"}
             append_event(
                 fresh_job,

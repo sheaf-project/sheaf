@@ -13,10 +13,12 @@ orphan-sweep job for anything left behind by a crashed runner.
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import uuid
 
 from sheaf.storage import get_storage
+
+logger = logging.getLogger("sheaf.imports")
 
 # All import payloads share this prefix in the storage backend, so a
 # self-hoster with S3 can apply lifecycle rules / IAM policies against
@@ -50,6 +52,16 @@ async def delete_payload(key: str) -> None:
     the job row is the source of truth for whether an import 'happened';
     a leftover payload blob is harmless and the orphan sweep will
     eventually catch it."""
-    # Don't let storage cleanup take down a finalize path.
-    with contextlib.suppress(Exception):
+    # Don't let storage cleanup take down a finalize path, but the staged blob
+    # is the user's raw import file (personal data), so a persistent delete
+    # failure that leaves PII sitting in storage should be visible rather than
+    # silent - the orphan sweep is only a backstop.
+    try:
         await get_storage().delete(key)
+    except Exception:
+        logger.warning(
+            "failed to delete staged import payload %s (orphan sweep will "
+            "retry; a persistent failure leaves user data in storage)",
+            key,
+            exc_info=True,
+        )

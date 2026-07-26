@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import uuid
 from collections.abc import Callable
 
@@ -14,6 +15,8 @@ from sheaf.database import get_db
 from sheaf.models.user import AccountStatus, User
 from sheaf.request import client_ip
 from sheaf.request_context import set_request_origin
+
+logger = logging.getLogger("sheaf")
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -44,6 +47,11 @@ async def get_current_user(
         api_key = result.scalar_one_or_none()
 
         if api_key is None:
+            logger.warning(
+                "auth: unknown API key presented (possible credential scan): "
+                "ip=%s",
+                client_ip(request),
+            )
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
         # Check expiry
@@ -51,6 +59,12 @@ async def get_current_user(
             from datetime import UTC, datetime
 
             if datetime.now(UTC) > api_key.expires_at:
+                logger.info(
+                    "auth: expired API key used: api_key_id=%s user=%s ip=%s",
+                    api_key.id,
+                    api_key.user_id,
+                    client_ip(request),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="API key expired"
                 )
@@ -107,6 +121,13 @@ async def get_current_user(
         jwt_sid = payload.get("sid")
         if jwt_sid is not None:
             if await get_session_user_id(jwt_sid) is None:
+                logger.warning(
+                    "auth: access token used after its session was revoked "
+                    "(possible token replay): session=%s user=%s ip=%s",
+                    jwt_sid,
+                    payload.get("sub"),
+                    client_ip(request),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Session revoked",
@@ -145,6 +166,13 @@ async def get_current_user(
     user = result.scalar_one_or_none()
 
     if user is None:
+        logger.warning(
+            "auth: valid credential resolved to a missing user (dangling "
+            "credential / data inconsistency): user=%s method=%s ip=%s",
+            user_id,
+            getattr(request.state, "auth_method", None),
+            client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
@@ -245,6 +273,14 @@ def require_scope(scope: str) -> Callable:
             if f"{resource}:write" in scopes or f"{resource}:delete" in scopes:
                 return user
 
+        logger.info(
+            "auth: API key missing required scope: scope=%s api_key_id=%s "
+            "user=%s ip=%s",
+            scope,
+            getattr(request.state, "api_key_id", None),
+            user.id,
+            client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Missing scope: {scope}",
@@ -285,6 +321,13 @@ async def get_admin_user(
     scopes = request.state.api_key_scopes
     if scopes is not None:
         if not any(s.startswith("admin:") for s in scopes):
+            logger.warning(
+                "auth: non-admin API key reached admin endpoint "
+                "(privilege probe): api_key_id=%s user=%s ip=%s",
+                getattr(request.state, "api_key_id", None),
+                user.id,
+                client_ip(request),
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Missing scope: admin:read",
@@ -309,6 +352,13 @@ async def get_admin_write_user(
     scopes = request.state.api_key_scopes
     if scopes is not None:
         if "admin:write" not in scopes:
+            logger.warning(
+                "auth: API key without admin:write reached admin-write "
+                "endpoint (privilege probe): api_key_id=%s user=%s ip=%s",
+                getattr(request.state, "api_key_id", None),
+                user.id,
+                client_ip(request),
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Missing scope: admin:write",
