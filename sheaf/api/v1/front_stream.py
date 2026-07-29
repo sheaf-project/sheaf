@@ -21,6 +21,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from sheaf.api.v1.fronts import serialize_open_fronts_for_stream
 from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.sessions import get_redis, get_session_user_id
 from sheaf.config import settings
@@ -216,7 +217,11 @@ async def _stream(
         # snapshot first also means a slow client cannot pin the connection.
         async with async_session_factory() as db:
             snapshots = [
-                build_snapshot_payload(sid, await snapshot_front_state(db, sid))
+                build_snapshot_payload(
+                    sid,
+                    await snapshot_front_state(db, sid),
+                    fronts=await serialize_open_fronts_for_stream(db, sid),
+                )
                 for sid in system_ids
             ]
         for snap in snapshots:

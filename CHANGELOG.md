@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **The realtime front-change stream now carries per-front detail.** Each `snapshot` and `front_change` event gains a `fronts` array describing every currently-open front after the change - id, member ids, start time, custom status, and the per-member "fronting since" timestamp - mirroring `GET /v1/fronts/current`. A stream client (for example the Home Assistant integration) can now drive per-front state straight from the event instead of re-polling after each one, and can tell when a member joins a *new* front while already fronting elsewhere, which the existing before/after union lists could not express. The `fronting` / `before` / `after` fields are unchanged, so existing clients keep working. See docs/CLIENT_DESIGN.md.
+
 ## [1.3.4] - 2026-07-25
 
 ### Added
