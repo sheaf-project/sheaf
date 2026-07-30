@@ -171,8 +171,27 @@ def test_build_snapshot_payload_shape():
     payload = build_snapshot_payload(sid, _state(m))
     assert payload["system_id"] == str(sid)
     assert payload["fronting"] == [str(m)]
+    # per-front detail defaults to empty when not supplied
+    assert payload["fronts"] == []
     # event_id present and JSON-serializable
     assert "event_id" in payload
+    json.dumps(payload)
+
+
+def test_build_snapshot_payload_carries_fronts_detail():
+    sid = uuid.uuid4()
+    m = uuid.uuid4()
+    fronts = [
+        {
+            "id": "f1",
+            "member_ids": [str(m)],
+            "started_at": "2026-07-23T12:00:00+00:00",
+            "custom_status": None,
+            "member_since": {str(m): "2026-07-23T12:00:00+00:00"},
+        }
+    ]
+    payload = build_snapshot_payload(sid, _state(m), fronts=fronts)
+    assert payload["fronts"] == fronts
     json.dumps(payload)
 
 
@@ -184,6 +203,15 @@ def test_build_change_payload_shape_carries_system_id_and_both_states():
     after_m = uuid.uuid4()
     changed_at = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
     event_id = uuid.uuid4()
+    fronts = [
+        {
+            "id": "f1",
+            "member_ids": [str(after_m)],
+            "started_at": changed_at.isoformat(),
+            "custom_status": "at work",
+            "member_since": {str(after_m): changed_at.isoformat()},
+        }
+    ]
     payload = build_change_payload(
         sid,
         _state(before_m),
@@ -191,6 +219,7 @@ def test_build_change_payload_shape_carries_system_id_and_both_states():
         changed_at=changed_at,
         event_id=event_id,
         emit_ts=123.5,
+        fronts=fronts,
     )
     assert payload["system_id"] == str(sid)
     assert payload["before"] == [str(before_m)]
@@ -198,6 +227,16 @@ def test_build_change_payload_shape_carries_system_id_and_both_states():
     assert payload["changed_at"] == changed_at.isoformat()
     assert payload["event_id"] == str(event_id)
     assert payload["emit_ts"] == 123.5
+    # NEW: per-front detail is carried through verbatim
+    assert payload["fronts"] == fronts
+    # and defaults to [] when the caller omits it (back-compat)
+    assert (
+        build_change_payload(
+            sid, _state(before_m), _state(after_m),
+            changed_at=changed_at, event_id=event_id, emit_ts=1.0,
+        )["fronts"]
+        == []
+    )
     json.dumps(payload)
 
 
@@ -305,6 +344,58 @@ def test_integration_stream_sends_snapshot_then_front_change(auth_client: httpx.
         assert change["event"] == "front_change"
         assert change["data"]["system_id"] == snapshot["data"]["system_id"]
         assert member in change["data"]["after"]
+
+
+def test_integration_stream_frame_carries_per_front_detail(auth_client: httpx.Client):
+    # The fronts[] array carries per-front composition (id, member_ids,
+    # started_at, custom_status, member_since) so a client can tell "a member
+    # joined a new front" from the frame - which the before/after union lists
+    # can't express. Both the snapshot and every front_change carry it.
+    a = _create_member(auth_client, f"A-{uuid.uuid4().hex[:6]}")
+    b = _create_member(auth_client, f"B-{uuid.uuid4().hex[:6]}")
+    key = _create_key(auth_client, ["fronts:read", "fronts:write"])
+    headers = {"Authorization": f"Bearer {key}"}
+    _front_keys = {"id", "member_ids", "started_at", "custom_status", "member_since"}
+
+    with httpx.Client(base_url=BASE_URL) as stream_client, stream_client.stream(
+        "GET", "/v1/fronts/stream", headers=headers, timeout=15.0
+    ) as resp:
+        assert resp.status_code == 200
+        lines = resp.iter_lines()
+
+        snapshot = _read_sse_event(lines)
+        assert snapshot["event"] == "snapshot"
+        assert "fronts" in snapshot["data"]  # per-front baseline on connect
+
+        # Front A.
+        assert (
+            auth_client.post("/v1/fronts", json={"member_ids": [a]}).status_code
+            == 201
+        )
+        change = _read_sse_event(lines)
+        fronts = change["data"]["fronts"]
+        assert isinstance(fronts, list) and fronts
+        for f in fronts:
+            assert set(f) >= _front_keys
+        assert any(a in f["member_ids"] for f in fronts)
+
+        # Now front A + B: B joins the fronting composition.
+        assert (
+            auth_client.post(
+                "/v1/fronts", json={"member_ids": [a, b]}
+            ).status_code
+            == 201
+        )
+        change2 = _read_sse_event(lines)
+        fronts2 = change2["data"]["fronts"]
+        # Every fronting member in the union is accounted for across fronts[],
+        # and each front maps its members to a member_since timestamp.
+        detail_members = {m for f in fronts2 for m in f["member_ids"]}
+        assert detail_members == set(change2["data"]["after"])
+        assert b in detail_members
+        for f in fronts2:
+            for mid in f["member_ids"]:
+                assert mid in f["member_since"]
 
 
 def test_integration_stream_does_not_block_same_key_requests(auth_client: httpx.Client):

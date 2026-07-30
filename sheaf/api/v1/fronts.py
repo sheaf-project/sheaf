@@ -235,6 +235,53 @@ async def _build_coalesced_member_since(
     return out
 
 
+async def serialize_open_fronts_for_stream(
+    db: AsyncSession, system_id: uuid.UUID
+) -> list[dict]:
+    """Serialise a system's currently-open fronts for the realtime SSE stream.
+
+    Mirrors the per-front shape GET /v1/fronts/current returns - id, member_ids,
+    started_at, decrypted custom_status, and the coalesced per-member
+    `member_since` map - so a stream client can drive per-front state straight
+    from the frame instead of re-polling. This is the detail the union
+    before/after member-id lists can't express (a member joining a new front
+    while already fronting elsewhere). Returns [] for an unknown system.
+
+    Ordered newest-first to match /current. The `member_since` walk-back reuses
+    `_build_coalesced_member_since`, so composition and timestamps are identical
+    to the REST view.
+    """
+    system = (
+        await db.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if system is None:
+        return []
+    result = await db.execute(
+        select(Front)
+        .options(selectinload(Front.members))
+        .where(Front.system_id == system_id, Front.ended_at.is_(None))
+        .order_by(Front.started_at.desc())
+    )
+    fronts = list(result.scalars().all())
+    since_map = await _build_coalesced_member_since(db, system, fronts)
+    return [
+        {
+            "id": str(f.id),
+            "member_ids": [str(m.id) for m in f.members],
+            "started_at": f.started_at.isoformat(),
+            "custom_status": (
+                decrypt(f.custom_status, aad=front_custom_status_aad(f.id))
+                if f.custom_status
+                else None
+            ),
+            "member_since": {
+                mid: ts.isoformat() for mid, ts in since_map[f.id][0].items()
+            },
+        }
+        for f in fronts
+    ]
+
+
 @router.get("", response_model=list[FrontRead])
 async def list_fronts(
     response: Response,
@@ -519,8 +566,14 @@ async def create_front(
     await db.commit()
     fronts_created_total.inc()
     # Realtime stream fast path: publish AFTER commit so a rolled-back switch
-    # can't emit a phantom event. Best-effort - never fails the request.
-    await publish_front_change(system.id, before_state, after_state)
+    # can't emit a phantom event. Best-effort - never fails the request. The
+    # per-front detail is resolved post-commit so it reflects the new state.
+    await publish_front_change(
+        system.id,
+        before_state,
+        after_state,
+        fronts=await serialize_open_fronts_for_stream(db, system.id),
+    )
     await db.refresh(front, ["members"])
     return _front_to_read(front)
 
@@ -666,7 +719,12 @@ async def update_front(
 
     await db.commit()
     # Realtime stream fast path: publish AFTER commit (see create_front).
-    await publish_front_change(system.id, before_state, after_state)
+    await publish_front_change(
+        system.id,
+        before_state,
+        after_state,
+        fronts=await serialize_open_fronts_for_stream(db, system.id),
+    )
     await db.refresh(front, ["members"])
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.FRONT_DELETE

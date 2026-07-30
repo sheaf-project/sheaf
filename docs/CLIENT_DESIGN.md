@@ -388,13 +388,29 @@ On connect you get one `snapshot` event (apply as truth), then `front_change` ev
 
 ```
 event: snapshot
-data: {"system_id":"...","fronting":["<member_id>", ...],"event_id":"..."}
+data: {"system_id":"...","fronting":["<member_id>", ...],"fronts":[...],"event_id":"..."}
 
 event: front_change
-data: {"system_id":"...","before":[...],"after":[...],"changed_at":"<iso8601>","event_id":"...","emit_ts":<float>}
+data: {"system_id":"...","before":[...],"after":[...],"fronts":[...],"changed_at":"<iso8601>","event_id":"...","emit_ts":<float>}
 ```
 
-`fronting`/`before`/`after` are arrays of member-id strings (resolve names via the members API). `after` is the new authoritative fronting set. There is no replay buffer: SSE auto-reconnects and the server re-sends a fresh `snapshot`, so a reconnecting client is always correct (re-apply the snapshot rather than resuming from `Last-Event-ID`). Responses: `404` if the operator disabled the stream (`FRONT_STREAM_ENABLED`), `403` if the key lacks `fronts:read`, `429` if the account is over its concurrent-connection cap (back off and retry). Full contract: `sheaf-design-docs/realtime-front-stream.md`.
+`fronting`/`before`/`after` are arrays of member-id strings (resolve names via the members API). `after` is the new authoritative fronting set (the union of everyone fronting).
+
+`fronts` (on both events) is the full per-front composition AFTER the change, one element per currently-open front, so you can drive per-front state straight from the frame without re-polling `GET /v1/fronts/current`. It is the detail the union lists can't express: a member joining a *new* front while already fronting elsewhere shows up as a new `fronts` element even though their membership of the `after` union is unchanged. Each element mirrors the `GET /v1/fronts/current` shape, so the same parser works:
+
+```
+{
+  "id": "<front_id>",
+  "member_ids": ["<member_id>", ...],
+  "started_at": "<iso8601>",
+  "custom_status": "at work",           // or null
+  "member_since": {"<member_id>": "<iso8601>", ...}
+}
+```
+
+`member_since` is the per-member effective fronting-since timestamp (coalesced across contiguous fronts exactly as `/current` computes it). An empty `fronts` array means nobody is fronting.
+
+There is no replay buffer: SSE auto-reconnects and the server re-sends a fresh `snapshot`, so a reconnecting client is always correct (re-apply the snapshot rather than resuming from `Last-Event-ID`). Responses: `404` if the operator disabled the stream (`FRONT_STREAM_ENABLED`), `403` if the key lacks `fronts:read`, `429` if the account is over its concurrent-connection cap (back off and retry). Full contract: `sheaf-design-docs/realtime-front-stream.md`.
 
 ### Notes
 
