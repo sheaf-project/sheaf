@@ -80,6 +80,7 @@ CLASSIFICATION: dict[type, dict] = {
             "name", "description", "note", "tag", "avatar_url", "color",
             "privacy", "delete_confirmation", "date_format", "timezone",
             "replace_fronts_default", "coalesce_contiguous_fronts",
+            "show_member_created_date",
             "auto_pin_first_revision", "safety_grace_period_days",
             "safety_applies_to_members", "safety_applies_to_groups",
             "safety_applies_to_tags", "safety_applies_to_fields",

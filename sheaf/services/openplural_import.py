@@ -239,6 +239,7 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
             "timezone": ext.get("timezone"),
             "replace_fronts_default": ext.get("replace_fronts_default"),
             "coalesce_contiguous_fronts": ext.get("coalesce_contiguous_fronts"),
+            "show_member_created_date": ext.get("show_member_created_date"),
             "delete_confirmation": ext.get("delete_confirmation"),
             "safety": ext.get("safety"),
             "retention": ext.get("retention"),
