@@ -39,6 +39,34 @@ def test_systems_patch_rejects_null_replace_fronts_default(
     assert resp.status_code == 422
 
 
+def test_systems_patch_rejects_null_show_member_created_date(
+    auth_client: httpx.Client,
+):
+    resp = auth_client.patch(
+        "/v1/systems/me",
+        json={"show_member_created_date": None},
+    )
+    assert resp.status_code == 422
+
+
+def test_systems_show_member_created_date_round_trips(auth_client: httpx.Client):
+    """Opt-in display setting: defaults off, PATCH turns it on, and it reads
+    back on SystemRead."""
+    assert (
+        auth_client.get("/v1/systems/me").json()["show_member_created_date"]
+        is False
+    )
+    resp = auth_client.patch(
+        "/v1/systems/me", json={"show_member_created_date": True}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["show_member_created_date"] is True
+    assert (
+        auth_client.get("/v1/systems/me").json()["show_member_created_date"]
+        is True
+    )
+
+
 def test_systems_patch_rejects_null_privacy(auth_client: httpx.Client):
     resp = auth_client.patch("/v1/systems/me", json={"privacy": None})
     assert resp.status_code == 422

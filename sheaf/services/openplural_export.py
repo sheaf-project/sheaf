@@ -191,6 +191,7 @@ def build_envelope(
             "timezone": sys_data.get("timezone"),
             "replace_fronts_default": sys_data.get("replace_fronts_default"),
             "coalesce_contiguous_fronts": sys_data.get("coalesce_contiguous_fronts"),
+            "show_member_created_date": sys_data.get("show_member_created_date"),
             "delete_confirmation": sys_data.get("delete_confirmation"),
             "safety": sys_data.get("safety"),
             "retention": sys_data.get("retention"),

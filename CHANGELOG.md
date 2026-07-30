@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Optional "member created date" on member profiles.** A new per-system setting (Settings > System profile) shows when each member was added, on their profile. It is off by default and opt-in, since some systems want it and others would find it noise. The member's creation date was already available on the API; this only gates whether the web UI shows it.
+
 ## [1.3.4] - 2026-07-25
 
 ### Added

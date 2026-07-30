@@ -49,6 +49,7 @@ class SystemUpdate(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     replace_fronts_default: bool | None = None
     coalesce_contiguous_fronts: bool | None = None
+    show_member_created_date: bool | None = None
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -76,6 +77,7 @@ class SystemUpdate(BaseModel):
         "date_format",
         "replace_fronts_default",
         "coalesce_contiguous_fronts",
+        "show_member_created_date",
     )
     @classmethod
     def _reject_explicit_null(cls, v):
@@ -105,6 +107,7 @@ class SystemRead(BaseModel):
     timezone: str | None
     replace_fronts_default: bool
     coalesce_contiguous_fronts: bool
+    show_member_created_date: bool
     created_at: datetime
     updated_at: datetime
 

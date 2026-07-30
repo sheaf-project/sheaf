@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -54,8 +55,8 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat; timezone?: string | null };
-  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null }) => void;
+  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean };
+  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null; show_member_created_date: boolean }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
@@ -67,6 +68,9 @@ function SystemSettingsForm({
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial.privacy);
   const [dateFormat, setDateFormat] = useState<DateFormat>(initial.date_format ?? "ymd");
   const [timezone, setTimezone] = useState<string | null>(initial.timezone ?? null);
+  const [showMemberCreatedDate, setShowMemberCreatedDate] = useState<boolean>(
+    initial.show_member_created_date ?? false,
+  );
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -80,6 +84,7 @@ function SystemSettingsForm({
       privacy,
       date_format: dateFormat,
       timezone,
+      show_member_created_date: showMemberCreatedDate,
     });
   }
 
@@ -196,6 +201,25 @@ function SystemSettingsForm({
             </p>
           </div>
           <DeviceTimezoneOverride />
+          <div className="flex items-start gap-3">
+            <Checkbox
+              id="show-member-created-date"
+              checked={showMemberCreatedDate}
+              onCheckedChange={(v) => setShowMemberCreatedDate(v === true)}
+            />
+            <div>
+              <Label
+                htmlFor="show-member-created-date"
+                className="text-sm font-medium cursor-pointer"
+              >
+                Show member created dates
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Show when each member was added, on their profile. Saved with
+                this form.
+              </p>
+            </div>
+          </div>
           <Button type="submit" disabled={loading}>
             {loading ? "Saving..." : "Save"}
           </Button>

@@ -77,6 +77,7 @@ export interface System {
   timezone: string | null;
   replace_fronts_default: boolean;
   coalesce_contiguous_fronts: boolean;
+  show_member_created_date: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -95,6 +96,7 @@ export interface SystemUpdate {
   timezone?: string | null;
   replace_fronts_default?: boolean;
   coalesce_contiguous_fronts?: boolean;
+  show_member_created_date?: boolean;
 }
 
 export interface Member {
