@@ -996,7 +996,8 @@ function MemberView({
   const { data: values } = useMemberFieldValues(member.id);
   const { data: allMembers } = useMembers();
   const { data: safety } = useQuery({ queryKey: ["system-safety"], queryFn: getSystemSafety });
-  const { formatBirthday } = useDateFormatters();
+  const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
+  const { formatBirthday, formatDate } = useDateFormatters();
   const [showRevisions, setShowRevisions] = useState(false);
 
   const fieldDisplay = useMemo(() => {
@@ -1094,6 +1095,11 @@ function MemberView({
               {member.pluralkit_id && (
                 <p className="text-xs text-muted-foreground font-mono">
                   PK: {member.pluralkit_id}
+                </p>
+              )}
+              {system?.show_member_created_date && (
+                <p className="text-xs text-muted-foreground">
+                  Created {formatDate(member.created_at)}
                 </p>
               )}
             </div>

@@ -915,6 +915,10 @@ async def run_import(
                 system.coalesce_contiguous_fronts = bool(
                     sys_data["coalesce_contiguous_fronts"]
                 )
+            if "show_member_created_date" in sys_data:
+                system.show_member_created_date = bool(
+                    sys_data["show_member_created_date"]
+                )
             df = _date_format(sys_data.get("date_format"))
             if df is not None:
                 system.date_format = df

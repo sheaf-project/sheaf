@@ -646,6 +646,7 @@ def _system_dict(system: System) -> dict:
         # User-set system preferences. Re-import should restore these.
         "replace_fronts_default": system.replace_fronts_default,
         "coalesce_contiguous_fronts": system.coalesce_contiguous_fronts,
+        "show_member_created_date": system.show_member_created_date,
         "date_format": system.date_format.value,
         # NULL (auto) round-trips as null; a set zone as its IANA name.
         "timezone": system.timezone,

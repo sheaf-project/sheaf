@@ -82,6 +82,13 @@ class System(UUIDMixin, TimestampMixin, Base):
     coalesce_contiguous_fronts: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
     )
+    # Display preference: show each member's created date on their profile.
+    # Off by default - some systems want it, others find it noise, so it is
+    # opt-in per system. Purely a display toggle: the member's created_at is
+    # always available (MemberRead.created_at); this only gates the UI.
+    show_member_created_date: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # System Safety — grace period + per-category toggles for destructive actions.
     # 0 days means no grace; paired with all category toggles off by default.

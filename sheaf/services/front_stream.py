@@ -178,10 +178,19 @@ def build_change_payload(
     changed_at: datetime,
     event_id: uuid.UUID,
     emit_ts: float,
+    fronts: list[dict] | None = None,
 ) -> dict:
     """The `front_change` event body. `emit_ts` is a wall-clock stamp used
     only to measure delivery lag at the client write; `changed_at` is the
-    human-facing transition time and doubles as the SSE `id:`."""
+    human-facing transition time and doubles as the SSE `id:`.
+
+    `before`/`after` carry only the union of fronting member ids (kept for
+    backwards compatibility). `fronts` carries the full per-front composition
+    AFTER the change - id, member_ids, started_at, custom_status, member_since -
+    so a client can tell "a member joined a new front" from the frame alone,
+    which the union lists can't express. Built by the caller (it needs a DB
+    session); serialize_open_fronts_for_stream in api/v1/fronts.py produces it.
+    """
     return {
         "system_id": str(system_id),
         "before": serialize_front_state(before),
@@ -189,16 +198,25 @@ def build_change_payload(
         "changed_at": changed_at.isoformat(),
         "event_id": str(event_id),
         "emit_ts": emit_ts,
+        "fronts": fronts or [],
     }
 
 
-def build_snapshot_payload(system_id: uuid.UUID, state: FrontState) -> dict:
+def build_snapshot_payload(
+    system_id: uuid.UUID, state: FrontState, *, fronts: list[dict] | None = None
+) -> dict:
     """The `snapshot` event body sent first on connect so the client is
-    correct with no race."""
+    correct with no race.
+
+    `fronting` is the union of fronting member ids (kept for compatibility).
+    `fronts` is the full per-front composition (same shape as in a
+    `front_change`), so a client gets a complete per-front baseline on every
+    connect/reconnect and can drive state from the stream alone."""
     return {
         "system_id": str(system_id),
         "fronting": serialize_front_state(state),
         "event_id": str(uuid.uuid4()),
+        "fronts": fronts or [],
     }
 
 
@@ -251,7 +269,11 @@ async def authorized_front_system_ids(
 # ---------------------------------------------------------------------------
 
 async def publish_front_change(
-    system_id: uuid.UUID, before: FrontState, after: FrontState
+    system_id: uuid.UUID,
+    before: FrontState,
+    after: FrontState,
+    *,
+    fronts: list[dict] | None = None,
 ) -> None:
     """Publish a front-change event to the per-system Redis channel.
 
@@ -259,6 +281,10 @@ async def publish_front_change(
     down Redis degrades the stream to nothing without failing the front
     switch. Call this AFTER `db.commit()` - a rolled-back switch must not
     emit a phantom event.
+
+    `fronts` is the post-change per-front composition (from
+    serialize_open_fronts_for_stream); the caller builds it because it needs a
+    DB session, and this runs after commit so it reflects the committed state.
     """
     payload = build_change_payload(
         system_id,
@@ -267,6 +293,7 @@ async def publish_front_change(
         changed_at=datetime.now(UTC),
         event_id=uuid.uuid4(),
         emit_ts=time.time(),
+        fronts=fronts,
     )
     try:
         r = await get_redis()

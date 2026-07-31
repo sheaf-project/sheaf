@@ -42,7 +42,8 @@ DISPOSITION: dict[str, dict[str, object]] = {
         # extensions.sheaf.* (note + prefs + the safety/retention blocks).
         "note": EXT, "date_format": EXT, "timezone": EXT,
         "replace_fronts_default": EXT,
-        "coalesce_contiguous_fronts": EXT, "delete_confirmation": EXT,
+        "coalesce_contiguous_fronts": EXT, "show_member_created_date": EXT,
+        "delete_confirmation": EXT,
         "auto_pin_first_revision": EXT,
         "safety_grace_period_days": EXT, "safety_applies_to_members": EXT,
         "safety_applies_to_groups": EXT, "safety_applies_to_tags": EXT,
