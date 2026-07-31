@@ -1,29 +1,36 @@
 import { NavLink, Outlet } from "react-router";
 import { PageHeader } from "@/components/page-header";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/use-auth";
 import {
   User as UserIcon,
   Shield,
   KeyRound,
   Palette,
   Share2,
+  Globe,
   Database,
   Wrench,
   AlertTriangle,
 } from "lucide-react";
 
-const sections = [
-  { to: "/settings/system", label: "System", icon: UserIcon },
-  { to: "/settings/safety", label: "Safety", icon: Shield },
-  { to: "/settings/account", label: "Account", icon: KeyRound },
-  { to: "/settings/appearance", label: "Appearance", icon: Palette },
-  { to: "/settings/relationships", label: "Relationships", icon: Share2 },
-  { to: "/settings/data", label: "Data", icon: Database },
-  { to: "/settings/advanced", label: "Advanced", icon: Wrench },
-  { to: "/settings/danger", label: "Danger zone", icon: AlertTriangle },
-];
-
 export function SettingsLayout() {
+  const { user } = useAuth();
+  const sections = [
+    { to: "/settings/system", label: "System", icon: UserIcon },
+    { to: "/settings/safety", label: "Safety", icon: Shield },
+    { to: "/settings/account", label: "Account", icon: KeyRound },
+    { to: "/settings/appearance", label: "Appearance", icon: Palette },
+    { to: "/settings/relationships", label: "Relationships", icon: Share2 },
+    // Sharing is only meaningful when the instance serves a public surface.
+    ...(user?.public_profiles_enabled
+      ? [{ to: "/settings/sharing", label: "Sharing", icon: Globe }]
+      : []),
+    { to: "/settings/data", label: "Data", icon: Database },
+    { to: "/settings/advanced", label: "Advanced", icon: Wrench },
+    { to: "/settings/danger", label: "Danger zone", icon: AlertTriangle },
+  ];
+
   return (
     <>
       <PageHeader title="Settings" />

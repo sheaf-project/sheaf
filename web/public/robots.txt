@@ -1,0 +1,7 @@
+# Public profile and share-link pages are unlisted by design: reachable by
+# link, not by search. Every such response also carries an X-Robots-Tag:
+# noindex header and a noindex meta tag; this Disallow is belt-and-braces so a
+# crawler that stumbles on a leaked link does not fetch it in the first place.
+User-agent: *
+Disallow: /p/
+Disallow: /s/

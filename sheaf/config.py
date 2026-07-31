@@ -250,6 +250,12 @@ class Settings(BaseSettings):
     pinned_revision_max_per_target_plus: int = 5
     pinned_revision_max_per_target_selfhosted: int = 10
 
+    # Master switch for the public-profile / share-link surface. Default OFF:
+    # an instance that never wants an anonymous read surface never has one
+    # (the public router 404s wholesale). Also lets the backend ship dark and
+    # be flipped on once the web UI lands.
+    public_profiles_enabled: bool = False
+
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True

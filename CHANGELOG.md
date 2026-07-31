@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Groundwork for public profiles and share links (not yet user-visible).** This release lays the data layer for sharing part of a system with people outside it. Sharing is built around *views*: a view is a named, curated selection of exactly which members and which custom fields are shown, and a *grant* points an audience at that view, either a public profile or an opaque share link that can be revoked or rotated at any time. Nothing is ever shown that was not deliberately added to a view, and nothing is reachable at all until a grant is created, so the default remains fully private. Two per-member protections come with it: a member can be marked never shareable, meaning they can never appear in any view under any circumstances, or fronting-private, meaning they can appear but their front status is never shown. Groups can be used to populate a view in bulk, but only as a one-time pick: adding someone to a group later never silently publishes them. Making something visible waits out the System Safety grace period (there is a new "profile visibility" category for it) and requires confirming you are 18 or older, which is recorded as a simple yes, with no date of birth or identity document collected. Removing, revoking, and rotating always take effect immediately. Backups round-trip your views but never your grants, so restoring a backup never republishes anything. The whole surface is off unless the server operator enables it, and the interface for managing it lands in a later release.
+
 ## [1.3.4] - 2026-07-25
 
 ### Added

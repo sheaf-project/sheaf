@@ -12,6 +12,7 @@ import {
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
+import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
@@ -99,6 +100,19 @@ function MemberForm({
     initial?.is_custom_front ?? false,
   );
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial?.privacy ?? "private");
+  const [neverShareable, setNeverShareable] = useState(
+    initial?.never_shareable ?? false,
+  );
+  const [frontingPrivate, setFrontingPrivate] = useState(
+    initial?.fronting_private ?? false,
+  );
+  // The share guards only mean anything when the instance serves a public
+  // surface; hide them otherwise so the form doesn't imply a feature that
+  // isn't there. A member already marked guarded still shows the control so
+  // it can be turned back off.
+  const { user } = useAuth();
+  const shareGuardsVisible =
+    !!user?.public_profiles_enabled || neverShareable || frontingPrivate;
   // Preserve an existing numeric pin priority when toggling stays on; a
   // freshly-pinned member gets priority 0.
   const initialPin = initial?.quick_switch_pin ?? null;
@@ -121,6 +135,8 @@ function MemberForm({
       is_custom_front: isCustomFront,
       privacy,
       quick_switch_pin: pinned ? (initialPin ?? 0) : null,
+      never_shareable: neverShareable,
+      fronting_private: frontingPrivate,
     });
   }
 
@@ -254,6 +270,44 @@ function MemberForm({
           </SelectContent>
         </Select>
       </div>
+      {shareGuardsVisible && (
+        <div className="space-y-3 rounded-md border border-dashed p-3">
+          <p className="text-xs font-medium text-muted-foreground">
+            Sharing protections
+          </p>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={neverShareable}
+              onChange={(e) => setNeverShareable(e.target.checked)}
+              className="h-4 w-4 mt-0.5 rounded border-input"
+            />
+            <div>
+              <span className="text-sm font-medium">Never shareable</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                This member can never appear in a share view or public profile,
+                under any circumstances. Turning this on also removes them from
+                every view immediately.
+              </p>
+            </div>
+          </label>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={frontingPrivate}
+              onChange={(e) => setFrontingPrivate(e.target.checked)}
+              className="h-4 w-4 mt-0.5 rounded border-input"
+            />
+            <div>
+              <span className="text-sm font-medium">Keep fronting private</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                This member may appear in a view, but their live front status is
+                never shown publicly - not even as an anonymous count.
+              </p>
+            </div>
+          </label>
+        </div>
+      )}
       <label className="flex items-start gap-3 cursor-pointer">
         <input
           type="checkbox"

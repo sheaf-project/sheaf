@@ -56,6 +56,13 @@ from sheaf.models.relationship import (
     RelationshipType,
 )
 from sheaf.models.reminder import Reminder
+from sheaf.models.share import (
+    ShareGrant,
+    ShareView,
+    ShareViewField,
+    ShareViewGroup,
+    ShareViewMember,
+)
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
@@ -66,6 +73,16 @@ _SURROGATE_PK = "surrogate UUID PK, re-minted on import (old->new id maps handle
 _TENANT_FK = "tenant scope FK, set from the importing system, not from file data"
 _ROW_CREATED = "row-creation timestamp, server state not portable content"
 _ROW_UPDATED = "row-mutation timestamp, server state not portable content"
+# Share rows land active on import because no grant is ever imported, so an
+# imported view is exposed to nobody until the user deliberately publishes it.
+_SHARE_LIFECYCLE = (
+    "grace-window lifecycle state; imported rows land active because grants "
+    "are never imported, so an imported view exposes nothing"
+)
+_NO_GRANT_IMPORT = (
+    "grants are deliberately never exported or imported: a grant is a live "
+    "capability, so restoring one would republish a system from a backup"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +104,7 @@ CLASSIFICATION: dict[type, dict] = {
             "safety_applies_to_images", "safety_applies_to_revisions",
             "safety_applies_to_notifications", "safety_applies_to_reminders",
             "safety_applies_to_polls", "safety_applies_to_messages",
-            "safety_applies_to_archive",
+            "safety_applies_to_archive", "safety_applies_to_profile_visibility",
             "journal_max_revisions", "journal_max_revision_days",
             "pinned_revision_max_per_target", "openplural_archive",
         },
@@ -111,6 +128,9 @@ CLASSIFICATION: dict[type, dict] = {
             "privacy", "note", "quick_switch_pin", "created_at", "archived_at",
             "notify_on_front_global", "notify_on_front_self",
             "notify_on_front_member_ids",
+            # Protective share guards. Round-tripped so a restore never comes
+            # back less protected than the backup was.
+            "never_shareable", "fronting_private",
         },
         "excluded": {
             "id": _SURROGATE_PK,
@@ -147,6 +167,78 @@ CLASSIFICATION: dict[type, dict] = {
             "system_id": _TENANT_FK,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+        },
+    },
+    # Share views round-trip (they are real curation work the user did).
+    # Share GRANTS deliberately do not - see the ShareGrant entry below.
+    ShareView: {
+        "exported": {
+            "name", "include_bio", "include_fronting", "fronting_show_count",
+        },
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "system_id": _TENANT_FK,
+            "created_at": _ROW_CREATED,
+            "updated_at": _ROW_UPDATED,
+        },
+    },
+    ShareViewMember: {
+        "exported": {"member_id"},
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "view_id": "parent view FK, re-pointed via the old->new view map",
+            "status": _SHARE_LIFECYCLE,
+            "activates_at": _SHARE_LIFECYCLE,
+            "created_at": _ROW_CREATED,
+        },
+    },
+    ShareViewField: {
+        "exported": {"field_id"},
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "view_id": "parent view FK, re-pointed via the old->new view map",
+            "status": _SHARE_LIFECYCLE,
+            "activates_at": _SHARE_LIFECYCLE,
+            "created_at": _ROW_CREATED,
+        },
+    },
+    ShareViewGroup: {
+        "exported": {"group_id"},
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "view_id": "parent view FK, re-pointed via the old->new view map",
+            "synced_at": (
+                "provenance bookkeeping for the last group expansion, not "
+                "portable content"
+            ),
+            "created_at": _ROW_CREATED,
+        },
+    },
+    ShareGrant: {
+        # Nothing here round-trips, on purpose. A grant is a LIVE CAPABILITY:
+        # re-creating one on import would republish a system straight out of a
+        # restored backup, which is the worst possible outcome for a feature
+        # whose threat model is accidental outing. Link tokens could not be
+        # restored anyway (only a keyed hash is ever stored). After a restore
+        # the user's views are intact and nothing is published until they
+        # deliberately publish it again.
+        "exported": set(),
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "system_id": _TENANT_FK,
+            "view_id": _NO_GRANT_IMPORT,
+            "subject_type": _NO_GRANT_IMPORT,
+            "token_hash": (
+                "keyed HMAC of a bearer capability; never exported, and the "
+                "raw token exists only at creation time"
+            ),
+            "note": _NO_GRANT_IMPORT,
+            "status": _NO_GRANT_IMPORT,
+            "activates_at": _NO_GRANT_IMPORT,
+            "expires_at": _NO_GRANT_IMPORT,
+            "revoked_at": _NO_GRANT_IMPORT,
+            "created_at": _ROW_CREATED,
+            "created_by_user_id": _NO_GRANT_IMPORT,
         },
     },
     CustomFieldDefinition: {

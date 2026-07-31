@@ -87,8 +87,22 @@ class UserRead(BaseModel):
     # frame. The frontend uses this to decide whether to offer a
     # "keep animation" path in the cropper.
     animated_uploads_allowed: bool = False
+    # Instance policy: whether this deployment serves a public-profile /
+    # share-link surface at all. When False the public router 404s wholesale,
+    # so clients should not render any sharing UI.
+    public_profiles_enabled: bool = False
+    # Whether this account has self-declared 18+. Creating a share grant is
+    # gated on it; null means the client should prompt for the declaration
+    # the first time the user tries to publish something.
+    adult_attested_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AdultAttestationRead(BaseModel):
+    """Result of the 18+ self-declaration. Deliberately just a timestamp."""
+
+    adult_attested_at: datetime | None = None
 
 
 class UserUpdate(BaseModel):

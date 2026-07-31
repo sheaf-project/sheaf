@@ -130,6 +130,14 @@ class System(UUIDMixin, TimestampMixin, Base):
     safety_applies_to_archive: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # Also inverted relative to the others: every category above gates a
+    # DESTRUCTIVE action, while this one gates an EXPOSING action (creating a
+    # share grant, or adding a member/field to an already-shared view). Same
+    # asymmetry though - exposing waits out the grace window, un-sharing is
+    # always immediate.
+    safety_applies_to_profile_visibility: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # Auto-pin the first captured revision for each journal entry / member bio.
     # Independent of safety_applies_to_revisions: even without grace+re-auth on

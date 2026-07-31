@@ -15,6 +15,8 @@ import { SettingsAccountPage } from "./settings/account";
 import { SettingsAdvancedPage } from "./settings/advanced";
 import { SettingsAppearancePage } from "./settings/appearance";
 import { SettingsRelationshipsPage } from "./settings/relationships";
+import { SettingsSharingPage } from "./settings/sharing";
+import { PublicSystemProfilePage, SharedViewPage } from "./public-profile";
 import { SettingsDataPage } from "./settings/data";
 import { SettingsDangerPage } from "./settings/danger";
 import { ImportPage } from "./import";
@@ -72,6 +74,16 @@ export const router = createBrowserRouter([
     element: <NotificationsManagePage />,
   },
   {
+    // Anonymous public profile (located by system UUID) + share link (opaque
+    // token). Outside <AppLayout> so they render with no session.
+    path: "/p/:systemId",
+    element: <PublicSystemProfilePage />,
+  },
+  {
+    path: "/s/:token",
+    element: <SharedViewPage />,
+  },
+  {
     element: <AppLayout />,
     children: [
       { index: true, element: <DashboardPage /> },
@@ -98,6 +110,7 @@ export const router = createBrowserRouter([
           { path: "account", element: <SettingsAccountPage /> },
           { path: "appearance", element: <SettingsAppearancePage /> },
           { path: "relationships", element: <SettingsRelationshipsPage /> },
+          { path: "sharing", element: <SettingsSharingPage /> },
           { path: "data", element: <SettingsDataPage /> },
           { path: "advanced", element: <SettingsAdvancedPage /> },
           { path: "danger", element: <SettingsDangerPage /> },

@@ -27,6 +27,9 @@ class MemberCreate(BaseModel):
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
     note: str | None = Field(default=None, max_length=5000)
     quick_switch_pin: int | None = Field(default=None, ge=0)
+    # Share hard guards (see sheaf/models/member.py). Both default off.
+    never_shareable: bool = False
+    fronting_private: bool = False
 
     # banner_url shares the avatar normaliser: both are image storage keys /
     # external URLs with the same allow_external_images gate.
@@ -57,6 +60,8 @@ class MemberUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
     # Explicit null clears the pin (unpins); omitted leaves it untouched.
     quick_switch_pin: int | None = Field(default=None, ge=0)
+    never_shareable: bool | None = None
+    fronting_private: bool | None = None
 
     @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
@@ -70,7 +75,10 @@ class MemberUpdate(BaseModel):
 
     # NOT-NULL columns on the model; `| None` is only here so
     # model_fields_set can distinguish omitted vs supplied.
-    @field_validator("name", "is_custom_front", "privacy")
+    @field_validator(
+        "name", "is_custom_front", "privacy",
+        "never_shareable", "fronting_private",
+    )
     @classmethod
     def _reject_explicit_null(cls, v):
         if v is None:
@@ -104,6 +112,8 @@ class MemberRead(BaseModel):
     privacy: PrivacyLevel
     note: str | None
     quick_switch_pin: int | None = None
+    never_shareable: bool = False
+    fronting_private: bool = False
     created_at: datetime
     updated_at: datetime
     # True iff at least one ContentRevision exists for this member's bio.

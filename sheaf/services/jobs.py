@@ -828,6 +828,19 @@ async def _finalize_safety_changes(db: AsyncSession) -> dict:
     return {"items_processed": len(changes)}
 
 
+async def _finalize_share_activations(db: AsyncSession) -> dict:
+    """Promote share grants and view rows whose grace window has elapsed.
+
+    The exposing half of System Safety: creating a grant, or adding someone to
+    an already-shared view, lands PENDING and only becomes visible here. A row
+    revoked during the window is skipped, so the exposure simply never happens.
+    """
+    from sheaf.services.sharing import finalize_share_activations
+
+    promoted = await finalize_share_activations(db)
+    return {"items_processed": promoted}
+
+
 # ---------------------------------------------------------------------------
 async def _build_export_jobs(db: AsyncSession) -> dict:
     """Pick up one pending export job per tick and assemble its zip.
@@ -1197,6 +1210,16 @@ def _register_all_jobs() -> None:
         name="finalize_safety_changes",
         description="Apply deferred System Safety setting loosenings past their grace period",
         func=_finalize_safety_changes,
+        interval_seconds=lambda: settings.job_check_interval_minutes * 60,
+    )
+
+    register_job(
+        name="finalize_share_activations",
+        description=(
+            "Make share grants and view additions live once their grace "
+            "period has elapsed"
+        ),
+        func=_finalize_share_activations,
         interval_seconds=lambda: settings.job_check_interval_minutes * 60,
     )
 

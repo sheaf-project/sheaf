@@ -251,6 +251,19 @@ def blind_index(value: str) -> str:
     ).hexdigest()
 
 
+def hash_share_token(token: str) -> str:
+    """Keyed HMAC-SHA-256 hash of a share-link token for DB storage.
+
+    Same reasoning as `hash_mail_token`: a share link is a bearer capability,
+    so the database stores only a keyed hash. An attacker holding a DB dump
+    cannot reconstruct or offline-verify a working link without the running
+    app's in-memory key. The raw token is shown to the owner exactly once, at
+    creation, and never again.
+    """
+    key = settings.jwt_secret_key.encode()
+    return hmac.new(key, token.encode(), hashlib.sha256).hexdigest()
+
+
 def hash_mail_token(token: str) -> str:
     """Keyed HMAC-SHA-256 hash of a mail-delivered token for DB storage.
 

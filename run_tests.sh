@@ -23,7 +23,7 @@ FAILED=()
 
 # Total config count (kept in sync with the configs run below). Update when
 # adding/removing a config so the "[N/TOTAL]" progress prefix stays accurate.
-TOTAL_CONFIGS=9
+TOTAL_CONFIGS=10
 CONFIG_INDEX=0
 
 # Shared bearer token used by the metrics config row. Random per run so
@@ -284,6 +284,33 @@ if SHEAF_TEST_URL="$TEST_URL" \
 else
     echo "FAILED: selfhosted/metrics"
     FAILED+=("selfhosted/metrics")
+fi
+
+# 10. Public profiles enabled - the anonymous share surface is off by default,
+# so its tests need a config with PUBLIC_PROFILES_ENABLED=true. Runs only the
+# public_profiles-marked tests.
+CONFIG_INDEX=$((CONFIG_INDEX + 1))
+echo ""
+echo "================================================================"
+echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/public_profiles"
+echo "================================================================"
+
+ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted PUBLIC_PROFILES_ENABLED=true \
+    $COMPOSE up -d app
+
+wait_for_app
+
+if SHEAF_TEST_URL="$TEST_URL" \
+   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+   SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
+   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+   SHEAF_TEST_MODE=selfhosted \
+   SHEAF_TEST_PUBLIC_PROFILES=true \
+   uv run --extra dev pytest -q -m "public_profiles"; then
+    echo "PASSED: selfhosted/public_profiles"
+else
+    echo "FAILED: selfhosted/public_profiles"
+    FAILED+=("selfhosted/public_profiles")
 fi
 
 # ---------------------------------------------------------------------------
