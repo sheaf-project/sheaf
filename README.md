@@ -12,11 +12,11 @@
 
 Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
 
-> **Status:** selfhostable; hosted app in [open beta](https://test.sheaf.sh). Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://sheaf.sh/discord).
+> **Status:** selfhostable; hosted at [app.sheaf.sh](https://app.sheaf.sh), free with open signups. [test.sheaf.sh](https://test.sheaf.sh) remains a public sandbox where data may be wiped at any time. Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://sheaf.sh/discord).
 
-[Android/WearOS](https://github.com/sheaf-project/android) and [iOS/WatchOS](https://github.com/sheaf-project/ios) clients are pending approval; ask on Discord for private test access.
+[Android/WearOS](https://github.com/sheaf-project/android) is on the [Play Store](https://play.google.com/store/apps/details?id=systems.lupine.sheaf) (or sideload the APK from [Releases](https://github.com/sheaf-project/android/releases)), and [iOS/WatchOS](https://github.com/sheaf-project/ios) is on the [App Store](https://apps.apple.com/us/app/sheaf-plural-system-tracker/id6766770364). Both ship a watch companion app and complication.
 
-Sheaf supports the [OpenPlural](https://github.com/skylartaylor/openplural) data standard proposal as a founding project, and will be migrating to the format for exports once finalised.
+Sheaf supports the [OpenPlural](https://github.com/skylartaylor/openplural) data standard proposal as a founding project, and ships import and export for v0.1 today.
 
 ## Why
 
@@ -38,19 +38,29 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Polls** — Run a vote across the system. Each vote is attributed to a specific member who must be in the current front, with a full audit log of cast / change / withdraw events plus a fronting snapshot. Single or multi-choice, results live or hidden until close, hard deadline at creation with auto-purge after retention.
 - **Notes** — Lightweight scratchpad per member and per system. Markdown, encrypted at rest, intentionally without revision history or System Safety protection - for "trigger list / fav drink / current med doses" quick reference where journals' versioning is overkill.
 - **Messages** — Global system message board plus a per-member wall, so headmates can leave each other notes inside the system. Replies chain (no nested threads), edits keep revision history, deletes are soft and gated by System Safety. Per-member unread counts power the sidebar badge and an opt-in "you have N unread" prompt when you start fronting.
-- **Groups** — Organize members into groups with nesting (subsystems)
+- **Groups** — Organize members into groups, nested up to 8 levels (subsystems), with a drag-to-reparent tree and subtree-inclusive group filtering
+- **Relationships** - Typed relationships between members and between subsystems (partner, parent/child, protector, or your own types), with symmetric / directional / either direction modes, mapped as a self-arranging system graph you can pan, zoom, and build on directly
+- **Archived members** - Soft-hide a member from lists, pickers, and the front switcher without losing their name anywhere it already appears in history
 - **Tags** — Flexible member tagging
 - **Custom fields** — Define your own fields (text, number, date, boolean, select) with per-field privacy
 - **Journals** — Per-member or system-wide markdown journal entries with edit history
 - **Revision history** — Member bios and journal entries are versioned, with tier-aware retention caps
 - **Revision pinning** — Pin specific revisions to protect them from automatic trim, with optional re-auth + grace on unpin
+- **Front-history retention** - Opt-in per-system window that ages out old closed fronts. A privacy control rather than a tier limit: off by default, with a fixed 14-day import grace so a freshly restored archive is never abruptly deleted, and tightening it takes a deferred, re-auth-gated countdown.
 - **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
-- **SimplyPlural / PluralKit import** — Import your SP export, your PluralKit export file, or pull live from PluralKit using your `pk;token`. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
+- **Realtime front stream** - `GET /v1/fronts/stream` pushes your front changes over Server-Sent Events instead of making you poll, aimed at home automation (Home Assistant, Node-RED) and live UI updates. The client dials out and holds the connection open, so a LAN-only consumer works with no inbound reachability at all.
+- **Imports** — SimplyPlural, PluralKit (export file or live via your `pk;token`), Tupperbox, PluralSpace, Prism, Ampersand, OpenPlural, and Sheaf's own exports. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals, and the preview tells you what will be deduplicated, shortened, or capped before you commit to it. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
+- **OpenPlural** - Import and export for [OpenPlural](https://github.com/skylartaylor/openplural) v0.1, as either a single JSON document or an `.openplural.zip` bundle carrying image bytes. Sheaf data the draft spec doesn't model yet rides in a namespaced extensions key so a round-trip is lossless, and other apps' unmodellable data is preserved on import and re-emitted on the next export rather than dropped. See **[docs/OPENPLURAL.md](docs/OPENPLURAL.md)**.
 - **File storage** — File uploads with filesystem or S3-compatible backends
-- **Data export** — sync JSON (Article 20 portability), async zip with image bytes, and a separate Article 15 endpoint covering everything we know about your account
+- **Data export** — sync JSON (Article 20 portability), async zip with image bytes that imports back as-is, and a separate Article 15 endpoint covering everything we know about your account
+- **Front-history export** - Fronting history on its own as CSV (one row per front, with duration and co-fronters), JSON, or ICS to drop into a calendar app
+- **Display preferences** - Date format and display timezone as per-account settings that sync across your devices, with a per-device override so a machine in another zone can pin its own
 - **2FA** — Optional TOTP with recovery codes
 - **API keys** — Scoped, named keys (`sk_…`) for scripts and integrations
-- **Admin dashboard** — User management, invite codes, storage audit, background job monitoring, optional step-up auth
+- **Account activity log** - A curated record of consequential account actions and automated actions on your data, carrying no member content and no IP, included in the Article 15 access export
+- **Admin dashboard** — User management, invite codes, storage audit, background job monitoring, server announcements (inline links, settable expiry), optional step-up auth
+- **Abuse investigation tooling** - Append-only security-event log covering the auth funnel with originating IP, with exact-IP and CIDR lookup, a top-failing-IPs credential-stuffing view, and per-account auth timelines. Bounded retention window, and targeted lookups require a stated reason and write an admin audit row.
+- **Operator kill switch** - Halt every data-deleting background job in one move while investigating a retention issue, instead of zeroing each job's interval one at a time
 - **Registration modes** — Open, approval-required, invite-only, or closed
 - **Email verification** — Optional required verification with configurable flow
 - **Account deletion** — Self-service with configurable grace period
@@ -63,13 +73,29 @@ See [FAQ.md](FAQ.md)
 
 ## Quick Start
 
+For a small single-instance self-host, the all-in-one image bundles the backend, the web UI, and a Caddy reverse proxy with automatic Let's Encrypt HTTPS in one container, alongside Postgres. It generates its own secrets on first start:
+
 ```bash
 cp .env.example .env
-# Edit .env — at minimum, change POSTGRES_PASSWORD and JWT_SECRET_KEY
+# Set AIO_DOMAIN=sheaf.example.com in .env, and point that domain's DNS here
+docker compose -f docker-compose.aio.yml up -d
+```
+
+Publish ports 80 and 443 and you are done. Leave `AIO_DOMAIN` unset to serve plain HTTP on port 80 for a LAN instance or one behind your own TLS proxy. No public IP or cannot forward ports? Set `CF_TUNNEL_TOKEN` and the bundled `cloudflared` serves over an outbound-only Cloudflare Tunnel instead. The all-in-one is not horizontally scalable; outgrow it and you move to the split images below.
+
+The secrets it generates on first start are persisted, not regenerated per boot, and they need backing up. See [the table below](#generating-secrets).
+
+For the split backend/frontend images, where you serve the frontend and terminate TLS yourself:
+
+```bash
+cp .env.example .env
+# Edit .env - at minimum, change POSTGRES_PASSWORD
 docker compose up -d
 ```
 
-The API is available at `http://localhost:8000` with interactive docs at `http://localhost:8000/v1/docs`.
+The API is available at `http://localhost:8000` with interactive docs at `http://localhost:8000/v1/docs`. `/health` is an always-200 liveness probe; `/health/ready` checks the database and Redis under a tight timeout for use as a readiness gate.
+
+`DATABASE_URL` is optional for the bundled database: setting `POSTGRES_PASSWORD` is enough and Sheaf derives the connection string from it, so the credential cannot drift between the two. Set it explicitly only for an external database or custom driver options.
 
 ### Generating secrets
 
@@ -81,7 +107,15 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-> **Important:** Sheaf encrypts sensitive data at rest (emails, TOTP secrets, and all member information). The key is `SHEAF_ENCRYPTION_KEY` — either set it in `.env` (recommended) or let Sheaf auto-generate one on first start, saved to `data/encryption.key` inside the Docker volume. **Either way, this key is a third backup target alongside your database and uploaded files: back it up somewhere safe. If you lose it, all encrypted data is unrecoverable.**
+> **Important: back up the secrets, not just the database.** Anything you do not set yourself, Sheaf generates on first start and persists. Those generated files are a backup target alongside your database and uploaded files, and restoring a database without them does not get you a working instance.
+>
+> | Secret | If unset, generated at | Lose it and |
+> |--------|----------------------|-------------|
+> | `SHEAF_ENCRYPTION_KEY` | `data/encryption.key` | **All encrypted data is unrecoverable.** Emails, TOTP secrets, member names and bios, journals, notes, status notes. There is no recovery path. |
+> | `JWT_SECRET_KEY` | `data/jwt_secret` (split stack) or `/secrets/jwt_secret` (all-in-one) | Every issued token is invalid. Recoverable: everyone just logs in again. |
+> | `POSTGRES_PASSWORD` | `/secrets/postgres_password` (all-in-one only) | The app cannot reach its own database until you reset the password. |
+>
+> Setting them explicitly in `.env` is recommended precisely because it puts them somewhere you already back up. If you let them auto-generate, back up the files.
 
 ## Web UI
 
@@ -140,7 +174,12 @@ Key endpoints:
 | `GET/POST /v1/members` | List/create members |
 | `GET/POST /v1/fronts` | Front history |
 | `GET /v1/fronts/current` | Who's fronting now |
+| `GET /v1/fronts/stream` | Live front changes over Server-Sent Events |
 | `GET/POST /v1/groups` | Groups |
+| `GET /v1/relationship-types` | Relationship types (partner, parent/child, your own) |
+| `POST /v1/member-relationships` | Relate two members |
+| `POST /v1/group-relationships` | Relate two groups (subsystems) |
+| `GET /v1/relationships/graph` | Whole-system relationship graph |
 | `GET/POST /v1/tags` | Tags |
 | `GET/POST /v1/fields` | Custom field definitions |
 | `PUT /v1/members/{id}/fields` | Set custom field values |
@@ -149,12 +188,12 @@ Key endpoints:
 | `POST /v1/journals/{id}/pin-revision` | Pin a revision (exempt from trim) |
 | `POST /v1/journals/{id}/unpin-revision` | Unpin (immediate or queued behind grace) |
 | `GET/PATCH /v1/system/safety` | System Safety settings + pending actions |
-| `POST /v1/import/simplyplural` | Import SP data |
-| `POST /v1/import/pluralkit` | Import PK export file |
-| `POST /v1/import/pluralkit-api` | Import PK system via token |
-| `POST /v1/import/sheaf` | Import Sheaf export |
-| `GET /v1/export` | Export plural system content (sync JSON) |
-| `POST /v1/export/jobs` | Queue an async backup including image bytes |
+| `POST /v1/imports/file` | Import an export file (`source=` picks the format) |
+| `POST /v1/imports/api` | Import a PluralKit system live via `pk;token` |
+| `GET /v1/imports` | Import job history and status |
+| `POST /v1/import/{source}/preview` | Preview a file before committing to it |
+| `GET /v1/export` | Export plural system content (sync JSON; `format=openplural` for OpenPlural) |
+| `POST /v1/export/jobs` | Queue an async export: full backup with image bytes, an `.openplural.zip` bundle, or front history as CSV / JSON / ICS |
 | `POST /v1/account/data` | Article 15 — everything we know about your account |
 | `POST /v1/files/upload` | Upload avatar |
 
@@ -166,7 +205,7 @@ Full interactive docs: `http://your-instance/v1/docs`
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum, change POSTGRES_PASSWORD and JWT_SECRET_KEY
+# Edit .env - at minimum, change POSTGRES_PASSWORD
 docker compose up -d
 ```
 
@@ -184,7 +223,11 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - System Safety (destructive-action grace, re-auth, per-category toggles)
 - Frontend build and serving
 - Reverse proxy setup (nginx, Caddy) and the `SHEAF_BASE_URL` / cookie-Secure relationship
-- Rate limiting and trusted proxies
+- Rate limiting, per-tier limits, and trusted proxies
+- Delivering webhooks and ntfy to your own LAN (`WEBHOOK_ALLOWED_PRIVATE_CIDRS`), and why it is off by default
+- Custom Support-page text for your own FAQ or house rules (`CUSTOM_SUPPORT_TEXT_FILE`)
+- The all-in-one image, including the Cloudflare Tunnel path
+- Proxy directives the realtime front stream needs (do not compress SSE)
 - Public test / demo mode (periodic non-admin wipe + warning banner)
 - Backups
 
@@ -215,24 +258,41 @@ SHEAF_TEST_DB_URL=postgresql+asyncpg://sheaf:<POSTGRES_PASSWORD>@localhost:5432/
 ```
 
 ## Roadmap
-- [ ] Named fronts — save a named combination of members and make them searchable in the start front dialog
+
+Shipped items are listed here for context; the [CHANGELOG](CHANGELOG.md) has the per-release detail.
+
+- [ ] Named fronts - save a named combination of members and make them searchable in the start front dialog
 - [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
-- [x] Front-change notifications — web push, mobile push (FCM + APNs), webhook (json/discord/slack/plaintext), ntfy, Pushover. Per-channel filters with three-layer member visibility (base + group rules + member overrides), payload sensitivity, debounce, quiet hours.
+- [x] Front-change notifications - web push, mobile push (FCM + APNs), webhook (json/discord/slack/plaintext), ntfy, Pushover. Per-channel filters with three-layer member visibility (base + group rules + member overrides), payload sensitivity, debounce, quiet hours.
+- [x] Realtime front-change stream over Server-Sent Events, for home automation and live UI
 - [x] Journals/notes (per-member, encrypted at rest)
 - [x] PluralKit one-shot import (file or live API via `pk;token`)
 - [ ] PluralKit bidirectional sync
+- [x] Importers for Tupperbox, PluralSpace, Prism, and Ampersand
+- [x] OpenPlural v0.1 import and export, with lossless round-trip and foreign-extension preservation ([docs/OPENPLURAL.md](docs/OPENPLURAL.md))
+- [x] Member and group relationships with a system graph
+- [x] Archived members
+- [x] Subgroups (nested groups) with a drag-to-reparent tree
+- [x] User-opt-in front-history retention
+- [x] Standalone front-history export (CSV / JSON / ICS)
+- [x] Account activity log
+- [x] Global display-timezone preference
 - [ ] Friend/trust system (cross-system visibility controls)
+- [ ] Public profiles and share links - curated views plus revocable/rotatable grants (landed behind `PUBLIC_PROFILES_ENABLED`, not yet in a tagged release)
 - [ ] Per-field-per-member privacy overrides
 - [x] Storage quotas (per-tier account-wide budget)
 - [x] Orphaned file cleanup (images uploaded but never attached to a member/system)
 - [x] API keys with granular scopes (for scripts and integrations)
 - [x] Admin UI (user management, maintenance operations)
+- [x] Security-event log with admin IP / CIDR lookup and credential-stuffing view
 - [x] Signed image URLs with S3 presign support (hotlink protection)
 - [ ] Custom-defined user tiers by server admin instead of placeholder free/plus/selfhosted
-- [ ] Android+iOS apps (in progress — API-first, OpenAPI spec available for client generation)
+- [x] Android+iOS apps, with Wear OS and watchOS companions, live on the Play Store and App Store
 - [x] Prometheus-compatible `/metrics` endpoint ([docs/METRICS.md](docs/METRICS.md))
+- [x] All-in-one Docker image with automatic HTTPS and a Cloudflare Tunnel option
+- [x] Multi-replica deployments via Postgres advisory-lock leader election
 - [ ] Terraform module for cloud deployment
-- [ ] More 2FA methods — WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
+- [ ] More 2FA methods - WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
 - [ ] Alternate secrets management methods - AWS Secrets Manager, Vault, others?
 - [ ] Accessibility improvements - image alt text support, additional TBD
 
