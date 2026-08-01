@@ -1,7 +1,7 @@
 """Add share views + grants, member share guards, adult attestation
 
-Revision ID: b9c0d1e2f3a4
-Revises: a8b9c0d1e2f3
+Revision ID: c0d1e2f3a4b5
+Revises: b9c0d1e2f3a4
 Create Date: 2026-07-21
 
 The exposure model behind public profiles. A ShareView is an explicit allowlist
@@ -26,8 +26,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-revision: str = "b9c0d1e2f3a4"
-down_revision: Union[str, None] = "a8b9c0d1e2f3"
+revision: str = "c0d1e2f3a4b5"
+down_revision: Union[str, None] = "b9c0d1e2f3a4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
