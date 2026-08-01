@@ -53,6 +53,7 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "safety_applies_to_notifications": EXT,
         "safety_applies_to_reminders": EXT, "safety_applies_to_polls": EXT,
         "safety_applies_to_messages": EXT, "safety_applies_to_archive": EXT,
+        "safety_applies_to_profile_visibility": EXT,
         "journal_max_revisions": EXT, "journal_max_revision_days": EXT,
         "pinned_revision_max_per_target": EXT,
         "openplural_archive": RESIDUAL,
@@ -70,6 +71,9 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "emoji": EXT, "note": EXT, "quick_switch_pin": EXT,
         "notify_on_front_global": EXT, "notify_on_front_self": EXT,
         "notify_on_front_member_ids": EXT,
+        # Protective share guards, carried on the member's extensions.sheaf.*
+        # so a round-trip never returns someone less protected.
+        "never_shareable": EXT, "fronting_private": EXT,
     },
     "Front": {
         "started_at": CORE, "ended_at": CORE, "custom_status": CORE,
@@ -125,6 +129,16 @@ DISPOSITION: dict[str, dict[str, object]] = {
     "RelationshipType": "_all_ext",
     "MemberRelationship": "_all_ext",
     "GroupRelationship": "_all_ext",
+    # Share views ride the same file-level extensions.sheaf.share_views
+    # passthrough (OpenPlural v0.1 has no sharing/visibility module).
+    "ShareView": "_all_ext",
+    "ShareViewMember": "_all_ext",
+    "ShareViewField": "_all_ext",
+    "ShareViewGroup": "_all_ext",
+    # Share GRANTS export nothing at all (see the native CLASSIFICATION): a
+    # grant is a live capability, so it is never written to a portable file
+    # and can never be restored from one. Empty disposition, nothing to map.
+    "ShareGrant": {},
 }
 
 

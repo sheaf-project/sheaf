@@ -78,6 +78,12 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     # like any other toggle (and loosening it routes through the asymmetric
     # delay via split_safety_changes).
     "archive",
+    # Also has no PendingAction, and is the only category that gates an
+    # EXPOSING action rather than a destructive one: creating a share grant,
+    # or adding a member/field to a view that is already shared. The grace
+    # window is served by the pending lifecycle on the share_* rows
+    # themselves (see sheaf/services/sharing.py), not by PendingAction.
+    "profile_visibility",
 )
 
 _CATEGORY_BY_ACTION: dict[str, str] = {

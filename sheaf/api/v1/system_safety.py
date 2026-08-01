@@ -67,6 +67,7 @@ _EXTERNAL_TO_INTERNAL = {
     "applies_to_polls": "safety_applies_to_polls",
     "applies_to_messages": "safety_applies_to_messages",
     "applies_to_archive": "safety_applies_to_archive",
+    "applies_to_profile_visibility": "safety_applies_to_profile_visibility",
     "auto_pin_first_revision": "auto_pin_first_revision",
 }
 _INTERNAL_TO_EXTERNAL = {v: k for k, v in _EXTERNAL_TO_INTERNAL.items()}
@@ -89,6 +90,7 @@ def _settings_from_system(system: System) -> SystemSafetySettings:
         applies_to_polls=system.safety_applies_to_polls,
         applies_to_messages=system.safety_applies_to_messages,
         applies_to_archive=system.safety_applies_to_archive,
+        applies_to_profile_visibility=system.safety_applies_to_profile_visibility,
         auto_pin_first_revision=system.auto_pin_first_revision,
     )
 

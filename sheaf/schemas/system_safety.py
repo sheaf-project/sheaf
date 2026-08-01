@@ -24,6 +24,7 @@ class SystemSafetySettings(BaseModel):
     applies_to_polls: bool
     applies_to_messages: bool
     applies_to_archive: bool
+    applies_to_profile_visibility: bool
     auto_pin_first_revision: bool
 
 
@@ -45,6 +46,7 @@ class SystemSafetyUpdate(BaseModel):
     applies_to_polls: bool | None = None
     applies_to_messages: bool | None = None
     applies_to_archive: bool | None = None
+    applies_to_profile_visibility: bool | None = None
     auto_pin_first_revision: bool | None = None
 
     # Re-auth for loosening changes is checked against the *current* auth tier.
@@ -69,6 +71,7 @@ class SystemSafetyUpdate(BaseModel):
         "applies_to_polls",
         "applies_to_messages",
         "applies_to_archive",
+        "applies_to_profile_visibility",
         "auto_pin_first_revision",
     )
     @classmethod

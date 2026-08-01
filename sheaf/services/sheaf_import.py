@@ -86,6 +86,13 @@ from sheaf.models.relationship import (
     RelationshipVisibility,
 )
 from sheaf.models.reminder import Reminder, reminder_scope_members
+from sheaf.models.share import (
+    ShareItemStatus,
+    ShareView,
+    ShareViewField,
+    ShareViewGroup,
+    ShareViewMember,
+)
 from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
@@ -206,6 +213,7 @@ _SAFETY_APPLIES_KEYS = (
     "applies_to_polls",
     "applies_to_messages",
     "applies_to_archive",
+    "applies_to_profile_visibility",
 )
 
 
@@ -548,7 +556,15 @@ class SheafImportResult:
         self.member_relationships_skipped: int = 0
         self.group_relationships_imported: int = 0
         self.group_relationships_skipped: int = 0
+        self.share_views_imported: int = 0
+        self.share_views_skipped: int = 0
         self.warnings: list[str] = []
+
+
+# Bounds on the share-view section of an untrusted payload. Views are cheap
+# rows, but an import must not be a way to make the DB do unbounded work.
+_MAX_SHARE_VIEWS = 100
+_MAX_SHARE_VIEW_ROWS = 1000
 
 
 def _as_list(val: object) -> list:
@@ -1056,6 +1072,10 @@ async def run_import(
             emoji=clamp_str(m_data.get("emoji"), il.M_EMOJI, report=report),
             is_custom_front=bool(m_data.get("is_custom_front", False)),
             privacy=_privacy(m_data.get("privacy")),
+            # Default False only when the key is absent (an older export).
+            # A member marked never-shareable stays never-shareable.
+            never_shareable=bool(m_data.get("never_shareable", False)),
+            fronting_private=bool(m_data.get("fronting_private", False)),
             quick_switch_pin=_coerce_pin(m_data.get("quick_switch_pin")),
             notify_on_front_global=bool(
                 m_data.get("notify_on_front_global", False)
@@ -1452,6 +1472,99 @@ async def run_import(
         result.group_relationships_skipped += g_skip
 
         await db.flush()
+
+    # --- Share views ---
+    # The curated projections round-trip; share GRANTS never do, so an
+    # imported view is exposed to nobody until the user deliberately
+    # publishes it. Rows land ACTIVE for the same reason: with no grant
+    # pointing at the view, "active" exposes nothing.
+    #
+    # A view whose name already exists is SKIPPED WHOLESALE rather than
+    # merged. Merging would let an import add members to a view that already
+    # has a live grant - i.e. publish somebody as a side effect of restoring
+    # a backup. Refusing to merge is the only safe behaviour here.
+    existing_view_names = set(
+        (
+            await db.execute(
+                select(ShareView.name).where(ShareView.system_id == system.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    for v_data in _as_list(data.get("share_views"))[:_MAX_SHARE_VIEWS]:
+        name = (str(v_data.get("name") or "Shared view").strip() or "Shared view")[:100]
+        if name in existing_view_names:
+            result.share_views_skipped += 1
+            continue
+        existing_view_names.add(name)
+
+        view = ShareView(
+            id=uuid.uuid4(),
+            system_id=system.id,
+            name=name,
+            include_bio=bool(v_data.get("include_bio", False)),
+            include_fronting=bool(v_data.get("include_fronting", False)),
+            fronting_show_count=bool(v_data.get("fronting_show_count", True)),
+        )
+        db.add(view)
+
+        seen_members: set[uuid.UUID] = set()
+        for old_mid in _as_list(v_data.get("member_ids"))[:_MAX_SHARE_VIEW_ROWS]:
+            member = old_id_to_member.get(str(old_mid))
+            # Drop references whose target did not import, and re-apply the
+            # never-shareable guard rather than trusting the file.
+            if member is None or member.never_shareable or member.id in seen_members:
+                continue
+            seen_members.add(member.id)
+            db.add(
+                ShareViewMember(
+                    id=uuid.uuid4(),
+                    view_id=view.id,
+                    member_id=member.id,
+                    status=ShareItemStatus.ACTIVE.value,
+                    activates_at=None,
+                    created_at=now,
+                )
+            )
+
+        seen_fields: set[uuid.UUID] = set()
+        for old_fid in _as_list(v_data.get("field_ids"))[:_MAX_SHARE_VIEW_ROWS]:
+            field_def = old_field_to_def.get(str(old_fid))
+            if field_def is None or field_def.id in seen_fields:
+                continue
+            seen_fields.add(field_def.id)
+            db.add(
+                ShareViewField(
+                    id=uuid.uuid4(),
+                    view_id=view.id,
+                    field_id=field_def.id,
+                    status=ShareItemStatus.ACTIVE.value,
+                    activates_at=None,
+                    created_at=now,
+                )
+            )
+
+        seen_groups: set[uuid.UUID] = set()
+        for old_gid in _as_list(v_data.get("group_ids"))[:_MAX_SHARE_VIEW_ROWS]:
+            group = old_gid_to_group.get(str(old_gid))
+            if group is None or group.id in seen_groups:
+                continue
+            seen_groups.add(group.id)
+            db.add(
+                ShareViewGroup(
+                    id=uuid.uuid4(),
+                    view_id=view.id,
+                    group_id=group.id,
+                    synced_at=now,
+                    created_at=now,
+                )
+            )
+
+        result.share_views_imported += 1
+
+    await db.flush()
 
     # --- Fronts ---
     if fronts:

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, tuple_
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -394,6 +394,18 @@ async def update_member(
                 member.note = encrypt(value, aad=member_note_aad(member.id))
         else:
             setattr(member, key, value)
+
+    # Marking a member never-shareable must enforce it, not just remember it:
+    # pull them out of every share view immediately. The projection query also
+    # filters never_shareable, but leaving stale membership rows around would
+    # be a footgun the first time that filter is ever loosened.
+    if update_data.get("never_shareable") is True:
+        from sheaf.models.share import ShareViewMember
+
+        await db.execute(
+            delete(ShareViewMember).where(ShareViewMember.member_id == member.id)
+        )
+
     await db.commit()
     await db.refresh(member)
     return decrypt_member_for_read(

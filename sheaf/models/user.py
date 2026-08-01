@@ -165,6 +165,16 @@ class User(UUIDMixin, TimestampMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # Self-declared "I am 18 or older", captured at the moment the account
+    # first creates a share grant. Deliberately a bare timestamp: we do NOT
+    # collect a date of birth or any identity document, because verifying age
+    # is itself a privacy harm for exactly the people this app exists for.
+    # Self-declaration is the accepted tradeoff; it gates the highest-risk
+    # surface (publishing) and nothing else. NULL = not attested.
+    adult_attested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Shield-mode opt-out. When the operator engages cf-shield (Cloudflare
     # under-attack + revoked direct-origin SG ingress), every login on the
     # SaaS necessarily routes through the CDN. Users who explicitly do not

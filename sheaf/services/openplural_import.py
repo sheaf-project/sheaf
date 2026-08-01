@@ -279,6 +279,10 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 "notify_on_front_global": ext.get("notify_on_front_global"),
                 "notify_on_front_self": ext.get("notify_on_front_self"),
                 "notify_on_front_member_ids": ext.get("notify_on_front_member_ids"),
+                # Protective share guards: default to False only when the key
+                # is genuinely absent (a foreign file that never had them).
+                "never_shareable": bool(ext.get("never_shareable", False)),
+                "fronting_private": bool(ext.get("fronting_private", False)),
                 "created_at": m.get("created_at"),
             }
         )

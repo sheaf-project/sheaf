@@ -58,6 +58,16 @@ from sheaf.models.relationship import (
 from sheaf.models.reminder import Reminder, ReminderPending, reminder_scope_members
 from sheaf.models.retention_trim_notice import RetentionTrimNotice, RetentionTrimStatus
 from sheaf.models.safety_change_request import SafetyChangeRequest, SafetyChangeStatus
+from sheaf.models.share import (
+    ShareGrant,
+    ShareGrantStatus,
+    ShareItemStatus,
+    ShareSubjectType,
+    ShareView,
+    ShareViewField,
+    ShareViewGroup,
+    ShareViewMember,
+)
 from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.trusted_device import TrustedDevice
@@ -132,6 +142,14 @@ __all__ = [
     "SafetyChangeRequest",
     "SafetyChangeStatus",
     "ServerAnnouncement",
+    "ShareGrant",
+    "ShareGrantStatus",
+    "ShareItemStatus",
+    "ShareSubjectType",
+    "ShareView",
+    "ShareViewField",
+    "ShareViewGroup",
+    "ShareViewMember",
     "System",
     "Tag",
     "TrustedDevice",

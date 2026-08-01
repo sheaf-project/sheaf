@@ -68,6 +68,11 @@ _EXT_PASSTHROUGH_SECTIONS = (
     "relationship_types",
     "member_relationships",
     "group_relationships",
+    # OpenPlural v0.1 has no sharing/visibility module, so the curated share
+    # views ride the passthrough. Share GRANTS are absent from the native
+    # export by design (a grant is a live capability), so nothing here can
+    # republish a system on re-import.
+    "share_views",
 )
 
 
@@ -225,6 +230,10 @@ def build_envelope(
             "notify_on_front_global": m.get("notify_on_front_global"),
             "notify_on_front_self": m.get("notify_on_front_self"),
             "notify_on_front_member_ids": m.get("notify_on_front_member_ids"),
+            # Protective share guards. Carried so a round-trip through
+            # OpenPlural never returns a member less protected than they were.
+            "never_shareable": m.get("never_shareable"),
+            "fronting_private": m.get("fronting_private"),
         }
         members.append(
             {

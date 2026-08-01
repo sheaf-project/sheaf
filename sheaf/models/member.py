@@ -151,6 +151,20 @@ class Member(UUIDMixin, TimestampMixin, Base):
         Integer, nullable=True
     )
 
+    # Share hard guards. These override every ShareView: they are enforced in
+    # the projection query itself, not just at the point a member is added to a
+    # view, because "just don't add them" is not a guarantee.
+    #   never_shareable  - a secret member. Appears in NO view, ever, no
+    #                      exceptions. Adding one to a view is rejected.
+    #   fronting_private - may appear in a view, but their front state never
+    #                      propagates to any fronting projection.
+    never_shareable: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    fronting_private: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     # Archive: a soft-hide. When set, the member drops out of the members
     # list, the front switcher, top-fronters, and pickers, but is never
     # deleted and still renders everywhere historical (past fronts,

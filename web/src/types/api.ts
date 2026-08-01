@@ -35,6 +35,14 @@ export interface User {
   /** Whether this user may upload animated avatars (GIF / animated WebP).
    *  When false the cropper always flattens animated input to a still. */
   animated_uploads_allowed: boolean;
+  /** Instance policy: whether this deployment serves a public-profile /
+   *  share-link surface at all. When false the sharing UI is hidden and the
+   *  public router 404s wholesale. */
+  public_profiles_enabled: boolean;
+  /** When the account self-declared 18+, or null if it hasn't. Creating a
+   *  share grant is gated on this; the UI prompts for the declaration the
+   *  first time the user tries to publish. */
+  adult_attested_at: string | null;
 }
 
 /** Public payload from GET /v1/shield-mode/status. `feature_enabled`
@@ -121,6 +129,12 @@ export interface Member {
    *  to the top of the top-fronters list ahead of the recency ranking,
    *  ordered ascending. */
   quick_switch_pin: number | null;
+  /** Hard share guard: this member appears in NO share view, ever. Setting it
+   *  also removes them from every view immediately. */
+  never_shareable: boolean;
+  /** Hard share guard: this member may be in a view, but their front state
+   *  never propagates to any public fronting projection. */
+  fronting_private: boolean;
   created_at: string;
   updated_at: string;
   /** True iff at least one ContentRevision exists for this member's
@@ -155,6 +169,8 @@ export interface MemberCreate {
   privacy?: PrivacyLevel;
   note?: string | null;
   quick_switch_pin?: number | null;
+  never_shareable?: boolean;
+  fronting_private?: boolean;
 }
 
 export interface MemberUpdate {
@@ -173,6 +189,8 @@ export interface MemberUpdate {
   note?: string | null;
   /** Set a number to pin, or null to clear the pin. */
   quick_switch_pin?: number | null;
+  never_shareable?: boolean;
+  fronting_private?: boolean;
 }
 
 export interface Front {
@@ -469,6 +487,7 @@ export interface SystemSafetySettings {
   applies_to_polls: boolean;
   applies_to_messages: boolean;
   applies_to_archive: boolean;
+  applies_to_profile_visibility: boolean;
   auto_pin_first_revision: boolean;
 }
 
@@ -488,6 +507,7 @@ export interface SystemSafetyUpdate {
   applies_to_polls?: boolean;
   applies_to_messages?: boolean;
   applies_to_archive?: boolean;
+  applies_to_profile_visibility?: boolean;
   auto_pin_first_revision?: boolean;
   password?: string;
   totp_code?: string;
@@ -1121,3 +1141,153 @@ export const RELATIONSHIP_PRESETS: RelationshipPreset[] = [
   { label: "Caretaker", name: "Caretaker", symmetry: "either", forward_label: "caretaker", reverse_label: "cared for" },
   { label: "Split from", name: "Split", symmetry: "directional", forward_label: "split from", reverse_label: "split off" },
 ];
+
+// --- Share views + grants (public profiles) ---
+
+export type ShareSubjectType = "public" | "link";
+export type ShareGrantStatus = "pending" | "active" | "revoked";
+export type ShareItemStatus = "pending" | "active";
+
+export interface ShareViewMemberRow {
+  id: string;
+  member_id: string;
+  status: ShareItemStatus;
+  activates_at: string | null;
+}
+
+export interface ShareViewFieldRow {
+  id: string;
+  field_id: string;
+  status: ShareItemStatus;
+  activates_at: string | null;
+}
+
+export interface ShareViewGroupRow {
+  id: string;
+  group_id: string;
+  synced_at: string;
+}
+
+export interface ShareView {
+  id: string;
+  name: string;
+  include_bio: boolean;
+  include_fronting: boolean;
+  fronting_show_count: boolean;
+  created_at: string;
+  /** True when any non-revoked grant (live or still in its grace window)
+   *  points at this view. */
+  is_shared: boolean;
+  members: ShareViewMemberRow[];
+  fields: ShareViewFieldRow[];
+  groups: ShareViewGroupRow[];
+}
+
+export interface ShareViewCreate {
+  name: string;
+  include_bio?: boolean;
+  include_fronting?: boolean;
+  fronting_show_count?: boolean;
+}
+
+export interface ShareViewUpdate {
+  name?: string;
+  include_bio?: boolean;
+  include_fronting?: boolean;
+  fronting_show_count?: boolean;
+  password?: string;
+  totp_code?: string;
+}
+
+export interface ShareViewGroupAddResult {
+  added: number;
+  skipped_never_shareable: number;
+  /** Members whose privacy (private/friends) keeps them off the public tier,
+   *  so the bulk group-add left them out. */
+  skipped_not_public: number;
+}
+
+export interface ShareGrant {
+  id: string;
+  view_id: string;
+  subject_type: ShareSubjectType;
+  note: string | null;
+  status: ShareGrantStatus;
+  activates_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface ShareGrantCreate {
+  view_id: string;
+  subject_type: ShareSubjectType;
+  note?: string | null;
+  expires_at?: string | null;
+  password?: string;
+  totp_code?: string;
+}
+
+/** A newly created or rotated grant. `token` is the raw link token, present
+ *  ONLY for link grants and ONLY on the response that created/rotated it. */
+export interface ShareGrantCreated {
+  grant: ShareGrant;
+  token: string | null;
+}
+
+export interface ShareAuditEntry {
+  grant: ShareGrant;
+  view_id: string;
+  view_name: string;
+  member_count: number;
+  field_count: number;
+  include_bio: boolean;
+  include_fronting: boolean;
+}
+
+export interface ShareAudit {
+  entries: ShareAuditEntry[];
+}
+
+export interface AdultAttestation {
+  adult_attested_at: string | null;
+}
+
+// --- Public projection payloads (anonymous /v1/public/... surface) ---
+
+export interface PublicMemberView {
+  id: string;
+  name: string;
+  display_name: string | null;
+  pronouns: string | null;
+  avatar_url: string | null;
+  banner_url: string | null;
+  color: string | null;
+  bio: string | null;
+  fields: Record<string, unknown>;
+}
+
+export interface PublicSystemView {
+  id: string;
+  name: string;
+  description: string | null;
+  avatar_url: string | null;
+  color: string | null;
+  tag: string | null;
+  member_count: number;
+}
+
+export interface PublicFrontingMember {
+  id: string;
+  name: string;
+  display_name: string | null;
+  pronouns: string | null;
+  avatar_url: string | null;
+  color: string | null;
+  since: string | null;
+}
+
+export interface PublicFrontingView {
+  members: PublicFrontingMember[];
+  hidden_count: number;
+}
