@@ -48,7 +48,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Revision pinning** — Pin specific revisions to protect them from automatic trim, with optional re-auth + grace on unpin
 - **Front-history retention** - Opt-in per-system window that ages out old closed fronts. A privacy control rather than a tier limit: off by default, with a fixed 14-day import grace so a freshly restored archive is never abruptly deleted, and tightening it takes a deferred, re-auth-gated countdown.
 - **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
-- **Realtime front stream** - `GET /v1/fronts/stream` pushes your front changes over Server-Sent Events instead of making you poll, aimed at home automation (Home Assistant, Node-RED) and live UI updates. The client dials out and holds the connection open, so a LAN-only consumer works with no inbound reachability at all.
+- **Realtime front stream** - `GET /v1/fronts/stream` pushes your front changes over Server-Sent Events instead of making you poll, aimed at home automation (Home Assistant, Node-RED) and live UI updates. The client dials out and holds the connection open, so a LAN-only consumer works with no inbound reachability at all. There is an official [Home Assistant integration](https://github.com/sheaf-project/sheaf-ha) built on it.
 - **Imports** — SimplyPlural, PluralKit (export file or live via your `pk;token`), Tupperbox, PluralSpace, Prism, Ampersand, OpenPlural, and Sheaf's own exports. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals, and the preview tells you what will be deduplicated, shortened, or capped before you commit to it. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
 - **OpenPlural** - Import and export for [OpenPlural](https://github.com/skylartaylor/openplural) v0.1, as either a single JSON document or an `.openplural.zip` bundle carrying image bytes. Sheaf data the draft spec doesn't model yet rides in a namespaced extensions key so a round-trip is lossless, and other apps' unmodellable data is preserved on import and re-emitted on the next export rather than dropped. See **[docs/OPENPLURAL.md](docs/OPENPLURAL.md)**.
 - **File storage** — File uploads with filesystem or S3-compatible backends
@@ -265,6 +265,7 @@ Shipped items are listed here for context; the [CHANGELOG](CHANGELOG.md) has the
 - [ ] CLI similar to [simplyplural-cli](https://github.com/SiteRelEnby/simplyplural-cli)
 - [x] Front-change notifications - web push, mobile push (FCM + APNs), webhook (json/discord/slack/plaintext), ntfy, Pushover. Per-channel filters with three-layer member visibility (base + group rules + member overrides), payload sensitivity, debounce, quiet hours.
 - [x] Realtime front-change stream over Server-Sent Events, for home automation and live UI
+- [x] Home Assistant integration ([sheaf-ha](https://github.com/sheaf-project/sheaf-ha)) - surfaces who's fronting as entities and can drive the front from HA, over the front stream or webhooks
 - [x] Journals/notes (per-member, encrypted at rest)
 - [x] PluralKit one-shot import (file or live API via `pk;token`)
 - [ ] PluralKit bidirectional sync
