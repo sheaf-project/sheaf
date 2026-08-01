@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -1673,7 +1674,14 @@ async def refresh(
     consumed_sid = await consume_refresh_jti(jti)
     replay_token: str | None = None
     if consumed_sid is None:
-        replay_token = await get_cached_refresh_rotation(jti)
+        # A loser processed concurrently with the winner can land here
+        # after the winner's GETDEL but before its cache write, so poll
+        # the rotation cache briefly before treating this as theft.
+        for _ in range(8):
+            replay_token = await get_cached_refresh_rotation(jti)
+            if replay_token is not None:
+                break
+            await asyncio.sleep(0.25)
         if replay_token is None:
             await delete_session(sid)
             response.delete_cookie("sheaf_session")
