@@ -37,6 +37,13 @@ jobs:
       - name: Lint backend
         run: ruff check sheaf/
 
+      # Runs against the PR merge result, so a migration that collided with
+      # another PR (duplicate revision id, or a second head off the same
+      # parent) fails here in seconds with a clear message instead of as a
+      # slow "app did not become ready" timeout in the test job.
+      - name: Check migration graph
+        run: python scripts/check_migrations.py
+
       - name: Install frontend deps
         run: cd web && npm ci
 
