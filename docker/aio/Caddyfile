@@ -56,5 +56,14 @@
 			Referrer-Policy "no-referrer"
 			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
 		}
+
+		# Public profiles (/p/) and share links (/s/) are the only pages a
+		# crawler can reach - the rest of the app is behind auth - and they
+		# are meant for sharing, not for search results. The pages set a
+		# noindex meta tag themselves; this covers a crawler that indexes on
+		# headers before running the SPA. `header` is ordered before
+		# try_files, so the matcher sees the original path, not /index.html.
+		@profiles path /p/* /s/*
+		header @profiles X-Robots-Tag "noindex, nofollow"
 	}
 }
