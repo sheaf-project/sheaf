@@ -60,6 +60,13 @@ class SecurityEventType(enum.StrEnum):
     TOTP_DISABLE = "totp_disable"
     RECOVERY_CODES_REGEN = "recovery_codes_regen"
     ACCOUNT_DELETION = "account_deletion"
+    # One-way account state change that unlocks publishing; the refresh-token
+    # reuse kill (the closest thing to a token-theft signal this codebase
+    # has); and a bulk export served to a programmatic credential (`outcome`
+    # names the credential type). Same migration rule as the block above.
+    ADULT_ATTESTATION = "adult_attestation"
+    REFRESH_REUSE = "refresh_reuse"
+    DATA_EXPORT = "data_export"
 
 
 class SecurityEvent(UUIDMixin, Base):
