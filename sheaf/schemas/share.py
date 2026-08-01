@@ -66,6 +66,13 @@ class ShareViewRead(BaseModel):
     # True when any non-revoked grant points at this view, including one still
     # inside its grace window. Drives the "this view is live" indicator.
     is_shared: bool
+    # A flag flip that EXPOSES more on an already-shared view is staged rather
+    # than applied: the live flag above is still the truth, and these say what
+    # it will become when `flags_activate_at` passes. Null = nothing staged.
+    pending_include_bio: bool | None = None
+    pending_include_fronting: bool | None = None
+    pending_fronting_show_count: bool | None = None
+    flags_activate_at: datetime | None = None
     members: list[ShareViewMemberRead]
     fields: list[ShareViewFieldRead]
     groups: list[ShareViewGroupRead]

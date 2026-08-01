@@ -3,12 +3,14 @@
 This module owns every decision about *when* something becomes visible. Two
 rules run through all of it:
 
-1. **Exposing waits, un-exposing is instant.** Creating a grant, or adding a
-   member/field to a view that is already shared, is a loosening: when the
-   system has a grace period and the `profile_visibility` safety category on,
-   the row lands PENDING and only the finalize sweep promotes it. Revoking,
-   rotating, and removing are always immediate and never gated - nothing may
-   slow down going dark.
+1. **Exposing waits, un-exposing is instant.** Creating a grant, adding a
+   member/field to a view that is already shared, turning one of that view's
+   exposure flags on, or flipping a member in a shared view to `public`
+   privacy, are all loosenings: when the system has a grace period and the
+   `profile_visibility` safety category on, the change lands PENDING and only
+   the finalize sweep promotes it. Revoking, rotating, removing, and turning
+   flags back off are always immediate and never gated - nothing may slow down
+   going dark.
 2. **Nothing is exposed implicitly.** `ShareViewMember` is the sole authority
    on who appears. Groups are a bulk picker that expands into explicit member
    rows (see `expand_group_into_view`), never a rule evaluated at read time,
@@ -78,6 +80,16 @@ def require_adult_attestation(user: User) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The per-view booleans that widen what a view shows. Named once so the update
+# endpoint and the finalize sweep cannot drift apart over which flags carry a
+# pending_* twin.
+EXPOSURE_FLAGS: tuple[str, ...] = (
+    "include_bio",
+    "include_fronting",
+    "fronting_show_count",
+)
+
+
 def is_exposure_safeguarded(system: System) -> bool:
     """True when exposing something should wait out the grace window."""
     return (
@@ -98,6 +110,20 @@ def _activation(system: System, *, already_shared: bool) -> tuple[str, datetime 
         ShareItemStatus.PENDING.value,
         datetime.now(UTC) + timedelta(days=system.safety_grace_period_days),
     )
+
+
+def promote_view_flags(view: ShareView) -> None:
+    """Copy a view's staged flag flips onto its live flags, in place.
+
+    Only flags with something staged move; the rest keep whatever the user set
+    meanwhile. Caller decides that the window has elapsed and commits.
+    """
+    for flag in EXPOSURE_FLAGS:
+        pending = getattr(view, f"pending_{flag}")
+        if pending is not None:
+            setattr(view, flag, pending)
+            setattr(view, f"pending_{flag}", None)
+    view.flags_activate_at = None
 
 
 def _grant_live_clause():
@@ -448,7 +474,8 @@ async def resolve_link_grant(
 
 
 async def finalize_share_activations(db: AsyncSession) -> int:
-    """Promote every pending share row whose activation time has passed.
+    """Promote every pending grant, membership, field, and view flag flip whose
+    activation time has passed.
 
     Mirrors the pending-action sweep. Returns the number of rows promoted.
     Revoked grants are skipped: revocation during the grace window means the
@@ -480,5 +507,17 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         for row in rows.scalars().all():
             row.status = ShareItemStatus.ACTIVE.value
             promoted += 1
+
+    # Staged flag flips (see EXPOSURE_FLAGS). One promotion per view, however
+    # many flags it had staged, since they share a single activation time.
+    views = await db.execute(
+        select(ShareView).where(
+            ShareView.flags_activate_at.is_not(None),
+            ShareView.flags_activate_at <= now,
+        )
+    )
+    for view in views.scalars().all():
+        promote_view_flags(view)
+        promoted += 1
 
     return promoted
