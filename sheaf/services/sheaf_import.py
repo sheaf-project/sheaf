@@ -665,6 +665,10 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
             s(rt.get("forward_label"), il.REL_TYPE_LABEL)
             s(rt.get("reverse_label"), il.REL_TYPE_LABEL)
 
+    for v in _as_list(data.get("share_views")):
+        if isinstance(v, dict):
+            s(v.get("name"), il.SHARE_VIEW_NAME)
+
 
 def preview(data: dict) -> SheafPreviewSummary:
     """Parse Sheaf export JSON and return a summary for user review."""
@@ -1493,10 +1497,23 @@ async def run_import(
         .all()
     )
     now = datetime.now(UTC)
+    malformed_views = 0
     for v_data in _as_list(data.get("share_views"))[:_MAX_SHARE_VIEWS]:
-        name = (str(v_data.get("name") or "Shared view").strip() or "Shared view")[:100]
+        if not isinstance(v_data, dict):
+            malformed_views += 1
+            continue
+        name = clamp_str(
+            str(v_data.get("name") or "Shared view").strip() or "Shared view",
+            il.SHARE_VIEW_NAME,
+            report=report,
+        )
         if name in existing_view_names:
             result.share_views_skipped += 1
+            warnings.append(
+                f"Skipped share view '{name}' - a view with that name already "
+                "exists and merging into it could publish members that view "
+                "is already shared with"
+            )
             continue
         existing_view_names.add(name)
 
@@ -1563,6 +1580,14 @@ async def run_import(
             )
 
         result.share_views_imported += 1
+
+    if malformed_views:
+        # Aggregated rather than one line per entry: a hostile file can carry
+        # up to _MAX_SHARE_VIEWS of these and the per-entry detail is nil.
+        warnings.append(
+            f"{malformed_views} share view(s) were not JSON objects and were "
+            "skipped."
+        )
 
     await db.flush()
 

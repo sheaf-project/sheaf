@@ -92,6 +92,10 @@ REMINDER_BODY = Cap("reminder body", 2000)
 REL_TYPE_NAME = Cap("relationship type name", 100)
 REL_TYPE_LABEL = Cap("relationship type label", 100)
 
+# --- Share views ------------------------------------------------------------
+# Mirrors sheaf/schemas/share.py (ShareViewCreate.name).
+SHARE_VIEW_NAME = Cap("share view name", 100)
+
 
 @dataclass
 class ClampReport:

@@ -131,6 +131,14 @@ def _base_counts(job: ImportJob, base) -> None:
         reminders_skipped=base.reminders_skipped,
         channels_imported=base.channels_imported,
         channels_skipped=base.channels_skipped,
+        relationship_types_imported=base.relationship_types_imported,
+        relationship_types_skipped=base.relationship_types_skipped,
+        member_relationships_imported=base.member_relationships_imported,
+        member_relationships_skipped=base.member_relationships_skipped,
+        group_relationships_imported=base.group_relationships_imported,
+        group_relationships_skipped=base.group_relationships_skipped,
+        share_views_imported=base.share_views_imported,
+        share_views_skipped=base.share_views_skipped,
     )
 
 
@@ -207,6 +215,7 @@ async def _run_json(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
         polls=options.polls,
         reminders=options.reminders,
         notifications=options.notifications,
+        relationships=options.relationships,
     )
     _base_counts(job, result)
     for warning in result.warnings:
@@ -283,6 +292,7 @@ async def _run_archive(
         polls=options.polls,
         reminders=options.reminders,
         notifications=options.notifications,
+        relationships=options.relationships,
     )
     base = result.base
     _base_counts(job, base)
