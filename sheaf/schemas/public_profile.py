@@ -3,7 +3,7 @@
 These are built field-by-field from plaintext the projection code explicitly
 chooses (see sheaf/services/share_projection.py). They are NEVER
 `model_validate`d over an ORM row, so a column added to a model can never drift
-into a public payload by accident. The `test_public_projection.py` key-set
+into a public payload by accident. The `test_public_profiles_api.py` key-set
 snapshot tests pin the exact field set of each of these as the contract.
 
 Nothing encrypted-at-rest appears here except the two fields a member may

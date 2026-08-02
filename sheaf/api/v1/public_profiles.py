@@ -58,12 +58,19 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
-def _public_headers(response: Response) -> None:
+def _public_headers(response: Response, *, token_keyed: bool) -> None:
     # Link-sharing, not search presence: never index a personal profile.
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
-    # Short TTL so un-publish propagates fast; long enough to absorb a link
-    # pasted into a busy channel without hammering the origin.
-    response.headers["Cache-Control"] = "public, max-age=60"
+    # Short TTL either way, so un-publishing propagates fast while a link
+    # pasted into a busy channel does not hammer the origin. A token-keyed URL
+    # carries a bearer capability in its path, so only the requesting client
+    # may store it: a shared cache holding it would keep serving the profile
+    # from an intermediary after the token is rotated or revoked, and would
+    # park the token itself in someone else's storage. The /systems/ URLs
+    # contain no secret and stay shared-cacheable.
+    response.headers["Cache-Control"] = (
+        "private, max-age=60" if token_keyed else "public, max-age=60"
+    )
 
 
 async def _resolve_system(
@@ -109,7 +116,7 @@ async def public_system(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> PublicSystemView:
-    _public_headers(response)
+    _public_headers(response, token_keyed=False)
     view, system = await _resolve_system(system_id, db)
     return await project_system(db, view, system)
 
@@ -124,7 +131,7 @@ async def public_system_members(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> list[PublicMemberView]:
-    _public_headers(response)
+    _public_headers(response, token_keyed=False)
     view, _ = await _resolve_system(system_id, db)
     return await project_members(db, view)
 
@@ -139,7 +146,7 @@ async def public_system_fronting(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> PublicFrontingView:
-    _public_headers(response)
+    _public_headers(response, token_keyed=False)
     view, system = await _resolve_system(system_id, db)
     # A view that does not include fronting 404s the fronting endpoint rather
     # than returning an empty body, so "is fronting shared?" is not probeable
@@ -164,7 +171,7 @@ async def public_shared(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> PublicSystemView:
-    _public_headers(response)
+    _public_headers(response, token_keyed=True)
     view, system = await _resolve_link(token, db)
     return await project_system(db, view, system)
 
@@ -179,7 +186,7 @@ async def public_shared_members(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> list[PublicMemberView]:
-    _public_headers(response)
+    _public_headers(response, token_keyed=True)
     view, _ = await _resolve_link(token, db)
     return await project_members(db, view)
 
@@ -194,7 +201,7 @@ async def public_shared_fronting(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> PublicFrontingView:
-    _public_headers(response)
+    _public_headers(response, token_keyed=True)
     view, system = await _resolve_link(token, db)
     if not view.include_fronting:
         raise _not_found()

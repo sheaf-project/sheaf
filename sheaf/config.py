@@ -256,6 +256,13 @@ class Settings(BaseSettings):
     # be flipped on once the web UI lands.
     public_profiles_enabled: bool = False
 
+    # Per-system ceilings on the sharing surface. Not a tier product limit:
+    # they bound how much an account can accumulate on a surface that is
+    # anonymously readable and whose audit page has to stay comprehensible.
+    # Well above any plausible real use; raise them if a self-hoster needs to.
+    share_views_max: int = 100
+    share_grants_max: int = 100
+
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True
