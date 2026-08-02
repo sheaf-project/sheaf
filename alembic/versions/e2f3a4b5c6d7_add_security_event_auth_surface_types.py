@@ -1,7 +1,7 @@
 """Add auth-surface values to the security_event_type enum
 
-Revision ID: d1e2f3a4b5c6
-Revises: c0d1e2f3a4b5
+Revision ID: e2f3a4b5c6d7
+Revises: d1e2f3a4b5c6
 Create Date: 2026-08-01
 
 Three account-security events that previously left no durable trail: the
@@ -23,8 +23,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "d1e2f3a4b5c6"
-down_revision: Union[str, None] = "c0d1e2f3a4b5"
+revision: str = "e2f3a4b5c6d7"
+down_revision: Union[str, None] = "d1e2f3a4b5c6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
