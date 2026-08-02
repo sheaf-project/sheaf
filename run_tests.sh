@@ -69,20 +69,28 @@ for arg in "$@"; do
             exit 0
             ;;
         *)
-            match=""
+            matches=()
             for c in "${ALL_CONFIGS[@]}"; do
-                if [[ "$arg" == "$c" || "$arg" == "${c#*/}" ]]; then
-                    match="$c"
+                if [[ "$arg" == "$c" ]]; then
+                    matches=("$c")
                     break
                 fi
+                [[ "$arg" == "${c#*/}" ]] && matches+=("$c")
             done
-            if [[ -z "$match" ]]; then
+            if [[ ${#matches[@]} -eq 0 ]]; then
                 echo "Unknown config: $arg" >&2
                 echo "Known configs:" >&2
                 printf '  %s\n' "${ALL_CONFIGS[@]}" >&2
                 exit 2
             fi
-            SELECTED+=("$match")
+            if [[ ${#matches[@]} -gt 1 ]]; then
+                # "none" is a suffix of more than one config; make the caller
+                # say which rather than silently picking one.
+                echo "Ambiguous config '$arg' matches:" >&2
+                printf '  %s\n' "${matches[@]}" >&2
+                exit 2
+            fi
+            SELECTED+=("${matches[0]}")
             ;;
     esac
 done
