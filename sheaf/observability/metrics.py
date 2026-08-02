@@ -915,7 +915,8 @@ def prewarm_metrics() -> None:
         auth_email_verification_total.labels(outcome=outcome).inc(0)
 
     for reason in (
-        "logout", "expiry", "mass_invalidation", "password_change", "cf_shield", "admin",
+        "logout", "expiry", "mass_invalidation", "password_change", "cf_shield",
+        "admin", "refresh_reuse",
     ):
         auth_sessions_invalidated_total.labels(reason=reason).inc(0)
 
