@@ -83,6 +83,7 @@ from sheaf.observability.metrics import (
     auth_logins_total,
     auth_password_reset_total,
     auth_recovery_codes_used_total,
+    auth_sessions_invalidated_total,
 )
 from sheaf.redact import redact_email
 from sheaf.request import client_ip
@@ -1626,8 +1627,21 @@ async def revoke_all_trusted_devices_endpoint(
     return {"revoked": revoked}
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    # Legitimate clients refresh once per access-token lifetime (minutes
+    # apart), plus the occasional multi-tab burst the rotation grace window
+    # absorbs, so 60/min per IP is far above real traffic even for a large
+    # NAT'd network sharing one address. The cap exists because the reuse
+    # path holds the request for up to 2s while it polls the rotation cache,
+    # which an attacker with one consumed token could otherwise trigger for
+    # free. fail_closed matches the other auth endpoints and costs nothing:
+    # refresh needs Redis for the jti and session lookups anyway.
+    dependencies=[rate_limit(60, 60, fail_closed=True)],
+)
 async def refresh(
+    request: Request,
     response: Response,
     body: TokenRefresh | None = None,
     refresh_cookie: str | None = Cookie(default=None, alias="sheaf_refresh"),
@@ -1684,6 +1698,26 @@ async def refresh(
             await asyncio.sleep(0.25)
         if replay_token is None:
             await delete_session(sid)
+            # The one place a probable token-theft signal exists: a valid,
+            # already-consumed refresh token presented outside the grace
+            # window. Record it before the generic 401 goes out - neither
+            # the caller nor the victim gets told anything, so without this
+            # the session kill is invisible to an operator.
+            event_ip = client_ip(request)
+            logger.warning(
+                "refresh token reuse detected outside grace window, "
+                "session killed: user=%s ip=%s",
+                user_id,
+                event_ip,
+            )
+            auth_sessions_invalidated_total.labels(reason="refresh_reuse").inc()
+            await record_security_event(
+                event_type=SecurityEventType.REFRESH_REUSE,
+                outcome="session_killed",
+                user_id=user_id,
+                ip=event_ip,
+                user_agent=request.headers.get("user-agent"),
+            )
             response.delete_cookie("sheaf_session")
             response.delete_cookie("sheaf_refresh", path="/v1/auth")
             raise HTTPException(
@@ -1764,6 +1798,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
 
 @router.post("/me/attest-adult", response_model=AdultAttestationRead)
 async def attest_adult(
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AdultAttestationRead:
@@ -1778,11 +1813,35 @@ async def attest_adult(
     Idempotent: re-declaring leaves the original timestamp alone. There is no
     un-attest endpoint - clearing it would not un-publish anything anyway
     (revoking a grant does that, immediately and ungated).
+
+    Refuses API-key auth: this is a one-way declaration made on the account's
+    behalf that unlocks publishing, so a leaked key must not be able to set
+    it. Same posture as the key-management and account endpoints.
     """
+    if getattr(request.state, "auth_method", None) == "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "API keys cannot record the adult attestation. Sign in with "
+                "a session or JWT to declare it."
+            ),
+        )
+
     if user.adult_attested_at is None:
         user.adult_attested_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(user)
+        # Durable trail: the attestation is irreversible and gates publishing,
+        # so the account needs a record of when and from where it was set.
+        # Best-effort, never raises. Only the transition is recorded - a
+        # no-op re-declaration is not an account state change.
+        await record_security_event(
+            event_type=SecurityEventType.ADULT_ATTESTATION,
+            outcome="success",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
     return AdultAttestationRead(adult_attested_at=user.adult_attested_at)
 
 

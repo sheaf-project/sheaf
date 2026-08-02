@@ -62,10 +62,16 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
       default member structurally unable to leak. When the (parked) friends tier
       lands, this filter becomes audience-parameterised: a friends grant would
       admit `friends` as well as `public`.
+
+    The tenant predicate is redundant with the write paths, which refuse a
+    member from another system at the point of adding. It is here anyway: this
+    is the query that feeds anonymous readers, so it does not get to rely on
+    every writer having been correct.
     """
     return stmt.join(ShareViewMember, ShareViewMember.member_id == Member.id).where(
         ShareViewMember.view_id == view.id,
         ShareViewMember.status == ShareItemStatus.ACTIVE.value,
+        Member.system_id == view.system_id,
         Member.never_shareable.is_(False),
         Member.privacy == PrivacyLevel.PUBLIC,
     )
@@ -94,13 +100,17 @@ async def _active_member_count(db: AsyncSession, view: ShareView) -> int:
 async def _exposed_fields(
     db: AsyncSession, view: ShareView
 ) -> dict[uuid.UUID, str]:
-    """{field_definition_id: name} for the custom fields this view exposes."""
+    """{field_definition_id: name} for the custom fields this view exposes.
+
+    Tenant-pinned for the same reason as `_active_member_filter`.
+    """
     result = await db.execute(
         select(CustomFieldDefinition.id, CustomFieldDefinition.name)
         .join(ShareViewField, ShareViewField.field_id == CustomFieldDefinition.id)
         .where(
             ShareViewField.view_id == view.id,
             ShareViewField.status == ShareItemStatus.ACTIVE.value,
+            CustomFieldDefinition.system_id == view.system_id,
         )
     )
     return {row[0]: row[1] for row in result}

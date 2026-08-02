@@ -96,6 +96,28 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, default=True, server_default="true", nullable=False
     )
 
+    # Staged flag flips. Turning one of the three flags ON while the view is
+    # already shared exposes more, so the new value parks here and the finalize
+    # sweep copies it onto the live flag once `flags_activate_at` passes - the
+    # same PENDING lifecycle the member and field rows carry, expressed as
+    # columns because a flag has nowhere else to live. NULL means "nothing
+    # staged for this flag". Turning a flag OFF is immediate and clears its
+    # pending value: going dark always wins.
+    pending_include_bio: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_fronting: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_fronting_show_count: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    # Shared activation time for whatever is staged above. NULL whenever no
+    # pending value is set.
+    flags_activate_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     members: Mapped[list["ShareViewMember"]] = relationship(
         back_populates="view", cascade="all, delete-orphan"
     )

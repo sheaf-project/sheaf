@@ -10,8 +10,10 @@ public payload is pinned, so a model field can never drift into the anonymous
 surface unnoticed.
 """
 
+import asyncio
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -76,6 +78,74 @@ def _published_system(
     assert grant.status_code == 201, grant.text
     system_id = c.get("/v1/systems/me").json()["id"]
     return system_id, view
+
+
+def _arm_visibility_safety(c: httpx.Client) -> None:
+    """Turn on the grace window for the profile_visibility category."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 7,
+            "applies_to_profile_visibility": True,
+            "auth_tier": "password",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def _in_db(work) -> None:
+    """Run `work(db)` straight against the test database, then commit.
+
+    Only used to put a pending row's activation time in the past, which the
+    API deliberately offers no way to do.
+    """
+
+    async def _run() -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            await work(db)
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def _backdate_view_flags(view_id: str) -> None:
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareView
+
+        view = await db.get(ShareView, uuid.UUID(view_id))
+        assert view is not None and view.flags_activate_at is not None
+        view.flags_activate_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
+def _backdate_pending_membership(member_id: str) -> None:
+    async def _work(db) -> None:
+        from sqlalchemy import select
+
+        from sheaf.models.share import ShareItemStatus, ShareViewMember
+
+        result = await db.execute(
+            select(ShareViewMember).where(
+                ShareViewMember.member_id == uuid.UUID(member_id),
+                ShareViewMember.status == ShareItemStatus.PENDING.value,
+            )
+        )
+        rows = list(result.scalars().all())
+        assert rows
+        for row in rows:
+            row.activates_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
 
 
 def _link_token(c: httpx.Client, view_id: str) -> str:
@@ -252,6 +322,89 @@ def test_only_exposed_custom_fields_appear():
 
 
 # ---------------------------------------------------------------------------
+# Deferred exposure: the surface only moves once the sweep says so
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.public_profiles
+def test_raising_a_member_to_public_waits_for_the_sweep(admin_client: httpx.Client):
+    """Flipping a member in a published view to public does not publish them
+    on the spot; their membership row is demoted until the window elapses."""
+    owner = _register()
+    m = _member(owner, "Riser", privacy="private")
+    system_id, _ = _published_system(owner, members=[m])
+    _arm_visibility_safety(owner)
+
+    r = owner.patch(
+        f"/v1/members/{m}", json={"privacy": "public", "password": "testpassword123"}
+    )
+    assert r.status_code == 200, r.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    _backdate_pending_membership(m)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
+
+    names = {
+        mem["name"]
+        for mem in _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    }
+    assert names == {"Riser"}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_lowering_a_member_from_public_hides_immediately():
+    """Un-exposing never waits, even with the grace window armed."""
+    owner = _register()
+    m = _member(owner, "Fading")
+    system_id, _ = _published_system(owner, members=[m])
+    assert len(_anon().get(f"/v1/public/systems/{system_id}/members").json()) == 1
+    _arm_visibility_safety(owner)
+
+    # No credential needed, and no window served.
+    r = owner.patch(f"/v1/members/{m}", json={"privacy": "private"})
+    assert r.status_code == 200, r.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_view_flag_loosening_reaches_the_surface_only_after_the_sweep(
+    admin_client: httpx.Client,
+):
+    owner = _register()
+    m = _member(owner, "Biod", description="my bio text")
+    system_id, view = _published_system(owner, members=[m], include_bio=False)
+    _arm_visibility_safety(owner)
+
+    r = owner.patch(
+        f"/v1/share-views/{view}",
+        json={"include_bio": True, "password": "testpassword123"},
+    )
+    assert r.status_code == 200, r.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json()[0][
+        "bio"
+    ] is None
+
+    _backdate_view_flags(view)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
+
+    mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
+    assert mem["bio"] == "my bio text"
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
 # 404 matrix (no existence oracle)
 # ---------------------------------------------------------------------------
 
@@ -321,6 +474,25 @@ def test_noindex_header_present():
     system_id, _ = _published_system(owner, members=[m])
     resp = _anon().get(f"/v1/public/systems/{system_id}")
     assert "noindex" in resp.headers.get("x-robots-tag", "").lower()
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_token_keyed_responses_are_not_shared_cacheable():
+    """The token is in the URL, so only the requesting client may store the
+    response; a shared cache would serve it to whoever asked next."""
+    owner = _register()
+    m = _member(owner, "Linked")
+    system_id, view = _published_system(owner, members=[m])
+    token = _link_token(owner, view)
+
+    link_resp = _anon().get(f"/v1/public/shared/{token}")
+    assert link_resp.status_code == 200, link_resp.text
+    assert link_resp.headers["cache-control"] == "private, max-age=60"
+
+    # The public-profile URL carries no secret and stays shared-cacheable.
+    public_resp = _anon().get(f"/v1/public/systems/{system_id}")
+    assert public_resp.headers["cache-control"] == "public, max-age=60"
     owner.close()
 
 
