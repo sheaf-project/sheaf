@@ -477,6 +477,25 @@ def test_noindex_header_present():
     owner.close()
 
 
+@pytest.mark.public_profiles
+def test_token_keyed_responses_are_not_shared_cacheable():
+    """The token is in the URL, so only the requesting client may store the
+    response; a shared cache would serve it to whoever asked next."""
+    owner = _register()
+    m = _member(owner, "Linked")
+    system_id, view = _published_system(owner, members=[m])
+    token = _link_token(owner, view)
+
+    link_resp = _anon().get(f"/v1/public/shared/{token}")
+    assert link_resp.status_code == 200, link_resp.text
+    assert link_resp.headers["cache-control"] == "private, max-age=60"
+
+    # The public-profile URL carries no secret and stays shared-cacheable.
+    public_resp = _anon().get(f"/v1/public/systems/{system_id}")
+    assert public_resp.headers["cache-control"] == "public, max-age=60"
+    owner.close()
+
+
 # ---------------------------------------------------------------------------
 # Fronting
 # ---------------------------------------------------------------------------

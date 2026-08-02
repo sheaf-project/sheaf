@@ -593,6 +593,103 @@ def test_privacy_tightening_is_always_immediate(auth_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Business caps
+# ---------------------------------------------------------------------------
+
+
+def _cap(name: str) -> int:
+    """Declared default for a cap, which is what the test stack runs with."""
+    from sheaf.config import Settings
+
+    return Settings.model_fields[name].default
+
+
+def _system_id(c: httpx.Client) -> str:
+    return c.get("/v1/systems/me").json()["id"]
+
+
+def _seed_views(system_id: str, count: int) -> None:
+    """Fill view slots straight in the database - the point under test is the
+    cap check, not the hundred POSTs it would take to reach it."""
+
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareView
+
+        for i in range(count):
+            db.add(
+                ShareView(
+                    id=uuid.uuid4(),
+                    system_id=uuid.UUID(system_id),
+                    name=f"Seeded {uuid.uuid4().hex[:8]}-{i}",
+                )
+            )
+
+    _in_db(_work)
+
+
+def _seed_grants(
+    system_id: str, view_id: str, count: int, *, revoked: bool = False
+) -> None:
+    async def _work(db) -> None:
+        from sheaf.models.share import (
+            ShareGrant,
+            ShareGrantStatus,
+            ShareSubjectType,
+        )
+
+        now = datetime.now(UTC)
+        for _ in range(count):
+            db.add(
+                ShareGrant(
+                    id=uuid.uuid4(),
+                    system_id=uuid.UUID(system_id),
+                    view_id=uuid.UUID(view_id),
+                    subject_type=ShareSubjectType.LINK.value,
+                    token_hash=uuid.uuid4().hex,
+                    status=(
+                        ShareGrantStatus.REVOKED.value
+                        if revoked
+                        else ShareGrantStatus.ACTIVE.value
+                    ),
+                    revoked_at=now if revoked else None,
+                    created_at=now,
+                )
+            )
+
+    _in_db(_work)
+
+
+def test_share_view_cap_is_enforced(auth_client: httpx.Client):
+    _seed_views(_system_id(auth_client), _cap("share_views_max"))
+
+    r = auth_client.post("/v1/share-views", json={"name": "One too many"})
+    assert r.status_code == 403, r.text
+    assert "share views" in r.text.lower()
+
+
+def test_share_grant_cap_counts_only_live_grants(auth_client: httpx.Client):
+    _attest(auth_client)
+    vid = _view(auth_client)
+    system_id = _system_id(auth_client)
+    cap = _cap("share_grants_max")
+
+    # Revoked grants are not exposure, so they must not use up the budget.
+    _seed_grants(system_id, vid, cap, revoked=True)
+    ok = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert ok.status_code == 201, ok.text
+
+    # That one plus these fills it.
+    _seed_grants(system_id, vid, cap - 1)
+    denied = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert denied.status_code == 403, denied.text
+    assert "revoke" in denied.text.lower()
+
+
+# ---------------------------------------------------------------------------
 # Audit surface
 # ---------------------------------------------------------------------------
 

@@ -28,9 +28,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.config import settings
 from sheaf.crypto import hash_share_token
 from sheaf.models.member import Member, group_members
 from sheaf.models.share import (
@@ -340,6 +341,24 @@ async def create_grant(
     stored, so a database dump yields no working links.
     """
     require_adult_attestation(user)
+
+    live = (
+        await db.execute(
+            select(func.count(ShareGrant.id)).where(
+                ShareGrant.system_id == system.id,
+                ShareGrant.revoked_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if live >= settings.share_grants_max:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Maximum {settings.share_grants_max} live share links and "
+                "public profiles per system. Revoke one you no longer need "
+                "first."
+            ),
+        )
 
     if subject_type is ShareSubjectType.PUBLIC:
         # "Public" is a single audience, so two competing public views would be

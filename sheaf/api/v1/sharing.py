@@ -20,12 +20,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.group import Group
@@ -230,6 +231,21 @@ async def create_share_view(
     this is deliberately ungated. The gate is on publishing.
     """
     system = await _get_user_system(user, db)
+
+    existing = (
+        await db.execute(
+            select(func.count(ShareView.id)).where(ShareView.system_id == system.id)
+        )
+    ).scalar_one()
+    if existing >= settings.share_views_max:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Maximum {settings.share_views_max} share views per system. "
+                "Delete one you no longer need first."
+            ),
+        )
+
     view = ShareView(
         id=uuid.uuid4(),
         system_id=system.id,
