@@ -12,6 +12,14 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 - **Optional "member created date" on member profiles.** A new per-system setting (Settings > System profile) shows when each member was added, on their profile. It is off by default and opt-in, since some systems want it and others would find it noise. The member's creation date was already available on the API; this only gates whether the web UI shows it.
 - **The realtime front-change stream now carries per-front detail.** Each `snapshot` and `front_change` event gains a `fronts` array describing every currently-open front after the change - id, member ids, start time, custom status, and the per-member "fronting since" timestamp - mirroring `GET /v1/fronts/current`. A stream client (for example the Home Assistant integration) can now drive per-front state straight from the event instead of re-polling after each one, and can tell when a member joins a *new* front while already fronting elsewhere, which the existing before/after union lists could not express. The `fronting` / `before` / `after` fields are unchanged, so existing clients keep working. See docs/CLIENT_DESIGN.md.
 
+### Changed
+
+- **Creating an API key with the data export scope now says what that scope really grants.** `export:read` reaches the full account export - every member, journal, board message, poll, and setting - regardless of how narrowly the other scopes on the key are set, which was easy to miss when picking scopes one resource at a time. The scope picker now warns inline as soon as data export is selected, and creating such a key asks for a confirmation first, unless the key already grants read on everything anyway (in which case there is nothing surprising to warn about). No change to what the scope does or to existing keys.
+
+### Fixed
+
+- **The "Copy" button on a newly created API key no longer claims success when it did nothing.** The browser clipboard API is unavailable outside a secure context, which includes a self-hosted instance served over plain HTTP, so the button reported "Copied!" while copying nothing. It now reports the failure and tells you to select the key and copy it by hand.
+
 ## [1.3.4] - 2026-07-25
 
 ### Added
