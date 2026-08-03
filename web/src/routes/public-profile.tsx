@@ -279,6 +279,15 @@ function formatFieldValue(v: unknown): string {
   if (v == null) return "";
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "boolean") return v ? "Yes" : "No";
+  // A custom field can hold an arbitrary JSON value; String() on an object
+  // renders "[object Object]", so show the shape instead.
+  if (typeof v === "object") {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return "";
+    }
+  }
   return String(v);
 }
 

@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, type MouseEvent, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Copy, ExternalLink, Globe, Link2, Trash2 } from "lucide-react";
@@ -13,6 +13,7 @@ import {
   useAddViewMember,
   useRemoveViewMember,
   useAddViewGroup,
+  useRemoveViewGroup,
   useAddViewField,
   useRemoveViewField,
   useCreateShareGrant,
@@ -32,6 +33,7 @@ import type {
   ShareGrantCreated,
   ShareView,
   ShareViewCreate,
+  ShareViewGroupRow,
 } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -135,8 +138,10 @@ function SharingManager() {
           </p>
           <p>
             Making something visible is deliberate; taking it back
-            (unpublishing, removing a member, rotating a link) is always
-            immediate.
+            (unpublishing, removing a member, rotating a link) applies
+            immediately, and a visitor loses access within a minute - public
+            pages are cached briefly, so one already loaded can linger that
+            long.
           </p>
         </CardContent>
       </Card>
@@ -188,6 +193,11 @@ function SharingManager() {
   );
 }
 
+/** Past its expiry the backend stops serving the grant, so "live" would lie. */
+function isExpired(expiresAt: string): boolean {
+  return new Date(expiresAt).getTime() <= Date.now();
+}
+
 function GrantStatusBadge({ grant }: { grant: ShareGrant }) {
   const { formatDate } = useDateFormatters();
   if (grant.status === "pending") {
@@ -198,6 +208,13 @@ function GrantStatusBadge({ grant }: { grant: ShareGrant }) {
     );
   }
   if (grant.expires_at) {
+    if (isExpired(grant.expires_at)) {
+      return (
+        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+          expired {formatDate(grant.expires_at)}
+        </Badge>
+      );
+    }
     return (
       <Badge variant="outline" className="text-[10px]">
         expires {formatDate(grant.expires_at)}
@@ -296,7 +313,15 @@ function ViewCard({
   systemId: string | null;
 }) {
   const del = useDeleteShareView();
+  const { formatDate } = useDateFormatters();
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // A flag turned on while the view was shared waits out the grace period, so
+  // the card has to say so - the checkbox below still shows the live value.
+  const flagsPending =
+    view.pending_include_bio != null ||
+    view.pending_include_fronting != null ||
+    view.pending_fronting_show_count != null;
 
   return (
     <Card>
@@ -306,6 +331,17 @@ function ViewCard({
             {view.name}
             {view.is_shared && (
               <Badge className="text-[10px]">shared</Badge>
+            )}
+            {flagsPending && (
+              <Badge
+                variant="outline"
+                className="text-[10px] border-amber-500/50 text-amber-600 dark:text-amber-500"
+              >
+                pending
+                {view.flags_activate_at
+                  ? ` - activates ${formatDate(view.flags_activate_at)}`
+                  : ""}
+              </Badge>
             )}
           </CardTitle>
           <Button
@@ -416,10 +452,21 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
 function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext }) {
   const { data: members } = useMembers();
   const { data: groups } = useGroups();
+  const { formatDate } = useDateFormatters();
   const addMember = useAddViewMember();
   const removeMember = useRemoveViewMember();
   const addGroup = useAddViewGroup();
   const [pendingAdd, setPendingAdd] = useState<string | null>(null);
+  const [pendingGroupAdd, setPendingGroupAdd] = useState<string | null>(null);
+  const [groupToRemove, setGroupToRemove] = useState<ShareViewGroupRow | null>(
+    null,
+  );
+
+  const groupById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of groups ?? []) m.set(g.id, g.name);
+    return m;
+  }, [groups]);
 
   const memberById = useMemo(() => {
     const m = new Map<string, { label: string; isPublic: boolean }>();
@@ -451,6 +498,20 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
       setPendingAdd(memberId);
     } else {
       doAdd(memberId);
+    }
+  }
+
+  function doAddGroup(groupId: string, reauth?: DestructiveConfirm) {
+    addGroup.mutate({ viewId: view.id, groupId, reauth });
+  }
+
+  // Same gate as adding a member one at a time: a group add on a shared view
+  // exposes people, so it needs the step-up rather than a bounced request.
+  function onPickGroup(groupId: string) {
+    if (view.is_shared && safety.safeguarded && safety.tier !== "none") {
+      setPendingGroupAdd(groupId);
+    } else {
+      doAddGroup(groupId);
     }
   }
 
@@ -502,6 +563,32 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
           or link. Change their privacy in the member editor to show them.
         </p>
       )}
+      {view.groups.length > 0 && (
+        <div className="space-y-1">
+          {view.groups.map((row) => (
+            <div
+              key={row.id}
+              className="flex items-center justify-between gap-2 rounded-md border px-2 py-1 text-[11px] text-muted-foreground"
+            >
+              <span className="min-w-0 truncate">
+                Added from group{" "}
+                <span className="font-medium text-foreground">
+                  {groupById.get(row.group_id) ?? "a deleted group"}
+                </span>{" "}
+                on {formatDate(row.synced_at)}
+              </span>
+              <button
+                type="button"
+                className="shrink-0 hover:text-destructive"
+                onClick={() => setGroupToRemove(row)}
+                aria-label="Remove group"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex gap-2">
         <Select value="" onValueChange={onPick}>
           <SelectTrigger className="h-8 text-xs">
@@ -521,16 +608,7 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
             )}
           </SelectContent>
         </Select>
-        <Select
-          value=""
-          onValueChange={(gid) =>
-            addGroup.mutate({
-              viewId: view.id,
-              groupId: gid,
-              reauth: undefined,
-            })
-          }
-        >
+        <Select value="" onValueChange={onPickGroup}>
           <SelectTrigger className="h-8 text-xs">
             <SelectValue placeholder="Add from group..." />
           </SelectTrigger>
@@ -569,7 +647,85 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
           }}
         />
       )}
+      {pendingGroupAdd && (
+        <DestructiveConfirmDialog
+          open
+          onOpenChange={(o) => !o && setPendingGroupAdd(null)}
+          title="Add a group to a shared view"
+          description="This view is already published, so adding this group's current members exposes them after the grace period. Confirm to continue."
+          tier={safety.tier}
+          actionLabel="Add"
+          actionLabelLoading="Adding..."
+          loading={addGroup.isPending}
+          onConfirm={(c?: DestructiveConfirm) => {
+            doAddGroup(pendingGroupAdd, c);
+            setPendingGroupAdd(null);
+          }}
+        />
+      )}
+      {groupToRemove && (
+        <RemoveGroupDialog
+          viewId={view.id}
+          groupId={groupToRemove.group_id}
+          groupName={groupById.get(groupToRemove.group_id) ?? "this group"}
+          onClose={() => setGroupToRemove(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function RemoveGroupDialog({
+  viewId,
+  groupId,
+  groupName,
+  onClose,
+}: {
+  viewId: string;
+  groupId: string;
+  groupName: string;
+  onClose: () => void;
+}) {
+  const removeGroup = useRemoveViewGroup();
+  // Matches the API default: the usual reason to drop a group is that those
+  // people shouldn't be in the view at all.
+  const [removeMembers, setRemoveMembers] = useState(true);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Remove group</DialogTitle>
+          <DialogDescription>
+            Drop the link between this view and &quot;{groupName}&quot;. The
+            group itself is not changed.
+          </DialogDescription>
+        </DialogHeader>
+        <CheckboxRow
+          checked={removeMembers}
+          onChange={setRemoveMembers}
+          label="Also remove the members it brought in"
+          desc="Uncheck to keep them in the view as individually picked members."
+        />
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={removeGroup.isPending}
+            onClick={() =>
+              removeGroup.mutate(
+                { viewId, groupId, removeMembers },
+                { onSuccess: onClose },
+              )
+            }
+          >
+            {removeGroup.isPending ? "Removing..." : "Remove"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -681,6 +837,8 @@ function PublishSection({
 
   const [publishing, setPublishing] = useState<null | "public" | "link">(null);
   const [tokenShown, setTokenShown] = useState<ShareGrantCreated | null>(null);
+  const [confirmRotate, setConfirmRotate] = useState<ShareGrant | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<ShareGrant | null>(null);
 
   const hasPublic = grants.some((g) => g.subject_type === "public");
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -723,11 +881,7 @@ function PublishSection({
                       size="sm"
                       className="h-7 text-xs"
                       disabled={rotate.isPending}
-                      onClick={() =>
-                        rotate.mutate(g.id, {
-                          onSuccess: (res) => setTokenShown(res),
-                        })
-                      }
+                      onClick={() => setConfirmRotate(g)}
                     >
                       Rotate
                     </Button>
@@ -737,15 +891,20 @@ function PublishSection({
                     size="sm"
                     className="h-7 text-xs text-destructive hover:text-destructive"
                     disabled={revoke.isPending}
-                    onClick={() => revoke.mutate(g.id)}
+                    onClick={() => setConfirmRevoke(g)}
                   >
                     Unpublish
                   </Button>
                 </div>
               </div>
-              {g.subject_type === "public" && (
-                <CopyableUrl url={grantUrl(g)} />
-              )}
+              {g.subject_type === "public" &&
+                (systemId ? (
+                  <CopyableUrl url={grantUrl(g)} />
+                ) : (
+                  // The public URL is built from the system id, so don't offer
+                  // a half-formed link to copy while that is still loading.
+                  <Skeleton className="mt-1 h-7 w-full" />
+                ))}
               {g.subject_type === "link" && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   The link is shown once when created or rotated. Rotate to
@@ -805,6 +964,78 @@ function PublishSection({
             );
           }}
         />
+      )}
+
+      {confirmRotate && (
+        <Dialog open onOpenChange={(o) => !o && setConfirmRotate(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Rotate share link</DialogTitle>
+              <DialogDescription>
+                Issue a new link for this view? The existing link stops working
+                immediately and cannot be shown again, so anyone still using it
+                needs the replacement. The new link is shown once.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConfirmRotate(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={rotate.isPending}
+                onClick={() =>
+                  rotate.mutate(confirmRotate.id, {
+                    onSuccess: (res) => {
+                      setConfirmRotate(null);
+                      setTokenShown(res);
+                    },
+                  })
+                }
+              >
+                {rotate.isPending ? "Rotating..." : "Rotate link"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {confirmRevoke && (
+        <Dialog open onOpenChange={(o) => !o && setConfirmRevoke(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {confirmRevoke.subject_type === "public"
+                  ? "Unpublish the public profile"
+                  : "Unpublish this share link"}
+              </DialogTitle>
+              <DialogDescription>
+                {confirmRevoke.subject_type === "public"
+                  ? "The public profile goes dark immediately. "
+                  : "The link stops working immediately. "}
+                A page a visitor already loaded can linger for up to a minute of
+                caching. This cannot be undone: republishing creates a new
+                {confirmRevoke.subject_type === "public" ? " grant" : " link"}.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConfirmRevoke(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={revoke.isPending}
+                onClick={() =>
+                  revoke.mutate(confirmRevoke.id, {
+                    onSuccess: () => setConfirmRevoke(null),
+                  })
+                }
+              >
+                {revoke.isPending ? "Unpublishing..." : "Unpublish"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       {tokenShown?.token && (
@@ -924,20 +1155,27 @@ function PublishDialog({
   );
 }
 
+/** Shown once, and only once: the raw token never comes back from the server.
+ *  Closing takes a deliberate acknowledgement - no stray Escape, no click on
+ *  the overlay, no corner X - because a mis-dismiss means rotating the link. */
 function TokenDialog({ url, onClose }: { url: string; onClose: () => void }) {
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+    <Dialog open>
+      <DialogContent
+        showCloseButton={false}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>Your share link</DialogTitle>
           <DialogDescription>
-            Copy it now - it is shown only once. Anyone with this link can see
-            the view until you rotate or unpublish it.
+            Copy it now - it is shown only once, and closing this is the last
+            chance. Anyone with this link can see the view until you rotate or
+            unpublish it.
           </DialogDescription>
         </DialogHeader>
         <CopyableUrl url={url} big />
         <DialogFooter>
-          <Button onClick={onClose}>Done</Button>
+          <Button onClick={onClose}>I've saved this link</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -945,19 +1183,43 @@ function TokenDialog({ url, onClose }: { url: string; onClose: () => void }) {
 }
 
 function CopyableUrl({ url, big }: { url: string; big?: boolean }) {
+  // Manual fallback for anywhere the clipboard API is unavailable: one click
+  // selects the whole link so it can be copied by hand.
+  function selectAll(e: MouseEvent<HTMLElement>) {
+    const range = document.createRange();
+    range.selectNodeContents(e.currentTarget);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  function copy() {
+    // navigator.clipboard is undefined outside a secure context - a plain-http
+    // selfhost, say - so this can't assume the write happened.
+    if (!navigator.clipboard) {
+      toast.error("Couldn't copy - select the link and copy it manually");
+      return;
+    }
+    navigator.clipboard.writeText(url).then(
+      () => toast.success("Copied"),
+      () => toast.error("Couldn't copy - select the link and copy it manually"),
+    );
+  }
+
   return (
     <div className={`mt-1 flex items-center gap-1 ${big ? "" : "text-xs"}`}>
-      <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-xs">
+      <code
+        onClick={selectAll}
+        title="Click to select the whole link"
+        className={`min-w-0 flex-1 cursor-text rounded bg-muted px-2 py-1 text-xs ${big ? "break-all" : "truncate"}`}
+      >
         {url}
       </code>
       <Button
         variant="ghost"
         size="sm"
         className="h-7 px-2"
-        onClick={() => {
-          navigator.clipboard.writeText(url);
-          toast.success("Copied");
-        }}
+        onClick={copy}
       >
         <Copy className="h-3.5 w-3.5" />
       </Button>

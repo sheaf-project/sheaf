@@ -1174,6 +1174,14 @@ export interface ShareView {
   include_bio: boolean;
   include_fronting: boolean;
   fronting_show_count: boolean;
+  /** A loosening of one of the flags above that is still waiting out the
+   *  grace period: null (or absent) when nothing is queued for that flag.
+   *  Optional so the UI works against a server that doesn't defer them. */
+  pending_include_bio?: boolean | null;
+  pending_include_fronting?: boolean | null;
+  pending_fronting_show_count?: boolean | null;
+  /** When the queued flag change above becomes live. */
+  flags_activate_at?: string | null;
   created_at: string;
   /** True when any non-revoked grant (live or still in its grace window)
    *  points at this view. */
