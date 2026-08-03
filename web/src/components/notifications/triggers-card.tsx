@@ -17,7 +17,17 @@ export function TriggersCard({
   channel: NotificationChannel;
   onChange: (patch: Partial<NotificationChannel>) => void;
 }) {
-  const cofrontDisabled = channel.payload_sensitivity !== "full";
+  // Redaction governs how an excluded/private member who is fronting
+  // alongside a visible one appears in the message. It applies to start and
+  // stop notifications too, not just co-front-change ones, so the control is
+  // shown whenever this channel can emit a name-bearing notification - i.e.
+  // some trigger is on and names aren't already hidden by the sensitivity.
+  const anyTrigger =
+    channel.trigger_on_start ||
+    channel.trigger_on_stop ||
+    channel.trigger_on_cofront_change;
+  const namesShown = channel.payload_sensitivity === "full";
+  const showRedaction = anyTrigger && namesShown;
 
   return (
     <Card>
@@ -35,47 +45,52 @@ export function TriggersCard({
           checked={channel.trigger_on_stop}
           onChange={(v) => onChange({ trigger_on_stop: v })}
         />
-        <div className="space-y-2 rounded border bg-muted/30 px-3 py-2">
+        <div className="rounded border bg-muted/30 px-3 py-2">
           <Row
             label="Co-front composition changes"
             description="Someone joins or leaves alongside a watched member."
             checked={channel.trigger_on_cofront_change}
             onChange={(v) => onChange({ trigger_on_cofront_change: v })}
           />
-          {channel.trigger_on_cofront_change && (
-            <div className="ml-6 space-y-1">
-              <Label
-                htmlFor="cofront-redaction-select"
-                className="text-xs text-muted-foreground"
-              >
-                Co-fronter redaction
-              </Label>
-              <Select
-                value={channel.cofront_redaction}
-                onValueChange={(v) =>
-                  onChange({ cofront_redaction: v as CofrontRedaction })
-                }
-                disabled={cofrontDisabled}
-              >
-                <SelectTrigger id="cofront-redaction-select" className="h-8 w-56">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="count">Count only ("1 other")</SelectItem>
-                  <SelectItem value="someone">"Someone joined"</SelectItem>
-                  <SelectItem value="suppress">
-                    Suppress if any invisible
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              {cofrontDisabled && (
-                <p className="text-xs text-muted-foreground">
-                  Only meaningful when payload sensitivity is <em>full</em>.
-                </p>
-              )}
-            </div>
-          )}
         </div>
+
+        {showRedaction && (
+          <div className="space-y-1 rounded border bg-muted/30 px-3 py-2">
+            <Label
+              htmlFor="cofront-redaction-select"
+              className="text-sm font-medium"
+            >
+              Hidden co-fronters
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              When an excluded or private member is fronting alongside someone
+              this channel can see, how should they appear? Applies to start,
+              stop, and co-front notifications.
+            </p>
+            <Select
+              value={channel.cofront_redaction}
+              onValueChange={(v) =>
+                onChange({ cofront_redaction: v as CofrontRedaction })
+              }
+            >
+              <SelectTrigger
+                id="cofront-redaction-select"
+                className="mt-1 h-8 w-64"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="count">
+                  Count only ("and 1 other")
+                </SelectItem>
+                <SelectItem value="someone">Vaguer ("someone")</SelectItem>
+                <SelectItem value="suppress">
+                  Send nothing if anyone is hidden
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
