@@ -1219,6 +1219,11 @@ sheaf.example.com {
             Referrer-Policy "no-referrer"
             Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
         }
+        # Public profiles (/p/) and share links (/s/) are the only pages a
+        # crawler can reach; keep them out of search results. `header` is
+        # ordered before try_files, so this matches the original path.
+        @profiles path /p/* /s/*
+        header @profiles X-Robots-Tag "noindex, nofollow"
     }
 }
 ```
@@ -1227,6 +1232,15 @@ Caddy terminates TLS automatically and passes `X-Forwarded-Proto=https` to the b
 
 **nginx example:**
 ```nginx
+# Public profiles (/p/) and share links (/s/) are the only pages a crawler can
+# reach; keep them out of search results. An empty value means nginx adds no
+# header at all, so the rest of the app is unaffected. Goes in the http block,
+# alongside the server blocks below.
+map $uri $sheaf_robots {
+    default    "";
+    ~^/[ps]/   "noindex, nofollow";
+}
+
 # Redirect plain HTTP to HTTPS
 server {
     listen 80;
@@ -1287,11 +1301,14 @@ server {
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "no-referrer" always;
         add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
+        add_header X-Robots-Tag $sheaf_robots always;
     }
 }
 ```
 
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
+
+The examples also send `X-Robots-Tag: noindex, nofollow` for `/p/` and `/s/` (public profiles and share links). Those are the only pages a crawler can reach, since everything else needs a login, and they are meant for sharing with people you gave the link to, not for turning up in search results. The pages set a `robots` meta tag themselves as well; the header covers a crawler that indexes on headers alone without running the app.
 
 **Streaming endpoints (SSE).** The realtime front-change stream (`GET /v1/fronts/stream`, Server-Sent Events) needs your proxy to forward each event as it arrives rather than buffering the response - otherwise clients (Home Assistant, Node-RED) stall for seconds on connect before the first event. The examples above disable buffering for that path (`proxy_buffering off` for nginx, `flush_interval -1` for Caddy). The app also sends `X-Accel-Buffering: no`, which nginx honours to disable buffering per-response, but Caddy and some other proxies ignore it, so set it explicitly for whatever proxy you run. For Traefik, HAProxy, or others, disable response buffering (enable streaming/flush) for that route, and make sure the route is not gzipped - compressing a live stream re-buffers it. A revoked or expired key drops its stream on its own, so the long read timeout in the nginx example is just to stop an idle-looking (but heartbeating) connection being cut.
 

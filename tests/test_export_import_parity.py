@@ -66,6 +66,7 @@ from sheaf.models.share import (
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
+from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 
 # Reusable exclusion reasons for the structural columns every model carries.
@@ -90,6 +91,24 @@ _NO_GRANT_IMPORT = (
     "grants are deliberately never exported or imported: a grant is a live "
     "capability, so restoring one would republish a system from a backup"
 )
+# The Article 20 export is system content restored INTO an already-existing
+# account, so no column of the account row itself round-trips.
+_ACCOUNT_CREDENTIAL = (
+    "credential material; exporting it would turn a portable file into an "
+    "account-takeover kit"
+)
+_ACCOUNT_ENTITLEMENT = (
+    "server-granted entitlement, set by the operator on this instance; "
+    "importing one would be privilege escalation by file"
+)
+_ACCOUNT_AUTH_STATE = (
+    "auth-flow bookkeeping for this instance's account row, not portable "
+    "content"
+)
+_ACCOUNT_SERVER_STATE = (
+    "server-derived account state, held on the instance that derived it; "
+    "the Article 15 bundle covers it, the portable export does not"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +118,79 @@ _NO_GRANT_IMPORT = (
 # ---------------------------------------------------------------------------
 
 CLASSIFICATION: dict[type, dict] = {
+    # The account row. Nothing on it round-trips: an export is restored into an
+    # account that already exists, so every column here is either credential
+    # material, an operator-granted entitlement, or state the receiving
+    # instance derives for itself. Listed in full anyway, so a new User column
+    # fails this guard until someone states which of those it is - the whole
+    # point of the classification.
+    User: {
+        "exported": set(),
+        "excluded": {
+            "id": (
+                "the importing account's own id; an export never creates an "
+                "account"
+            ),
+            "email": "account identity, set at signup on the receiving instance",
+            "email_hash": "derived blind index of email, recomputed at signup",
+            "password_hash": _ACCOUNT_CREDENTIAL,
+            "totp_secret": _ACCOUNT_CREDENTIAL,
+            "totp_enabled": _ACCOUNT_CREDENTIAL,
+            "recovery_codes": _ACCOUNT_CREDENTIAL,
+            "is_admin": _ACCOUNT_ENTITLEMENT,
+            "can_upload_images": _ACCOUNT_ENTITLEMENT,
+            "can_upload_animated_images": _ACCOUNT_ENTITLEMENT,
+            "member_limit": _ACCOUNT_ENTITLEMENT,
+            "tier": _ACCOUNT_ENTITLEMENT,
+            "account_status": "moderation state, local to the instance that set it",
+            "suspended_until": "moderation state, local to the instance that set it",
+            "suspended_reason": "moderation state, local to the instance that set it",
+            "email_verified": _ACCOUNT_AUTH_STATE,
+            "email_verification_token": _ACCOUNT_AUTH_STATE,
+            "email_verification_sent_at": _ACCOUNT_AUTH_STATE,
+            "password_reset_token": _ACCOUNT_AUTH_STATE,
+            "password_reset_sent_at": _ACCOUNT_AUTH_STATE,
+            "invite_code_id": "signup provenance FK, meaningless elsewhere",
+            "signup_ip": (
+                "IP telemetry; the portable export excludes IPs by contract "
+                "because it is shareable"
+            ),
+            "last_login_at": _ACCOUNT_SERVER_STATE,
+            "failed_login_count": _ACCOUNT_SERVER_STATE,
+            "locked_until": _ACCOUNT_SERVER_STATE,
+            "deletion_requested_at": (
+                "pending-deletion clock; a restore must never re-arm a "
+                "deletion the user is trying to escape"
+            ),
+            "deletion_reminders_sent": (
+                "reminder bookkeeping for the pending-deletion clock"
+            ),
+            "newsletter_opt_in": (
+                "marketing consent is given to the instance that will send the "
+                "mail; it is not transferable, so it is re-asked, never imported"
+            ),
+            "newsletter_opted_in_at": (
+                "timestamp of a consent that is deliberately not transferable"
+            ),
+            "email_delivery_status": _ACCOUNT_SERVER_STATE,
+            "email_delivery_status_changed_at": _ACCOUNT_SERVER_STATE,
+            "email_soft_bounce_count": _ACCOUNT_SERVER_STATE,
+            "email_revalidation_required": _ACCOUNT_SERVER_STATE,
+            "adult_attested_at": (
+                "the age attestation that gates publishing. Grants never "
+                "round-trip, so a restored account is exposing nothing and "
+                "must deliberately re-attest before it can publish again - "
+                "importing the attestation would carry a legal declaration "
+                "across accounts and instances on a file's say-so"
+            ),
+            "disable_cdn_during_ddos": (
+                "shield-mode opt-out, meaningful only on an instance with a "
+                "CDN break-glass setup"
+            ),
+            "created_at": _ROW_CREATED,
+            "updated_at": _ROW_UPDATED,
+        },
+    },
     System: {
         "exported": {
             "name", "description", "note", "tag", "avatar_url", "color",

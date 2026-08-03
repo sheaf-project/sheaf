@@ -129,6 +129,11 @@ DISPOSITION: dict[str, dict[str, object]] = {
     "RelationshipType": "_all_ext",
     "MemberRelationship": "_all_ext",
     "GroupRelationship": "_all_ext",
+    # User is classified in the native guard purely so new account columns
+    # cannot skip export review; every column is excluded there, so there is
+    # nothing to give an OpenPlural disposition. The empty dict records that
+    # deliberately (an empty exported set maps to no dispositions).
+    "User": {},
     # Share views ride the same file-level extensions.sheaf.share_views
     # passthrough (OpenPlural v0.1 has no sharing/visibility module).
     "ShareView": "_all_ext",
