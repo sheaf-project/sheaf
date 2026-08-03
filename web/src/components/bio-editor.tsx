@@ -57,12 +57,20 @@ function isHostedImage(src: string, cdnBase: string | null) {
   return false;
 }
 
+/** What the server substitutes for an external image URL on public profiles,
+ *  so a visitor's browser never fetches from an owner-chosen host. Kept in
+ *  sync with EXTERNAL_IMAGE_HIDDEN in sheaf/files.py. */
+const HIDDEN_IMAGE_SRC = "#external-image-hidden";
+
 function MarkdownPreview({
   content,
   showBadgesOverride,
+  publicSurface,
 }: {
   content: string;
   showBadgesOverride?: boolean;
+  /** Rendering a public profile: show the hidden-image sentinel as a chip. */
+  publicSurface?: boolean;
 }) {
   const [defaultBadges] = useShowImageBadges();
   const showBadges = showBadgesOverride ?? defaultBadges;
@@ -93,6 +101,13 @@ function MarkdownPreview({
         ]}
         components={{
           img: ({ src, alt, ...props }) => {
+            if (publicSurface && src === HIDDEN_IMAGE_SRC) {
+              return (
+                <span className="inline-flex items-center rounded border border-dashed px-1.5 py-0.5 align-middle text-[11px] text-muted-foreground">
+                  external image
+                </span>
+              );
+            }
             const hosted = src ? isHostedImage(src, cdnBase) : false;
             return (
               <span className="relative inline-block">

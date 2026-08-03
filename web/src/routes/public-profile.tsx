@@ -132,7 +132,7 @@ export function PublicProfileView({ source }: { source: Source }) {
           {sys.description && (
             <div className="prose prose-sm dark:prose-invert max-w-none text-left">
               <Suspense fallback={<p className="text-sm">{sys.description}</p>}>
-                <MarkdownPreview content={sys.description} />
+                <MarkdownPreview content={sys.description} publicSurface />
               </Suspense>
             </div>
           )}
@@ -256,7 +256,7 @@ function MemberCard({ member }: { member: PublicMemberView }) {
         {member.bio && (
           <div className="prose prose-sm dark:prose-invert max-w-none">
             <Suspense fallback={<p className="text-sm">{member.bio}</p>}>
-              <MarkdownPreview content={member.bio} />
+              <MarkdownPreview content={member.bio} publicSurface />
             </Suspense>
           </div>
         )}

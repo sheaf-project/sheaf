@@ -224,6 +224,95 @@ def resolve_description_urls(text: str | None) -> str | None:
     return _MD_IMAGE_URL_RE.sub(_replace, text)
 
 
+# What an external image URL becomes on the anonymous public surface. A
+# fragment never triggers a fetch, so a client that does not special-case the
+# sentinel shows alt text or a broken image - the fail-closed direction. The
+# web app renders it as a neutral "external image" chip.
+EXTERNAL_IMAGE_HIDDEN = "#external-image-hidden"
+
+# Reference-style images: ![alt][ref], the collapsed ![alt][], and the shortcut
+# ![alt] paired with a link-reference definition further down the text.
+_MD_REF_IMAGE_RE = re.compile(r"(!\[[^\]]*\])(\[[^\]]*\])")
+_MD_SHORTCUT_IMAGE_RE = re.compile(r"!\[([^\]]*)\](?![\[(])")
+_MD_LINK_DEFINITION_RE = re.compile(r"(?m)^ {0,3}\[([^\]]+)\]:")
+
+
+def _hide_reference_images(text: str) -> str:
+    """Rewrite reference-style markdown images to the hidden sentinel.
+
+    Their target lives in a link-reference definition that a plain link may
+    share, so the URL cannot be rewritten in isolation and the image itself is
+    hidden instead. A reference image pointing at one of our own files is
+    hidden too: reference syntax never comes out of the image picker, and
+    hiding a hosted image is the direction that fails safe.
+    """
+    text = _MD_REF_IMAGE_RE.sub(rf"\1({EXTERNAL_IMAGE_HIDDEN})", text)
+    labels = {m.casefold() for m in _MD_LINK_DEFINITION_RE.findall(text)}
+    if not labels:
+        return text
+
+    def _shortcut(m: re.Match) -> str:
+        if m.group(1).casefold() not in labels:
+            return m.group(0)  # no definition: markdown renders it as text
+        return f"![{m.group(1)}]({EXTERNAL_IMAGE_HIDDEN})"
+
+    return _MD_SHORTCUT_IMAGE_RE.sub(_shortcut, text)
+
+
+def resolve_description_urls_public(text: str | None) -> str | None:
+    """resolve_description_urls for the anonymous public surface.
+
+    Internal refs resolve to signed URLs exactly as the private variant does.
+    Every other image URL is replaced with EXTERNAL_IMAGE_HIDDEN, because the
+    browser that would fetch it belongs to a VISITOR who consented to nothing:
+    rendering it hands an owner-chosen host that visitor's IP address, user
+    agent, and a timestamp for every view of the page. The authenticated app
+    still renders externals - that leak is the owner's own, and theirs to
+    accept.
+
+    data: URIs carry their own bytes and never touch the network, so they are
+    passed through untouched. (The private variant does not special-case them,
+    so they fall into _to_internal_key's bare-key branch and come back
+    mangled; nothing depends on that, and the fix belongs with the write path.)
+    """
+    if text is None:
+        return None
+
+    def _replace(m: re.Match) -> str:
+        prefix, url, suffix = m.group(1), m.group(2), m.group(3)
+        if url.startswith("data:"):
+            return prefix + url + suffix
+        key = _to_internal_key(url)
+        if key is None:
+            return f"{prefix}{EXTERNAL_IMAGE_HIDDEN}{suffix}"
+        resolved = resolve_avatar_url(key)
+        return f"{prefix}{resolved or '/v1/files/' + key}{suffix}"
+
+    return _hide_reference_images(_MD_IMAGE_URL_RE.sub(_replace, text))
+
+
+def resolve_avatar_url_public(url: str | None) -> str | None:
+    """resolve_avatar_url for the anonymous public surface.
+
+    Internal keys resolve to a signed URL as usual; anything external returns
+    None so the client falls back to initials. Same reasoning as
+    resolve_description_urls_public: an avatar pointed at a third-party host
+    makes every anonymous visitor's browser announce itself to that host.
+
+    data: URIs are dropped rather than passed through. They cannot leak an
+    address, but normalize_avatar_url has never been able to store one - it
+    hands the value to _to_internal_key, which classifies it as a bare storage
+    key - so there is no legitimate data: avatar to preserve, and initials beat
+    signing a nonsense key.
+    """
+    if url is None or url.startswith("data:"):
+        return None
+    key = _to_internal_key(url)
+    if key is None:
+        return None
+    return resolve_avatar_url(key)
+
+
 # Prefixes our uploads write under: {prefix}/{user_id}/{uuid}.{ext}. The
 # second path segment identifies the owning account, which is what the
 # ownership filters below key off.
