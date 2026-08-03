@@ -110,6 +110,8 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
         member_relationships_skipped=result.member_relationships_skipped,
         group_relationships_imported=result.group_relationships_imported,
         group_relationships_skipped=result.group_relationships_skipped,
+        share_views_imported=result.share_views_imported,
+        share_views_skipped=result.share_views_skipped,
     )
     for warning in result.warnings:
         append_event(job, level="warning", stage="import", message=warning)
@@ -131,7 +133,8 @@ async def handle_sheaf_file(job: ImportJob, db: AsyncSession) -> None:
             f"{result.channels_imported} notification channels, "
             f"{result.relationship_types_imported} relationship types, "
             f"{result.member_relationships_imported} member relationships, "
-            f"{result.group_relationships_imported} group relationships"
+            f"{result.group_relationships_imported} group relationships, "
+            f"{result.share_views_imported} share views"
         ),
     )
 
