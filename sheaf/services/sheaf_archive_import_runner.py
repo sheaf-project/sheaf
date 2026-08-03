@@ -114,6 +114,8 @@ async def handle_sheaf_archive(job: ImportJob, db: AsyncSession) -> None:
         member_relationships_skipped=base.member_relationships_skipped,
         group_relationships_imported=base.group_relationships_imported,
         group_relationships_skipped=base.group_relationships_skipped,
+        share_views_imported=base.share_views_imported,
+        share_views_skipped=base.share_views_skipped,
         images_imported=result.images_imported,
     )
     for warning in result.warnings:

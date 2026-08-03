@@ -6,13 +6,18 @@ and - crucially - it runs against the PR *merge* result in CI, which is where a
 cross-PR collision shows up (two branches numbering a migration off the same
 head, or picking the same revision id).
 
-Two failure modes it catches, both of which otherwise only surface as a
+Three failure modes it catches, all of which otherwise only surface as a
 2-minute "app did not become ready" timeout when alembic refuses to pick a head:
 
   1. Duplicate revision id  - two files declaring the same `revision`.
   2. Multiple heads         - a revision that nothing chains onto, more than
                               once, i.e. the graph forked (usually two
                               migrations sharing a `down_revision`).
+  3. Unreachable revisions  - a revision the head cannot be walked down to,
+                              i.e. a detached chain or a `down_revision`
+                              cycle. Every node of a cycle is referenced by
+                              another node in it, so no node of it is ever a
+                              head and the head count alone stays happy.
 
 Exit non-zero with a pointer to the fix (renumber to the next id in sequence and
 re-point `down_revision` at the current head).
@@ -38,6 +43,8 @@ _QUOTED = re.compile(r"[\"']([^\"']+)[\"']")
 def main() -> int:
     files = sorted(VERSIONS.glob("*.py"))
     revisions: dict[str, list[str]] = {}
+    # revision -> the revision(s) it chains onto (more than one at a merge point).
+    parents: dict[str, list[str]] = {}
     referenced: set[str] = set()
 
     for path in files:
@@ -50,7 +57,9 @@ def main() -> int:
 
         down_match = _DOWN.search(text)
         if down_match:
-            referenced.update(_QUOTED.findall(down_match.group(1)))
+            downs = _QUOTED.findall(down_match.group(1))
+            parents[rev_match.group(1)] = downs
+            referenced.update(downs)
 
     errors: list[str] = []
 
@@ -66,6 +75,29 @@ def main() -> int:
             + " (the migration graph forked - two migrations likely share a "
             "down_revision)"
         )
+
+    # Walk down from the head(s) following down_revision links. Anything not
+    # visited is on a chain the head cannot reach - a cycle, or a fragment
+    # left behind by a bad rebase. Skipped when there is no head at all, so
+    # that case keeps its own clearer message below.
+    if heads:
+        seen: set[str] = set()
+        stack = list(heads)
+        while stack:
+            rev = stack.pop()
+            if rev in seen:
+                continue
+            seen.add(rev)
+            stack.extend(parents.get(rev, ()))
+
+        unreachable = sorted(set(revisions) - seen)
+        if unreachable:
+            errors.append(
+                "revisions unreachable from the head: "
+                + ", ".join(unreachable)
+                + " (their chain never joins the main one - usually a "
+                "down_revision cycle, or a fragment left by a bad rebase)"
+            )
 
     if errors:
         print("Migration graph check FAILED:", file=sys.stderr)

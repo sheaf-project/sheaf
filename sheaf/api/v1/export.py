@@ -58,18 +58,21 @@ from sheaf.models.relationship import (
     MemberRelationship,
     RelationshipType,
 )
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.share import ShareView
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.request import client_ip
 from sheaf.services import export_storage
 from sheaf.services.activity_log import log_activity
 from sheaf.services.custom_fields import field_value_plaintext
 from sheaf.services.journals import entry_plaintext, revision_plaintext
 from sheaf.services.members import member_plaintext
 from sheaf.services.openplural_archive import unpack_residual
+from sheaf.services.security_events import record_security_event
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -202,7 +205,44 @@ async def _enforce_sync_export_size(
             )
 
 
-@router.get("", dependencies=[rate_limit(6, 3600, "user"), Depends(_enforce_sync_export_size)])
+async def _note_api_key_export(
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> None:
+    """Leave a trail when the sync export is served to a programmatic
+    credential, so a key leak can be audited after the fact.
+
+    Key-based export is a sanctioned use case (scripted backups), so this
+    records rather than refuses. A route dependency rather than an inline
+    check because export_all() is also called directly (not over HTTP) by
+    the async build worker, which has no request and is already covered by
+    the job's own activity-log entry.
+    """
+    if getattr(request.state, "auth_method", None) != "api_key":
+        return
+    event_ip = client_ip(request)
+    logger.info(
+        "sync export served to API-key auth: user=%s ip=%s", user.id, event_ip
+    )
+    await record_security_event(
+        event_type=SecurityEventType.DATA_EXPORT,
+        outcome="api_key",
+        user_id=user.id,
+        ip=event_ip,
+        user_agent=request.headers.get("user-agent"),
+    )
+
+
+@router.get(
+    "",
+    dependencies=[
+        rate_limit(6, 3600, "user"),
+        Depends(_enforce_sync_export_size),
+        # Last, so a request the size guard turns away is not recorded as an
+        # export that happened.
+        Depends(_note_api_key_export),
+    ],
+)
 async def export_all(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

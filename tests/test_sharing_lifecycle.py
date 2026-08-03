@@ -20,12 +20,15 @@ from sheaf.models.share import (
     ShareGrantStatus,
     ShareItemStatus,
     ShareSubjectType,
+    ShareView,
 )
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.services.sharing import (
+    EXPOSURE_FLAGS,
     _activation,
     is_exposure_safeguarded,
+    promote_view_flags,
     require_adult_attestation,
     revoke_grant,
     rotate_grant_token,
@@ -106,6 +109,61 @@ def test_shared_view_without_the_category_armed_is_immediate():
     )
     assert status == ShareItemStatus.ACTIVE.value
     assert activates_at is None
+
+
+# ---------------------------------------------------------------------------
+# Staged view flags
+# ---------------------------------------------------------------------------
+
+
+def _view(**kw) -> ShareView:
+    defaults = {
+        "include_bio": False,
+        "include_fronting": False,
+        "fronting_show_count": True,
+    }
+    return ShareView(
+        id=uuid.uuid4(),
+        system_id=uuid.uuid4(),
+        name="v",
+        **{**defaults, **kw},
+    )
+
+
+def test_every_exposure_flag_has_a_pending_twin():
+    """The staging columns and the flag list must not drift apart."""
+    columns = set(ShareView.__table__.columns.keys())
+    for flag in EXPOSURE_FLAGS:
+        assert flag in columns
+        assert f"pending_{flag}" in columns
+
+
+def test_promoting_applies_staged_flags_and_clears_the_staging():
+    view = _view(
+        pending_include_bio=True,
+        flags_activate_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    promote_view_flags(view)
+
+    assert view.include_bio is True
+    assert view.pending_include_bio is None
+    assert view.flags_activate_at is None
+
+
+def test_promoting_leaves_unstaged_flags_alone():
+    """A flag the user turned off meanwhile must not be resurrected."""
+    view = _view(
+        include_fronting=True,
+        pending_include_bio=True,
+        flags_activate_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    promote_view_flags(view)
+
+    assert view.include_bio is True
+    assert view.include_fronting is True
+    assert view.fronting_show_count is True
 
 
 # ---------------------------------------------------------------------------
