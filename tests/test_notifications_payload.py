@@ -282,3 +282,44 @@ def test_minimal_no_triggers_match_suppresses():
         visible_member_ids=set(),
     )
     assert msg.suppress is True
+
+
+# ---------------------------------------------------------------------------
+# Time-window aggregation nets: the payload a folded window row carries is a
+# NET (before at window open -> latest after). These assert the renderer does
+# the right thing with such a net, which is what the enqueue-time folding
+# relies on (see `_fold_or_open_window` in events.py).
+# ---------------------------------------------------------------------------
+
+
+def test_cofront_swap_nets_to_one_message():
+    """The motivating case: A is fronting; a swap removes C and adds B in two
+    separate front changes. The window folds them to net {A,C} -> {A,B},
+    which renders as ONE message covering both facts (not two notifications)."""
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    msg = render_message(
+        _channel(on_start=True, on_stop=True),
+        payload=_payload([a, c], [a, b]),
+        member_names={a: "Alice", b: "Bob", c: "Cara"},
+        visible_member_ids={a, b, c},
+    )
+    assert msg.suppress is False
+    assert "Bob started fronting." in msg.body
+    assert "Cara stopped fronting." in msg.body
+    # Alice persisted across the window and should not be named as a change.
+    assert "Alice started" not in msg.body
+    assert "Alice stopped" not in msg.body
+
+
+def test_flap_within_window_nets_to_suppressed():
+    """B starts then stops within the window: net {A} -> {A}. Nothing net
+    changed, so the aggregated row renders as suppressed (no spurious
+    notification about a member who is no longer fronting)."""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    msg = render_message(
+        _channel(on_start=True, on_stop=True),
+        payload=_payload([a], [a]),
+        member_names={a: "Alice", b: "Bob"},
+        visible_member_ids={a, b},
+    )
+    assert msg.suppress is True
