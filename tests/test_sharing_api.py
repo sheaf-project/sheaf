@@ -338,6 +338,35 @@ def test_link_token_returned_once_and_rotates(auth_client: httpx.Client):
     assert rotated.json()["token"] and rotated.json()["token"] != token
 
 
+def test_account_data_bundle_carries_grants_but_no_token(
+    auth_client: httpx.Client,
+):
+    """Article 15 has to describe the exposure the account created, and must
+    not leak any part of the link token doing it."""
+    _attest(auth_client)
+    vid = _view(auth_client, "Bundled", include_bio=True)
+    token = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    ).json()["token"]
+
+    bundle = auth_client.post(
+        "/v1/account/data", json={"password": "testpassword123"}
+    )
+    assert bundle.status_code == 200, bundle.text
+    body = bundle.json()
+
+    assert body["account"]["adult_attested_at"] is not None
+    grant = next(g for g in body["share_grants"] if g["view_id"] == vid)
+    assert grant["subject_type"] == "link"
+    assert grant["view_name"] == "Bundled"
+    assert grant["view_include_bio"] is True
+    assert grant["status"] and grant["created_at"]
+
+    serialised = str(body)
+    assert token not in serialised
+    assert "token_hash" not in serialised
+
+
 def test_public_grant_carries_no_token(auth_client: httpx.Client):
     _attest(auth_client)
     vid = _view(auth_client)
