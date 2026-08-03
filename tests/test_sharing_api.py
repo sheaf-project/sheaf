@@ -78,27 +78,55 @@ def _arm_visibility_safety(c: httpx.Client) -> None:
     assert r.status_code == 200, r.text
 
 
-def _backdate_grant_activation(grant_id: str) -> None:
-    """Push a pending grant's activation into the past so the finalize job fires."""
+def _in_db(work) -> None:
+    """Run `work(db)` straight against the test database, then commit.
+
+    Only for the one thing the API deliberately cannot do on request: put an
+    activation timestamp in the past so the finalize job has something due.
+    """
 
     async def _run() -> None:
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
         from sqlalchemy.orm import sessionmaker
 
         from sheaf.config import settings
-        from sheaf.models.share import ShareGrant
 
         db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
         engine = create_async_engine(db_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         async with async_session() as db:
-            grant = await db.get(ShareGrant, uuid.UUID(grant_id))
-            assert grant is not None
-            grant.activates_at = datetime.now(UTC) - timedelta(minutes=1)
+            await work(db)
             await db.commit()
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+def _backdate_grant_activation(grant_id: str) -> None:
+    """Push a pending grant's activation into the past so the finalize job fires."""
+
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareGrant
+
+        grant = await db.get(ShareGrant, uuid.UUID(grant_id))
+        assert grant is not None
+        grant.activates_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
+def _backdate_view_flags(view_id: str) -> None:
+    """Same, for a view's staged flag flip."""
+
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareView
+
+        view = await db.get(ShareView, uuid.UUID(view_id))
+        assert view is not None
+        assert view.flags_activate_at is not None
+        view.flags_activate_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +442,280 @@ def test_finalize_job_promotes_pending_grant(
         g for g in auth_client.get("/v1/share-grants").json() if g["id"] == gid
     )
     assert now_active["status"] == "active"
+
+
+def _shared_view(c: httpx.Client, **kw) -> str:
+    """A view with a live public grant, created before safety is armed."""
+    _attest(c)
+    vid = _view(c, f"Shared-{uuid.uuid4().hex[:6]}", **kw)
+    r = c.post("/v1/share-grants", json={"view_id": vid, "subject_type": "public"})
+    assert r.status_code == 201, r.text
+    return vid
+
+
+# ---------------------------------------------------------------------------
+# View flag flips (staged like any other exposure)
+# ---------------------------------------------------------------------------
+
+
+def test_flag_loosening_on_a_shared_view_is_deferred(auth_client: httpx.Client):
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    # No credential -> refused, exactly like adding a member would be.
+    denied = auth_client.patch(f"/v1/share-views/{vid}", json={"include_bio": True})
+    assert denied.status_code in (400, 403), denied.text
+
+    ok = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"include_bio": True, "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    # Accepted, but staged: the live flag has not moved.
+    assert body["include_bio"] is False
+    assert body["pending_include_bio"] is True
+    assert body["flags_activate_at"] is not None
+    # Untouched flags stage nothing.
+    assert body["pending_include_fronting"] is None
+
+
+def test_flag_tightening_is_immediate_and_ungated(auth_client: httpx.Client):
+    vid = _shared_view(auth_client, include_fronting=True)
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_fronting": False}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["include_fronting"] is False
+    assert r.json()["pending_include_fronting"] is None
+
+
+def test_turning_a_flag_off_cancels_its_pending_flip(auth_client: httpx.Client):
+    """Going dark wins: a staged flip is dropped, not merely overridden."""
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+    staged = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"include_bio": True, "password": "testpassword123"},
+    )
+    assert staged.json()["pending_include_bio"] is True
+
+    off = auth_client.patch(f"/v1/share-views/{vid}", json={"include_bio": False})
+    assert off.status_code == 200, off.text
+    assert off.json()["include_bio"] is False
+    assert off.json()["pending_include_bio"] is None
+    # Nothing staged anywhere -> no activation time left hanging around.
+    assert off.json()["flags_activate_at"] is None
+
+
+def test_flag_change_on_an_unshared_view_is_immediate(auth_client: httpx.Client):
+    """Nothing points at the view, so turning a flag on exposes nothing."""
+    _arm_visibility_safety(auth_client)
+    vid = _view(auth_client)
+
+    r = auth_client.patch(f"/v1/share-views/{vid}", json={"include_bio": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["include_bio"] is True
+    assert r.json()["pending_include_bio"] is None
+
+
+def test_flag_change_without_the_category_armed_is_immediate(
+    auth_client: httpx.Client,
+):
+    vid = _shared_view(auth_client)
+    r = auth_client.patch(f"/v1/share-views/{vid}", json={"include_bio": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["include_bio"] is True
+    assert r.json()["flags_activate_at"] is None
+
+
+def test_finalize_job_promotes_a_staged_flag_flip(
+    auth_client: httpx.Client, admin_client: httpx.Client
+):
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+    auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={
+            "include_bio": True,
+            "fronting_show_count": True,
+            "password": "testpassword123",
+        },
+    )
+
+    _backdate_view_flags(vid)
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["include_bio"] is True
+    assert got["pending_include_bio"] is None
+    assert got["flags_activate_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# member.privacy: raising a member to public is an exposure too
+# ---------------------------------------------------------------------------
+
+
+def test_privacy_flip_to_public_in_a_shared_view_is_deferred(
+    auth_client: httpx.Client,
+):
+    vid = _shared_view(auth_client)
+    m = _member(auth_client, "Riser")  # private by default
+    assert (
+        auth_client.post(
+            f"/v1/share-views/{vid}/members", json={"member_id": m}
+        ).status_code
+        == 200
+    )
+    _arm_visibility_safety(auth_client)
+
+    denied = auth_client.patch(f"/v1/members/{m}", json={"privacy": "public"})
+    assert denied.status_code in (400, 403), denied.text
+
+    ok = auth_client.patch(
+        f"/v1/members/{m}", json={"privacy": "public", "password": "testpassword123"}
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["privacy"] == "public"
+
+    # The flip landed, the exposure did not: the membership row is back to
+    # pending and waits out the window.
+    row = auth_client.get(f"/v1/share-views/{vid}").json()["members"][0]
+    assert row["status"] == "pending"
+    assert row["activates_at"] is not None
+
+
+def test_privacy_flip_outside_a_shared_view_is_ungated(auth_client: httpx.Client):
+    """No grant points at the view, so nothing is exposed and nothing waits."""
+    _arm_visibility_safety(auth_client)
+    vid = _view(auth_client)
+    m = _member(auth_client, "Unpublished")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+
+    r = auth_client.patch(f"/v1/members/{m}", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "public"
+    assert auth_client.get(f"/v1/share-views/{vid}").json()["members"][0][
+        "status"
+    ] == "active"
+
+
+def test_privacy_tightening_is_always_immediate(auth_client: httpx.Client):
+    vid = _shared_view(auth_client)
+    m = _member(auth_client, "Dropper", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+    _arm_visibility_safety(auth_client)
+
+    # No credential, no waiting - and private -> friends is ungated too, since
+    # the friends tier exposes nothing today.
+    down = auth_client.patch(f"/v1/members/{m}", json={"privacy": "private"})
+    assert down.status_code == 200, down.text
+    assert down.json()["privacy"] == "private"
+
+    sideways = auth_client.patch(f"/v1/members/{m}", json={"privacy": "friends"})
+    assert sideways.status_code == 200, sideways.text
+    assert sideways.json()["privacy"] == "friends"
+
+
+# ---------------------------------------------------------------------------
+# Business caps
+# ---------------------------------------------------------------------------
+
+
+def _cap(name: str) -> int:
+    """Declared default for a cap, which is what the test stack runs with."""
+    from sheaf.config import Settings
+
+    return Settings.model_fields[name].default
+
+
+def _system_id(c: httpx.Client) -> str:
+    return c.get("/v1/systems/me").json()["id"]
+
+
+def _seed_views(system_id: str, count: int) -> None:
+    """Fill view slots straight in the database - the point under test is the
+    cap check, not the hundred POSTs it would take to reach it."""
+
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareView
+
+        for i in range(count):
+            db.add(
+                ShareView(
+                    id=uuid.uuid4(),
+                    system_id=uuid.UUID(system_id),
+                    name=f"Seeded {uuid.uuid4().hex[:8]}-{i}",
+                )
+            )
+
+    _in_db(_work)
+
+
+def _seed_grants(
+    system_id: str, view_id: str, count: int, *, revoked: bool = False
+) -> None:
+    async def _work(db) -> None:
+        from sheaf.models.share import (
+            ShareGrant,
+            ShareGrantStatus,
+            ShareSubjectType,
+        )
+
+        now = datetime.now(UTC)
+        for _ in range(count):
+            db.add(
+                ShareGrant(
+                    id=uuid.uuid4(),
+                    system_id=uuid.UUID(system_id),
+                    view_id=uuid.UUID(view_id),
+                    subject_type=ShareSubjectType.LINK.value,
+                    token_hash=uuid.uuid4().hex,
+                    status=(
+                        ShareGrantStatus.REVOKED.value
+                        if revoked
+                        else ShareGrantStatus.ACTIVE.value
+                    ),
+                    revoked_at=now if revoked else None,
+                    created_at=now,
+                )
+            )
+
+    _in_db(_work)
+
+
+def test_share_view_cap_is_enforced(auth_client: httpx.Client):
+    _seed_views(_system_id(auth_client), _cap("share_views_max"))
+
+    r = auth_client.post("/v1/share-views", json={"name": "One too many"})
+    assert r.status_code == 403, r.text
+    assert "share views" in r.text.lower()
+
+
+def test_share_grant_cap_counts_only_live_grants(auth_client: httpx.Client):
+    _attest(auth_client)
+    vid = _view(auth_client)
+    system_id = _system_id(auth_client)
+    cap = _cap("share_grants_max")
+
+    # Revoked grants are not exposure, so they must not use up the budget.
+    _seed_grants(system_id, vid, cap, revoked=True)
+    ok = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert ok.status_code == 201, ok.text
+
+    # That one plus these fills it.
+    _seed_grants(system_id, vid, cap - 1)
+    denied = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert denied.status_code == 403, denied.text
+    assert "revoke" in denied.text.lower()
 
 
 # ---------------------------------------------------------------------------

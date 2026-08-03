@@ -80,6 +80,13 @@ _SHARE_LIFECYCLE = (
     "grace-window lifecycle state; imported rows land active because grants "
     "are never imported, so an imported view exposes nothing"
 )
+# A staged flag flip is mid-grace-window state, not curation: the export
+# carries the view's LIVE flags, so an import never restores a half-applied
+# loosening (and, with no grants imported, could not act on one anyway).
+_SHARE_FLAG_STAGING = (
+    "staged flag flip waiting out the grace window; the export carries the "
+    "view's live flags, so an import never restores a half-applied loosening"
+)
 _NO_GRANT_IMPORT = (
     "grants are deliberately never exported or imported: a grant is a live "
     "capability, so restoring one would republish a system from a backup"
@@ -273,6 +280,10 @@ CLASSIFICATION: dict[type, dict] = {
             "system_id": _TENANT_FK,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "pending_include_bio": _SHARE_FLAG_STAGING,
+            "pending_include_fronting": _SHARE_FLAG_STAGING,
+            "pending_fronting_show_count": _SHARE_FLAG_STAGING,
+            "flags_activate_at": _SHARE_FLAG_STAGING,
         },
     },
     ShareViewMember: {

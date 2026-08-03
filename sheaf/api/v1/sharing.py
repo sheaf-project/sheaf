@@ -3,23 +3,30 @@
 Every endpoint here is scoped to the caller's own system. The asymmetry that
 runs through the whole feature shows up in the re-auth rules: anything that
 EXPOSES more (creating a grant, adding a member/field/group to a view that is
-already shared) is deferred and re-auth-gated when the system has armed the
-`profile_visibility` safety category, while anything that exposes LESS
-(revoking, rotating, removing, deleting) is immediate and never gated.
+already shared, turning one of that view's exposure flags on) is deferred and
+re-auth-gated when the system has armed the `profile_visibility` safety
+category, while anything that exposes LESS (revoking, rotating, removing,
+deleting, turning a flag back off) is immediate and never gated.
+
+Deferred does not mean "refused until later": the change is accepted and parked
+as pending state, and `finalize_share_activations` makes it live once the grace
+window has elapsed.
 
 The anonymous read surface lives in a separate router; nothing here serves
 public content.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.group import Group
@@ -49,6 +56,7 @@ from sheaf.schemas.share import (
     ShareViewUpdate,
 )
 from sheaf.services.sharing import (
+    EXPOSURE_FLAGS,
     add_field_to_view,
     add_member_to_view,
     create_grant,
@@ -126,6 +134,10 @@ def _view_to_read(view: ShareView, *, is_shared: bool) -> ShareViewRead:
         fronting_show_count=view.fronting_show_count,
         created_at=view.created_at,
         is_shared=is_shared,
+        pending_include_bio=view.pending_include_bio,
+        pending_include_fronting=view.pending_include_fronting,
+        pending_fronting_show_count=view.pending_fronting_show_count,
+        flags_activate_at=view.flags_activate_at,
         members=[
             {
                 "id": m.id,
@@ -219,6 +231,21 @@ async def create_share_view(
     this is deliberately ungated. The gate is on publishing.
     """
     system = await _get_user_system(user, db)
+
+    existing = (
+        await db.execute(
+            select(func.count(ShareView.id)).where(ShareView.system_id == system.id)
+        )
+    ).scalar_one()
+    if existing >= settings.share_views_max:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Maximum {settings.share_views_max} share views per system. "
+                "Delete one you no longer need first."
+            ),
+        )
+
     view = ShareView(
         id=uuid.uuid4(),
         system_id=system.id,
@@ -264,38 +291,58 @@ async def update_share_view(
 ) -> ShareViewRead:
     """Edit a view's settings.
 
-    Turning `include_bio` or `include_fronting` ON while the view is already
-    shared exposes more, so it is re-auth-gated the same way adding a member
-    is. Turning them off is immediate.
+    Turning one of the three exposure flags ON while the view is already shared
+    exposes more, so it is deferred and re-auth-gated exactly like adding a
+    member: the new value is STAGED (`pending_<flag>` + `flags_activate_at`),
+    the live flag does not move, and the finalize sweep promotes it once the
+    grace window has elapsed. Turning a flag off is immediate, ungated, and
+    cancels any staged flip of that flag. Renaming exposes nothing and is
+    always immediate.
     """
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db, load=True)
     shared = await view_is_shared(db, view.id)
 
-    loosening = shared and (
-        (body.include_bio is True and not view.include_bio)
-        or (body.include_fronting is True and not view.include_fronting)
-        # Switching the fallback from "hide" to "count" reveals that someone
-        # not in the view is fronting, which is strictly more than before.
-        or (body.fronting_show_count is True and not view.fronting_show_count)
-    )
+    # Switching fronting_show_count from "hide" to "count" reveals that someone
+    # not in the view is fronting, which is strictly more than before, so it
+    # counts as a loosening alongside the two include_* flags.
+    requested = {flag: getattr(body, flag) for flag in EXPOSURE_FLAGS}
+    loosening = {
+        flag
+        for flag, value in requested.items()
+        if value is True and not getattr(view, flag)
+    }
+    deferred = bool(loosening) and shared and is_exposure_safeguarded(system)
     await _reauth_if_deferred(
         db=db,
         user=user,
         system=system,
-        deferred=loosening and is_exposure_safeguarded(system),
+        deferred=deferred,
         password=body.password,
         totp_code=body.totp_code,
     )
 
     if body.name is not None:
         view.name = body.name.strip()
-    if body.include_bio is not None:
-        view.include_bio = body.include_bio
-    if body.include_fronting is not None:
-        view.include_fronting = body.include_fronting
-    if body.fronting_show_count is not None:
-        view.fronting_show_count = body.fronting_show_count
+
+    activates_at = datetime.now(UTC) + timedelta(
+        days=system.safety_grace_period_days
+    )
+    for flag, value in requested.items():
+        if value is None:
+            continue
+        if deferred and flag in loosening:
+            setattr(view, f"pending_{flag}", True)
+            # One clock for the whole view; a later loosening restarts it.
+            view.flags_activate_at = activates_at
+        else:
+            # Everything else - tightening, an unshared or unsafeguarded view,
+            # a no-op repeat - lands now and drops anything staged for that
+            # flag, so switching a pending flip back off cancels it outright.
+            setattr(view, flag, value)
+            setattr(view, f"pending_{flag}", None)
+    if all(getattr(view, f"pending_{flag}") is None for flag in EXPOSURE_FLAGS):
+        view.flags_activate_at = None
 
     try:
         await db.commit()

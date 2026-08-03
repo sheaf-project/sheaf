@@ -75,6 +75,30 @@ def test_login_rate_limit(anon_client):
     assert results[0] == 200
 
 
+def test_refresh_rate_limit(anon_client):
+    """Refresh is limited to 60/min per IP.
+
+    It had no limit at all, which made the reuse path (which holds the
+    request for up to 2s polling the rotation cache) free to trigger in
+    bulk. Rejected tokens still draw down the budget: the limiter runs
+    before the handler looks at the body.
+    """
+    results = []
+    for _ in range(70):
+        resp = anon_client.post(
+            "/v1/auth/refresh", json={"refresh_token": "not-a-real-token"}
+        )
+        results.append(resp.status_code)
+        if resp.status_code == 429:
+            break
+
+    assert results[0] == 401, results[:5]
+    assert 429 in results, f"Expected at least one 429, got: {set(results)}"
+    # The cap is nowhere near legitimate traffic: a real client refreshes
+    # once per access-token lifetime, so the first several dozen pass.
+    assert results.index(429) >= 50, results.index(429)
+
+
 def test_rate_limit_returns_correct_headers(anon_client):
     """429 responses include rate limit headers."""
     for _ in range(8):
