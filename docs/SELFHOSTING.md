@@ -633,6 +633,16 @@ When `S3_ACCESS_KEY`/`S3_SECRET_KEY` are unset, boto3's default credential chain
 
 Image URLs need to balance four things: preventing your instance from being used as free image hosting, CDN caching for performance, privacy (what the CDN sees), and operational cost/complexity. Four supported setups, pick whichever matches your deployment:
 
+Public profiles and share links are a deliberate exception to the normal URL
+shape below. Uploaded media on those anonymous pages is rewritten to an
+expiring `/v1/public/files/...` URL and served through the app from the
+configured storage backend. It never redirects to S3 or emits the CDN origin,
+so the public page can retain `img-src 'self' data:` without breaking uploads.
+Those responses are publicly cacheable until their capability expires. If you
+use S3/CDN primarily to keep image bytes away from the app, include public
+profile traffic when sizing the app; authenticated pages still use the chosen
+paradigm normally.
+
 #### 1. Filesystem, app-served (default, simplest)
 
 ```env
@@ -1025,7 +1035,7 @@ When disabled:
 
 Regardless of this setting, avatar URLs accepted from imports must be plain `http(s)` - other schemes are dropped.
 
-This setting governs the authenticated app. It has no bearing on public profiles and share links, where an external image is never served at all: the visitor has no account and consented to nothing, so their browser is not made to fetch from a host the profile's owner chose. Bio embeds arrive as a placeholder the page renders as an "external image" label, and an external avatar arrives as null, so the member's initials show instead. Uploaded images are served as normal.
+This setting governs the authenticated app. It has no bearing on public profiles and share links, where an external image is never served at all: the visitor has no account and consented to nothing, so their browser is not made to fetch from a host the profile's owner chose. Bio embeds arrive as a placeholder the page renders as an "external image" label, and an external avatar arrives as null, so the member's initials show instead. Uploaded images use an expiring same-origin public-media route.
 
 The toggle does not retroactively scrub existing content — it only governs new writes. CSP blocks old references at render time.
 
@@ -1330,7 +1340,7 @@ Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Refer
 
 The examples also send `X-Robots-Tag: noindex, nofollow` for `/p/` and `/s/` (public profiles and share links). Those are the only pages a crawler can reach, since everything else needs a login, and they are meant for sharing with people you gave the link to, not for turning up in search results. The pages set a `robots` meta tag themselves as well; the header covers a crawler that indexes on headers alone without running the app.
 
-Those same two paths get a tighter `img-src` (`'self' data:`, dropping `https:` and `blob:`). They are read by visitors with no account, and Sheaf never sends them an external image URL: it withholds it, so a visitor's browser is never made to fetch from a host the profile's owner picked, which would hand that host the visitor's address on every view. The narrower policy is the backstop - if a bug ever let such a URL through, the browser refuses the fetch and the visitor sees a broken image rather than being quietly announced.
+Those same two paths get a tighter `img-src` (`'self' data:`, dropping `https:` and `blob:`). They are read by visitors with no account, and Sheaf never sends them an external image URL: it withholds it, so a visitor's browser is never made to fetch from a host the profile's owner picked, which would hand that host the visitor's address on every view. Uploaded media is rewritten to the same-origin `/v1/public/files/...` route, including under S3/CDN configurations, so it remains compatible with the narrower policy. The policy is the backstop - if a bug ever let an owner-chosen URL through, the browser refuses the fetch and the visitor sees a broken image rather than being quietly announced.
 
 **Streaming endpoints (SSE).** The realtime front-change stream (`GET /v1/fronts/stream`, Server-Sent Events) needs your proxy to forward each event as it arrives rather than buffering the response - otherwise clients (Home Assistant, Node-RED) stall for seconds on connect before the first event. The examples above disable buffering for that path (`proxy_buffering off` for nginx, `flush_interval -1` for Caddy). The app also sends `X-Accel-Buffering: no`, which nginx honours to disable buffering per-response, but Caddy and some other proxies ignore it, so set it explicitly for whatever proxy you run. For Traefik, HAProxy, or others, disable response buffering (enable streaming/flush) for that route, and make sure the route is not gzipped - compressing a live stream re-buffers it. A revoked or expired key drops its stream on its own, so the long read timeout in the nginx example is just to stop an idle-looking (but heartbeating) connection being cut.
 

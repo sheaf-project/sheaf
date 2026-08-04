@@ -74,7 +74,9 @@
 		# because these pages are read by anonymous visitors: the server already
 		# withholds external images from them, and if that ever regressed the
 		# browser refuses the fetch rather than announcing the visitor's address
-		# to a host the profile owner chose.
+		# to a host the profile owner chose. Hosted uploads use the dedicated
+		# same-origin /v1/public/files route even when normal image serving uses
+		# S3 redirects or a CDN.
 		header @profiles {
 			X-Frame-Options "DENY"
 			X-Content-Type-Options "nosniff"

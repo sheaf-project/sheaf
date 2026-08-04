@@ -362,7 +362,7 @@ def test_external_avatar_and_banner_are_withheld():
     assert by_name["Linked"]["banner_url"] is None
     # An upload still resolves to a serve URL (signed only when the config
     # says so - the test stack runs image_serving=unsigned).
-    assert by_name["Hosted"]["avatar_url"].startswith(f"/v1/files/{key}")
+    assert by_name["Hosted"]["avatar_url"].startswith(f"/v1/public/files/{key}")
 
     # Scope guard: the owner's own read is unchanged. Nothing was scrubbed from
     # the row, it is only withheld from the anonymous surface.
@@ -383,7 +383,7 @@ def test_external_bio_image_is_replaced_by_the_sentinel():
     bio = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]["bio"]
     assert "tracker.example" not in bio
     assert _HIDDEN in bio
-    assert f"/v1/files/{key}" in bio
+    assert f"/v1/public/files/{key}" in bio
     assert bio.startswith("Before ") and bio.endswith(" after")
 
     # Same scope guard, on the authenticated read.
@@ -407,7 +407,7 @@ def test_system_description_hides_external_images_too():
     body = _anon().get(f"/v1/public/systems/{system_id}").json()
     assert "tracker.example" not in body["description"]
     assert _HIDDEN in body["description"]
-    assert f"/v1/files/{key}" in body["description"]
+    assert f"/v1/public/files/{key}" in body["description"]
 
     assert _TRACKER in owner.get("/v1/systems/me").json()["description"]
     owner.close()

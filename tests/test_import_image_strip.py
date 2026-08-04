@@ -116,6 +116,19 @@ def test_strip_md_preserves_non_image_markdown():
     assert strip_internal_image_refs_md(text) == text
 
 
+def test_strip_md_handles_reference_image_without_touching_code():
+    key = "bios/00000000-0000-0000-0000-000000000001/a.png"
+    text = (
+        f"`![example](/v1/files/{key})`\n\n"
+        f"![actual][photo]\n\n[photo]: /v1/files/{key}"
+    )
+
+    cleaned = strip_internal_image_refs_md(text)
+
+    assert f"`![example](/v1/files/{key})`" in cleaned
+    assert "![actual]" not in cleaned
+
+
 # ---------------------------------------------------------------------------
 # strip_internal_image_refs_md_to_none
 # ---------------------------------------------------------------------------

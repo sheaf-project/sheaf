@@ -40,7 +40,8 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
-from sheaf.files import _MD_IMAGE_URL_RE, _to_internal_key
+from sheaf.files import _to_internal_key
+from sheaf.markdown_images import iter_markdown_images
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.services.import_dedup import ImportConflictStrategy
@@ -225,8 +226,8 @@ def collect_image_references(data: dict) -> dict[str, list[str]]:
     def _from_md(text: object, site: str) -> None:
         if not isinstance(text, str) or not text:
             return
-        for m in _MD_IMAGE_URL_RE.finditer(text):
-            _add(_to_internal_key(m.group(2)), site)
+        for image in iter_markdown_images(text):
+            _add(_to_internal_key(image.url), site)
 
     def _from_key_list(values: object, site: str) -> None:
         if not isinstance(values, list):
