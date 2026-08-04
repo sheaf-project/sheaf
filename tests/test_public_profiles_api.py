@@ -11,6 +11,8 @@ surface unnoticed.
 """
 
 import asyncio
+import base64
+import io
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -45,6 +47,21 @@ def _member(c: httpx.Client, name: str, **kw) -> str:
     r = c.post("/v1/members", json=body)
     assert r.status_code == 201, r.text
     return r.json()["id"]
+
+
+def _upload(c: httpx.Client, purpose: str = "avatar") -> str:
+    """Upload a 1x1 PNG and return its storage key."""
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+        "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+    r = c.post(
+        "/v1/files/upload",
+        params={"purpose": purpose},
+        files={"file": ("a.png", io.BytesIO(png), "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["key"]
 
 
 def _anon() -> httpx.Client:
@@ -318,6 +335,94 @@ def test_only_exposed_custom_fields_appear():
     mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
     assert mem["fields"] == {"Role": "Protector"}
     assert "Secret" not in mem["fields"]
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# External images: a visitor's browser is never sent to a host the owner chose
+# ---------------------------------------------------------------------------
+
+_TRACKER = "https://tracker.example/pixel.png"
+_HIDDEN = "#external-image-hidden"
+
+
+@pytest.mark.public_profiles
+def test_external_avatar_and_banner_are_withheld():
+    owner = _register()
+    key = _upload(owner)
+    hosted = _member(owner, "Hosted", avatar_url=key)
+    linked = _member(owner, "Linked", avatar_url=_TRACKER, banner_url=_TRACKER)
+    system_id, _ = _published_system(owner, members=[hosted, linked])
+
+    by_name = {
+        m["name"]: m
+        for m in _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    }
+    assert by_name["Linked"]["avatar_url"] is None
+    assert by_name["Linked"]["banner_url"] is None
+    # An upload still resolves to a serve URL (signed only when the config
+    # says so - the test stack runs image_serving=unsigned).
+    assert by_name["Hosted"]["avatar_url"].startswith(f"/v1/files/{key}")
+
+    # Scope guard: the owner's own read is unchanged. Nothing was scrubbed from
+    # the row, it is only withheld from the anonymous surface.
+    own = owner.get(f"/v1/members/{linked}").json()
+    assert own["avatar_url"] == _TRACKER
+    assert own["banner_url"] == _TRACKER
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_external_bio_image_is_replaced_by_the_sentinel():
+    owner = _register()
+    key = _upload(owner, purpose="bio")
+    desc = f"Before ![mine](/v1/files/{key}) middle ![theirs]({_TRACKER}) after"
+    m = _member(owner, "Bioed", description=desc)
+    system_id, _ = _published_system(owner, members=[m], include_bio=True)
+
+    bio = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]["bio"]
+    assert "tracker.example" not in bio
+    assert _HIDDEN in bio
+    assert f"/v1/files/{key}" in bio
+    assert bio.startswith("Before ") and bio.endswith(" after")
+
+    # Same scope guard, on the authenticated read.
+    assert _TRACKER in owner.get(f"/v1/members/{m}").json()["description"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_system_description_hides_external_images_too():
+    """The system description is rendered as markdown on the public page, so it
+    gets the same treatment as a bio."""
+    owner = _register()
+    key = _upload(owner, purpose="bio")
+    r = owner.patch(
+        "/v1/systems/me",
+        json={"description": f"![logo](/v1/files/{key}) ![pixel]({_TRACKER})"},
+    )
+    assert r.status_code == 200, r.text
+    system_id, _ = _published_system(owner)
+
+    body = _anon().get(f"/v1/public/systems/{system_id}").json()
+    assert "tracker.example" not in body["description"]
+    assert _HIDDEN in body["description"]
+    assert f"/v1/files/{key}" in body["description"]
+
+    assert _TRACKER in owner.get("/v1/systems/me").json()["description"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_fronting_member_external_avatar_is_withheld():
+    owner = _register()
+    m = _member(owner, "Fronter", avatar_url=_TRACKER)
+    system_id, _ = _published_system(owner, members=[m], include_fronting=True)
+    assert owner.post("/v1/fronts", json={"member_ids": [m]}).status_code == 201
+
+    fronting = _anon().get(f"/v1/public/systems/{system_id}/fronting").json()
+    assert [pm["name"] for pm in fronting["members"]] == ["Fronter"]
+    assert fronting["members"][0]["avatar_url"] is None
     owner.close()
 
 

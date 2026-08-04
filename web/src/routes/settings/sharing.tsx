@@ -137,6 +137,12 @@ function SharingManager() {
             view.
           </p>
           <p>
+            Images you uploaded show up on a shared page as normal. Images
+            linked from another site do not: loading one would tell that site
+            the address of everyone who opens your page, so a linked image
+            appears as a small "external image" label instead.
+          </p>
+          <p>
             Making something visible is deliberate; taking it back
             (unpublishing, removing a member, rotating a link) applies
             immediately, and a visitor loses access within a minute - public

@@ -6,13 +6,16 @@ import pytest
 
 from sheaf.config import settings
 from sheaf.files import (
+    EXTERNAL_IMAGE_HIDDEN,
     internal_key_owner,
     normalize_avatar_url,
     normalize_description_urls,
     owned_avatar_url,
     owned_description_urls,
     resolve_avatar_url,
+    resolve_avatar_url_public,
     resolve_description_urls,
+    resolve_description_urls_public,
     sign_cdn_url,
     sign_file_url,
     verify_file_token,
@@ -274,6 +277,92 @@ def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Public surface: an external image would make an anonymous visitor's browser
+# announce itself to a host the profile owner chose, so it never ships.
+
+
+def test_resolve_description_urls_public_signs_hosted():
+    result = resolve_description_urls_public("![pic](/v1/files/members/m/a.png)")
+    assert "/v1/files/members/m/a.png" in result
+    assert "token=" in result
+    assert "expires=" in result
+
+
+def test_resolve_description_urls_public_hides_external():
+    result = resolve_description_urls_public("![evil](https://tracker.example/p.png)")
+    assert result == f"![evil]({EXTERNAL_IMAGE_HIDDEN})"
+    assert "tracker.example" not in result
+
+
+def test_resolve_description_urls_public_keeps_data_uri():
+    text = "![dot](data:image/png;base64,iVBORw0KGgo=)"
+    assert resolve_description_urls_public(text) == text
+
+
+def test_resolve_description_urls_public_mixed_content():
+    text = (
+        "Intro ![mine](/v1/files/bios/u/a.png) middle "
+        "![theirs](https://tracker.example/p.png) end [a link](https://ok.example)"
+    )
+    result = resolve_description_urls_public(text)
+    assert "tracker.example" not in result
+    assert result.count(EXTERNAL_IMAGE_HIDDEN) == 1
+    assert "/v1/files/bios/u/a.png?token=" in result
+    # Prose and ordinary links are not image fetches; they stay.
+    assert "Intro " in result and "[a link](https://ok.example)" in result
+
+
+def test_resolve_description_urls_public_hides_reference_images():
+    """Reference syntax is the way round an inline-only rewrite, so it is
+    hidden whatever it points at."""
+    text = (
+        "![full][t] ![collapsed][] ![shortcut]\n\n"
+        "[t]: https://tracker.example/1.png\n"
+        "[collapsed]: https://tracker.example/2.png\n"
+        "[shortcut]: https://tracker.example/3.png\n"
+    )
+    result = resolve_description_urls_public(text)
+    assert result.count(f"]({EXTERNAL_IMAGE_HIDDEN})") == 3
+
+
+def test_resolve_description_urls_public_leaves_undefined_shortcut_alone():
+    """Without a definition, ![like this] is prose, not an image."""
+    text = "Filed under ![not an image] in the notes."
+    assert resolve_description_urls_public(text) == text
+
+
+def test_resolve_description_urls_public_none():
+    assert resolve_description_urls_public(None) is None
+
+
+def test_resolve_avatar_url_public_signs_internal():
+    result = resolve_avatar_url_public("avatars/user/abc.png")
+    assert result.startswith("/v1/files/avatars/user/abc.png?token=")
+
+
+def test_resolve_avatar_url_public_signs_legacy_cdn_row(monkeypatch):
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
+    result = resolve_avatar_url_public(
+        "https://cdn.example.com/avatars/user/abc.png?token=STALE&expires=1"
+    )
+    assert result.startswith("https://cdn.example.com/avatars/user/abc.png?token=")
+    assert "STALE" not in result
+
+
+def test_resolve_avatar_url_public_drops_external():
+    assert resolve_avatar_url_public("https://gravatar.com/x.png") is None
+
+
+def test_resolve_avatar_url_public_drops_data_uri():
+    assert resolve_avatar_url_public("data:image/png;base64,iVBORw0KGgo=") is None
+
+
+def test_resolve_avatar_url_public_none():
+    assert resolve_avatar_url_public(None) is None
+
+
+# ---------------------------------------------------------------------------
 # Ownership binding: a caller can't persist another account's storage key
 # (which would be re-signed into a live serve URL on read).
 
@@ -348,3 +437,64 @@ def test_owned_description_urls_mixed_keeps_own_drops_foreign():
     result = owned_description_urls(text, _OWNER)
     assert f"avatars/{_OWNER}/m.png" in result
     assert _OTHER not in result
+
+
+# ---------------------------------------------------------------------------
+# Reference-style images face the same write-path policy as inline ones
+# ---------------------------------------------------------------------------
+
+
+def test_reference_image_stripped_when_external_disabled(monkeypatch):
+    """`![alt][ref]` must not smuggle an external image past the instance
+    policy: the image goes, the definition stays, a link sharing it works."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "Look ![pixel][t] here, [click me][t] though.\n\n"
+        "[t]: https://tracker.example/p.png"
+    )
+    result = normalize_description_urls(text)
+    assert "![pixel]" not in result
+    assert "[click me][t]" in result
+    assert "[t]: https://tracker.example/p.png" in result
+
+
+def test_reference_image_expanded_and_kept_when_allowed(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", True)
+    text = "![art][gallery]\n\n[gallery]: https://images.example/a.png"
+    result = normalize_description_urls(text)
+    assert "![art](https://images.example/a.png)" in result
+
+
+def test_reference_image_cannot_bypass_url_safety(monkeypatch):
+    """Even with externals allowed, a reference image's target faces the same
+    validation as an inline one - http and internal hosts are stripped."""
+    monkeypatch.setattr(settings, "allow_external_images", True)
+    for bad in ("http://plain.example/x.png", "https://10.0.0.8/x.png"):
+        text = f"![x][r]\n\n[r]: {bad}"
+        result = normalize_description_urls(text)
+        assert "![x]" not in result, bad
+
+
+def test_reference_image_internal_key_canonicalised():
+    text = "![mine][m]\n\n[m]: /v1/files/bios/u/f.png?token=stale"
+    result = normalize_description_urls(text)
+    assert "![mine](/v1/files/bios/u/f.png)" in result
+
+
+def test_collapsed_and_shortcut_reference_images(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "![Tracker][] and ![tracker]\n\n"
+        "[tracker]: https://tracker.example/p.png"
+    )
+    result = normalize_description_urls(text)
+    assert "![Tracker]" not in result
+    assert "![tracker]" not in result
+
+
+def test_reference_image_without_definition_left_alone(monkeypatch):
+    """No definition means markdown renders literal text - nothing fetches,
+    nothing to police."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = "just ![a cat][nope] talking"
+    assert normalize_description_urls(text) == text

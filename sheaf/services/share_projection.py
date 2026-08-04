@@ -11,6 +11,10 @@ Two rules are enforced in the QUERY, not just trusted to the caller:
 
 Output is assembled field-by-field into the dedicated public schemas; an ORM row
 is never handed to `model_validate`, so nothing leaks by omission.
+
+Every image URL leaves here through the `*_public` resolvers in `sheaf.files`:
+an external image on this surface would make an anonymous visitor's browser
+fetch from an owner-chosen host, handing it their address for every page view.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
-from sheaf.files import resolve_avatar_url, resolve_description_urls
+from sheaf.files import resolve_avatar_url_public, resolve_description_urls_public
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.front import Front
 from sheaf.models.member import Member, front_members
@@ -150,17 +154,20 @@ def _member_view(
     for v in values:
         name = field_names.get(v.field_id)
         if name is not None:
+            # Field values are text by contract: the public page renders them
+            # as plain strings in a badge, never as markdown or a URL, so they
+            # need no image handling.
             fields[name] = field_value_plaintext(v)
     return PublicMemberView(
         id=str(m.id),
         name=member_name_plaintext(m),
         display_name=m.display_name,
         pronouns=m.pronouns,
-        avatar_url=resolve_avatar_url(m.avatar_url),
-        banner_url=resolve_avatar_url(m.banner_url),
+        avatar_url=resolve_avatar_url_public(m.avatar_url),
+        banner_url=resolve_avatar_url_public(m.banner_url),
         color=m.color,
         bio=(
-            resolve_description_urls(member_description_plaintext(m))
+            resolve_description_urls_public(member_description_plaintext(m))
             if include_bio
             else None
         ),
@@ -193,8 +200,11 @@ async def project_system(
     return PublicSystemView(
         id=str(system.id),
         name=system.name,
-        description=system.description,
-        avatar_url=resolve_avatar_url(system.avatar_url),
+        # Rendered as markdown on the public page, same as a member bio - and
+        # the resolve pass is also what signs an internal image ref here, which
+        # the raw column value never was.
+        description=resolve_description_urls_public(system.description),
+        avatar_url=resolve_avatar_url_public(system.avatar_url),
         color=system.color,
         tag=system.tag,
         member_count=member_count,
@@ -249,7 +259,7 @@ async def project_fronting(
                     name=member_name_plaintext(member),
                     display_name=member.display_name,
                     pronouns=member.pronouns,
-                    avatar_url=resolve_avatar_url(member.avatar_url),
+                    avatar_url=resolve_avatar_url_public(member.avatar_url),
                     color=member.color,
                     since=started.isoformat() if started is not None else None,
                 )
