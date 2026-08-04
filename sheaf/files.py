@@ -233,8 +233,11 @@ EXTERNAL_IMAGE_HIDDEN = "#external-image-hidden"
 # Reference-style images: ![alt][ref], the collapsed ![alt][], and the shortcut
 # ![alt] paired with a link-reference definition further down the text.
 _MD_REF_IMAGE_RE = re.compile(r"(!\[[^\]]*\])(\[[^\]]*\])")
+_MD_REF_IMAGE_FULL_RE = re.compile(r"!\[([^\]]*)\]\[([^\]]*)\]")
 _MD_SHORTCUT_IMAGE_RE = re.compile(r"!\[([^\]]*)\](?![\[(])")
 _MD_LINK_DEFINITION_RE = re.compile(r"(?m)^ {0,3}\[([^\]]+)\]:")
+# Definition with its target: `[label]: <url> "optional title"`.
+_MD_LINK_DEFINITION_URL_RE = re.compile(r"(?m)^ {0,3}\[([^\]]+)\]:\s*<?([^\s>]+)>?")
 
 
 def _hide_reference_images(text: str) -> str:
@@ -382,14 +385,60 @@ def owned_description_urls(text: str | None, owner_id: object) -> str | None:
     return _MD_IMAGE_URL_RE.sub(_filter, text)
 
 
+def _expand_reference_images(text: str) -> str:
+    """Rewrite reference-style markdown images into inline form.
+
+    `![alt][ref]`, `![alt][]`, and shortcut `![alt]` resolve their URL from a
+    link-reference definition elsewhere in the text, so a URL-policy pass that
+    only looks inside `![...](...)` never sees it - reference syntax was a
+    clean bypass of both the allow_external_images policy and the
+    safe-external-URL validation. Expanding the image to inline form (the
+    definition line itself is left alone - plain links may share it) puts
+    every image URL in front of the policy in `normalize_description_urls`.
+
+    An image whose label has no definition is left untouched: markdown
+    renders it as literal text, which fetches nothing.
+
+    The read-side counterpart for the anonymous surface is
+    `_hide_reference_images`, which blanket-hides instead: stored rows from
+    before this expansion existed can still carry reference images, so the
+    public path must not trust the write path to have seen them.
+    """
+    defs = {
+        label.casefold(): url
+        for label, url in _MD_LINK_DEFINITION_URL_RE.findall(text)
+    }
+    if not defs:
+        return text
+
+    def _full(m: re.Match) -> str:
+        label = (m.group(2) or m.group(1)).casefold()
+        url = defs.get(label)
+        if url is None:
+            return m.group(0)
+        return f"![{m.group(1)}]({url})"
+
+    text = _MD_REF_IMAGE_FULL_RE.sub(_full, text)
+
+    def _shortcut(m: re.Match) -> str:
+        url = defs.get(m.group(1).casefold())
+        if url is None:
+            return m.group(0)
+        return f"![{m.group(1)}]({url})"
+
+    return _MD_SHORTCUT_IMAGE_RE.sub(_shortcut, text)
+
+
 def normalize_description_urls(text: str | None) -> str | None:
     """Normalize markdown image URLs for safe DB storage.
 
-    Our own files — referenced as /v1/files/{key}, {s3_public_url}/{key}, or
-    a bare key — are canonicalised to /v1/files/{key} with any signed query
+    Our own files - referenced as /v1/files/{key}, {s3_public_url}/{key}, or
+    a bare key - are canonicalised to /v1/files/{key} with any signed query
     params stripped. External URLs are validated (HTTPS, no internal IPs);
     unsafe ones and all externals under allow_external_images=False are
-    stripped from the text.
+    stripped from the text. Reference-style images are expanded to inline
+    form first so their URLs face the same policy instead of hiding in a
+    link-reference definition.
 
     The CDN form matters: without recognising it, hosted bio images
     re-rendered with a CDN URL round-trip through the client and come back
@@ -398,6 +447,8 @@ def normalize_description_urls(text: str | None) -> str | None:
     """
     if text is None:
         return None
+
+    text = _expand_reference_images(text)
 
     def _normalize(m: re.Match) -> str:
         prefix, url, suffix = m.group(1), m.group(2), m.group(3)

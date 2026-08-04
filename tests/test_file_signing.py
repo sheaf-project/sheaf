@@ -437,3 +437,64 @@ def test_owned_description_urls_mixed_keeps_own_drops_foreign():
     result = owned_description_urls(text, _OWNER)
     assert f"avatars/{_OWNER}/m.png" in result
     assert _OTHER not in result
+
+
+# ---------------------------------------------------------------------------
+# Reference-style images face the same write-path policy as inline ones
+# ---------------------------------------------------------------------------
+
+
+def test_reference_image_stripped_when_external_disabled(monkeypatch):
+    """`![alt][ref]` must not smuggle an external image past the instance
+    policy: the image goes, the definition stays, a link sharing it works."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "Look ![pixel][t] here, [click me][t] though.\n\n"
+        "[t]: https://tracker.example/p.png"
+    )
+    result = normalize_description_urls(text)
+    assert "![pixel]" not in result
+    assert "[click me][t]" in result
+    assert "[t]: https://tracker.example/p.png" in result
+
+
+def test_reference_image_expanded_and_kept_when_allowed(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", True)
+    text = "![art][gallery]\n\n[gallery]: https://images.example/a.png"
+    result = normalize_description_urls(text)
+    assert "![art](https://images.example/a.png)" in result
+
+
+def test_reference_image_cannot_bypass_url_safety(monkeypatch):
+    """Even with externals allowed, a reference image's target faces the same
+    validation as an inline one - http and internal hosts are stripped."""
+    monkeypatch.setattr(settings, "allow_external_images", True)
+    for bad in ("http://plain.example/x.png", "https://10.0.0.8/x.png"):
+        text = f"![x][r]\n\n[r]: {bad}"
+        result = normalize_description_urls(text)
+        assert "![x]" not in result, bad
+
+
+def test_reference_image_internal_key_canonicalised():
+    text = "![mine][m]\n\n[m]: /v1/files/bios/u/f.png?token=stale"
+    result = normalize_description_urls(text)
+    assert "![mine](/v1/files/bios/u/f.png)" in result
+
+
+def test_collapsed_and_shortcut_reference_images(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "![Tracker][] and ![tracker]\n\n"
+        "[tracker]: https://tracker.example/p.png"
+    )
+    result = normalize_description_urls(text)
+    assert "![Tracker]" not in result
+    assert "![tracker]" not in result
+
+
+def test_reference_image_without_definition_left_alone(monkeypatch):
+    """No definition means markdown renders literal text - nothing fetches,
+    nothing to police."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = "just ![a cat][nope] talking"
+    assert normalize_description_urls(text) == text
