@@ -58,7 +58,10 @@ from sheaf.services.journals import (
 from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
-from sheaf.services.sharing import is_exposure_safeguarded
+from sheaf.services.sharing import (
+    fronting_guard_release_exposes,
+    is_exposure_safeguarded,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -78,11 +81,18 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
 
 
 async def _get_own_member(
-    member_id: uuid.UUID, system: System, db: AsyncSession
+    member_id: uuid.UUID,
+    system: System,
+    db: AsyncSession,
+    *,
+    for_update: bool = False,
 ) -> Member:
-    result = await db.execute(
-        select(Member).where(Member.id == member_id, Member.system_id == system.id)
+    stmt = select(Member).where(
+        Member.id == member_id, Member.system_id == system.id
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await db.execute(stmt)
     member = result.scalar_one_or_none()
     if member is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
@@ -379,7 +389,7 @@ async def update_member(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
-    member = await _get_own_member(member_id, system, db)
+    member = await _get_own_member(member_id, system, db, for_update=True)
     update_data = body.model_dump(exclude_unset=True)
     # Step-up credentials are not member columns; drop them before anything
     # iterates the update so they can never be persisted.
@@ -404,8 +414,31 @@ async def update_member(
         and is_exposure_safeguarded(system)
     ):
         exposing_rows = await _shared_view_memberships(db, system, member.id)
-        if exposing_rows:
-            await verify_destructive_auth(user, system, password, totp_code, db)
+
+    # Releasing the dedicated fronting guard is another exposing direction.
+    # Active and pending paths both count: this request receives a fresh full
+    # grace window instead of piggybacking on an older pending action.
+    defer_fronting_release = False
+    if (
+        update_data.get("fronting_private") is False
+        and member.fronting_private
+        and is_exposure_safeguarded(system)
+    ):
+        defer_fronting_release = await fronting_guard_release_exposes(
+            db,
+            system.id,
+            member.id,
+            member_is_public=member.privacy == PrivacyLevel.PUBLIC,
+        )
+
+    if exposing_rows or defer_fronting_release:
+        await verify_destructive_auth(user, system, password, totp_code, db)
+
+    visibility_activates_at = (
+        datetime.now(UTC) + timedelta(days=system.safety_grace_period_days)
+        if exposing_rows or defer_fronting_release
+        else None
+    )
 
     # Same ownership guard as create: a key from another account must not be
     # stored (and later re-signed) here. Filter before the revision-capture
@@ -449,6 +482,13 @@ async def update_member(
                 member.note = None
             else:
                 member.note = encrypt(value, aad=member_note_aad(member.id))
+        elif key == "fronting_private":
+            if defer_fronting_release:
+                # Keep the guard live until the finalizer releases it.
+                member.fronting_private_activates_at = visibility_activates_at
+            else:
+                member.fronting_private = value
+                member.fronting_private_activates_at = None
         else:
             setattr(member, key, value)
 
@@ -468,12 +508,9 @@ async def update_member(
     # member until the finalize sweep promotes them, exactly as if they had
     # just been added to the view.
     if exposing_rows:
-        activates_at = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
         for row in exposing_rows:
             row.status = ShareItemStatus.PENDING.value
-            row.activates_at = activates_at
+            row.activates_at = visibility_activates_at
 
     await db.commit()
     await db.refresh(member)

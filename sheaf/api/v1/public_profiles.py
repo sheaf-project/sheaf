@@ -43,11 +43,11 @@ from sheaf.services.share_projection import (
 )
 from sheaf.services.sharing import resolve_link_grant, resolve_public_grant
 
-# Per-IP throttle: tight enough that scraping a system's whole profile is
-# annoying, loose enough that a link pasted in a busy channel (many distinct
-# IPs, each fetching the 2-3 endpoints of one page) is never hit. Anonymous, so
-# there is no per-user key to use.
-_RATE = rate_limit(60, 60)
+# One shared per-IP throttle across every public-profile route. A fixed bucket
+# means varying system ids or bearer tokens cannot create fresh quotas, and raw
+# link capabilities never become part of Redis key names. Sixty requests still
+# permits twenty complete three-endpoint page loads per minute from one IP.
+_RATE = rate_limit(60, 60, bucket="public_profiles")
 
 router = APIRouter(prefix="/public", tags=["public-profiles"])
 

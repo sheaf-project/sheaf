@@ -36,6 +36,7 @@ import { RelationshipsEditor } from "@/components/relationships-editor";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiErrorMessage, showApiErrorToast } from "@/lib/api-errors";
+import { ApiError } from "@/lib/api-error";
 
 const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
@@ -67,6 +68,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type {
   CustomFieldValueSet,
   DeleteConfirmation,
+  DestructiveConfirm,
   FieldType,
   Member,
   MemberCreate,
@@ -80,7 +82,7 @@ function MemberForm({
   loading,
   submitLabel,
 }: {
-  initial?: Partial<MemberCreate> & { privacy?: PrivacyLevel };
+  initial?: Partial<Member> & { privacy?: PrivacyLevel };
   onSubmit: (data: MemberCreate | MemberUpdate) => void;
   loading: boolean;
   submitLabel: string;
@@ -104,15 +106,21 @@ function MemberForm({
     initial?.never_shareable ?? false,
   );
   const [frontingPrivate, setFrontingPrivate] = useState(
-    initial?.fronting_private ?? false,
+    initial?.fronting_private_activates_at
+      ? false
+      : (initial?.fronting_private ?? false),
   );
+  const [frontingPrivateTouched, setFrontingPrivateTouched] = useState(false);
   // The share guards only mean anything when the instance serves a public
   // surface; hide them otherwise so the form doesn't imply a feature that
   // isn't there. A member already marked guarded still shows the control so
   // it can be turned back off.
   const { user } = useAuth();
   const shareGuardsVisible =
-    !!user?.public_profiles_enabled || neverShareable || frontingPrivate;
+    !!user?.public_profiles_enabled ||
+    neverShareable ||
+    frontingPrivate ||
+    !!initial?.fronting_private_activates_at;
   // Preserve an existing numeric pin priority when toggling stays on; a
   // freshly-pinned member gets priority 0.
   const initialPin = initial?.quick_switch_pin ?? null;
@@ -120,7 +128,7 @@ function MemberForm({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    onSubmit({
+    const data: MemberCreate | MemberUpdate = {
       name,
       display_name: displayName || null,
       avatar_url: avatarUrl,
@@ -137,7 +145,18 @@ function MemberForm({
       quick_switch_pin: pinned ? (initialPin ?? 0) : null,
       never_shareable: neverShareable,
       fronting_private: frontingPrivate,
-    });
+    };
+    // The API reports the live guard as true while a release is pending. The
+    // form displays the requested (unchecked) state; omit it on unrelated
+    // edits so saving a name does not restart the grace period. Checking it is
+    // an explicit cancellation and is sent normally.
+    if (
+      initial?.fronting_private_activates_at &&
+      !frontingPrivateTouched
+    ) {
+      delete (data as MemberUpdate).fronting_private;
+    }
+    onSubmit(data);
   }
 
   return (
@@ -295,7 +314,10 @@ function MemberForm({
             <input
               type="checkbox"
               checked={frontingPrivate}
-              onChange={(e) => setFrontingPrivate(e.target.checked)}
+              onChange={(e) => {
+                setFrontingPrivate(e.target.checked);
+                setFrontingPrivateTouched(true);
+              }}
               className="h-4 w-4 mt-0.5 rounded border-input"
             />
             <div>
@@ -304,6 +326,12 @@ function MemberForm({
                 This member may appear in a view, but their live front status is
                 never shown publicly - not even as an anonymous count.
               </p>
+              {initial?.fronting_private_activates_at && (
+                <p className="text-xs text-amber-600 mt-1">
+                  A request to release this guard is waiting out the System
+                  Safety grace period.
+                </p>
+              )}
             </div>
           </label>
         </div>
@@ -1201,6 +1229,11 @@ export function MembersPage() {
   const [editing, setEditing] = useState<Member | null>(null);
   const [deleting, setDeleting] = useState<Member | null>(null);
   const [archiving, setArchiving] = useState<Member | null>(null);
+  const [pendingExposureEdit, setPendingExposureEdit] = useState<{
+    member: Member;
+    data: MemberUpdate;
+    tier: DeleteConfirmation;
+  } | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Archived members stay fetched (so historical surfaces can resolve their
@@ -1216,6 +1249,37 @@ export function MembersPage() {
   const archiveTier: DeleteConfirmation = safety?.settings.applies_to_archive
     ? system?.delete_confirmation ?? "none"
     : "none";
+
+  function saveMemberEdit(member: Member, data: MemberUpdate) {
+    updateMember.mutate(
+      { id: member.id, data, skipErrorToast: true },
+      {
+        onSuccess: (updated) => {
+          setEditing(null);
+          setViewing(updated);
+        },
+        onError: (err) => {
+          if (
+            err instanceof ApiError &&
+            err.status === 400 &&
+            (err.detail === "Password required" ||
+              err.detail === "TOTP code required")
+          ) {
+            setPendingExposureEdit({
+              member,
+              data,
+              tier:
+                safety?.settings.auth_tier ??
+                system?.delete_confirmation ??
+                "password",
+            });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't update member.", { force: true });
+        },
+      },
+    );
+  }
 
   // Deep link: /members?member=<id> opens that member's view dialog (used by
   // the uploaded-files "where is this used" links). Derived from the URL so it
@@ -1321,17 +1385,7 @@ export function MembersPage() {
             <>
               <MemberForm
                 initial={editing}
-                onSubmit={(data) =>
-                  updateMember.mutate(
-                    { id: editing.id, data },
-                    {
-                      onSuccess: (updated) => {
-                        setEditing(null);
-                        setViewing(updated);
-                      },
-                    },
-                  )
-                }
+                onSubmit={(data) => saveMemberEdit(editing, data as MemberUpdate)}
                 loading={updateMember.isPending}
                 submitLabel="Save"
               />
@@ -1393,6 +1447,33 @@ export function MembersPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <DestructiveConfirmDialog
+        open={!!pendingExposureEdit}
+        onOpenChange={(open) => !open && setPendingExposureEdit(null)}
+        title="Confirm public visibility change"
+        description="This edit can reveal member information through an existing public profile or share link. Confirm now; when exposure is possible, it takes effect after your System Safety grace period."
+        tier={pendingExposureEdit?.tier ?? "none"}
+        actionLabel="Confirm change"
+        actionLabelLoading="Saving..."
+        loading={updateMember.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!pendingExposureEdit) return;
+          updateMember.mutate(
+            {
+              id: pendingExposureEdit.member.id,
+              data: { ...pendingExposureEdit.data, ...confirm },
+            },
+            {
+              onSuccess: (updated) => {
+                setPendingExposureEdit(null);
+                setEditing(null);
+                setViewing(updated);
+              },
+            },
+          );
+        }}
+      />
 
       {/* Delete confirm */}
       {deleting && (

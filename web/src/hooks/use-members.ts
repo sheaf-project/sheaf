@@ -42,8 +42,15 @@ export function useCreateMember() {
 export function useUpdateMember() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: MemberUpdate }) =>
-      api.updateMember(id, data),
+    mutationFn: ({
+      id,
+      data,
+      skipErrorToast = false,
+    }: {
+      id: string;
+      data: MemberUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateMember(id, data, skipErrorToast),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: memberKeys.all });
       qc.invalidateQueries({ queryKey: memberKeys.detail(id) });

@@ -23,12 +23,15 @@ from sheaf.observability import (
     setup_metrics_endpoint,
 )
 from sheaf.observability.metrics import build_info, prewarm_metrics
+from sheaf.observability.middleware import route_template
+from sheaf.redact import install_access_log_redaction
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("sheaf")
+install_access_log_redaction()
 
 
 async def _fast_gauges_loop() -> None:
@@ -206,12 +209,12 @@ async def http_exception_handler(
     if exc.status_code >= 500:
         logger.warning(
             "%s %s -> %d: %s",
-            request.method, request.url.path, exc.status_code, exc.detail,
+            request.method, route_template(request), exc.status_code, exc.detail,
         )
     elif exc.status_code >= 400:
         logger.info(
             "%s %s -> %d: %s",
-            request.method, request.url.path, exc.status_code, exc.detail,
+            request.method, route_template(request), exc.status_code, exc.detail,
         )
     return JSONResponse(
         status_code=exc.status_code,
@@ -234,7 +237,7 @@ async def validation_exception_handler(
         for e in exc.errors()
     ]
     logger.info(
-        "%s %s -> 422 validation: %s", request.method, request.url.path, safe
+        "%s %s -> 422 validation: %s", request.method, route_template(request), safe
     )
     return JSONResponse(
         status_code=422, content={"detail": jsonable_encoder(exc.errors())}
@@ -244,7 +247,7 @@ async def validation_exception_handler(
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception(
-        "Unhandled exception on %s %s", request.method, request.url.path
+        "Unhandled exception on %s %s", request.method, route_template(request)
     )
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 

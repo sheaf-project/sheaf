@@ -82,7 +82,12 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
 
 
 async def _get_view(
-    view_id: uuid.UUID, system: System, db: AsyncSession, *, load: bool = False
+    view_id: uuid.UUID,
+    system: System,
+    db: AsyncSession,
+    *,
+    load: bool = False,
+    for_update: bool = False,
 ) -> ShareView:
     """Fetch a view, 404ing if it is not this system's.
 
@@ -98,6 +103,8 @@ async def _get_view(
             selectinload(ShareView.fields),
             selectinload(ShareView.groups),
         )
+    if for_update:
+        stmt = stmt.with_for_update()
     result = await db.execute(stmt)
     view = result.scalar_one_or_none()
     if view is None:
@@ -300,7 +307,7 @@ async def update_share_view(
     always immediate.
     """
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db, load=True)
+    view = await _get_view(view_id, system, db, load=True, for_update=True)
     shared = await view_is_shared(db, view.id)
 
     # Switching fronting_show_count from "hide" to "count" reveals that someone

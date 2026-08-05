@@ -28,7 +28,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
@@ -151,6 +151,57 @@ async def view_is_shared(db: AsyncSession, view_id: uuid.UUID) -> bool:
                 [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
             ),
         ).limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def fronting_guard_release_exposes(
+    db: AsyncSession,
+    system_id: uuid.UUID,
+    member_id: uuid.UUID,
+    *,
+    member_is_public: bool,
+) -> bool:
+    """Whether an active/pending path can expose a released fronting guard.
+
+    Include pending paths: a guard release requested near the end of an older
+    grant/flag/membership window must still receive its own full grace period,
+    not inherit only the older action's remaining time. A member outside the
+    view can expose an anonymous presence bit when show-count is enabled.
+    """
+    now = datetime.now(UTC)
+    eligible_membership = (
+        (ShareViewMember.view_id == ShareView.id)
+        & (ShareViewMember.member_id == member_id)
+        & ShareViewMember.status.in_(
+            [ShareItemStatus.ACTIVE.value, ShareItemStatus.PENDING.value]
+        )
+    )
+    visibility_paths = [
+        ShareView.fronting_show_count.is_(True),
+        ShareView.pending_fronting_show_count.is_(True),
+    ]
+    if member_is_public:
+        visibility_paths.append(ShareViewMember.id.is_not(None))
+
+    result = await db.execute(
+        select(ShareView.id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .outerjoin(ShareViewMember, eligible_membership)
+        .where(
+            ShareView.system_id == system_id,
+            or_(
+                ShareView.include_fronting.is_(True),
+                ShareView.pending_include_fronting.is_(True),
+            ),
+            ShareGrant.status.in_(
+                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
+            ),
+            ShareGrant.revoked_at.is_(None),
+            or_(ShareGrant.expires_at.is_(None), ShareGrant.expires_at > now),
+            or_(*visibility_paths),
+        )
+        .limit(1)
     )
     return result.scalar_one_or_none() is not None
 
@@ -527,16 +578,54 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             row.status = ShareItemStatus.ACTIVE.value
             promoted += 1
 
-    # Staged flag flips (see EXPOSURE_FLAGS). One promotion per view, however
-    # many flags it had staged, since they share a single activation time.
+    # Promote flags in one conditional UPDATE. If the owner cancels before
+    # this statement, a NULL pending value preserves the live flag; if they
+    # cancel afterward, their tightening is the last write. Going dark wins in
+    # either ordering, without a stale ORM object resurrecting the flag.
     views = await db.execute(
-        select(ShareView).where(
+        update(ShareView)
+        .where(
             ShareView.flags_activate_at.is_not(None),
             ShareView.flags_activate_at <= now,
         )
+        .values(
+            include_bio=case(
+                (ShareView.pending_include_bio.is_not(None),
+                 ShareView.pending_include_bio),
+                else_=ShareView.include_bio,
+            ),
+            include_fronting=case(
+                (ShareView.pending_include_fronting.is_not(None),
+                 ShareView.pending_include_fronting),
+                else_=ShareView.include_fronting,
+            ),
+            fronting_show_count=case(
+                (ShareView.pending_fronting_show_count.is_not(None),
+                 ShareView.pending_fronting_show_count),
+                else_=ShareView.fronting_show_count,
+            ),
+            pending_include_bio=None,
+            pending_include_fronting=None,
+            pending_fronting_show_count=None,
+            flags_activate_at=None,
+        )
+        .execution_options(synchronize_session=False)
     )
-    for view in views.scalars().all():
-        promote_view_flags(view)
-        promoted += 1
+    promoted += views.rowcount or 0
+
+    # The same atomic shape makes restoring the guard race-safe: a concurrent
+    # tightening clears the timestamp and either wins the predicate or lands
+    # last after it.
+    member_guards = await db.execute(
+        update(Member)
+        .where(
+            Member.fronting_private.is_(True),
+            Member.fronting_private_activates_at.is_not(None),
+            Member.fronting_private_activates_at <= now,
+        )
+        .values(fronting_private=False, fronting_private_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    promoted += member_guards.rowcount or 0
 
     return promoted

@@ -237,6 +237,10 @@ CLASSIFICATION: dict[type, dict] = {
             "system_id": _TENANT_FK,
             "name_hash": "derived blind index of name, recomputed on import",
             "updated_at": _ROW_UPDATED,
+            "fronting_private_activates_at": (
+                "live System Safety staging state; imports restore the guard "
+                "itself but never resume an in-flight release"
+            ),
         },
     },
     Front: {

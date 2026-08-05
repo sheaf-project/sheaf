@@ -106,6 +106,7 @@ def decrypt_member_for_read(
         "quick_switch_pin": member.quick_switch_pin,
         "never_shareable": member.never_shareable,
         "fronting_private": member.fronting_private,
+        "fronting_private_activates_at": member.fronting_private_activates_at,
         "created_at": member.created_at,
         "updated_at": member.updated_at,
         "has_bio_revisions": has_bio_revisions,
