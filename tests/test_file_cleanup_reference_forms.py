@@ -123,6 +123,15 @@ def test_markdown_empty_and_none():
     assert extract_image_keys("no images here") == []
 
 
+def test_markdown_reference_image_is_captured_but_code_example_is_not():
+    body = (
+        f"![portrait][photo]\n\n[photo]: /v1/files/{BIO_KEY}\n\n"
+        f"`![sample](/v1/files/{BIO_KEY.removesuffix('.png')}-code.png)`"
+    )
+
+    assert extract_image_keys(body) == [BIO_KEY]
+
+
 def test_selfhost_no_cdn_still_resolves_serve_and_bare_forms(monkeypatch):
     # With no CDN configured (the self-host default), form #2 doesn't exist, but
     # forms #1/#3 must still resolve and an arbitrary external host stays

@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Logo } from "@/components/logo";
 import { ApiError } from "@/lib/api-error";
+import { isPublicImageAllowed } from "@/lib/image-sources";
 import {
   getPublicFronting,
   getPublicMembers,
@@ -107,7 +108,9 @@ export function PublicProfileView({ source }: { source: Source }) {
 
         <div className="flex flex-col items-center gap-3 text-center">
           <Avatar className="size-20">
-            {sys.avatar_url && <AvatarImage src={sys.avatar_url} />}
+            {sys.avatar_url && isPublicImageAllowed(sys.avatar_url) && (
+              <AvatarImage src={sys.avatar_url} />
+            )}
             <AvatarFallback
               className="text-2xl"
               style={accent ? { backgroundColor: accent, color: "#fff" } : undefined}
@@ -201,7 +204,9 @@ function FrontingSection({ fronting }: { fronting: PublicFrontingView }) {
               className="flex items-center gap-2 rounded-full border py-1 pl-1 pr-3"
             >
               <Avatar className="size-6">
-                {m.avatar_url && <AvatarImage src={m.avatar_url} />}
+                {m.avatar_url && isPublicImageAllowed(m.avatar_url) && (
+                  <AvatarImage src={m.avatar_url} />
+                )}
                 <AvatarFallback
                   className="text-[10px]"
                   style={m.color ? { backgroundColor: m.color, color: "#fff" } : undefined}
@@ -227,7 +232,7 @@ function MemberCard({ member }: { member: PublicMemberView }) {
   const fields = Object.entries(member.fields ?? {});
   return (
     <Card className="overflow-hidden">
-      {member.banner_url && (
+      {member.banner_url && isPublicImageAllowed(member.banner_url) && (
         <div className="h-24 w-full bg-muted">
           <img
             src={member.banner_url}
@@ -239,7 +244,10 @@ function MemberCard({ member }: { member: PublicMemberView }) {
       <CardContent className="space-y-3 p-4">
         <div className="flex items-center gap-3">
           <Avatar className="size-12">
-            {member.avatar_url && <AvatarImage src={member.avatar_url} />}
+            {member.avatar_url &&
+              isPublicImageAllowed(member.avatar_url) && (
+                <AvatarImage src={member.avatar_url} />
+              )}
             <AvatarFallback
               style={member.color ? { backgroundColor: member.color, color: "#fff" } : undefined}
             >

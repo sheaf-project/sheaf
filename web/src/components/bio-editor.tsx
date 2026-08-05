@@ -29,6 +29,7 @@ import {
   Tags,
 } from "lucide-react";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
+import { isHostedImage, isPublicImageAllowed } from "@/lib/image-sources";
 
 const HLJS_LINK_ID = "hljs-theme-stylesheet";
 
@@ -49,12 +50,6 @@ function useHljsTheme() {
       link.href = href;
     }
   }, [effectiveMode]);
-}
-
-function isHostedImage(src: string, cdnBase: string | null) {
-  if (src.startsWith("/v1/files/")) return true;
-  if (cdnBase && src.startsWith(cdnBase + "/")) return true;
-  return false;
 }
 
 /** What the server substitutes for an external image URL on public profiles,
@@ -78,10 +73,11 @@ function MarkdownPreview({
   useHljsTheme();
 
   useEffect(() => {
+    if (publicSurface) return;
     getAuthConfig()
-      .then((c: AuthConfig) => setCdnBase(c.file_cdn_base))
+      .then((config: AuthConfig) => setCdnBase(config.file_cdn_base))
       .catch(() => {});
-  }, []);
+  }, [publicSurface]);
 
   if (!content) {
     return <p className="text-sm text-muted-foreground italic">Nothing here yet.</p>;
@@ -101,14 +97,21 @@ function MarkdownPreview({
         ]}
         components={{
           img: ({ src, alt, ...props }) => {
-            if (publicSurface && src === HIDDEN_IMAGE_SRC) {
+            const hosted = src
+              ? publicSurface
+                ? isPublicImageAllowed(src)
+                : isHostedImage(src, cdnBase)
+              : false;
+            const publicBlocked = Boolean(
+              publicSurface && src && !isPublicImageAllowed(src, true),
+            );
+            if (publicSurface && (src === HIDDEN_IMAGE_SRC || publicBlocked)) {
               return (
                 <span className="inline-flex items-center rounded border border-dashed px-1.5 py-0.5 align-middle text-[11px] text-muted-foreground">
                   external image
                 </span>
               );
             }
-            const hosted = src ? isHostedImage(src, cdnBase) : false;
             return (
               <span className="relative inline-block">
                 <img

@@ -3,6 +3,8 @@
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from sheaf.config import settings
 from sheaf.files import (
@@ -18,8 +20,11 @@ from sheaf.files import (
     resolve_description_urls_public,
     sign_cdn_url,
     sign_file_url,
+    sign_public_file_url,
     verify_file_token,
+    verify_public_file_token,
 )
+from sheaf.markdown_images import iter_markdown_images
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +81,23 @@ def test_file_signing_key_overrides_jwt_derivation(monkeypatch):
     # And a token signed with the override verifies under the override
     q_b = parse_qs(urlparse(url_b).query)
     assert verify_file_token(key, q_b["token"][0], q_b["expires"][0])
+
+
+def test_public_file_token_is_domain_separated_from_regular_serve_token():
+    key = "avatars/user/abc.png"
+    public_url = sign_public_file_url(key)
+    public_q = parse_qs(urlparse(public_url).query)
+    regular_url = sign_file_url(key)
+    regular_q = parse_qs(urlparse(regular_url).query)
+
+    assert public_url.startswith(f"/v1/public/files/{key}?")
+    assert verify_public_file_token(
+        key, public_q["token"][0], public_q["expires"][0]
+    )
+    assert not verify_file_token(key, public_q["token"][0], public_q["expires"][0])
+    assert not verify_public_file_token(
+        key, regular_q["token"][0], regular_q["expires"][0]
+    )
 
 
 def test_resolve_avatar_url_s3_cdn_signed_routes_through_cdn(monkeypatch):
@@ -176,6 +198,11 @@ def test_normalize_avatar_url_strips_app_serve_url():
     assert normalize_avatar_url(stored) == "avatars/user/abc.png"
 
 
+def test_normalize_avatar_url_strips_public_serve_url():
+    stored = "/v1/public/files/avatars/user/abc.png?token=x&expires=1"
+    assert normalize_avatar_url(stored) == "avatars/user/abc.png"
+
+
 def test_normalize_avatar_url_bare_key_unchanged():
     assert normalize_avatar_url("avatars/user/abc.png") == "avatars/user/abc.png"
 
@@ -189,6 +216,12 @@ def test_normalize_avatar_url_external_dropped_when_disabled(monkeypatch):
     dropped to None rather than silently stored."""
     monkeypatch.setattr(settings, "allow_external_images", False)
     assert normalize_avatar_url("https://gravatar.com/x.png") is None
+
+
+def test_normalize_avatar_url_malformed_network_url_fails_closed(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+
+    assert normalize_avatar_url("http://[") is None
 
 
 def test_normalize_avatar_url_bare_key_survives_when_external_disabled(monkeypatch):
@@ -205,6 +238,32 @@ def test_normalize_description_urls_strips_external_when_disabled(monkeypatch):
     assert "example.com" not in result
     assert result.startswith("Hi ")
     assert result.endswith(" there")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "HTTPS://tracker.example/a.png",
+        "hTtPs://tracker.example/a.png",
+        "//tracker.example/a.png",
+    ],
+)
+def test_normalize_description_urls_cannot_bypass_external_policy_by_url_form(
+    monkeypatch, url
+):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+
+    result = normalize_description_urls(f"before ![pixel]({url}) after")
+
+    assert "tracker.example" not in result
+    assert result == "before  after"
+
+
+def test_normalize_description_urls_treats_data_scheme_as_non_network(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = "![dot](DATA:image/png;base64,iVBORw0KGgo=)"
+
+    assert normalize_description_urls(text) == text
 
 
 def test_normalize_description_urls_preserves_hosted_when_external_disabled(monkeypatch):
@@ -283,7 +342,7 @@ def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
 
 def test_resolve_description_urls_public_signs_hosted():
     result = resolve_description_urls_public("![pic](/v1/files/members/m/a.png)")
-    assert "/v1/files/members/m/a.png" in result
+    assert "/v1/public/files/members/m/a.png" in result
     assert "token=" in result
     assert "expires=" in result
 
@@ -294,9 +353,30 @@ def test_resolve_description_urls_public_hides_external():
     assert "tracker.example" not in result
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_alt"),
+    [
+        ("![foo [bar]](https://tracker.example/nested.png)", "foo [bar]"),
+        (r"![foo \] bar](https://tracker.example/escaped.png)", r"foo \] bar"),
+    ],
+)
+def test_resolve_description_urls_public_uses_commonmark_image_grammar(
+    text, expected_alt
+):
+    result = resolve_description_urls_public(text)
+
+    assert "tracker.example" not in result
+    assert EXTERNAL_IMAGE_HIDDEN in result
+    rewritten = list(iter_markdown_images(result))
+    assert len(rewritten) == 1
+    assert rewritten[0].url == EXTERNAL_IMAGE_HIDDEN
+    assert rewritten[0].alt == expected_alt
+
+
 def test_resolve_description_urls_public_keeps_data_uri():
-    text = "![dot](data:image/png;base64,iVBORw0KGgo=)"
-    assert resolve_description_urls_public(text) == text
+    for scheme in ("data", "DATA"):
+        text = f"![dot]({scheme}:image/png;base64,iVBORw0KGgo=)"
+        assert resolve_description_urls_public(text) == text
 
 
 def test_resolve_description_urls_public_mixed_content():
@@ -307,14 +387,13 @@ def test_resolve_description_urls_public_mixed_content():
     result = resolve_description_urls_public(text)
     assert "tracker.example" not in result
     assert result.count(EXTERNAL_IMAGE_HIDDEN) == 1
-    assert "/v1/files/bios/u/a.png?token=" in result
+    assert "/v1/public/files/bios/u/a.png?token=" in result
     # Prose and ordinary links are not image fetches; they stay.
     assert "Intro " in result and "[a link](https://ok.example)" in result
 
 
 def test_resolve_description_urls_public_hides_reference_images():
-    """Reference syntax is the way round an inline-only rewrite, so it is
-    hidden whatever it points at."""
+    """Every external reference-image form is hidden."""
     text = (
         "![full][t] ![collapsed][] ![shortcut]\n\n"
         "[t]: https://tracker.example/1.png\n"
@@ -323,6 +402,14 @@ def test_resolve_description_urls_public_hides_reference_images():
     )
     result = resolve_description_urls_public(text)
     assert result.count(f"]({EXTERNAL_IMAGE_HIDDEN})") == 3
+
+
+def test_resolve_description_urls_public_serves_hosted_reference_same_origin():
+    text = "![portrait][photo]\n\n[photo]: /v1/files/bios/u/photo.png"
+
+    result = resolve_description_urls_public(text)
+
+    assert "/v1/public/files/bios/u/photo.png?token=" in result
 
 
 def test_resolve_description_urls_public_leaves_undefined_shortcut_alone():
@@ -337,7 +424,7 @@ def test_resolve_description_urls_public_none():
 
 def test_resolve_avatar_url_public_signs_internal():
     result = resolve_avatar_url_public("avatars/user/abc.png")
-    assert result.startswith("/v1/files/avatars/user/abc.png?token=")
+    assert result.startswith("/v1/public/files/avatars/user/abc.png?token=")
 
 
 def test_resolve_avatar_url_public_signs_legacy_cdn_row(monkeypatch):
@@ -346,8 +433,146 @@ def test_resolve_avatar_url_public_signs_legacy_cdn_row(monkeypatch):
     result = resolve_avatar_url_public(
         "https://cdn.example.com/avatars/user/abc.png?token=STALE&expires=1"
     )
-    assert result.startswith("https://cdn.example.com/avatars/user/abc.png?token=")
+    assert result.startswith("/v1/public/files/avatars/user/abc.png?token=")
     assert "STALE" not in result
+
+
+@pytest.mark.parametrize(
+    ("storage_backend", "image_serving", "s3_public_url"),
+    [
+        ("filesystem", "signed", ""),
+        ("s3", "signed", ""),
+        ("s3", "signed", "https://images.example.com"),
+        ("s3", "unsigned", "https://images.example.com"),
+    ],
+)
+async def test_public_file_route_serves_same_origin_in_every_storage_mode(
+    monkeypatch, storage_backend, image_serving, s3_public_url
+):
+    from sheaf.api.v1 import files as files_api
+
+    class StubStorage:
+        async def get(self, key):
+            assert key == "avatars/user/abc.png"
+            return b"image-bytes"
+
+    monkeypatch.setattr(settings, "storage_backend", storage_backend)
+    monkeypatch.setattr(settings, "image_serving", image_serving)
+    monkeypatch.setattr(settings, "s3_public_url", s3_public_url)
+    monkeypatch.setattr(files_api, "get_storage", lambda: StubStorage())
+    signed = sign_public_file_url("avatars/user/abc.png")
+    raw_query = urlparse(signed).query
+    query = parse_qs(raw_query)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": urlparse(signed).path,
+            "raw_path": urlparse(signed).path.encode(),
+            "query_string": raw_query.encode(),
+            "headers": [],
+        }
+    )
+
+    response = await files_api.serve_public_file(
+        "avatars/user/abc.png",
+        request,
+        token=query["token"][0],
+        expires=query["expires"][0],
+    )
+
+    assert response.status_code == 200
+    assert response.body == b"image-bytes"
+    assert response.media_type == "image/png"
+    assert response.headers["cache-control"].startswith("public, max-age=")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "location" not in response.headers
+
+
+@pytest.mark.parametrize(
+    "mutate_query",
+    [
+        lambda token, expires: f"token={token}&expires={expires}&bust=1",
+        lambda token, expires: f"token={token}&token={token}&expires={expires}",
+        lambda token, expires: f"expires={expires}&token={token}",
+        lambda token, expires: (
+            f"token=%{ord(token[0]):02X}{token[1:]}&expires={expires}"
+        ),
+    ],
+)
+async def test_public_file_route_rejects_cache_key_aliases(monkeypatch, mutate_query):
+    from sheaf.api.v1 import files as files_api
+
+    signed = sign_public_file_url("avatars/user/abc.png")
+    parsed = urlparse(signed)
+    query = parse_qs(parsed.query)
+    token = query["token"][0]
+    expires = query["expires"][0]
+    raw_query = mutate_query(token, expires)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": parsed.path,
+            "raw_path": parsed.path.encode(),
+            "query_string": raw_query.encode(),
+            "headers": [],
+        }
+    )
+    storage_called = False
+
+    def _storage():
+        nonlocal storage_called
+        storage_called = True
+        raise AssertionError("noncanonical capability reached storage")
+
+    monkeypatch.setattr(files_api, "get_storage", _storage)
+    with pytest.raises(HTTPException) as exc:
+        await files_api.serve_public_file(
+            "avatars/user/abc.png",
+            request,
+            token=token,
+            expires=expires,
+        )
+
+    assert exc.value.status_code == 403
+    assert not storage_called
+
+
+async def test_public_file_route_rejects_percent_encoded_path_alias(monkeypatch):
+    from sheaf.api.v1 import files as files_api
+
+    signed = sign_public_file_url("avatars/user/abc.png")
+    parsed = urlparse(signed)
+    query = parse_qs(parsed.query)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": parsed.path,
+            "raw_path": parsed.path.replace("/avatars", "/%61vatars").encode(),
+            "query_string": parsed.query.encode(),
+            "headers": [],
+        }
+    )
+    storage_called = False
+
+    def _storage():
+        nonlocal storage_called
+        storage_called = True
+        raise AssertionError("noncanonical capability reached storage")
+
+    monkeypatch.setattr(files_api, "get_storage", _storage)
+    with pytest.raises(HTTPException) as exc:
+        await files_api.serve_public_file(
+            "avatars/user/abc.png",
+            request,
+            token=query["token"][0],
+            expires=query["expires"][0],
+        )
+
+    assert exc.value.status_code == 403
+    assert not storage_called
 
 
 def test_resolve_avatar_url_public_drops_external():
@@ -462,7 +687,7 @@ def test_reference_image_expanded_and_kept_when_allowed(monkeypatch):
     monkeypatch.setattr(settings, "allow_external_images", True)
     text = "![art][gallery]\n\n[gallery]: https://images.example/a.png"
     result = normalize_description_urls(text)
-    assert "![art](https://images.example/a.png)" in result
+    assert result == text
 
 
 def test_reference_image_cannot_bypass_url_safety(monkeypatch):
@@ -498,3 +723,44 @@ def test_reference_image_without_definition_left_alone(monkeypatch):
     monkeypatch.setattr(settings, "allow_external_images", False)
     text = "just ![a cat][nope] talking"
     assert normalize_description_urls(text) == text
+
+
+def test_image_like_examples_in_code_are_not_normalized(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "Inline `![example](https://tracker.example/inline.png)`\n\n"
+        "```markdown\n![example](https://tracker.example/fenced.png)\n```\n\n"
+        "    ![example](https://tracker.example/indented.png)\n"
+    )
+
+    assert normalize_description_urls(text) == text
+    assert resolve_description_urls_public(text) == text
+
+
+def test_unmatched_backticks_cannot_hide_image_in_later_paragraph(monkeypatch):
+    """Inline parsing is block-scoped; backticks cannot span blank lines."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "`open\n\n"
+        "![leak](https://tracker.example/cross-paragraph.png)\n\n"
+        "`close"
+    )
+
+    normalized = normalize_description_urls(text)
+    public = resolve_description_urls_public(text)
+
+    assert normalized == "`open\n\n\n\n`close"
+    assert "tracker.example" not in public
+    assert EXTERNAL_IMAGE_HIDDEN in public
+    assert public.startswith("`open\n\n") and public.endswith("\n\n`close")
+
+
+@pytest.mark.parametrize("line_ending", ["\r", "\r\n"])
+def test_markdown_image_offsets_support_all_commonmark_line_endings(line_ending):
+    text = f"![first{line_ending}second](https://tracker.example/image.png)"
+
+    images = list(iter_markdown_images(text))
+
+    assert len(images) == 1
+    assert text[images[0].start : images[0].end] == text
+    assert images[0].url == "https://tracker.example/image.png"

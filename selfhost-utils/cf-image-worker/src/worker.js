@@ -3,7 +3,7 @@
  *
  * Sits in front of a private S3 bucket on a Cloudflare-proxied hostname.
  * Validates HMAC-signed URLs issued by the Sheaf backend, fetches the
- * object from S3 via SigV4, caches at the edge keyed by the full URL.
+ * object from S3 via SigV4, caches at the edge under a canonical URL.
  *
  * See selfhost-utils/cf-image-worker/README.md for deployment.
  */
@@ -84,7 +84,15 @@ function isAllowedKey(key, allowedPrefixes) {
 
 // ----- SigV4 GET signer --------------------------------------------------
 
-async function signS3Get({ bucket, region, endpoint, key, accessKey, secretKey }) {
+async function signS3Request({
+  bucket,
+  region,
+  endpoint,
+  key,
+  accessKey,
+  secretKey,
+  method,
+}) {
   let host;
   let pathname;
   if (endpoint) {
@@ -110,7 +118,7 @@ async function signS3Get({ bucket, region, endpoint, key, accessKey, secretKey }
     `x-amz-date:${amzDate}\n`;
   const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
   const canonicalRequest = [
-    "GET",
+    method,
     pathname,
     "", // empty query string
     canonicalHeaders,
@@ -163,23 +171,60 @@ function required(env, name) {
   return env[name];
 }
 
+function signedQuery(url) {
+  // There is one canonical spelling for a capability URL. Besides avoiding
+  // ambiguous validation, this prevents a caller with a valid URL from
+  // manufacturing cache misses by adding, duplicating, or respelling query
+  // parameters.
+  const entries = [...url.searchParams.entries()];
+  if (entries.length !== 2) return null;
+  if (
+    url.searchParams.getAll("token").length !== 1 ||
+    url.searchParams.getAll("expires").length !== 1
+  ) {
+    return null;
+  }
+  if (entries.some(([name]) => name !== "token" && name !== "expires")) {
+    return null;
+  }
+
+  const token = url.searchParams.get("token");
+  const expires = url.searchParams.get("expires");
+  if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
+  if (!expires || !/^(0|[1-9][0-9]*)$/.test(expires)) return null;
+  return { token, expires };
+}
+
+function canonicalCacheKey(url, key, token, expires) {
+  const canonical = new URL(url.origin);
+  canonical.pathname = `/${key.split("/").map(encodeURIComponent).join("/")}`;
+  canonical.searchParams.set("token", token);
+  canonical.searchParams.set("expires", expires);
+  return new Request(canonical.toString(), { method: "GET" });
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return reject(405, "Method not allowed");
     }
 
     const url = new URL(request.url);
-    const key = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-    const token = url.searchParams.get("token");
-    const expires = url.searchParams.get("expires");
+    let key;
+    try {
+      key = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+    } catch {
+      return reject(403);
+    }
+    const query = signedQuery(url);
 
-    if (!key || !token || !expires) return reject(403);
+    if (!key || !query) return reject(403);
+    const { token, expires } = query;
 
     if (!isAllowedKey(key, env.ALLOWED_KEY_PREFIXES)) return reject(403);
 
-    const expiresInt = Number.parseInt(expires, 10);
-    if (!Number.isFinite(expiresInt)) return reject(403);
+    const expiresInt = Number(expires);
+    if (!Number.isSafeInteger(expiresInt)) return reject(403);
     const nowSec = Math.floor(Date.now() / 1000);
     if (expiresInt <= nowSec) return reject(403);
 
@@ -187,41 +232,60 @@ export default {
     const valid = await verifyToken(signingKey, key, expires, token);
     if (!valid) return reject(403);
 
-    // Cache lookup — full URL is the key, so each signing window has its
-    // own entry, and expired/invalid tokens never reach cache.
+    // Both accepted query orders and equivalent path encodings converge on
+    // this key. Expired and invalid capabilities never reach the cache.
     const cache = caches.default;
-    const cacheKey = new Request(url.toString(), { method: "GET" });
+    const cacheKey = canonicalCacheKey(url, key, token, expires);
     const cached = await cache.match(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      const headers = new Headers(cached.headers);
+      const ttl = Math.max(1, expiresInt - nowSec);
+      headers.set("cache-control", `public, max-age=${ttl}, immutable`);
+      return new Response(request.method === "HEAD" ? null : cached.body, {
+        status: cached.status,
+        headers,
+      });
+    }
 
-    const signed = await signS3Get({
+    const signed = await signS3Request({
       bucket: required(env, "S3_BUCKET"),
       region: env.S3_REGION || "us-east-1",
       endpoint: env.S3_ENDPOINT || "",
       key,
       accessKey: required(env, "AWS_ACCESS_KEY_ID"),
       secretKey: required(env, "AWS_SECRET_ACCESS_KEY"),
+      method: request.method,
     });
 
-    const origin = await fetch(signed.url, { headers: signed.headers });
+    const origin = await fetch(signed.url, {
+      method: request.method,
+      headers: signed.headers,
+    });
     if (!origin.ok) {
       return reject(origin.status === 404 ? 404 : 502, "Origin error");
     }
 
     const headers = new Headers(origin.headers);
-    headers.delete("x-amz-request-id");
-    headers.delete("x-amz-id-2");
+    for (const name of [...headers.keys()]) {
+      if (name.startsWith("x-amz-")) headers.delete(name);
+    }
     headers.delete("server");
     headers.set("x-content-type-options", "nosniff");
     // Cache until the token expires — never longer.
     const ttl = Math.max(1, expiresInt - nowSec);
     headers.set("cache-control", `public, max-age=${ttl}, immutable`);
 
-    const body = await origin.arrayBuffer();
-    const response = new Response(body, { status: 200, headers });
-    // ctx.waitUntil would be cleaner but we don't have ctx in this shape;
-    // awaiting is fine for a hot path that's already doing origin IO.
-    await cache.put(cacheKey, response.clone());
+    const response = new Response(request.method === "HEAD" ? null : origin.body, {
+      status: origin.status,
+      headers,
+    });
+    // A HEAD miss is deliberately cheap and does not populate a bodyless
+    // entry that could shadow a later GET.
+    if (request.method === "GET") {
+      const put = cache.put(cacheKey, response.clone());
+      if (ctx?.waitUntil) ctx.waitUntil(put);
+      else await put;
+    }
     return response;
   },
 };

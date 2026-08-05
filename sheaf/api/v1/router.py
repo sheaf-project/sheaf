@@ -228,5 +228,7 @@ v1_router.include_router(
     dependencies=[Depends(require_scope("messages:read"))],
 )
 
-# File serve catch-all MUST be last — {path:path} would shadow other routes
+# Anonymous public-profile media stays same-origin even under S3/CDN modes.
+v1_router.include_router(files.public_serve_router)
+# File serve catch-all MUST be last — {path:path} would shadow other routes.
 v1_router.include_router(files.serve_router)

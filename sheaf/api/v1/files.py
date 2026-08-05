@@ -3,7 +3,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +14,11 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
-from sheaf.files import resolve_avatar_url, verify_file_token
+from sheaf.files import (
+    resolve_avatar_url,
+    verify_file_token,
+    verify_public_file_token,
+)
 from sheaf.image_processing import (
     ImageNormalizationError,
     animation_allowed,
@@ -470,6 +474,99 @@ _CONTENT_TYPES = {
 }
 
 
+def _media_response(
+    path: str,
+    data: bytes,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> Response:
+    suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
+    headers = dict(extra_headers or {})
+    # Defence in depth: uploads are gated to image magic bytes so we should
+    # never land here with a non-image extension. If we do (e.g. a legacy
+    # file from before the validator was tightened), force a download.
+    if content_type == "application/octet-stream":
+        headers["Content-Disposition"] = "attachment"
+    return Response(content=data, media_type=content_type, headers=headers)
+
+
+public_serve_router = APIRouter(prefix="/public/files", tags=["public profiles"])
+
+
+def _canonical_public_file_request(
+    request: Request,
+    token: str | None,
+    expires: str | None,
+) -> bool:
+    if token is None or expires is None:
+        return False
+    if len(token) != 64 or any(char not in "0123456789abcdef" for char in token):
+        return False
+    if not expires.isascii() or not expires.isdecimal() or expires.startswith("0"):
+        return False
+    # Proxies key caches on the raw URL. Requiring the exact spelling emitted
+    # by sign_public_file_url prevents extras, duplicates, reordering, and
+    # percent-encoding aliases from turning one capability into cache misses.
+    expected = f"token={token}&expires={expires}".encode()
+    if request.scope.get("query_string", b"") != expected:
+        return False
+    path = request.scope.get("path")
+    if not isinstance(path, str):
+        return False
+    try:
+        canonical_path = path.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return request.scope.get("raw_path") == canonical_path
+
+
+@public_serve_router.get("/{path:path}")
+async def serve_public_file(
+    path: str,
+    request: Request,
+    token: str | None = Query(default=None),
+    expires: str | None = Query(default=None),
+):
+    """Serve uploaded public-profile media without leaving the app origin.
+
+    The ordinary file route may redirect to S3, and CDN mode normally emits a
+    CDN URL directly. Public profiles deliberately do neither: their strict
+    CSP permits only same-origin images. The bounded HMAC capability keeps the
+    route cacheable without making the underlying bucket public.
+    """
+
+    if ".." in path or path.startswith("/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+    if not path.startswith(_SERVE_KEY_PREFIXES):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not _canonical_public_file_request(
+        request, token, expires
+    ) or not verify_public_file_token(path, token, expires):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or expired public file URL",
+        )
+
+    storage = get_storage()
+    try:
+        data = await storage.get(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST) from exc
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    ttl = max(1, int(expires) - int(time.time()))
+    return _media_response(
+        path,
+        data,
+        extra_headers={
+            "Cache-Control": f"public, max-age={ttl}, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 def _s3_public_url(key: str) -> str:
     """Construct the direct public S3 URL for a key (unsigned mode, no CDN)."""
     if settings.s3_endpoint:
@@ -543,15 +640,4 @@ async def serve_file(
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
-    # Defence in depth: uploads are gated to image magic bytes so we should
-    # never land here with a non-image extension. If we do (e.g. a legacy
-    # file from before the validator was tightened), force a download
-    # instead of letting the browser render.
-    headers = (
-        {"Content-Disposition": "attachment"}
-        if content_type == "application/octet-stream"
-        else {}
-    )
-    return Response(content=data, media_type=content_type, headers=headers)
+    return _media_response(path, data)

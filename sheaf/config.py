@@ -15,6 +15,11 @@ class SheafMode(StrEnum):
     SAAS = "saas"
 
 
+class ImageServing(StrEnum):
+    SIGNED = "signed"
+    UNSIGNED = "unsigned"
+
+
 class Settings(BaseSettings):
     # Database. DATABASE_URL is optional: leave it unset and it is assembled
     # from the POSTGRES_* parts below - the same env vars the db container
@@ -321,7 +326,7 @@ class Settings(BaseSettings):
     #   Easier to set up, but effectively provides free image hosting.
     #   For S3: set S3_PUBLIC_URL to a Cloudflare-proxied domain and use
     #   Cloudflare hotlink protection rules as the alternative mechanism.
-    image_serving: str = "signed"
+    image_serving: ImageServing = ImageServing.SIGNED
 
     # Signed URL expiry window in seconds. Window-based: all requests within
     # the same window get the same URL, enabling browser image caching.
