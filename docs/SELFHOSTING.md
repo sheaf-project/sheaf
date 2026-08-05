@@ -1261,16 +1261,26 @@ map $request_uri $sheaf_csp {
     ~^/[ps]/   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
 }
 
+# /s/{token} and its API route both carry the unlisted share-link bearer.
+# Exclude them from nginx access logs in both the redirect and TLS servers.
+map $request_uri $sheaf_access_loggable {
+    default                  1;
+    ~^/s/                    0;
+    ~^/v1/public/shared/     0;
+}
+
 # Redirect plain HTTP to HTTPS
 server {
     listen 80;
     server_name sheaf.example.com;
+    access_log /var/log/nginx/access.log combined if=$sheaf_access_loggable;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
     server_name sheaf.example.com;
+    access_log /var/log/nginx/access.log combined if=$sheaf_access_loggable;
 
     # TLS — modern profile. Adjust paths to your certificates.
     ssl_certificate     /etc/letsencrypt/live/sheaf.example.com/fullchain.pem;
@@ -1325,6 +1335,12 @@ server {
     }
 }
 ```
+
+Unlisted share links are bearer capabilities: the token appears in both the
+SPA URL (`/s/{token}`) and API requests (`/v1/public/shared/{token}/...`). The
+nginx example suppresses access logging for both. If you enable Caddy access
+logs or use another proxy/CDN, configure equivalent path redaction or exclusion
+and review any upstream load-balancer logs too.
 
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
 

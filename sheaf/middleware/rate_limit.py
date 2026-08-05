@@ -246,7 +246,7 @@ async def _enforce_limit(
         if fail_closed:
             logger.error(
                 "Redis unavailable on fail-closed endpoint: %s",
-                request.url.path,
+                route_template(request),
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -329,6 +329,8 @@ def rate_limit(
     window: int = 60,
     key: str = "ip",
     fail_closed: bool = False,
+    *,
+    bucket: str | None = None,
 ):
     """FastAPI dependency that enforces a rate limit on a single endpoint.
 
@@ -345,12 +347,15 @@ def rate_limit(
             unreachable. Use on auth endpoints so a Redis outage can't be
             used to bypass brute-force protection. Default False - most
             endpoints are better off staying available on Redis blips.
+        bucket: Optional fixed counter name. Use when several routes should
+            share one limit, or when a route contains a bearer capability that
+            must not be copied into Redis keys.
     """
     limit = Limit(requests=requests, window=window)
 
     async def _check(request: Request):
         await _enforce_limit(
-            request, limit=limit, key=key, bucket=None, fail_closed=fail_closed,
+            request, limit=limit, key=key, bucket=bucket, fail_closed=fail_closed,
         )
 
     if key == "user":
@@ -544,7 +549,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             logger.warning(
                 "Redis unavailable - global per-IP rate-limit backstop is "
                 "open (path=%s)",
-                request.url.path,
+                route_template(request),
             )
             return await call_next(request)
 

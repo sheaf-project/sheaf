@@ -135,6 +135,9 @@ export interface Member {
   /** Hard share guard: this member may be in a view, but their front state
    *  never propagates to any public fronting projection. */
   fronting_private: boolean;
+  /** A requested release of the fronting guard is waiting out the System
+   *  Safety grace period until this timestamp. */
+  fronting_private_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** True iff at least one ContentRevision exists for this member's
@@ -191,6 +194,8 @@ export interface MemberUpdate {
   quick_switch_pin?: number | null;
   never_shareable?: boolean;
   fronting_private?: boolean;
+  password?: string;
+  totp_code?: string;
 }
 
 export interface Front {

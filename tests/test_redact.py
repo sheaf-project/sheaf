@@ -1,6 +1,12 @@
-"""Unit tests for the email-redaction log helper."""
+"""Unit tests for log-redaction helpers."""
 
-from sheaf.redact import redact_email
+import logging
+
+from sheaf.redact import (
+    ShareTokenAccessLogFilter,
+    redact_email,
+    redact_share_token_path,
+)
 
 
 def test_redacts_normal_address():
@@ -35,6 +41,35 @@ def test_empty_and_none_are_redacted():
 
 def test_trailing_at_with_no_domain_is_redacted():
     assert redact_email("alice@") == "<redacted>"
+
+
+def test_redacts_share_token_but_keeps_endpoint_and_query():
+    assert redact_share_token_path(
+        "/v1/public/shared/super-secret-token/members?preview=1"
+    ) == "/v1/public/shared/<redacted>/members?preview=1"
+    assert redact_share_token_path("/s/super-secret-token") == "/s/<redacted>"
+
+
+def test_uvicorn_access_filter_redacts_path_argument():
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        (
+            "127.0.0.1:1234",
+            "GET",
+            "/v1/public/shared/super-secret-token/fronting",
+            "1.1",
+            200,
+        ),
+        None,
+    )
+
+    assert ShareTokenAccessLogFilter().filter(record) is True
+    assert "super-secret-token" not in record.getMessage()
+    assert "/v1/public/shared/<redacted>/fronting" in record.getMessage()
 
 
 def test_full_address_never_appears_verbatim():

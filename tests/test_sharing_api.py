@@ -115,6 +115,19 @@ def _backdate_grant_activation(grant_id: str) -> None:
     _in_db(_work)
 
 
+def _set_grant_activation_soon(grant_id: str) -> None:
+    """Leave a pending grant with only a minute left in its own window."""
+
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareGrant
+
+        grant = await db.get(ShareGrant, uuid.UUID(grant_id))
+        assert grant is not None
+        grant.activates_at = datetime.now(UTC) + timedelta(minutes=1)
+
+    _in_db(_work)
+
+
 def _backdate_view_flags(view_id: str) -> None:
     """Same, for a view's staged flag flip."""
 
@@ -125,6 +138,20 @@ def _backdate_view_flags(view_id: str) -> None:
         assert view is not None
         assert view.flags_activate_at is not None
         view.flags_activate_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
+def _backdate_fronting_guard(member_id: str) -> None:
+    """Make a staged fronting-private release due for the finalize job."""
+
+    async def _work(db) -> None:
+        from sheaf.models.member import Member
+
+        member = await db.get(Member, uuid.UUID(member_id))
+        assert member is not None
+        assert member.fronting_private_activates_at is not None
+        member.fronting_private_activates_at = datetime.now(UTC) - timedelta(minutes=1)
 
     _in_db(_work)
 
@@ -556,8 +583,125 @@ def test_finalize_job_promotes_a_staged_flag_flip(
 
 
 # ---------------------------------------------------------------------------
-# member.privacy: raising a member to public is an exposure too
+# Member-level visibility loosenings
 # ---------------------------------------------------------------------------
+
+
+def test_fronting_guard_release_is_reauthed_and_deferred(
+    auth_client: httpx.Client, admin_client: httpx.Client
+):
+    vid = _shared_view(auth_client, include_fronting=True)
+    member = _member(auth_client, "GuardedFronter", privacy="public")
+    auth_client.post(
+        f"/v1/share-views/{vid}/members", json={"member_id": member}
+    )
+    auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": True}
+    )
+    _arm_visibility_safety(auth_client)
+
+    denied = auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": False}
+    )
+    assert denied.status_code in (400, 403), denied.text
+
+    staged = auth_client.patch(
+        f"/v1/members/{member}",
+        json={"fronting_private": False, "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+    assert staged.json()["fronting_private"] is True
+    assert staged.json()["fronting_private_activates_at"] is not None
+
+    _backdate_fronting_guard(member)
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+    finalized = auth_client.get(f"/v1/members/{member}").json()
+    assert finalized["fronting_private"] is False
+    assert finalized["fronting_private_activates_at"] is None
+
+
+def test_fronting_guard_release_without_exposure_is_immediate(
+    auth_client: httpx.Client,
+):
+    member = _member(auth_client, "UnsharedFronter", privacy="public")
+    guarded = auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": True}
+    )
+    assert guarded.status_code == 200, guarded.text
+    _arm_visibility_safety(auth_client)
+
+    released = auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": False}
+    )
+    assert released.status_code == 200, released.text
+    assert released.json()["fronting_private"] is False
+    assert released.json()["fronting_private_activates_at"] is None
+
+
+def test_fronting_guard_release_gets_full_window_with_older_pending_grant(
+    auth_client: httpx.Client,
+):
+    _attest(auth_client)
+    member = _member(auth_client, "PendingPath", privacy="public")
+    auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": True}
+    )
+    vid = _view(auth_client, include_fronting=True)
+    auth_client.post(
+        f"/v1/share-views/{vid}/members", json={"member_id": member}
+    )
+    _arm_visibility_safety(auth_client)
+    created = auth_client.post(
+        "/v1/share-grants",
+        json={
+            "view_id": vid,
+            "subject_type": "public",
+            "password": "testpassword123",
+        },
+    )
+    assert created.status_code == 201, created.text
+    grant = created.json()["grant"]
+    _set_grant_activation_soon(grant["id"])
+
+    before = datetime.now(UTC)
+    staged = auth_client.patch(
+        f"/v1/members/{member}",
+        json={"fronting_private": False, "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    assert body["fronting_private"] is True
+    activates_at = datetime.fromisoformat(body["fronting_private_activates_at"])
+    assert activates_at > before + timedelta(days=6, hours=23)
+
+
+def test_restoring_fronting_guard_cancels_pending_release(
+    auth_client: httpx.Client,
+):
+    vid = _shared_view(auth_client, include_fronting=True)
+    member = _member(auth_client, "StillGuarded", privacy="public")
+    auth_client.post(
+        f"/v1/share-views/{vid}/members", json={"member_id": member}
+    )
+    auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": True}
+    )
+    _arm_visibility_safety(auth_client)
+    auth_client.patch(
+        f"/v1/members/{member}",
+        json={"fronting_private": False, "password": "testpassword123"},
+    )
+
+    cancelled = auth_client.patch(
+        f"/v1/members/{member}", json={"fronting_private": True}
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["fronting_private"] is True
+    assert cancelled.json()["fronting_private_activates_at"] is None
+
+
+# member.privacy: raising a member to public is an exposure too
 
 
 def test_privacy_flip_to_public_in_a_shared_view_is_deferred(

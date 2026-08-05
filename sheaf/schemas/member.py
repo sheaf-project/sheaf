@@ -122,6 +122,9 @@ class MemberRead(BaseModel):
     quick_switch_pin: int | None = None
     never_shareable: bool = False
     fronting_private: bool = False
+    # System Safety keeps fronting_private=True until this timestamp when a
+    # requested guard release is waiting out the grace period.
+    fronting_private_activates_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     # True iff at least one ContentRevision exists for this member's bio.

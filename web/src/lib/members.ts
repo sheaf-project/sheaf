@@ -45,10 +45,15 @@ export function createMember(data: MemberCreate) {
   });
 }
 
-export function updateMember(id: string, data: MemberUpdate) {
+export function updateMember(
+  id: string,
+  data: MemberUpdate,
+  skipErrorToast = false,
+) {
   return apiFetch<Member>(`/v1/members/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
