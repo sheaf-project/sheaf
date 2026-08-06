@@ -27,9 +27,12 @@ they behave the same on any instance.
 
 from __future__ import annotations
 
-import re
-
-from sheaf.files import _MD_IMAGE_URL_RE, _to_internal_key
+from sheaf.files import _to_internal_key
+from sheaf.markdown_images import (
+    MarkdownImage,
+    render_markdown_image,
+    rewrite_markdown_images,
+)
 
 # Image keys live in flat strings (Member.avatar_url, System.avatar_url),
 # JSON arrays (JournalEntry.image_keys, ContentRevision.image_keys), and
@@ -91,11 +94,10 @@ def rewrite_internal_image_refs_md(
     key_map: dict[str, str],
     used_keys: set[str],
 ) -> str | None:
-    """Rewrite `![alt](url)` embeds with mapped keys; strip unmapped internals.
+    """Rewrite hosted image embeds with mapped keys; strip unmapped internals.
 
-    Operates on raw markdown plaintext. The regex matches the same
-    embed shape `sheaf/files.py:_MD_IMAGE_URL_RE` uses (`![alt](url)`),
-    and we apply `_to_internal_key` to each url to decide. Mapped
+    Operates on raw Markdown plaintext using the shared CommonMark parser, so
+    inline and reference images follow the same rules as the renderer. Mapped
     internal embeds are re-pointed at `/v1/files/<new_key>` (the
     canonical serve path the editor writes); unmapped internal embeds
     are dropped entirely (including their alt text); externals survive
@@ -108,18 +110,17 @@ def rewrite_internal_image_refs_md(
     if text is None:
         return None
 
-    def _rewrite(m: re.Match[str]) -> str:
-        url = m.group(2)
-        key = _to_internal_key(url)
+    def _rewrite(image: MarkdownImage) -> str | None:
+        key = _to_internal_key(image.url)
         if key is None:
-            return m.group(0)
+            return None
         new_key = key_map.get(key)
         if new_key is None:
             return ""
         used_keys.add(key)
-        return f"{m.group(1)}/v1/files/{new_key}{m.group(3)}"
+        return render_markdown_image(image, f"/v1/files/{new_key}")
 
-    return _MD_IMAGE_URL_RE.sub(_rewrite, text)
+    return rewrite_markdown_images(text, _rewrite)
 
 
 def strip_internal_image_refs_md(text: str | None) -> str | None:

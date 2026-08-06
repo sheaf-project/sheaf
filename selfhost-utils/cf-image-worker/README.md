@@ -10,9 +10,10 @@ CDN** paradigm described in `docs/SELFHOSTING.md`.
 2. Validates the HMAC token against `FILE_SIGNING_KEY` and checks `expires`.
 3. If valid, fetches the object from S3 using AWS SigV4 credentials.
 4. Returns it with cache headers matched to the token's remaining lifetime.
-5. Cloudflare's edge cache serves subsequent hits within the signing window without re-invoking the Worker.
+5. Reuses the cached object for subsequent valid requests in the signing window.
 
-Invalid tokens, expired tokens, malformed keys, and keys outside the allow-list return 403 at the edge.
+Invalid tokens, expired tokens, malformed keys, extra/duplicate query parameters,
+and keys outside the allow-list return 403 at the edge.
 
 ## When to use this
 
@@ -68,7 +69,7 @@ FILE_SIGNING_KEY=<same value as the Worker secret>
 
 ## Cost expectations
 
-- **Workers:** free tier is 100k requests/day (~3M/mo). The Worker only runs on cache misses; with a 1-hour signing window and a normal hit rate, most image loads skip it entirely. Small/mid instances stay free-tier indefinitely. Paid plan ($5/mo) covers 10M requests.
+- **Workers:** each request routed to this Worker is an invocation, including a Cache API hit. Check Cloudflare's current Workers allowance against total image-request volume. Cache hits still avoid S3 traffic and SigV4 origin fetches.
 - **S3 egress:** every cache miss pulls the full object from S3 to Cloudflare at $0.09/GB. For avatars (<500KB), this is noise unless you're purging the CF cache frequently.
 - **CF bandwidth to end users:** free on Cloudflare's standard plan.
 
@@ -79,8 +80,14 @@ If egress becomes material, migrating the bucket from S3 to R2 eliminates it —
 - The Worker serves **only** on GET/HEAD. POST/PUT/DELETE are rejected.
 - `ALLOWED_KEY_PREFIXES` is enforced before any S3 call, so a leaked valid token can't be used to reach unrelated objects in the bucket (e.g. if the same bucket holds non-user data).
 - Path traversal (`..`, leading `/`, null bytes) is rejected.
+- Capability URLs accept exactly one lowercase `token` and one canonical
+  integer `expires` parameter. Query order is normalized for the cache; extra
+  or duplicate parameters are rejected, so a valid URL cannot be turned into
+  unlimited cache misses.
 - `x-amz-*` and `server` headers from S3 are stripped before returning to the client — no bucket-identifying leakage.
 - HMAC verification uses `crypto.subtle.verify`, which is constant-time.
+- `HEAD` misses use an upstream `HEAD` and never populate a bodyless cache
+  entry; they do not download the full object.
 - `FILE_SIGNING_KEY` is stored as a Wrangler secret, not in `wrangler.toml`. Don't commit it.
 - Upstream fetch uses SigV4, so the bucket can stay fully private — no bucket policy changes required.
 

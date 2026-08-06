@@ -67,12 +67,18 @@ class S3Storage(StorageBackend):
         )
 
     async def get(self, key: str) -> bytes | None:
-        try:
-            resp = await observe_s3(
-                "get",
-                self._run(self.client.get_object, Bucket=self.bucket, Key=key),
+        async def _read_object() -> bytes:
+            response = await self._run(
+                self.client.get_object,
+                Bucket=self.bucket,
+                Key=key,
             )
-            return resp["Body"].read()
+            # StreamingBody.read performs network I/O, so it belongs in the
+            # executor too - reading it inline blocks the event loop.
+            return await self._run(response["Body"].read)
+
+        try:
+            return await observe_s3("get", _read_object())
         except ClientError as e:
             if e.response["Error"]["Code"] == "NoSuchKey":
                 return None
