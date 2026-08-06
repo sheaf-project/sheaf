@@ -74,22 +74,11 @@ _SURROGATE_PK = "surrogate UUID PK, re-minted on import (old->new id maps handle
 _TENANT_FK = "tenant scope FK, set from the importing system, not from file data"
 _ROW_CREATED = "row-creation timestamp, server state not portable content"
 _ROW_UPDATED = "row-mutation timestamp, server state not portable content"
-# Share rows land active on import because no grant is ever imported, so an
-# imported view is exposed to nobody until the user deliberately publishes it.
-_SHARE_LIFECYCLE = (
-    "grace-window lifecycle state; imported rows land active because grants "
-    "are never imported, so an imported view exposes nothing"
-)
-# A staged flag flip is mid-grace-window state, not curation: the export
-# carries the view's LIVE flags, so an import never restores a half-applied
-# loosening (and, with no grants imported, could not act on one anyway).
-_SHARE_FLAG_STAGING = (
-    "staged flag flip waiting out the grace window; the export carries the "
-    "view's live flags, so an import never restores a half-applied loosening"
-)
-_NO_GRANT_IMPORT = (
-    "grants are deliberately never exported or imported: a grant is a live "
-    "capability, so restoring one would republish a system from a backup"
+# The share tables are dormant: they carry no rows because nothing writes
+# them, and the portable export has no share section at all.
+_SHARE_DORMANT = (
+    "dormant table; nothing writes it and the portable export carries no "
+    "share section, so no column round-trips"
 )
 # The Article 20 export is system content restored INTO an already-existing
 # account, so no column of the account row itself round-trips.
@@ -177,11 +166,9 @@ CLASSIFICATION: dict[type, dict] = {
             "email_soft_bounce_count": _ACCOUNT_SERVER_STATE,
             "email_revalidation_required": _ACCOUNT_SERVER_STATE,
             "adult_attested_at": (
-                "the age attestation that gates publishing. Grants never "
-                "round-trip, so a restored account is exposing nothing and "
-                "must deliberately re-attest before it can publish again - "
-                "importing the attestation would carry a legal declaration "
-                "across accounts and instances on a file's say-so"
+                "a legal self-declaration made to one instance by one account; "
+                "importing it would carry that declaration across accounts and "
+                "instances on a file's say-so"
             ),
             "disable_cdn_during_ddos": (
                 "shield-mode opt-out, meaningful only on an instance with a "
@@ -269,80 +256,72 @@ CLASSIFICATION: dict[type, dict] = {
             "updated_at": _ROW_UPDATED,
         },
     },
-    # Share views round-trip (they are real curation work the user did).
-    # Share GRANTS deliberately do not - see the ShareGrant entry below.
+    # Nothing on the share tables round-trips: they are dormant, so there is
+    # no curation to carry and no capability to restore.
     ShareView: {
-        "exported": {
-            "name", "include_bio", "include_fronting", "fronting_show_count",
-        },
-        "excluded": {
-            "id": _SURROGATE_PK,
-            "system_id": _TENANT_FK,
-            "created_at": _ROW_CREATED,
-            "updated_at": _ROW_UPDATED,
-            "pending_include_bio": _SHARE_FLAG_STAGING,
-            "pending_include_fronting": _SHARE_FLAG_STAGING,
-            "pending_fronting_show_count": _SHARE_FLAG_STAGING,
-            "flags_activate_at": _SHARE_FLAG_STAGING,
-        },
-    },
-    ShareViewMember: {
-        "exported": {"member_id"},
-        "excluded": {
-            "id": _SURROGATE_PK,
-            "view_id": "parent view FK, re-pointed via the old->new view map",
-            "status": _SHARE_LIFECYCLE,
-            "activates_at": _SHARE_LIFECYCLE,
-            "created_at": _ROW_CREATED,
-        },
-    },
-    ShareViewField: {
-        "exported": {"field_id"},
-        "excluded": {
-            "id": _SURROGATE_PK,
-            "view_id": "parent view FK, re-pointed via the old->new view map",
-            "status": _SHARE_LIFECYCLE,
-            "activates_at": _SHARE_LIFECYCLE,
-            "created_at": _ROW_CREATED,
-        },
-    },
-    ShareViewGroup: {
-        "exported": {"group_id"},
-        "excluded": {
-            "id": _SURROGATE_PK,
-            "view_id": "parent view FK, re-pointed via the old->new view map",
-            "synced_at": (
-                "provenance bookkeeping for the last group expansion, not "
-                "portable content"
-            ),
-            "created_at": _ROW_CREATED,
-        },
-    },
-    ShareGrant: {
-        # Nothing here round-trips, on purpose. A grant is a LIVE CAPABILITY:
-        # re-creating one on import would republish a system straight out of a
-        # restored backup, which is the worst possible outcome for a feature
-        # whose threat model is accidental outing. Link tokens could not be
-        # restored anyway (only a keyed hash is ever stored). After a restore
-        # the user's views are intact and nothing is published until they
-        # deliberately publish it again.
         "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
-            "view_id": _NO_GRANT_IMPORT,
-            "subject_type": _NO_GRANT_IMPORT,
-            "token_hash": (
-                "keyed HMAC of a bearer capability; never exported, and the "
-                "raw token exists only at creation time"
-            ),
-            "note": _NO_GRANT_IMPORT,
-            "status": _NO_GRANT_IMPORT,
-            "activates_at": _NO_GRANT_IMPORT,
-            "expires_at": _NO_GRANT_IMPORT,
-            "revoked_at": _NO_GRANT_IMPORT,
+            "name": _SHARE_DORMANT,
+            "include_bio": _SHARE_DORMANT,
+            "include_fronting": _SHARE_DORMANT,
+            "fronting_show_count": _SHARE_DORMANT,
+            "pending_include_bio": _SHARE_DORMANT,
+            "pending_include_fronting": _SHARE_DORMANT,
+            "pending_fronting_show_count": _SHARE_DORMANT,
+            "flags_activate_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
-            "created_by_user_id": _NO_GRANT_IMPORT,
+            "updated_at": _ROW_UPDATED,
+        },
+    },
+    ShareViewMember: {
+        "exported": set(),
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "view_id": _SHARE_DORMANT,
+            "member_id": _SHARE_DORMANT,
+            "status": _SHARE_DORMANT,
+            "activates_at": _SHARE_DORMANT,
+            "created_at": _ROW_CREATED,
+        },
+    },
+    ShareViewField: {
+        "exported": set(),
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "view_id": _SHARE_DORMANT,
+            "field_id": _SHARE_DORMANT,
+            "status": _SHARE_DORMANT,
+            "activates_at": _SHARE_DORMANT,
+            "created_at": _ROW_CREATED,
+        },
+    },
+    ShareViewGroup: {
+        "exported": set(),
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "view_id": _SHARE_DORMANT,
+            "group_id": _SHARE_DORMANT,
+            "synced_at": _SHARE_DORMANT,
+            "created_at": _ROW_CREATED,
+        },
+    },
+    ShareGrant: {
+        "exported": set(),
+        "excluded": {
+            "id": _SURROGATE_PK,
+            "system_id": _TENANT_FK,
+            "view_id": _SHARE_DORMANT,
+            "subject_type": _SHARE_DORMANT,
+            "token_hash": _SHARE_DORMANT,
+            "note": _SHARE_DORMANT,
+            "status": _SHARE_DORMANT,
+            "activates_at": _SHARE_DORMANT,
+            "expires_at": _SHARE_DORMANT,
+            "revoked_at": _SHARE_DORMANT,
+            "created_at": _ROW_CREATED,
+            "created_by_user_id": _SHARE_DORMANT,
         },
     },
     CustomFieldDefinition: {

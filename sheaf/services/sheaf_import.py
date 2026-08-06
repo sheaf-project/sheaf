@@ -86,13 +86,6 @@ from sheaf.models.relationship import (
     RelationshipVisibility,
 )
 from sheaf.models.reminder import Reminder, reminder_scope_members
-from sheaf.models.share import (
-    ShareItemStatus,
-    ShareView,
-    ShareViewField,
-    ShareViewGroup,
-    ShareViewMember,
-)
 from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
@@ -556,15 +549,7 @@ class SheafImportResult:
         self.member_relationships_skipped: int = 0
         self.group_relationships_imported: int = 0
         self.group_relationships_skipped: int = 0
-        self.share_views_imported: int = 0
-        self.share_views_skipped: int = 0
         self.warnings: list[str] = []
-
-
-# Bounds on the share-view section of an untrusted payload. Views are cheap
-# rows, but an import must not be a way to make the DB do unbounded work.
-_MAX_SHARE_VIEWS = 100
-_MAX_SHARE_VIEW_ROWS = 1000
 
 
 def _as_list(val: object) -> list:
@@ -664,10 +649,6 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
             s(rt.get("name"), il.REL_TYPE_NAME)
             s(rt.get("forward_label"), il.REL_TYPE_LABEL)
             s(rt.get("reverse_label"), il.REL_TYPE_LABEL)
-
-    for v in _as_list(data.get("share_views")):
-        if isinstance(v, dict):
-            s(v.get("name"), il.SHARE_VIEW_NAME)
 
 
 def preview(data: dict) -> SheafPreviewSummary:
@@ -1476,118 +1457,6 @@ async def run_import(
         result.group_relationships_skipped += g_skip
 
         await db.flush()
-
-    # --- Share views ---
-    # The curated projections round-trip; share GRANTS never do, so an
-    # imported view is exposed to nobody until the user deliberately
-    # publishes it. Rows land ACTIVE for the same reason: with no grant
-    # pointing at the view, "active" exposes nothing.
-    #
-    # A view whose name already exists is SKIPPED WHOLESALE rather than
-    # merged. Merging would let an import add members to a view that already
-    # has a live grant - i.e. publish somebody as a side effect of restoring
-    # a backup. Refusing to merge is the only safe behaviour here.
-    existing_view_names = set(
-        (
-            await db.execute(
-                select(ShareView.name).where(ShareView.system_id == system.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    now = datetime.now(UTC)
-    malformed_views = 0
-    for v_data in _as_list(data.get("share_views"))[:_MAX_SHARE_VIEWS]:
-        if not isinstance(v_data, dict):
-            malformed_views += 1
-            continue
-        name = clamp_str(
-            str(v_data.get("name") or "Shared view").strip() or "Shared view",
-            il.SHARE_VIEW_NAME,
-            report=report,
-        )
-        if name in existing_view_names:
-            result.share_views_skipped += 1
-            warnings.append(
-                f"Skipped share view '{name}' - a view with that name already "
-                "exists and merging into it could publish members that view "
-                "is already shared with"
-            )
-            continue
-        existing_view_names.add(name)
-
-        view = ShareView(
-            id=uuid.uuid4(),
-            system_id=system.id,
-            name=name,
-            include_bio=bool(v_data.get("include_bio", False)),
-            include_fronting=bool(v_data.get("include_fronting", False)),
-            fronting_show_count=bool(v_data.get("fronting_show_count", True)),
-        )
-        db.add(view)
-
-        seen_members: set[uuid.UUID] = set()
-        for old_mid in _as_list(v_data.get("member_ids"))[:_MAX_SHARE_VIEW_ROWS]:
-            member = old_id_to_member.get(str(old_mid))
-            # Drop references whose target did not import, and re-apply the
-            # never-shareable guard rather than trusting the file.
-            if member is None or member.never_shareable or member.id in seen_members:
-                continue
-            seen_members.add(member.id)
-            db.add(
-                ShareViewMember(
-                    id=uuid.uuid4(),
-                    view_id=view.id,
-                    member_id=member.id,
-                    status=ShareItemStatus.ACTIVE.value,
-                    activates_at=None,
-                    created_at=now,
-                )
-            )
-
-        seen_fields: set[uuid.UUID] = set()
-        for old_fid in _as_list(v_data.get("field_ids"))[:_MAX_SHARE_VIEW_ROWS]:
-            field_def = old_field_to_def.get(str(old_fid))
-            if field_def is None or field_def.id in seen_fields:
-                continue
-            seen_fields.add(field_def.id)
-            db.add(
-                ShareViewField(
-                    id=uuid.uuid4(),
-                    view_id=view.id,
-                    field_id=field_def.id,
-                    status=ShareItemStatus.ACTIVE.value,
-                    activates_at=None,
-                    created_at=now,
-                )
-            )
-
-        seen_groups: set[uuid.UUID] = set()
-        for old_gid in _as_list(v_data.get("group_ids"))[:_MAX_SHARE_VIEW_ROWS]:
-            group = old_gid_to_group.get(str(old_gid))
-            if group is None or group.id in seen_groups:
-                continue
-            seen_groups.add(group.id)
-            db.add(
-                ShareViewGroup(
-                    id=uuid.uuid4(),
-                    view_id=view.id,
-                    group_id=group.id,
-                    synced_at=now,
-                    created_at=now,
-                )
-            )
-
-        result.share_views_imported += 1
-
-    if malformed_views:
-        # Aggregated rather than one line per entry: a hostile file can carry
-        # up to _MAX_SHARE_VIEWS of these and the per-entry detail is nil.
-        warnings.append(
-            f"{malformed_views} share view(s) were not JSON objects and were "
-            "skipped."
-        )
 
     await db.flush()
 

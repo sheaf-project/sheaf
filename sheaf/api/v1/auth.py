@@ -88,7 +88,6 @@ from sheaf.observability.metrics import (
 from sheaf.redact import redact_email
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
-    AdultAttestationRead,
     SecondarySessionRequest,
     SecondarySessionResponse,
     TokenRefresh,
@@ -119,7 +118,6 @@ _VALID_SCOPES = {
     "polls:read", "polls:write", "polls:delete",
     "messages:read", "messages:write", "messages:delete",
     "relationships:read", "relationships:write", "relationships:delete",
-    "sharing:read", "sharing:write", "sharing:delete",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
@@ -1791,58 +1789,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         ),
         external_images_allowed=settings.allow_external_images,
         animated_uploads_allowed=animation_allowed(user, settings),
-        public_profiles_enabled=settings.public_profiles_enabled,
-        adult_attested_at=user.adult_attested_at,
     )
-
-
-@router.post("/me/attest-adult", response_model=AdultAttestationRead)
-async def attest_adult(
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> AdultAttestationRead:
-    """Record the account's self-declared "I am 18 or older".
-
-    We store a bare timestamp and nothing else: no date of birth, no identity
-    document. Verifying age is itself a privacy harm for exactly the people
-    this app exists for, so self-declaration is the accepted tradeoff. It
-    gates the creation of share grants (see
-    `sheaf.services.sharing.require_adult_attestation`) and nothing else.
-
-    Idempotent: re-declaring leaves the original timestamp alone. There is no
-    un-attest endpoint - clearing it would not un-publish anything anyway
-    (revoking a grant does that, immediately and ungated).
-
-    Refuses API-key auth: this is a one-way declaration made on the account's
-    behalf that unlocks publishing, so a leaked key must not be able to set
-    it. Same posture as the key-management and account endpoints.
-    """
-    if getattr(request.state, "auth_method", None) == "api_key":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "API keys cannot record the adult attestation. Sign in with "
-                "a session or JWT to declare it."
-            ),
-        )
-
-    if user.adult_attested_at is None:
-        user.adult_attested_at = datetime.now(UTC)
-        await db.commit()
-        await db.refresh(user)
-        # Durable trail: the attestation is irreversible and gates publishing,
-        # so the account needs a record of when and from where it was set.
-        # Best-effort, never raises. Only the transition is recorded - a
-        # no-op re-declaration is not an account state change.
-        await record_security_event(
-            event_type=SecurityEventType.ADULT_ATTESTATION,
-            outcome="success",
-            user_id=user.id,
-            ip=client_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-    return AdultAttestationRead(adult_attested_at=user.adult_attested_at)
 
 
 @router.patch("/me", response_model=UserRead)
@@ -1900,8 +1847,6 @@ async def update_me(
         ),
         external_images_allowed=settings.allow_external_images,
         animated_uploads_allowed=animation_allowed(user, settings),
-        public_profiles_enabled=settings.public_profiles_enabled,
-        adult_attested_at=user.adult_attested_at,
     )
 
 

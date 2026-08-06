@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,13 +21,7 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.share import (
-    ShareGrant,
-    ShareGrantStatus,
-    ShareItemStatus,
-    ShareViewMember,
-)
-from sheaf.models.system import PrivacyLevel, System
+from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
 from sheaf.observability.metrics import tier_label, tier_limit_hits_total
@@ -58,7 +52,6 @@ from sheaf.services.journals import (
 from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
-from sheaf.services.sharing import is_exposure_safeguarded
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -341,30 +334,6 @@ async def get_member(
     )
 
 
-async def _shared_view_memberships(
-    db: AsyncSession, system: System, member_id: uuid.UUID
-) -> list[ShareViewMember]:
-    """This member's rows in views something actually points at.
-
-    The view-side equivalent of `view_is_shared`, from the member's end: a
-    pending grant counts, because it goes live on its own.
-    """
-    result = await db.execute(
-        select(ShareViewMember)
-        .join(ShareGrant, ShareGrant.view_id == ShareViewMember.view_id)
-        .where(
-            ShareViewMember.member_id == member_id,
-            ShareGrant.system_id == system.id,
-            ShareGrant.revoked_at.is_(None),
-            ShareGrant.status.in_(
-                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
-            ),
-        )
-        .distinct()
-    )
-    return list(result.scalars().all())
-
-
 @router.patch(
     "/{member_id}",
     response_model=MemberRead,
@@ -381,31 +350,6 @@ async def update_member(
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db)
     update_data = body.model_dump(exclude_unset=True)
-    # Step-up credentials are not member columns; drop them before anything
-    # iterates the update so they can never be persisted.
-    password = update_data.pop("password", None)
-    totp_code = update_data.pop("totp_code", None)
-
-    # Raising a member to `public` EXPOSES them: if they are already sitting in
-    # a view something points at, the projection would start serving them the
-    # moment this lands. Same rule as the sharing endpoints - re-auth now, and
-    # the exposure itself waits out the grace window (applied below).
-    #
-    # Lowering privacy is the un-exposing direction and stays instant and
-    # ungated. private -> friends is ungated too because the friends tier is
-    # parked and every grant that exists today is public-tier, so it exposes
-    # nothing; when friends lands, this check has to become audience-aware
-    # (a flip to `friends` would then expose to friend grants) alongside the
-    # matching filter in share_projection._active_member_filter.
-    exposing_rows: list[ShareViewMember] = []
-    if (
-        update_data.get("privacy") == PrivacyLevel.PUBLIC
-        and member.privacy != PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
-    ):
-        exposing_rows = await _shared_view_memberships(db, system, member.id)
-        if exposing_rows:
-            await verify_destructive_auth(user, system, password, totp_code, db)
 
     # Same ownership guard as create: a key from another account must not be
     # stored (and later re-signed) here. Filter before the revision-capture
@@ -451,29 +395,6 @@ async def update_member(
                 member.note = encrypt(value, aad=member_note_aad(member.id))
         else:
             setattr(member, key, value)
-
-    # Marking a member never-shareable must enforce it, not just remember it:
-    # pull them out of every share view immediately. The projection query also
-    # filters never_shareable, but leaving stale membership rows around would
-    # be a footgun the first time that filter is ever loosened.
-    if update_data.get("never_shareable") is True:
-        await db.execute(
-            delete(ShareViewMember).where(ShareViewMember.member_id == member.id)
-        )
-        # Nothing left to demote - the rows are gone, which is stricter still.
-        exposing_rows = []
-
-    # The privacy change itself is immediate; the exposure it would cause is
-    # not. Demote the membership rows so the projection keeps hiding this
-    # member until the finalize sweep promotes them, exactly as if they had
-    # just been added to the view.
-    if exposing_rows:
-        activates_at = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
-        for row in exposing_rows:
-            row.status = ShareItemStatus.PENDING.value
-            row.activates_at = activates_at
 
     await db.commit()
     await db.refresh(member)
