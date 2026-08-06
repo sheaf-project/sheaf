@@ -17,6 +17,7 @@ from sheaf.files import (
     sign_file_url,
     verify_file_token,
 )
+from sheaf.markdown_images import iter_markdown_images
 
 
 @pytest.fixture(autouse=True)
@@ -188,6 +189,18 @@ def test_normalize_avatar_url_external_dropped_when_disabled(monkeypatch):
     assert normalize_avatar_url("https://gravatar.com/x.png") is None
 
 
+def test_normalize_avatar_url_malformed_network_url_fails_closed(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+
+    assert normalize_avatar_url("http://[") is None
+
+
+def test_normalize_avatar_url_drops_data_uri():
+    """A data: avatar is not a storage key, so it must not survive as one."""
+    assert normalize_avatar_url("data:image/png;base64,iVBORw0KGgo=") is None
+    assert normalize_avatar_url("DATA:image/png;base64,iVBORw0KGgo=") is None
+
+
 def test_normalize_avatar_url_bare_key_survives_when_external_disabled(monkeypatch):
     """Toggling off external images must not break hosted avatars."""
     monkeypatch.setattr(settings, "allow_external_images", False)
@@ -202,6 +215,32 @@ def test_normalize_description_urls_strips_external_when_disabled(monkeypatch):
     assert "example.com" not in result
     assert result.startswith("Hi ")
     assert result.endswith(" there")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "HTTPS://tracker.example/a.png",
+        "hTtPs://tracker.example/a.png",
+        "//tracker.example/a.png",
+    ],
+)
+def test_normalize_description_urls_cannot_bypass_external_policy_by_url_form(
+    monkeypatch, url
+):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+
+    result = normalize_description_urls(f"before ![pixel]({url}) after")
+
+    assert "tracker.example" not in result
+    assert result == "before  after"
+
+
+def test_normalize_description_urls_treats_data_scheme_as_non_network(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = "![dot](DATA:image/png;base64,iVBORw0KGgo=)"
+
+    assert normalize_description_urls(text) == text
 
 
 def test_normalize_description_urls_preserves_hosted_when_external_disabled(monkeypatch):
@@ -271,6 +310,49 @@ def test_resolve_description_urls_resigns_legacy_cdn_row(monkeypatch):
 def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
     result = resolve_description_urls("![avatar](https://gravatar.com/x.png)")
     assert result == "![avatar](https://gravatar.com/x.png)"
+
+
+def test_resolve_description_urls_leaves_data_uri_alone():
+    """A data: URI carries its own bytes; it is not a bare storage key."""
+    text = "![dot](data:image/png;base64,iVBORw0KGgo=)"
+    assert resolve_description_urls(text) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_alt"),
+    [
+        ("![foo [bar]](/v1/files/bios/u/nested.png)", "foo [bar]"),
+        (r"![foo \] bar](/v1/files/bios/u/escaped.png)", r"foo \] bar"),
+    ],
+)
+def test_resolve_description_urls_uses_commonmark_image_grammar(text, expected_alt):
+    """Alt text with nested or escaped brackets survives the rewrite."""
+    result = resolve_description_urls(text)
+
+    rewritten = list(iter_markdown_images(result))
+    assert len(rewritten) == 1
+    assert rewritten[0].alt == expected_alt
+    assert "token=" in rewritten[0].url
+
+
+def test_resolve_description_urls_signs_hosted_reference_image():
+    """Reference syntax resolves to the same signed URL as the inline form."""
+    text = "![portrait][photo]\n\n[photo]: /v1/files/bios/u/photo.png"
+
+    result = resolve_description_urls(text)
+
+    assert "![portrait](/v1/files/bios/u/photo.png?token=" in result
+
+
+def test_resolve_description_urls_leaves_code_examples_alone():
+    """Code spans and code blocks are prose, not image fetches."""
+    text = (
+        "Inline `![example](/v1/files/bios/u/a.png)`\n\n"
+        "```markdown\n![example](/v1/files/bios/u/b.png)\n```\n\n"
+        "    ![example](/v1/files/bios/u/c.png)\n"
+    )
+
+    assert resolve_description_urls(text) == text
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +455,7 @@ def test_reference_image_expanded_and_kept_when_allowed(monkeypatch):
     monkeypatch.setattr(settings, "allow_external_images", True)
     text = "![art][gallery]\n\n[gallery]: https://images.example/a.png"
     result = normalize_description_urls(text)
-    assert "![art](https://images.example/a.png)" in result
+    assert result == text
 
 
 def test_reference_image_cannot_bypass_url_safety(monkeypatch):
@@ -409,3 +491,37 @@ def test_reference_image_without_definition_left_alone(monkeypatch):
     monkeypatch.setattr(settings, "allow_external_images", False)
     text = "just ![a cat][nope] talking"
     assert normalize_description_urls(text) == text
+
+
+def test_image_like_examples_in_code_are_not_normalized(monkeypatch):
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "Inline `![example](https://tracker.example/inline.png)`\n\n"
+        "```markdown\n![example](https://tracker.example/fenced.png)\n```\n\n"
+        "    ![example](https://tracker.example/indented.png)\n"
+    )
+
+    assert normalize_description_urls(text) == text
+
+
+def test_unmatched_backticks_cannot_hide_image_in_later_paragraph(monkeypatch):
+    """Inline parsing is block-scoped; backticks cannot span blank lines."""
+    monkeypatch.setattr(settings, "allow_external_images", False)
+    text = (
+        "`open\n\n"
+        "![leak](https://tracker.example/cross-paragraph.png)\n\n"
+        "`close"
+    )
+
+    assert normalize_description_urls(text) == "`open\n\n\n\n`close"
+
+
+@pytest.mark.parametrize("line_ending", ["\r", "\r\n"])
+def test_markdown_image_offsets_support_all_commonmark_line_endings(line_ending):
+    text = f"![first{line_ending}second](https://tracker.example/image.png)"
+
+    images = list(iter_markdown_images(text))
+
+    assert len(images) == 1
+    assert text[images[0].start : images[0].end] == text
+    assert images[0].url == "https://tracker.example/image.png"

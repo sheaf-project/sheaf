@@ -4,17 +4,18 @@ Single source of truth for "what counts as an image reference" so file
 cleanup, journal write-time key extraction, and bio revision capture all
 agree.
 
-The actual matching - the markdown image regex plus internal-key resolution -
-lives in ``sheaf.files``. This module reuses it rather than keeping its own,
-narrower matcher: that divergence is what caused the 2026-07-03 orphan-cleanup
-over-deletion. A legacy reference stored as a CDN-hostname URL (e.g.
+CommonMark image discovery lives in ``sheaf.markdown_images`` and storage-key
+resolution lives in ``sheaf.files``. This module reuses both rather than
+keeping a narrower matcher: that divergence is what caused the 2026-07-03
+orphan-cleanup over-deletion. A legacy reference stored as a CDN-hostname URL (e.g.
 ``https://images.sheaf.sh/bios/...``) resolved fine on the serve path (which
 uses ``_to_internal_key``) but slipped past this module's old
 ``![...](/v1/files/...)``-only regex, so the still-referenced blob looked
 orphaned and got reaped.
 """
 
-from sheaf.files import _MD_IMAGE_URL_RE, _to_internal_key
+from sheaf.files import _to_internal_key
+from sheaf.markdown_images import iter_markdown_images
 
 
 def extract_image_keys(text: str | None) -> list[str]:
@@ -31,8 +32,8 @@ def extract_image_keys(text: str | None) -> list[str]:
     if not text:
         return []
     keys: set[str] = set()
-    for match in _MD_IMAGE_URL_RE.finditer(text):
-        key = _to_internal_key(match.group(2))
+    for image in iter_markdown_images(text):
+        key = _to_internal_key(image.url)
         if key is not None:
             keys.add(key)
     return sorted(keys)
