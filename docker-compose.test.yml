@@ -37,9 +37,6 @@ services:
       ALLOW_IMAGE_UPLOADS: "${ALLOW_IMAGE_UPLOADS:-true}"
       ALLOW_BIO_IMAGES: "${ALLOW_BIO_IMAGES:-true}"
       ALLOW_EXTERNAL_IMAGES: "${ALLOW_EXTERNAL_IMAGES:-true}"
-      # Public-profile surface. Off by default (matches prod); the dedicated
-      # public_profiles config row in run_tests.sh flips it on.
-      PUBLIC_PROFILES_ENABLED: "${PUBLIC_PROFILES_ENABLED:-false}"
       # Mobile push: dummy creds in the test stack so channel creation
       # for FCM / APNS_DEV / APNS_PROD passes the feature-flag gate.
       # Real dispatch is mocked in tests.

@@ -1025,8 +1025,6 @@ When disabled:
 
 Regardless of this setting, avatar URLs accepted from imports must be plain `http(s)` - other schemes are dropped.
 
-This setting governs the authenticated app. It has no bearing on public profiles and share links, where an external image is never served at all: the visitor has no account and consented to nothing, so their browser is not made to fetch from a host the profile's owner chose. Bio embeds arrive as a placeholder the page renders as an "external image" label, and an external avatar arrives as null, so the member's initials show instead. Uploaded images are served as normal.
-
 The toggle does not retroactively scrub existing content — it only governs new writes. CSP blocks old references at render time.
 
 ---
@@ -1214,26 +1212,12 @@ sheaf.example.com {
         try_files {path} /index.html
         file_server
         # Sheaf only sets security headers on its own /v1/* responses;
-        # the SPA document is served by Caddy and needs them here. Public
-        # profiles (/p/) and share links (/s/) get their own set: noindex,
-        # and an img-src with no third-party hosts in it. Keep the two
-        # matchers mutually exclusive - `header` sets, so if both matched a
-        # request, whichever handler Caddy ran last would win. `header` is
-        # ordered before try_files, so the matchers see the original path.
-        @profiles path /p/* /s/*
-        @app not path /p/* /s/*
-        header @app {
+        # the SPA document is served by Caddy and needs them here.
+        header {
             X-Frame-Options "DENY"
             X-Content-Type-Options "nosniff"
             Referrer-Policy "no-referrer"
             Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
-        }
-        header @profiles {
-            X-Frame-Options "DENY"
-            X-Content-Type-Options "nosniff"
-            Referrer-Policy "no-referrer"
-            X-Robots-Tag "noindex, nofollow"
-            Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
         }
     }
 }
@@ -1243,24 +1227,6 @@ Caddy terminates TLS automatically and passes `X-Forwarded-Proto=https` to the b
 
 **nginx example:**
 ```nginx
-# Public profiles (/p/) and share links (/s/) are the only pages a crawler can
-# reach; keep them out of search results. An empty value means nginx adds no
-# header at all, so the rest of the app is unaffected. Goes in the http block,
-# alongside the server blocks below. Key off $request_uri, not $uri: try_files
-# rewrites $uri to /index.html for these SPA routes before add_header is
-# evaluated, so a $uri map would never match and the header would go missing.
-map $request_uri $sheaf_robots {
-    default    "";
-    ~^/[ps]/   "noindex, nofollow";
-}
-
-# Those same pages are the ones visitors with no account read, so their img-src
-# allows no third-party host. Same map trick: one add_header, value by path.
-map $request_uri $sheaf_csp {
-    default    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
-    ~^/[ps]/   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
-}
-
 # Redirect plain HTTP to HTTPS
 server {
     listen 80;
@@ -1320,17 +1286,12 @@ server {
         add_header X-Frame-Options "DENY" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "no-referrer" always;
-        add_header Content-Security-Policy $sheaf_csp always;
-        add_header X-Robots-Tag $sheaf_robots always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
     }
 }
 ```
 
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
-
-The examples also send `X-Robots-Tag: noindex, nofollow` for `/p/` and `/s/` (public profiles and share links). Those are the only pages a crawler can reach, since everything else needs a login, and they are meant for sharing with people you gave the link to, not for turning up in search results. The pages set a `robots` meta tag themselves as well; the header covers a crawler that indexes on headers alone without running the app.
-
-Those same two paths get a tighter `img-src` (`'self' data:`, dropping `https:` and `blob:`). They are read by visitors with no account, and Sheaf never sends them an external image URL: it withholds it, so a visitor's browser is never made to fetch from a host the profile's owner picked, which would hand that host the visitor's address on every view. The narrower policy is the backstop - if a bug ever let such a URL through, the browser refuses the fetch and the visitor sees a broken image rather than being quietly announced.
 
 **Streaming endpoints (SSE).** The realtime front-change stream (`GET /v1/fronts/stream`, Server-Sent Events) needs your proxy to forward each event as it arrives rather than buffering the response - otherwise clients (Home Assistant, Node-RED) stall for seconds on connect before the first event. The examples above disable buffering for that path (`proxy_buffering off` for nginx, `flush_interval -1` for Caddy). The app also sends `X-Accel-Buffering: no`, which nginx honours to disable buffering per-response, but Caddy and some other proxies ignore it, so set it explicitly for whatever proxy you run. For Traefik, HAProxy, or others, disable response buffering (enable streaming/flush) for that route, and make sure the route is not gzipped - compressing a live stream re-buffers it. A revoked or expired key drops its stream on its own, so the long read timeout in the nginx example is just to stop an idle-looking (but heartbeating) connection being cut.
 

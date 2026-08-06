@@ -257,7 +257,6 @@ tuple), plus the lineage chain.
 | `watch_tokens` | Notification watch tokens / channels; await a notifications/export module. |
 | `uploaded_files` | The sync JSON's file inventory (no bytes); meaningless without the async zip but kept so nothing is silently dropped. |
 | `relationship_types`, `member_relationships`, `group_relationships` | v0.1 has no relationship core record. NB these ride the `extensions.sheaf.*` passthrough, not the reserved top-level `relationships` key (which carries foreign preserved modules). |
-| `share_views` | v0.1 has no sharing/visibility module. Views only: share **grants** are never written to a portable file, so a restored view is curated but exposed to nobody. |
 | `lineage` | Provenance chain (see Provenance and lineage above). |
 
 On import these are read straight back: messages prefer the `boards` module shape

@@ -137,8 +137,6 @@ def _base_counts(job: ImportJob, base) -> None:
         member_relationships_skipped=base.member_relationships_skipped,
         group_relationships_imported=base.group_relationships_imported,
         group_relationships_skipped=base.group_relationships_skipped,
-        share_views_imported=base.share_views_imported,
-        share_views_skipped=base.share_views_skipped,
     )
 
 

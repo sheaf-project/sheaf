@@ -30,11 +30,9 @@ from sheaf.api.v1 import (
     pluralspace_import,
     polls,
     prism_import,
-    public_profiles,
     relationships,
     reminders,
     retention,
-    sharing,
     sheaf_import,
     shield_mode,
     sp_import,
@@ -138,18 +136,9 @@ v1_router.include_router(
     dependencies=[Depends(require_scope("system:read"))],
 )
 v1_router.include_router(
-    sharing.router,
-    dependencies=[Depends(require_scope("sharing:read"))],
-)
-v1_router.include_router(
     export.router,
     dependencies=[Depends(require_scope("export:read"))],
 )
-
-# Public profiles: anonymous read surface. NO require_scope - there is no
-# caller to authenticate. Its own per-IP rate limit and a fail-closed
-# projection are the controls. 404s wholesale when the feature is disabled.
-v1_router.include_router(public_profiles.router)
 
 # Files: upload gated by members:write (used for avatars/bios); serve is public
 v1_router.include_router(files.router)

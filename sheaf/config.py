@@ -250,19 +250,6 @@ class Settings(BaseSettings):
     pinned_revision_max_per_target_plus: int = 5
     pinned_revision_max_per_target_selfhosted: int = 10
 
-    # Master switch for the public-profile / share-link surface. Default OFF:
-    # an instance that never wants an anonymous read surface never has one
-    # (the public router 404s wholesale). Also lets the backend ship dark and
-    # be flipped on once the web UI lands.
-    public_profiles_enabled: bool = False
-
-    # Per-system ceilings on the sharing surface. Not a tier product limit:
-    # they bound how much an account can accumulate on a surface that is
-    # anonymously readable and whose audit page has to stay comprehensible.
-    # Well above any plausible real use; raise them if a self-hoster needs to.
-    share_views_max: int = 100
-    share_grants_max: int = 100
-
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True

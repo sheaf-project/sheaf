@@ -153,28 +153,6 @@ def test_email_change_step_up_recorded(admin_client: httpx.Client):
     assert "success" in outcomes
 
 
-def test_adult_attestation_recorded(admin_client: httpx.Client):
-    # The 18+ attestation is one-way and unlocks share grants, so the account
-    # gets a durable record of when it was set and from where. Only the
-    # transition is recorded - re-declaring changes nothing.
-    email = f"sec-attest-{uuid.uuid4().hex[:8]}@sheaf.dev"
-    with httpx.Client(base_url=BASE_URL) as c:
-        reg = c.post(
-            "/v1/auth/register", json={"email": email, "password": PASSWORD}
-        )
-        assert reg.status_code == 201, reg.text
-        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
-        assert c.post("/v1/auth/me/attest-adult").status_code == 200
-        assert c.post("/v1/auth/me/attest-adult").status_code == 200
-
-    uid = _find_user_id(admin_client, email)
-    events = _timeline(admin_client, uid)
-    attestations = [e for e in events if e["event_type"] == "adult_attestation"]
-    assert len(attestations) == 1, attestations
-    assert attestations[0]["outcome"] == "success"
-    assert attestations[0]["ip"]
-
-
 def test_api_key_export_recorded(admin_client: httpx.Client):
     """Exporting with an API key stays allowed - scripted backups are a
     sanctioned use case - but each one leaves a row, which is what makes a

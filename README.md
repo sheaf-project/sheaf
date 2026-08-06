@@ -279,7 +279,7 @@ Shipped items are listed here for context; the [CHANGELOG](CHANGELOG.md) has the
 - [x] Account activity log
 - [x] Global display-timezone preference
 - [ ] Friend/trust system (cross-system visibility controls)
-- [ ] Public profiles and share links - curated views plus revocable/rotatable grants (landed behind `PUBLIC_PROFILES_ENABLED`, not yet in a tagged release)
+- [ ] Public profiles and share links - curated views plus revocable/rotatable grants
 - [ ] Per-field-per-member privacy overrides
 - [x] Storage quotas (per-tier account-wide budget)
 - [x] Orphaned file cleanup (images uploaded but never attached to a member/system)

@@ -134,15 +134,12 @@ DISPOSITION: dict[str, dict[str, object]] = {
     # nothing to give an OpenPlural disposition. The empty dict records that
     # deliberately (an empty exported set maps to no dispositions).
     "User": {},
-    # Share views ride the same file-level extensions.sheaf.share_views
-    # passthrough (OpenPlural v0.1 has no sharing/visibility module).
-    "ShareView": "_all_ext",
-    "ShareViewMember": "_all_ext",
-    "ShareViewField": "_all_ext",
-    "ShareViewGroup": "_all_ext",
-    # Share GRANTS export nothing at all (see the native CLASSIFICATION): a
-    # grant is a live capability, so it is never written to a portable file
-    # and can never be restored from one. Empty disposition, nothing to map.
+    # The share tables are dormant and export nothing (see the native
+    # CLASSIFICATION), so there is no column to give a disposition.
+    "ShareView": {},
+    "ShareViewMember": {},
+    "ShareViewField": {},
+    "ShareViewGroup": {},
     "ShareGrant": {},
 }
 

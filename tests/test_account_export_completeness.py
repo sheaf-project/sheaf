@@ -111,7 +111,6 @@ def test_account_data_succeeds_with_correct_password(auth_client: httpx.Client):
         "api_keys",
         "client_settings",
         "pending_safety_actions",
-        "share_grants",
         "receiving_notification_channels",
     ):
         assert k in body

@@ -63,14 +63,6 @@ class MemberUpdate(BaseModel):
     never_shareable: bool | None = None
     fronting_private: bool | None = None
 
-    # Step-up credentials, only consulted when the edit is a deferred exposure
-    # (flipping a member who sits in a shared view to `public` while the
-    # profile_visibility safety category is armed). Never stored on the member.
-    password: str | None = Field(
-        default=None, description="Required when the change is deferred"
-    )
-    totp_code: str | None = None
-
     @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:

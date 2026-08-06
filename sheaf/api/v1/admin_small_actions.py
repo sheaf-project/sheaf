@@ -897,7 +897,6 @@ async def export_user_dossier(
     from sheaf.models.message import Message
     from sheaf.models.poll import Poll
     from sheaf.models.reminder import Reminder
-    from sheaf.models.share import ShareGrant, ShareView
     from sheaf.models.tag import Tag
     from sheaf.models.trusted_device import TrustedDevice
     from sheaf.models.uploaded_file import UploadedFile
@@ -946,16 +945,6 @@ async def export_user_dossier(
             ),
             "watch_tokens": await _count(
                 WatchToken, WatchToken.system_id == system.id,
-            ),
-            # Counts only: a grant's note and its view's name are labels the
-            # owner wrote, and the dossier keeps owner-authored content out
-            # of admin hands. The user's own Article 15 bundle has the full
-            # grant metadata.
-            "share_views": await _count(
-                ShareView, ShareView.system_id == system.id,
-            ),
-            "share_grants": await _count(
-                ShareGrant, ShareGrant.system_id == system.id,
             ),
             "uploaded_files": await _count(
                 UploadedFile, UploadedFile.user_id == user_id,

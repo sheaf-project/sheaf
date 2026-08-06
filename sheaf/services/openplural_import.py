@@ -439,9 +439,6 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
     native["relationship_types"] = file_ext.get("relationship_types") or []
     native["member_relationships"] = file_ext.get("member_relationships") or []
     native["group_relationships"] = file_ext.get("group_relationships") or []
-    # Share views only; grants are never written to a file, so a restored
-    # view comes back curated but exposed to nobody (see sheaf_import).
-    native["share_views"] = file_ext.get("share_views") or []
 
     return native
 

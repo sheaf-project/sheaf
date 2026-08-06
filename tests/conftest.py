@@ -28,9 +28,6 @@ _BIO_UPLOADS_DISABLED = os.environ.get("SHEAF_TEST_BIO_UPLOADS_DISABLED", "false
 _EXTERNAL_IMAGES_DISABLED = (
     os.environ.get("SHEAF_TEST_EXTERNAL_IMAGES_DISABLED", "false").lower() == "true"
 )
-_PUBLIC_PROFILES = (
-    os.environ.get("SHEAF_TEST_PUBLIC_PROFILES", "false").lower() == "true"
-)
 
 
 def pytest_collection_modifyitems(items):
@@ -51,8 +48,6 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_BIO_UPLOADS_DISABLED=true"))
         if "external_images_disabled" in item.keywords and not _EXTERNAL_IMAGES_DISABLED:
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_EXTERNAL_IMAGES_DISABLED=true"))
-        if "public_profiles" in item.keywords and not _PUBLIC_PROFILES:
-            item.add_marker(pytest.mark.skip("requires SHEAF_TEST_PUBLIC_PROFILES=true"))
 
 
 @pytest.fixture
