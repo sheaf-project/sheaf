@@ -6,13 +6,9 @@
 
 Sheaf is an open-source plural system tracker. It lets you track members, switches (fronting), groups, custom fields, and more. It's a self-hostable replacement for SimplyPlural.
 
-### Why does Sheaf exist?
-
-[Simply Plural is shutting down](https://apparyllis.com/simply-plural-will-be-discontinued/). The alternatives that appeared are either closed-source, local-only, or don't have credible infrastructure behind them. Sheaf is built by people who make a living running large-scale systems and shipping production-quality code, with a focus on doing it properly and not sacrificing feature-compatibility for ease-of-implementation.
-
 ### Is Sheaf free?
 
-Yes. Sheaf is free and open-source software under the AGPL-3.0 license. You can self-host it at no cost. There may be a hosted option in the future with a free tier and a paid tier — the paid tier would fund development and infrastructure, not gate core features behind a paywall.
+Yes. Sheaf is free and open-source software under the AGPL-3.0 license. You can self-host it at no cost. There is also a hosted service, which will always be free for all its features - if a paid tier launched, this would fund development and infrastructure, and provide benefits such as increased storage limits, not gating core features behind a paywall.
 
 ### Can I import my SimplyPlural data?
 
@@ -33,7 +29,7 @@ We currently support imports from:
 * Tupperbox
 * Octocon and compatible forks
 * Plural Space
-* Prism Pluram
+* Prism Plural
 
 ### Does Sheaf have mobile apps?
 
@@ -111,7 +107,7 @@ Sheaf treats all system data as GDPR Article 9 special category data (data conce
 
 One-shot import is supported today (file upload or live API via `pk;token`). Bidirectional sync (pushing switches to PK and/or continuously pulling from PK with conflict resolution) is on the roadmap as a follow-up; it needs careful design work around foreign-ID tracking and merge semantics.
 
-## Contributing
+## Development and Contributing
 
 ### Can I contribute?
 
@@ -122,6 +118,30 @@ Yes! See [CONTRIBUTING.md](CONTRIBUTING.md). We welcome code contributions, bug 
 At this time, probably the web UI and mobile apps, although PRs are welcome for all aspects. If you can not contribute code, bug reports and feedback are also welcome.
 
 If you speak a language other than English and are willing to discuss your background with the language (just as a basic quality filter) and commit to what we will admit is sometimes difficult and repetitive work but with a real impact, register your interest in translating Sheaf #i18n-translation on the Discord server or in GitHub discussions. i18n work represents a significant expenditure of our energy and time in a domain of software engineering we have never worked in before, where we will likely need to seek outside assistance, so we want to make 100% sure that we have enough people committed to working on it to make it worth our time.
+
+### Does Sheaf use AI/LLM-assisted development?
+
+Yes. We use LLMs primarily as a productivity aid, never as a replacement for our own effort. We never treat LLM output as authoritative; anything generated is reviewed, understood, tested, and reworked as needed before it reaches a build. The same standards apply to documentation. We do not like to use the term "human" as many such FAQ entries do, as we find such terminology exclusionary towards other idenities, but the effect is the same - the person or system who submits or publishes the code is in all cases fully accountable for it, and the project maintainers are for all overarching decisions as a whole.
+
+In practice that means we never commit or merge code we couldn't explain or debug ourselves. All changes regardless of origin go through the same test suite and internal review process, including comprehensive unit and regression testing and security analysis.
+
+Sheaf's architecture, data model, privacy design, and security decisions are ours - LLMs are used for review and exploration, but never to make critical design decisions. We do use LLMs for creating test plans, executing predefined workflows such as creating releases, and assisting in debugging dev builds, but in all cases, these need hands/paws/etc-on-keyboard for review and approval before anything is confirmed. For documentation and ancillary text such as commit messages and pull requests, we always start from our own understanding and use them as a *refinement*, so that someone not familiar with the project can follow our work more easily, and so months down the road so can *we*.
+
+All maintainers work to the same accountability standard described above, and individual maintainers can speak to their own workflows in more detail.
+
+As with any open source, you don't have to take our word for any of this; you can read the source code and check for yourself. We have been developing software for many years before LLMs existed, have seen what bad LLM-generated code looks like, we know what productivity-enhancing tool use looks like, and have no interest in ever weakening our standards for the sake of convenience or to ship a new feature faster.
+
+### Does Sheaf include any user-facing or internal generative features?
+
+No, and we are not interested in shipping any in the core product. If you do want such features and wish to integrate Sheaf with an agent or similar workflow *yourself*, we will never *prevent* you from doing so, and we provide the same full API to custom software as available to the official clients, but we are not planning to create such features ourselves.
+
+### Can you tell us what proportion of the code is AI-generated?
+
+No. Code that starts as generated output gets reviewed, rewritten, refactored, partially reverted and merged into code written at different times; git history doesn't record or track such data, so any percentage we published would be an estimate or guess rather than anything backed by data. We'd rather tell you what our process and accountability actually are than attach unverifiable claims, for all the reasons outlined above.
+
+### Do you have a formal policy for LLM use in pull requests or issues?
+
+Not currently. Our standard would be based on our assessment of the submitter's understanding of their code or writeup. A generated-looking pull request or issue description may invite a request for the submitter to explain it *in their own words*, particularly if it would represent a heavy time investment for us to review or attempt to reproduce, but we do not currently receive sufficient volume of either to spend the time and energy on a formal policy here. This will be reassessed if this situation changes.
 
 ## Terminology
 
