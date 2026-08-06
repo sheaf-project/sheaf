@@ -130,6 +130,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_limits import ClampReport, clamp_str
@@ -501,9 +502,18 @@ async def run_import(
     # updated) so every later section attributes to the right member.
     ps_id_to_handle: dict[str, _MemberHandle] = {}
     for member, ps_id, plaintext_name, source in candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_name:
+            result.members_privacy_skipped += 1
+            result.warnings.append(
+                privacy_hold_warning(resolution.privacy_held_name)
+            )
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1

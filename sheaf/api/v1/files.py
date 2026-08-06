@@ -493,6 +493,14 @@ def _media_response(
 
 public_serve_router = APIRouter(prefix="/public/files", tags=["public profiles"])
 
+# Per-IP throttle for the anonymous media route, in its own fixed bucket. The
+# fixed name means neither the key path nor the HMAC capability in the query
+# string can mint a fresh quota or end up inside a Redis key. The ceiling is
+# well above the public-profile page limit because images fan out: one profile
+# view can pull an avatar, a banner and every image embedded in a bio, and a
+# caching proxy re-fetches them all once its TTL lapses.
+_PUBLIC_FILE_RATE = rate_limit(300, 60, bucket="public_files")
+
 
 def _canonical_public_file_request(
     request: Request,
@@ -521,7 +529,7 @@ def _canonical_public_file_request(
     return request.scope.get("raw_path") == canonical_path
 
 
-@public_serve_router.get("/{path:path}")
+@public_serve_router.get("/{path:path}", dependencies=[_PUBLIC_FILE_RATE])
 async def serve_public_file(
     path: str,
     request: Request,

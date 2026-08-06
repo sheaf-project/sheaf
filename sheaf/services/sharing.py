@@ -155,6 +155,30 @@ async def view_is_shared(db: AsyncSession, view_id: uuid.UUID) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def shared_view_memberships(
+    db: AsyncSession, system: System, member_id: uuid.UUID
+) -> list[ShareViewMember]:
+    """This member's rows in views something actually points at.
+
+    The view-side equivalent of `view_is_shared`, from the member's end: a
+    pending grant counts, because it goes live on its own.
+    """
+    result = await db.execute(
+        select(ShareViewMember)
+        .join(ShareGrant, ShareGrant.view_id == ShareViewMember.view_id)
+        .where(
+            ShareViewMember.member_id == member_id,
+            ShareGrant.system_id == system.id,
+            ShareGrant.revoked_at.is_(None),
+            ShareGrant.status.in_(
+                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
+            ),
+        )
+        .distinct()
+    )
+    return list(result.scalars().all())
+
+
 async def fronting_guard_release_exposes(
     db: AsyncSession,
     system_id: uuid.UUID,

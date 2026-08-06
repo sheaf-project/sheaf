@@ -92,6 +92,7 @@ async def handle_simplyplural_file(job: ImportJob, db: AsyncSession) -> None:
         custom_fronts_imported=result.custom_fronts_imported,
         members_skipped=result.members_skipped,
         members_updated=result.members_updated,
+        members_privacy_skipped=result.members_privacy_skipped,
         fronts_imported=result.fronts_imported,
         fronts_skipped=result.fronts_skipped,
         groups_imported=result.groups_imported,

@@ -29,6 +29,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_limits import ClampReport, enforce_import_row_caps
@@ -160,9 +161,22 @@ async def _process_pk_export(
 
     hid_to_member: dict[str, Member] = {}
     for member, hid in candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=options.conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=options.conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_name:
+            update_counts(job, members_privacy_skipped=1)
+            append_event(
+                job,
+                level="warning",
+                stage="members",
+                message=privacy_hold_warning(resolution.privacy_held_name),
+                record_ref=hid or None,
+            )
         if resolution.disposition == "created":
             db.add(resolution.member)
             update_counts(job, members_imported=1)

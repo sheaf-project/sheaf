@@ -66,6 +66,7 @@ async def handle_tupperbox_file(job: ImportJob, db: AsyncSession) -> None:
         members_imported=result.members_imported,
         members_skipped=result.members_skipped,
         members_updated=result.members_updated,
+        members_privacy_skipped=result.members_privacy_skipped,
         groups_imported=result.groups_imported,
         groups_skipped=result.groups_skipped,
     )

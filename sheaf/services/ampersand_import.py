@@ -82,6 +82,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_limits import ClampReport, clamp_str
@@ -346,7 +347,16 @@ async def run_import(
     amp_id_to_member: dict[str, Member] = {}
     created_member_ids: set[uuid.UUID] = set()
     for member, amp_m in member_candidates:
-        resolution = resolve_member(member, index=index, strategy=options.conflict_strategy)
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=options.conflict_strategy,
+            db=db,
+            system=system,
+        )
+        if resolution.privacy_held_name:
+            result.members_privacy_skipped += 1
+            warnings.append(privacy_hold_warning(resolution.privacy_held_name))
         amp_id = _coerce_str(amp_m.get("uuid")) or ""
         if resolution.disposition == "created":
             db.add(resolution.member)

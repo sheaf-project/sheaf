@@ -111,6 +111,7 @@ def _base_counts(job: ImportJob, base) -> None:
         members_imported=base.members_imported,
         members_skipped=base.members_skipped,
         members_updated=base.members_updated,
+        members_privacy_skipped=base.members_privacy_skipped,
         fronts_imported=base.fronts_imported,
         fronts_skipped=base.fronts_skipped,
         groups_imported=base.groups_imported,

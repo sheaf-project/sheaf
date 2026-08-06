@@ -92,6 +92,10 @@ class PluralspaceImportResult(BaseModel):
     # fronts) that matched an existing row instead of being created.
     members_skipped: int = 0
     members_updated: int = 0
+    # Members whose privacy the file raised to public but the import kept as
+    # it was, because publishing an already-shared member needs step-up
+    # re-auth an import job cannot ask for.
+    members_privacy_skipped: int = 0
     avatars_imported: int = 0
     tags_imported: int = 0
     groups_imported: int = 0

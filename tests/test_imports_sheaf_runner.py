@@ -34,11 +34,16 @@ _SHEAF_EXPORT = {
 }
 
 
-def _post_file(client: httpx.Client, *, payload: bytes) -> dict:
+def _post_file(
+    client: httpx.Client, *, payload: bytes, options: dict | None = None
+) -> dict:
+    form = {"source": "sheaf_file", "idempotency_key": str(uuid.uuid4())}
+    if options is not None:
+        form["options"] = json.dumps(options)
     resp = client.post(
         "/v1/imports/file",
         files={"file": ("sheaf.json", payload, "application/json")},
-        data={"source": "sheaf_file", "idempotency_key": str(uuid.uuid4())},
+        data=form,
     )
     assert resp.status_code == 202, resp.text
     return resp.json()
@@ -1066,3 +1071,163 @@ def test_sheaf_runner_clamps_concurrent_open_polls(auth_client: httpx.Client):
     # Non-destructive: every imported poll kept its single vote, closed or not.
     assert len(imported) == n
     assert all(p["total_votes"] == 1 for p in imported), imported
+
+
+# --- The UPDATE-strategy privacy gate --------------------------------------
+
+
+def _seed_roster(client: httpx.Client) -> dict:
+    """Import the base export once and return ReAlice's member row."""
+    job = _post_file(client, payload=json.dumps(_SHEAF_EXPORT).encode())
+    drive_import_runner()
+    assert wait_for_terminal(client, job["id"])["status"] == "complete"
+    alice = next(
+        m for m in client.get("/v1/members").json() if m["name"] == "ReAlice"
+    )
+    assert alice["privacy"] == "private"
+    return alice
+
+
+def _arm_visibility_safety(client: httpx.Client) -> None:
+    resp = client.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 7,
+            "applies_to_profile_visibility": True,
+            "auth_tier": "password",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _raise_to_public(member_id: str) -> bytes:
+    """The base export with ReAlice flipped to public and re-pronouned."""
+    export = json.loads(json.dumps(_SHEAF_EXPORT))
+    for m in export["members"]:
+        if m["id"] == member_id:
+            m["privacy"] = "public"
+            m["pronouns"] = "they/them"
+    return json.dumps(export).encode()
+
+
+def test_sheaf_runner_update_will_not_publish_a_shared_member(
+    auth_client: httpx.Client,
+):
+    """An import job has no step-up channel, so UPDATE must not do what
+    PATCH /v1/members refuses without one: raise an already-shared member to
+    public. The raise is dropped, the rest of the update still lands, and the
+    report names who was held back."""
+    alice = _seed_roster(auth_client)
+
+    # Put her in a view a live grant points at, THEN arm the safety net, so
+    # the exposure is already in place when the import runs.
+    assert auth_client.post("/v1/auth/me/attest-adult").status_code == 200
+    view = auth_client.post("/v1/share-views", json={"name": "Shared"})
+    assert view.status_code == 201, view.text
+    vid = view.json()["id"]
+    added = auth_client.post(
+        f"/v1/share-views/{vid}/members", json={"member_id": alice["id"]}
+    )
+    assert added.status_code == 200, added.text
+    grant = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    assert grant.status_code == 201, grant.text
+    _arm_visibility_safety(auth_client)
+
+    job = _post_file(
+        auth_client,
+        payload=_raise_to_public("m1"),
+        options={"conflict_strategy": "update"},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["counts"]["members_privacy_skipped"] == 1, final["counts"]
+    assert final["counts"]["members_updated"] == 2, final["counts"]
+
+    after = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "ReAlice"
+    )
+    assert after["privacy"] == "private"      # the raise was withheld
+    assert after["pronouns"] == "they/them"   # the rest of the update applied
+
+    held = [e for e in final["events"] if "ReAlice" in e["message"]]
+    assert held, final["events"]
+    assert held[0]["level"] == "warning", held
+
+
+def test_sheaf_runner_update_publishes_when_no_grant_can_see_them(
+    auth_client: httpx.Client,
+):
+    """The same raise on a member nothing points at exposes nobody, so it is
+    applied. Safety armed, but no view and no grant."""
+    _seed_roster(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    job = _post_file(
+        auth_client,
+        payload=_raise_to_public("m1"),
+        options={"conflict_strategy": "update"},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["counts"].get("members_privacy_skipped", 0) == 0, final["counts"]
+
+    after = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "ReAlice"
+    )
+    assert after["privacy"] == "public"
+
+
+def test_sheaf_runner_update_never_gates_lowering_privacy(
+    auth_client: httpx.Client,
+):
+    """Lowering is the un-exposing direction: it applies even to a member
+    sitting in a shared view with the safety net armed."""
+    alice = _seed_roster(auth_client)
+    assert (
+        auth_client.patch(
+            f"/v1/members/{alice['id']}", json={"privacy": "public"}
+        ).status_code
+        == 200
+    )
+    assert auth_client.post("/v1/auth/me/attest-adult").status_code == 200
+    vid = auth_client.post("/v1/share-views", json={"name": "Shared"}).json()["id"]
+    assert (
+        auth_client.post(
+            f"/v1/share-views/{vid}/members", json={"member_id": alice["id"]}
+        ).status_code
+        == 200
+    )
+    assert (
+        auth_client.post(
+            "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+        ).status_code
+        == 201
+    )
+    _arm_visibility_safety(auth_client)
+
+    # The base export carries no privacy for ReAlice, so spell out the drop.
+    export = json.loads(json.dumps(_SHEAF_EXPORT))
+    for m in export["members"]:
+        if m["id"] == "m1":
+            m["privacy"] = "private"
+    job = _post_file(
+        auth_client,
+        payload=json.dumps(export).encode(),
+        options={"conflict_strategy": "update"},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["counts"].get("members_privacy_skipped", 0) == 0, final["counts"]
+
+    after = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "ReAlice"
+    )
+    assert after["privacy"] == "private"

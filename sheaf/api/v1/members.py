@@ -21,12 +21,7 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.share import (
-    ShareGrant,
-    ShareGrantStatus,
-    ShareItemStatus,
-    ShareViewMember,
-)
+from sheaf.models.share import ShareItemStatus, ShareViewMember
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
@@ -61,6 +56,7 @@ from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.sharing import (
     fronting_guard_release_exposes,
     is_exposure_safeguarded,
+    shared_view_memberships,
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
@@ -351,30 +347,6 @@ async def get_member(
     )
 
 
-async def _shared_view_memberships(
-    db: AsyncSession, system: System, member_id: uuid.UUID
-) -> list[ShareViewMember]:
-    """This member's rows in views something actually points at.
-
-    The view-side equivalent of `view_is_shared`, from the member's end: a
-    pending grant counts, because it goes live on its own.
-    """
-    result = await db.execute(
-        select(ShareViewMember)
-        .join(ShareGrant, ShareGrant.view_id == ShareViewMember.view_id)
-        .where(
-            ShareViewMember.member_id == member_id,
-            ShareGrant.system_id == system.id,
-            ShareGrant.revoked_at.is_(None),
-            ShareGrant.status.in_(
-                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
-            ),
-        )
-        .distinct()
-    )
-    return list(result.scalars().all())
-
-
 @router.patch(
     "/{member_id}",
     response_model=MemberRead,
@@ -406,14 +378,15 @@ async def update_member(
     # parked and every grant that exists today is public-tier, so it exposes
     # nothing; when friends lands, this check has to become audience-aware
     # (a flip to `friends` would then expose to friend grants) alongside the
-    # matching filter in share_projection._active_member_filter.
+    # matching filter in share_projection._active_member_filter and the same
+    # test in import_dedup._privacy_raise_exposes.
     exposing_rows: list[ShareViewMember] = []
     if (
         update_data.get("privacy") == PrivacyLevel.PUBLIC
         and member.privacy != PrivacyLevel.PUBLIC
         and is_exposure_safeguarded(system)
     ):
-        exposing_rows = await _shared_view_memberships(db, system, member.id)
+        exposing_rows = await shared_view_memberships(db, system, member.id)
 
     # Releasing the dedicated fronting guard is another exposing direction.
     # Active and pending paths both count: this request receives a fresh full

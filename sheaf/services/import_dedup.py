@@ -27,11 +27,22 @@ Strategies:
 - UPDATE: an existing match's importable fields are overwritten from the
   candidate.
 
-The caller is responsible for two things based on the disposition:
+One field UPDATE cannot overwrite freely is `privacy`. Raising an
+existing member to `public` PUBLISHES them if they already sit in a share
+view a grant points at, and the members API only allows that flip behind
+step-up re-auth plus a grace window. A job has no step-up channel, so an
+import must not do what the API refuses: the raise is applied only when
+it exposes nothing, and otherwise the existing value stands and the
+member is named in the job report (`Resolution.privacy_held_name`).
+Lowering is the un-exposing direction and stays ungated, and a CREATE is
+in no view yet, so neither is gated.
+
+The caller is responsible for three things based on the disposition:
   * db.add() the candidate ONLY when disposition == "created";
   * use the returned member in its source-id -> member map either way,
     so downstream sections (fronts, groups, custom fields) link to the
-    right row whether it was created, skipped, or updated.
+    right row whether it was created, skipped, or updated;
+  * count and report `privacy_held_name` when it is set.
 """
 
 from __future__ import annotations
@@ -50,6 +61,8 @@ from sheaf.encrypted_fields import (
     member_note_aad,
 )
 from sheaf.models.member import Member
+from sheaf.models.system import PrivacyLevel, System
+from sheaf.services.sharing import is_exposure_safeguarded, shared_view_memberships
 
 
 class ImportConflictStrategy(enum.StrEnum):
@@ -65,8 +78,10 @@ class ImportConflictStrategy(enum.StrEnum):
 # leave it None on the candidate (relying on the column server-default),
 # which would null out the existing row's NOT NULL column. The encrypted
 # `name` is handled separately (see `_ENCRYPTED_ALWAYS`); `name_hash` is a
-# blind index (not encrypted) and is copied verbatim.
-_ALWAYS_OVERWRITE = ("name_hash", "privacy")
+# blind index (not encrypted) and is copied verbatim. `privacy` is handled
+# separately too, because raising it can publish the member (see
+# `_privacy_raise_exposes`).
+_ALWAYS_OVERWRITE = ("name_hash",)
 # Optional plaintext fields: UPDATE overwrites only when the candidate
 # carries a value, so a re-import never nulls a field the source format
 # doesn't model (e.g. PluralKit has no emoji, so a PK update must not wipe
@@ -146,6 +161,20 @@ async def load_member_match_index(
 class Resolution:
     member: Member
     disposition: str  # "created" | "skipped" | "updated"
+    # The member's plaintext name when UPDATE declined to raise their privacy
+    # to public, else None. Callers count it and name the member in the job
+    # report so a withheld flip is never silent.
+    privacy_held_name: str | None = None
+
+
+def privacy_hold_warning(name: str) -> str:
+    """The report line for a privacy raise an import declined to apply."""
+    return (
+        f"Kept member '{name}' at their current privacy setting - the file "
+        "makes them public and they are already in a shared view, so "
+        "publishing them needs re-authentication. Change it from the members "
+        "page if that is what you want."
+    )
 
 
 def _rebind(ciphertext: str, src_aad: bytes, dst_aad: bytes) -> str:
@@ -156,9 +185,36 @@ def _rebind(ciphertext: str, src_aad: bytes, dst_aad: bytes) -> str:
     return encrypt(decrypt(ciphertext, aad=src_aad), aad=dst_aad)
 
 
-def _apply_update(existing: Member, candidate: Member) -> None:
+async def _privacy_raise_exposes(
+    db: AsyncSession, system: System, existing: Member, candidate: Member
+) -> bool:
+    """Whether taking the candidate's privacy would publish the existing row.
+
+    Only the raise to `public` can expose: lowering takes the member off the
+    public surface and an equal value moves nothing. A raise on a system whose
+    safety net does not cover profile visibility, or on a member no live or
+    pending grant can reach, exposes nobody and stays ungated - the same
+    conditions PATCH /v1/members uses before it demands step-up re-auth, and
+    the same place the parked friends tier will need an audience-aware test.
+    """
+    if (
+        candidate.privacy != PrivacyLevel.PUBLIC
+        or existing.privacy == PrivacyLevel.PUBLIC
+        or not is_exposure_safeguarded(system)
+    ):
+        return False
+    return bool(await shared_view_memberships(db, system, existing.id))
+
+
+def _apply_update(
+    existing: Member, candidate: Member, *, apply_privacy: bool
+) -> None:
     for fld in _ALWAYS_OVERWRITE:
         setattr(existing, fld, getattr(candidate, fld))
+    # Not every source format models privacy, so a candidate that carries no
+    # value leaves the existing setting alone rather than nulling the column.
+    if apply_privacy and candidate.privacy is not None:
+        existing.privacy = candidate.privacy
     for fld in _OVERWRITE_IF_SET:
         val = getattr(candidate, fld, None)
         if val is not None:
@@ -185,16 +241,20 @@ def _apply_update(existing: Member, candidate: Member) -> None:
             )
 
 
-def resolve_member(
+async def resolve_member(
     candidate: Member,
     *,
     index: MemberMatchIndex,
     strategy: ImportConflictStrategy,
+    db: AsyncSession,
+    system: System,
 ) -> Resolution:
     """Decide how a freshly-built candidate relates to existing members.
 
     On "created" the candidate is registered in the index so a later
-    intra-import row with the same key dedups against it too.
+    intra-import row with the same key dedups against it too. UPDATE hits the
+    DB only when the file would raise a matched member to public, which is the
+    one overwrite that can publish somebody.
     """
     if strategy == ImportConflictStrategy.CREATE:
         return Resolution(candidate, "created")
@@ -208,8 +268,19 @@ def resolve_member(
         return Resolution(candidate, "created")
     if strategy == ImportConflictStrategy.SKIP:
         return Resolution(existing, "skipped")
-    _apply_update(existing, candidate)
-    return Resolution(existing, "updated")
+    exposes = await _privacy_raise_exposes(db, system, existing, candidate)
+    _apply_update(existing, candidate, apply_privacy=not exposes)
+    return Resolution(
+        existing,
+        "updated",
+        # The name is read from the candidate because the update just re-bound
+        # it onto the existing row, so it is what the user will see listed.
+        privacy_held_name=(
+            decrypt(candidate.name, aad=member_name_aad(candidate.id))
+            if exposes
+            else None
+        ),
+    )
 
 
 def candidate_key(member: Member) -> tuple[str, str | None, bool]:
