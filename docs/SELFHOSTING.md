@@ -680,7 +680,7 @@ Bucket stays private. Clients load `https://images.example.com/{key}?token=…&e
 
 This is the combination you want when you need *both* expiring URLs *and* CDN caching — e.g. a public-facing deployment where private images need hotlink protection stronger than a referer check and you don't want your app serving image bytes.
 
-Tradeoffs: one more moving piece (the Worker); the CDN sees image paths and tokens; every image request routed to the hostname is a Worker invocation, cache hit or not (see `cf-image-worker/README.md` for what that costs). `FILE_SIGNING_KEY` must be set explicitly here — without it the app derives the signing key from `JWT_SECRET_KEY`, which you should never give to a Worker.
+Tradeoffs: one more moving piece (the Worker); the CDN sees image paths and tokens; every image request routed to the hostname is a Worker invocation, cache hit or not (see `cf-image-worker/README.md` for what that costs). `FILE_SIGNING_KEY` must be set explicitly here - without it the app derives the signing key from `JWT_SECRET_KEY`, which you should never give to a Worker, so Sheaf refuses to start in this paradigm until one is set (`openssl rand -hex 32`).
 
 > **Privacy note:** paradigms 3 and 4 route image loads through a third-party CDN. If you're CDN-fronting only images (not the API/web UI), this is the split most people hosting publicly as a service may want — performance where it matters, privacy for the data that matters.
 
