@@ -1079,6 +1079,26 @@ def _validate_settings() -> None:
             "domain with hotlink protection, or switch to IMAGE_SERVING=signed."
         )
 
+    if (
+        settings.image_serving == ImageServing.SIGNED
+        and settings.storage_backend == "s3"
+        and settings.s3_public_url
+        and not settings.file_signing_key
+    ):
+        # Without an explicit key the backend derives one from JWT_SECRET_KEY,
+        # which the CDN worker cannot know, so every image URL it validates
+        # 403s - and the tempting "fix" is handing the worker material derived
+        # from the JWT secret. Broken serving plus a secret-handling trap is a
+        # misconfiguration, not a mode.
+        logger.critical(
+            "REFUSING TO START: IMAGE_SERVING=signed with S3_PUBLIC_URL set "
+            "but no FILE_SIGNING_KEY. The signed CDN paradigm needs a "
+            "dedicated key shared with the edge worker; generate one "
+            "(openssl rand -hex 32) and set FILE_SIGNING_KEY here and in the "
+            "worker, or unset S3_PUBLIC_URL to serve signed URLs from the app."
+        )
+        sys.exit(1)
+
     if settings.email_verification == "required" and settings.email_backend == "none":
         logger.critical(
             "EMAIL_VERIFICATION=required but EMAIL_BACKEND=none — "
