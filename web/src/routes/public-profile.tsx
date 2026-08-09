@@ -78,6 +78,11 @@ export function PublicProfileView({ source }: { source: Source }) {
     },
     retry: false,
     enabled: system.isSuccess,
+    // Who is fronting changes on its own, so the page would otherwise show
+    // whatever was true when it was opened. Matched to the 60s Cache-Control
+    // on the public surface: polling faster would only re-read the cache.
+    // Left to stop while the tab is hidden (no refetchIntervalInBackground).
+    refetchInterval: 60_000,
   });
 
   if (system.isLoading) {

@@ -99,6 +99,7 @@ POSTGRES_PASSWORD=<generated>
 **`JWT_SECRET_KEY`** — signs access tokens, refresh tokens, and keys the HMAC for password-reset and email-verification tokens stored in the DB. If you rotate it:
 - All sessions and refresh tokens are invalidated — every user must log in again.
 - Any outstanding password-reset or email-verification links become invalid (users request a new one).
+- **Every share link ever issued stops working, permanently.** A share link's token is stored only as a keyed hash under this secret, so after a rotation nothing an owner handed out verifies against anything. There is no grace period and no dual-key window: as soon as the new secret is in use, every share link 404s, and the old URLs cannot be revived (the raw tokens were never stored). Owners have to issue fresh links from Settings → Sharing and send them out again. Public profiles survive a rotation untouched: they are located by the system's id, not by a token. Tell your users before you rotate.
 
 Sheaf refuses to start in `saas` mode if this is left at the default, and logs a loud warning in `selfhosted` mode. The default is safe for local dev only.
 
@@ -1350,7 +1351,10 @@ Unlisted share links are bearer capabilities: the token appears in both the
 SPA URL (`/s/{token}`) and API requests (`/v1/public/shared/{token}/...`). The
 nginx example suppresses access logging for both. If you enable Caddy access
 logs or use another proxy/CDN, configure equivalent path redaction or exclusion
-and review any upstream load-balancer logs too.
+and review any upstream load-balancer logs too. Those tokens are verified
+against a hash keyed from `JWT_SECRET_KEY`, so rotating that secret breaks
+every link ever issued and owners must re-issue them; see "What each key does"
+above.
 
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
 

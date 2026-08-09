@@ -766,6 +766,62 @@ def test_privacy_tightening_is_always_immediate(auth_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Expired grants: dead everywhere the owner side asks "is this live?"
+# ---------------------------------------------------------------------------
+
+
+def _lapsed_grant_view(c: httpx.Client) -> tuple[str, str]:
+    """A view whose only grant expired a minute ago. Returns (view, grant)."""
+    _attest(c)
+    vid = _view(c, f"Lapsed-{uuid.uuid4().hex[:6]}")
+    r = c.post(
+        "/v1/share-grants",
+        json={
+            "view_id": vid,
+            "subject_type": "link",
+            "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert r.status_code == 201, r.text
+    return vid, r.json()["grant"]["id"]
+
+
+def test_expired_grant_leaves_its_view_unshared(auth_client: httpx.Client):
+    vid, gid = _lapsed_grant_view(auth_client)
+
+    assert auth_client.get(f"/v1/share-views/{vid}").json()["is_shared"] is False
+    listed = auth_client.get("/v1/share-views").json()
+    assert next(v for v in listed if v["id"] == vid)["is_shared"] is False
+
+    # Still listed, though: the owner set that expiry and the client labels it.
+    grants = auth_client.get("/v1/share-grants").json()
+    assert any(g["id"] == gid and g["expires_at"] for g in grants)
+
+
+def test_privacy_raise_with_only_an_expired_grant_is_ungated(
+    auth_client: httpx.Client,
+):
+    """Nothing is exposed by the raise, so there is nothing to re-authenticate
+    for and nothing to stage."""
+    vid, _ = _lapsed_grant_view(auth_client)
+    m = _member(auth_client, "RiserAfterExpiry")
+    assert (
+        auth_client.post(
+            f"/v1/share-views/{vid}/members", json={"member_id": m}
+        ).status_code
+        == 200
+    )
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(f"/v1/members/{m}", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "public"
+    row = auth_client.get(f"/v1/share-views/{vid}").json()["members"][0]
+    assert row["status"] == "active"
+    assert row["activates_at"] is None
+
+
+# ---------------------------------------------------------------------------
 # Business caps
 # ---------------------------------------------------------------------------
 
@@ -801,7 +857,12 @@ def _seed_views(system_id: str, count: int) -> None:
 
 
 def _seed_grants(
-    system_id: str, view_id: str, count: int, *, revoked: bool = False
+    system_id: str,
+    view_id: str,
+    count: int,
+    *,
+    revoked: bool = False,
+    expired: bool = False,
 ) -> None:
     async def _work(db) -> None:
         from sheaf.models.share import (
@@ -825,6 +886,7 @@ def _seed_grants(
                         else ShareGrantStatus.ACTIVE.value
                     ),
                     revoked_at=now if revoked else None,
+                    expires_at=now - timedelta(minutes=1) if expired else None,
                     created_at=now,
                 )
             )
@@ -860,6 +922,28 @@ def test_share_grant_cap_counts_only_live_grants(auth_client: httpx.Client):
     )
     assert denied.status_code == 403, denied.text
     assert "revoke" in denied.text.lower()
+
+
+def test_expired_grant_frees_its_cap_slot(auth_client: httpx.Client):
+    """A lapsed link serves nobody, so holding a slot hostage would mean the
+    only way back under the cap is noticing and revoking a dead grant."""
+    _attest(auth_client)
+    vid = _view(auth_client)
+    system_id = _system_id(auth_client)
+    cap = _cap("share_grants_max")
+
+    _seed_grants(system_id, vid, cap - 1)
+    _seed_grants(system_id, vid, 1, expired=True)
+    ok = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert ok.status_code == 201, ok.text
+
+    # And that really did fill the last slot.
+    denied = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert denied.status_code == 403, denied.text
 
 
 # ---------------------------------------------------------------------------

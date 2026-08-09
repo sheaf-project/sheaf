@@ -13,7 +13,9 @@ Everything about it is built to fail closed:
 - Payloads come only from `share_projection`, which builds dedicated public
   schemas field-by-field; an ORM row is never serialised directly.
 - `noindex` on every response, plus a short cache TTL so un-publishing actually
-  propagates.
+  propagates. Only the success path is set here; `PublicShareHeadersMiddleware`
+  fills the same headers in on the 404s, 429s, and anything else built by an
+  exception handler that never sees this router's `Response`.
 
 The whole router 404s wholesale when `PUBLIC_PROFILES_ENABLED` is off, so an
 instance that never wants a public surface never has one.

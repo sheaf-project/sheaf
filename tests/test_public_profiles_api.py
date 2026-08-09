@@ -601,6 +601,40 @@ def test_token_keyed_responses_are_not_shared_cacheable():
     owner.close()
 
 
+@pytest.mark.public_profiles
+def test_failed_link_response_keeps_its_headers():
+    """A 404 is built by the exception handler, which never sees the route's
+    Response - and 404 is a status a shared cache may store on its own. The
+    middleware is what keeps a dead-link answer off intermediaries."""
+    resp = _anon().get(f"/v1/public/shared/{uuid.uuid4().hex}")
+    assert resp.status_code == 404
+    cache = resp.headers["cache-control"]
+    assert "private" in cache and "no-store" in cache
+    assert "noindex" in resp.headers["x-robots-tag"].lower()
+
+
+@pytest.mark.public_profiles
+def test_expired_link_grant_is_refused_anonymously():
+    owner = _register()
+    m = _member(owner, "Lapsed")
+    _, view = _published_system(owner, members=[m])
+    r = owner.post(
+        "/v1/share-grants",
+        json={
+            "view_id": view,
+            "subject_type": "link",
+            "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+
+    # Same 404 as a revoked or never-existent token: expiry is not an oracle.
+    assert _anon().get(f"/v1/public/shared/{token}").status_code == 404
+    assert _anon().get(f"/v1/public/shared/{token}/members").status_code == 404
+    owner.close()
+
+
 # ---------------------------------------------------------------------------
 # Fronting
 # ---------------------------------------------------------------------------

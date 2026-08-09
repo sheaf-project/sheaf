@@ -127,29 +127,44 @@ def promote_view_flags(view: ShareView) -> None:
     view.flags_activate_at = None
 
 
-def _grant_live_clause():
-    """SQL predicate for a grant that is currently serving content."""
+def grant_live_clause(*, include_pending: bool = True):
+    """SQL predicate for a grant that exposes something, now or on its own.
+
+    The one place "live" is defined, so the owner-side questions ("does this
+    use up a grant slot?", "is this view shared?", "does raising this member to
+    public expose them?") and the anonymous resolution cannot drift apart, in
+    the same spirit as `share_projection._active_member_filter`. Three
+    conditions, all of them in SQL:
+
+    - not revoked - revocation is the panic button and is always immediate;
+    - not past `expires_at` - an expired grant serves nobody, so it must not
+      consume the grant cap, mark a view as shared, or drag a member privacy
+      raise through step-up and a grace window;
+    - PENDING counts alongside ACTIVE by default, because a pending grant goes
+      live on its own: something added now must serve its own grace window
+      rather than riding in on the grant's.
+
+    `include_pending=False` narrows it to grants serving content *right now*,
+    which is what the anonymous surface resolves against - inside its grace
+    window a pending grant shows nobody anything.
+    """
     now = datetime.now(UTC)
+    statuses = [ShareGrantStatus.ACTIVE.value]
+    if include_pending:
+        statuses.append(ShareGrantStatus.PENDING.value)
     return (
-        (ShareGrant.status == ShareGrantStatus.ACTIVE.value)
-        & (ShareGrant.revoked_at.is_(None))
+        ShareGrant.status.in_(statuses)
+        & ShareGrant.revoked_at.is_(None)
         & or_(ShareGrant.expires_at.is_(None), ShareGrant.expires_at > now)
     )
 
 
 async def view_is_shared(db: AsyncSession, view_id: uuid.UUID) -> bool:
-    """True if anything points at this view, including a not-yet-live grant.
-
-    Pending counts: the grant will go live on its own, so a member added now
-    must serve its own grace window rather than riding in on the grant's.
-    """
+    """True if a live (or not-yet-live) grant points at this view."""
     result = await db.execute(
         select(ShareGrant.id).where(
             ShareGrant.view_id == view_id,
-            ShareGrant.revoked_at.is_(None),
-            ShareGrant.status.in_(
-                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
-            ),
+            grant_live_clause(),
         ).limit(1)
     )
     return result.scalar_one_or_none() is not None
@@ -160,8 +175,7 @@ async def shared_view_memberships(
 ) -> list[ShareViewMember]:
     """This member's rows in views something actually points at.
 
-    The view-side equivalent of `view_is_shared`, from the member's end: a
-    pending grant counts, because it goes live on its own.
+    The view-side equivalent of `view_is_shared`, from the member's end.
     """
     result = await db.execute(
         select(ShareViewMember)
@@ -169,10 +183,7 @@ async def shared_view_memberships(
         .where(
             ShareViewMember.member_id == member_id,
             ShareGrant.system_id == system.id,
-            ShareGrant.revoked_at.is_(None),
-            ShareGrant.status.in_(
-                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
-            ),
+            grant_live_clause(),
         )
         .distinct()
     )
@@ -193,7 +204,6 @@ async def fronting_guard_release_exposes(
     not inherit only the older action's remaining time. A member outside the
     view can expose an anonymous presence bit when show-count is enabled.
     """
-    now = datetime.now(UTC)
     eligible_membership = (
         (ShareViewMember.view_id == ShareView.id)
         & (ShareViewMember.member_id == member_id)
@@ -218,11 +228,7 @@ async def fronting_guard_release_exposes(
                 ShareView.include_fronting.is_(True),
                 ShareView.pending_include_fronting.is_(True),
             ),
-            ShareGrant.status.in_(
-                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
-            ),
-            ShareGrant.revoked_at.is_(None),
-            or_(ShareGrant.expires_at.is_(None), ShareGrant.expires_at > now),
+            grant_live_clause(),
             or_(*visibility_paths),
         )
         .limit(1)
@@ -421,7 +427,7 @@ async def create_grant(
         await db.execute(
             select(func.count(ShareGrant.id)).where(
                 ShareGrant.system_id == system.id,
-                ShareGrant.revoked_at.is_(None),
+                grant_live_clause(),
             )
         )
     ).scalar_one()
@@ -438,7 +444,11 @@ async def create_grant(
     if subject_type is ShareSubjectType.PUBLIC:
         # "Public" is a single audience, so two competing public views would be
         # ambiguous. Enforced by a partial unique index too; checked here to
-        # return a clean error instead of an IntegrityError.
+        # return a clean error instead of an IntegrityError. Deliberately NOT
+        # `grant_live_clause()`: the index is `revoked_at IS NULL` and a partial
+        # index cannot carry an expiry comparison, so relaxing this alone would
+        # turn "republish over an expired public grant" into an IntegrityError.
+        # Revoking the expired one first is the (already suggested) way through.
         existing = await db.execute(
             select(ShareGrant).where(
                 ShareGrant.system_id == system.id,
@@ -532,7 +542,7 @@ async def resolve_public_grant(
         .where(
             ShareGrant.system_id == system_id,
             ShareGrant.subject_type == ShareSubjectType.PUBLIC.value,
-            _grant_live_clause(),
+            grant_live_clause(include_pending=False),
         )
     )
     row = result.first()
@@ -555,7 +565,7 @@ async def resolve_link_grant(
         .where(
             ShareGrant.token_hash == hash_share_token(raw_token),
             ShareGrant.subject_type == ShareSubjectType.LINK.value,
-            _grant_live_clause(),
+            grant_live_clause(include_pending=False),
         )
     )
     row = result.first()

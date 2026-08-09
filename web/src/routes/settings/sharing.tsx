@@ -149,6 +149,12 @@ function SharingManager() {
             pages are cached briefly, so one already loaded can linger that
             long.
           </p>
+          <p>
+            On a self-hosted instance, changing the server's signing secret
+            invalidates every share link ever created, with no way to bring the
+            old addresses back - you would need to create new links and send
+            them out again. A public profile is unaffected.
+          </p>
         </CardContent>
       </Card>
 

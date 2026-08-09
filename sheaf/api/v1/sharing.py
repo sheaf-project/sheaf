@@ -61,6 +61,7 @@ from sheaf.services.sharing import (
     add_member_to_view,
     create_grant,
     expand_group_into_view,
+    grant_live_clause,
     is_exposure_safeguarded,
     revoke_grant,
     rotate_grant_token,
@@ -211,10 +212,7 @@ async def list_share_views(
     shared_rows = await db.execute(
         select(ShareGrant.view_id).where(
             ShareGrant.system_id == system.id,
-            ShareGrant.revoked_at.is_(None),
-            ShareGrant.status.in_(
-                [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
-            ),
+            grant_live_clause(),
         )
     )
     shared = set(shared_rows.scalars().all())
@@ -795,7 +793,10 @@ async def sharing_audit(
 
     Lists every grant that is live or about to be, with what its view actually
     exposes. Revoked grants are omitted: this answers "what is my exposure
-    right now", not "what did I ever share".
+    right now", not "what did I ever share". An expired one stays listed even
+    though it now exposes nothing - the owner set that expiry and should see
+    that it lapsed rather than watch the entry vanish; `expires_at` is on every
+    entry and the client labels it.
     """
     system = await _get_user_system(user, db)
     result = await db.execute(

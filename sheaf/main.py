@@ -16,6 +16,7 @@ from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
 from sheaf.middleware.origin_check import OriginCheckMiddleware
+from sheaf.middleware.public_headers import PublicShareHeadersMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
 from sheaf.observability import (
     MetricsMiddleware,
@@ -290,6 +291,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(OriginCheckMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
+# Outside the rate limiter so its 429 is stamped too, and outside the
+# exception handlers (which live at the router end of the stack) so their
+# freshly built error responses are as well.
+app.add_middleware(PublicShareHeadersMiddleware)
 app.add_middleware(
     MaxBodySizeMiddleware,
     max_bytes=settings.max_request_body_size_mb * 1024 * 1024,

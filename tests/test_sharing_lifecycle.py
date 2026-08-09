@@ -27,6 +27,7 @@ from sheaf.models.user import User
 from sheaf.services.sharing import (
     EXPOSURE_FLAGS,
     _activation,
+    grant_live_clause,
     is_exposure_safeguarded,
     promote_view_flags,
     require_adult_attestation,
@@ -217,6 +218,44 @@ def test_rotate_rejects_a_public_grant():
     with pytest.raises(HTTPException) as exc:
         rotate_grant_token(grant)
     assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# The "is this grant live?" predicate
+# ---------------------------------------------------------------------------
+
+
+def _clause_sql(**kw) -> tuple[str, list]:
+    """(rendered SQL, flattened bound values) for the predicate."""
+    compiled = grant_live_clause(**kw).compile()
+    values: list = []
+    for value in compiled.params.values():
+        if isinstance(value, list):
+            values.extend(value)
+        else:
+            values.append(value)
+    return str(compiled), values
+
+
+def test_live_clause_always_tests_revocation_and_expiry():
+    """Every caller of this gets both, which is the whole point of it being
+    one function: an expired grant is as dead as a revoked one."""
+    for kwargs in ({}, {"include_pending": False}):
+        sql, _ = _clause_sql(**kwargs)
+        assert "revoked_at IS NULL" in sql
+        assert "expires_at IS NULL" in sql
+        assert "expires_at >" in sql
+
+
+def test_live_clause_counts_pending_only_when_asked():
+    _, owner_side = _clause_sql()
+    assert ShareGrantStatus.PENDING.value in owner_side
+
+    # The anonymous surface resolves against this one: a grant still inside
+    # its grace window shows nobody anything.
+    _, serving = _clause_sql(include_pending=False)
+    assert ShareGrantStatus.PENDING.value not in serving
+    assert ShareGrantStatus.ACTIVE.value in serving
 
 
 # ---------------------------------------------------------------------------
