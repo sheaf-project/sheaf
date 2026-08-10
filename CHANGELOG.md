@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-08-09
+
 ### Security
 
 - **The signed CDN image paradigm now refuses to start without its own signing key.** Running `IMAGE_SERVING=signed` with `S3_PUBLIC_URL` pointing at a CDN worker requires `FILE_SIGNING_KEY`: without one the app silently derived a key from `JWT_SECRET_KEY`, which the worker cannot know, so every image the worker validated was rejected - and the tempting workaround was handing the worker key material derived from the JWT secret. The misconfiguration now fails startup with instructions instead of limping. The other serving paradigms are unaffected and the key stays optional there.
