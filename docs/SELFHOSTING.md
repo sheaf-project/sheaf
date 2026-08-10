@@ -687,11 +687,11 @@ S3_PUBLIC_URL=https://images.example.com   # CDN hostname; Worker lives here
 FILE_SIGNING_KEY=...                       # 32+ bytes; shared with the Worker
 ```
 
-Bucket stays private. Clients load `https://images.example.com/{key}?token=…&expires=…`. A Cloudflare Worker (see `selfhost-utils/cf-image-worker/`) on that hostname validates the HMAC against the same `FILE_SIGNING_KEY`, fetches the object from the private bucket via AWS SigV4, and returns it. The CDN caches by full URL so all requests within a signing window share a cache entry; expired or invalid tokens return 403 at the edge.
+Bucket stays private. Clients load `https://images.example.com/{key}?token=…&expires=…`. A Cloudflare Worker (see `selfhost-utils/cf-image-worker/`) on that hostname validates the HMAC against the same `FILE_SIGNING_KEY`, fetches the object from the private bucket via AWS SigV4, and returns it. The Worker caches under a canonical URL so all requests within a signing window share a cache entry; expired or invalid tokens, and URLs carrying extra or duplicated query parameters, return 403 at the edge.
 
 This is the combination you want when you need *both* expiring URLs *and* CDN caching — e.g. a public-facing deployment where private images need hotlink protection stronger than a referer check and you don't want your app serving image bytes.
 
-Tradeoffs: one more moving piece (the Worker); the CDN sees image paths and tokens; Worker costs scale with cache-miss rate (typically free-tier for small/mid instances, see the `cf-image-worker/README.md` for numbers). `FILE_SIGNING_KEY` must be set explicitly here — without it the app derives the signing key from `JWT_SECRET_KEY`, which you should never give to a Worker.
+Tradeoffs: one more moving piece (the Worker); the CDN sees image paths and tokens; every image request routed to the hostname is a Worker invocation, cache hit or not (see `cf-image-worker/README.md` for what that costs). `FILE_SIGNING_KEY` must be set explicitly here - without it the app derives the signing key from `JWT_SECRET_KEY`, which you should never give to a Worker, so Sheaf refuses to start in this paradigm until one is set (`openssl rand -hex 32`).
 
 > **Privacy note:** paradigms 3 and 4 route image loads through a third-party CDN. If you're CDN-fronting only images (not the API/web UI), this is the split most people hosting publicly as a service may want — performance where it matters, privacy for the data that matters.
 

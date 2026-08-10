@@ -764,3 +764,56 @@ def test_markdown_image_offsets_support_all_commonmark_line_endings(line_ending)
     assert len(images) == 1
     assert text[images[0].start : images[0].end] == text
     assert images[0].url == "https://tracker.example/image.png"
+
+
+def test_normalize_avatar_url_drops_data_uri():
+    """A data: avatar is not a storage key, so it must not survive as one."""
+    assert normalize_avatar_url("data:image/png;base64,iVBORw0KGgo=") is None
+    assert normalize_avatar_url("DATA:image/png;base64,iVBORw0KGgo=") is None
+
+def test_resolve_description_urls_leaves_data_uri_alone():
+    """A data: URI carries its own bytes; it is not a bare storage key."""
+    text = "![dot](data:image/png;base64,iVBORw0KGgo=)"
+    assert resolve_description_urls(text) == text
+
+@pytest.mark.parametrize(
+    ("text", "expected_alt"),
+    [
+        ("![foo [bar]](/v1/files/bios/u/nested.png)", "foo [bar]"),
+        (r"![foo \] bar](/v1/files/bios/u/escaped.png)", r"foo \] bar"),
+    ],
+)
+def test_resolve_description_urls_uses_commonmark_image_grammar(text, expected_alt):
+    """Alt text with nested or escaped brackets survives the rewrite."""
+    result = resolve_description_urls(text)
+
+    rewritten = list(iter_markdown_images(result))
+    assert len(rewritten) == 1
+    assert rewritten[0].alt == expected_alt
+    assert "token=" in rewritten[0].url
+
+def test_resolve_description_urls_signs_hosted_reference_image():
+    """Reference syntax resolves to the same signed URL as the inline form."""
+    text = "![portrait][photo]\n\n[photo]: /v1/files/bios/u/photo.png"
+
+    result = resolve_description_urls(text)
+
+    assert "![portrait](/v1/files/bios/u/photo.png?token=" in result
+
+def test_resolve_description_urls_leaves_code_examples_alone():
+    """Code spans and code blocks are prose, not image fetches."""
+    text = (
+        "Inline `![example](/v1/files/bios/u/a.png)`\n\n"
+        "```markdown\n![example](/v1/files/bios/u/b.png)\n```\n\n"
+        "    ![example](/v1/files/bios/u/c.png)\n"
+    )
+
+    assert resolve_description_urls(text) == text
+
+
+# ---------------------------------------------------------------------------
+# Ownership binding: a caller can't persist another account's storage key
+# (which would be re-signed into a live serve URL on read).
+
+_OWNER = "11111111-1111-1111-1111-111111111111"
+_OTHER = "22222222-2222-2222-2222-222222222222"
