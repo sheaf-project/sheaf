@@ -1,23 +1,27 @@
 import { lazy, Suspense, useEffect } from "react";
 import { useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Users } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Loader2, Users } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ColorDot } from "@/components/color-dot";
 import { Logo } from "@/components/logo";
 import { ApiError } from "@/lib/api-error";
 import { isPublicImageAllowed } from "@/lib/image-sources";
 import {
   getPublicFronting,
   getPublicMembers,
+  getPublicRelationships,
   getPublicSystem,
 } from "@/lib/public-profiles";
 import type {
   PublicFrontingView,
   PublicMemberView,
+  PublicRelationship,
+  PublicRelationshipsView,
   PublicSystemView,
 } from "@/types/api";
 
@@ -83,6 +87,24 @@ export function PublicProfileView({ source }: { source: Source }) {
     // on the public surface: polling faster would only re-read the cache.
     // Left to stop while the tab is hidden (no refetchIntervalInBackground).
     refetchInterval: 60_000,
+  });
+
+  // Opt-in per view like fronting, and a 404 means the same thing: not shared,
+  // so the tab is absent rather than empty. No refetchInterval on purpose -
+  // who a member is related to changes about never, so polling it would only
+  // re-read the same cached response.
+  const relationships = useQuery<PublicRelationshipsView | null>({
+    queryKey: ["public", sourceKey(source), "relationships"],
+    queryFn: async () => {
+      try {
+        return await getPublicRelationships(source);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+    retry: false,
+    enabled: system.isSuccess,
   });
 
   if (system.isLoading) {
@@ -156,6 +178,11 @@ export function PublicProfileView({ source }: { source: Source }) {
                 Fronting
               </TabsTrigger>
             )}
+            {relationships.data && (
+              <TabsTrigger value="relationships" className="flex-1">
+                Relationships
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="members" className="space-y-3">
@@ -172,6 +199,12 @@ export function PublicProfileView({ source }: { source: Source }) {
           {fronting.data && (
             <TabsContent value="fronting">
               <FrontingSection fronting={fronting.data} />
+            </TabsContent>
+          )}
+
+          {relationships.data && (
+            <TabsContent value="relationships">
+              <RelationshipsSection view={relationships.data} />
             </TabsContent>
           )}
         </Tabs>
@@ -230,6 +263,55 @@ function FrontingSection({ fronting }: { fronting: PublicFrontingView }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function RelationshipsSection({ view }: { view: PublicRelationshipsView }) {
+  const { relationships } = view;
+  if (relationships.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-sm text-muted-foreground">
+          No relationships are shared on this profile.
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card>
+      <CardContent className="space-y-2 p-4">
+        {relationships.map((r) => (
+          <RelationshipRow key={r.id} relationship={r} />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RelationshipRow({ relationship: r }: { relationship: PublicRelationship }) {
+  // Both ends read the same way for a symmetric type and for a mutual
+  // either-edge, and the server says so twice over: `mutual`, and two labels
+  // that come back identical. Either one means there is no direction to draw,
+  // so no arrow is drawn and the single label speaks for both ends.
+  const undirected = r.mutual || r.source_label === r.target_label;
+  const iconCls = "h-3.5 w-3.5 shrink-0 text-muted-foreground";
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+      <ColorDot color={r.type_color} />
+      <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
+        <span className="truncate font-medium">{r.source.name}</span>
+        {undirected ? (
+          <ArrowLeftRight className={iconCls} aria-label="mutual" />
+        ) : (
+          <ArrowRight className={iconCls} aria-label="one-way" />
+        )}
+        <span className="truncate font-medium">{r.target.name}</span>
+      </span>
+      <span className="shrink-0 text-xs text-muted-foreground">
+        {undirected ? r.source_label : `${r.source_label} / ${r.target_label}`}
+      </span>
+    </div>
   );
 }
 

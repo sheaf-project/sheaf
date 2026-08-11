@@ -1041,9 +1041,6 @@ export interface PollServerConfig {
  *  read the forward label (protector). */
 export type RelationshipSymmetry = "symmetric" | "directional" | "either";
 
-/** Reserved for the future access-control primitive; only `private` today. */
-export type RelationshipVisibility = "private";
-
 export interface RelationshipType {
   id: string;
   system_id: string;
@@ -1051,6 +1048,9 @@ export interface RelationshipType {
   symmetry: RelationshipSymmetry;
   forward_label: string;
   reverse_label: string | null;
+  /** Nullable, unlike a member's colour: a type may simply have none, and an
+   *  explicit null on update clears it back to that. */
+  color: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1060,12 +1060,14 @@ export interface RelationshipTypeCreate {
   symmetry: RelationshipSymmetry;
   forward_label: string;
   reverse_label?: string | null;
+  color?: string | null;
 }
 
 export interface RelationshipTypeUpdate {
   name?: string;
   forward_label?: string;
   reverse_label?: string | null;
+  color?: string | null;
 }
 
 export interface RelationshipEdgeCreate {
@@ -1073,7 +1075,10 @@ export interface RelationshipEdgeCreate {
   target_id: string;
   relationship_type_id: string;
   mutual?: boolean;
-  visibility?: RelationshipVisibility;
+  /** Deliberately the same `PrivacyLevel` a member carries: "who may see this"
+   *  is one question, so it gets one vocabulary rather than a parallel set of
+   *  words that can drift apart. Private unless said otherwise. */
+  visibility?: PrivacyLevel;
 }
 
 export interface RelationshipEdge {
@@ -1082,8 +1087,19 @@ export interface RelationshipEdge {
   target_id: string;
   relationship_type_id: string;
   mutual: boolean;
-  visibility: RelationshipVisibility;
+  visibility: PrivacyLevel;
+  /** A raise still waiting out the safety grace window. `visibility` above is
+   *  the truth right now; these say what it becomes and when. Both null when
+   *  nothing is staged - and always null on group edges, which never stage. */
+  pending_visibility: PrivacyLevel | null;
+  visibility_activates_at: string | null;
   created_at: string;
+}
+
+export interface RelationshipEdgeUpdate {
+  visibility?: PrivacyLevel;
+  password?: string;
+  totp_code?: string;
 }
 
 /** Direction of an edge as read from one node's viewpoint. */
@@ -1099,7 +1115,11 @@ export interface RelationshipFromViewpoint {
   label: string;
   direction: RelationshipDirection;
   mutual: boolean;
-  visibility: RelationshipVisibility;
+  visibility: PrivacyLevel;
+  /** As on RelationshipEdge: what the level becomes and when, while
+   *  `visibility` stays the truth until then. Always null for group edges. */
+  pending_visibility: PrivacyLevel | null;
+  visibility_activates_at: string | null;
 }
 
 export interface RelationshipGraphNode {
@@ -1135,16 +1155,23 @@ export interface RelationshipPreset {
   symmetry: RelationshipSymmetry;
   forward_label: string;
   reverse_label: string | null;
+  /** Suggested starting colour, editable (and clearable) like any other. */
+  color?: string;
 }
 
+/** The preset colours are deliberately muted mid-tones: each one has enough
+ *  contrast to read against both the light and the dark theme, and no two are
+ *  told apart by red-vs-green alone, so the graph still parses for someone who
+ *  can't separate those. They are a starting point, not a meaning - a colour
+ *  never carries information the label doesn't already say. */
 export const RELATIONSHIP_PRESETS: RelationshipPreset[] = [
-  { label: "Partner", name: "Partner", symmetry: "symmetric", forward_label: "partner", reverse_label: null },
-  { label: "Friend", name: "Friend", symmetry: "symmetric", forward_label: "friend", reverse_label: null },
-  { label: "Sibling", name: "Sibling", symmetry: "symmetric", forward_label: "sibling", reverse_label: null },
-  { label: "Parent / Child", name: "Parent", symmetry: "directional", forward_label: "parent", reverse_label: "child" },
-  { label: "Protector / Protectee", name: "Protector", symmetry: "either", forward_label: "protector", reverse_label: "protectee" },
-  { label: "Caretaker", name: "Caretaker", symmetry: "either", forward_label: "caretaker", reverse_label: "cared for" },
-  { label: "Split from", name: "Split", symmetry: "directional", forward_label: "split from", reverse_label: "split off" },
+  { label: "Partner", name: "Partner", symmetry: "symmetric", forward_label: "partner", reverse_label: null, color: "#c2708f" },
+  { label: "Friend", name: "Friend", symmetry: "symmetric", forward_label: "friend", reverse_label: null, color: "#6a9fb5" },
+  { label: "Sibling", name: "Sibling", symmetry: "symmetric", forward_label: "sibling", reverse_label: null, color: "#7f9c6c" },
+  { label: "Parent / Child", name: "Parent", symmetry: "directional", forward_label: "parent", reverse_label: "child", color: "#b5894a" },
+  { label: "Protector / Protectee", name: "Protector", symmetry: "either", forward_label: "protector", reverse_label: "protectee", color: "#7c6fa8" },
+  { label: "Caretaker", name: "Caretaker", symmetry: "either", forward_label: "caretaker", reverse_label: "cared for", color: "#4f9a92" },
+  { label: "Split from", name: "Split", symmetry: "directional", forward_label: "split from", reverse_label: "split off", color: "#9a7b6a" },
 ];
 
 // --- Share views + grants (public profiles) ---
@@ -1179,12 +1206,14 @@ export interface ShareView {
   include_bio: boolean;
   include_fronting: boolean;
   fronting_show_count: boolean;
+  include_relationships: boolean;
   /** A loosening of one of the flags above that is still waiting out the
    *  grace period: null (or absent) when nothing is queued for that flag.
    *  Optional so the UI works against a server that doesn't defer them. */
   pending_include_bio?: boolean | null;
   pending_include_fronting?: boolean | null;
   pending_fronting_show_count?: boolean | null;
+  pending_include_relationships?: boolean | null;
   /** When the queued flag change above becomes live. */
   flags_activate_at?: string | null;
   created_at: string;
@@ -1201,6 +1230,7 @@ export interface ShareViewCreate {
   include_bio?: boolean;
   include_fronting?: boolean;
   fronting_show_count?: boolean;
+  include_relationships?: boolean;
 }
 
 export interface ShareViewUpdate {
@@ -1208,6 +1238,7 @@ export interface ShareViewUpdate {
   include_bio?: boolean;
   include_fronting?: boolean;
   fronting_show_count?: boolean;
+  include_relationships?: boolean;
   password?: string;
   totp_code?: string;
 }
@@ -1256,6 +1287,11 @@ export interface ShareAuditEntry {
   field_count: number;
   include_bio: boolean;
   include_fronting: boolean;
+  include_relationships: boolean;
+  /** Edges this view would actually serve right now, not what the flag
+   *  permits: zero when the flag is off, and zero when it is on but no edge
+   *  clears both its own `public` level and the member ceiling. */
+  relationship_count: number;
 }
 
 export interface ShareAudit {
@@ -1303,4 +1339,31 @@ export interface PublicFrontingMember {
 export interface PublicFrontingView {
   members: PublicFrontingMember[];
   hidden_count: number;
+}
+
+/** One end of a published edge: id and name only. The endpoint is always a
+ *  member the same view publishes in full through /members, so the client
+ *  joins on `id` for anything richer. */
+export interface PublicRelationshipEndpoint {
+  id: string;
+  name: string;
+}
+
+export interface PublicRelationship {
+  id: string;
+  type_name: string;
+  type_color: string | null;
+  source: PublicRelationshipEndpoint;
+  target: PublicRelationshipEndpoint;
+  /** How the edge reads from each end ("parent" / "child"). Both are the
+   *  forward label for symmetric types and for mutual either-edges. */
+  source_label: string;
+  target_label: string;
+  /** True only for an `either` edge the owner marked mutual. With the two
+   *  labels, this decides whether an arrow is drawn at all. */
+  mutual: boolean;
+}
+
+export interface PublicRelationshipsView {
+  relationships: PublicRelationship[];
 }

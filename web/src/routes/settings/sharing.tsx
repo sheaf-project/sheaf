@@ -93,6 +93,19 @@ interface SafetyContext {
   tier: DeleteConfirmation;
 }
 
+/** Every view flag that shows MORE when it is turned on, in one list (the
+ *  client-side mirror of the server's own). The pending badge and the
+ *  step-up gate below both derive from it, so a flag added here is covered
+ *  everywhere instead of being covered in two places out of three. */
+const EXPOSURE_FLAGS = [
+  "include_bio",
+  "include_fronting",
+  "fronting_show_count",
+  "include_relationships",
+] as const;
+
+type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
+
 function SharingManager() {
   const { data: views } = useShareViews();
   const { data: grants } = useShareGrants();
@@ -195,6 +208,8 @@ function SharingManager() {
                   {e.field_count > 0 && `, ${e.field_count} field${e.field_count === 1 ? "" : "s"}`}
                   {e.include_bio && ", bios"}
                   {e.include_fronting && ", live fronting"}
+                  {e.include_relationships &&
+                    `, ${e.relationship_count} relationship${e.relationship_count === 1 ? "" : "s"}`}
                 </p>
               </div>
             ))}
@@ -246,12 +261,14 @@ function NewViewCard() {
   const [includeBio, setIncludeBio] = useState(false);
   const [includeFronting, setIncludeFronting] = useState(false);
   const [frontingShowCount, setFrontingShowCount] = useState(true);
+  const [includeRelationships, setIncludeRelationships] = useState(false);
 
   function reset() {
     setName("");
     setIncludeBio(false);
     setIncludeFronting(false);
     setFrontingShowCount(true);
+    setIncludeRelationships(false);
   }
 
   function handleSubmit(e: FormEvent) {
@@ -262,6 +279,7 @@ function NewViewCard() {
       include_bio: includeBio,
       include_fronting: includeFronting,
       fronting_show_count: frontingShowCount,
+      include_relationships: includeRelationships,
     };
     create.mutate(data, { onSuccess: reset });
   }
@@ -304,6 +322,12 @@ function NewViewCard() {
               indent
             />
           )}
+          <CheckboxRow
+            checked={includeRelationships}
+            onChange={setIncludeRelationships}
+            label="Include relationships between members"
+            desc="Only relationships you marked public, and only where both members are shown here."
+          />
           <Button type="submit" disabled={create.isPending || !name.trim()}>
             {create.isPending ? "Creating..." : "Create view"}
           </Button>
@@ -330,10 +354,9 @@ function ViewCard({
 
   // A flag turned on while the view was shared waits out the grace period, so
   // the card has to say so - the checkbox below still shows the live value.
-  const flagsPending =
-    view.pending_include_bio != null ||
-    view.pending_include_fronting != null ||
-    view.pending_fronting_show_count != null;
+  const flagsPending = EXPOSURE_FLAGS.some(
+    (flag) => view[`pending_${flag}`] != null,
+  );
 
   return (
     <Card>
@@ -406,11 +429,11 @@ function ViewCard({
 
 function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext }) {
   const update = useUpdateShareView();
-  const [reauth, setReauth] = useState<null | { field: "include_bio" | "include_fronting" | "fronting_show_count"; value: boolean }>(null);
+  const [reauth, setReauth] = useState<null | { field: ExposureFlag; value: boolean }>(null);
 
   // Turning an option ON while the view is shared is a loosening; when safety
   // is armed it needs re-auth. Turning off is always immediate.
-  function change(field: "include_bio" | "include_fronting" | "fronting_show_count", value: boolean) {
+  function change(field: ExposureFlag, value: boolean) {
     const loosening = value && view.is_shared;
     if (loosening && safety.safeguarded && safety.tier !== "none") {
       setReauth({ field, value });
@@ -438,6 +461,17 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           label="Count fronting members not in this view"
           indent
         />
+      )}
+      <CheckboxRow
+        checked={view.include_relationships}
+        onChange={(v) => change("include_relationships", v)}
+        label="Include relationships between members"
+      />
+      {view.include_relationships && (
+        <p className="text-[11px] text-muted-foreground">
+          Only relationships you marked public show, and only where both
+          members are shown in this view.
+        </p>
       )}
       {reauth && (
         <DestructiveConfirmDialog

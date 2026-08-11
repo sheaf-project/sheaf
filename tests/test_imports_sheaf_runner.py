@@ -188,6 +188,74 @@ def test_sheaf_runner_roundtrips_relationships(auth_client: httpx.Client):
     assert len(dump2["relationship_types"]) == len(dump["relationship_types"])
 
 
+def test_sheaf_runner_roundtrips_relationship_colour_and_visibility(
+    auth_client: httpx.Client,
+):
+    """A relationship type's colour and every edge's privacy level survive the
+    round trip. Visibility matters most: a `private` edge that came back as
+    anything else would publish a relationship on the strength of a restore,
+    and a `public` one that came back private would silently un-publish."""
+    export = {
+        "version": "2",
+        "system": {"name": "Rel Privacy System"},
+        "members": [
+            {"id": "m1", "name": "VisAlice"},
+            {"id": "m2", "name": "VisBob"},
+            {"id": "m3", "name": "VisCass"},
+        ],
+        "relationship_types": [
+            {
+                "id": "rt-tinted", "name": "Tinted", "symmetry": "symmetric",
+                "forward_label": "partner", "reverse_label": None,
+                "color": "#ff8800",
+            },
+        ],
+        "member_relationships": [
+            {
+                "source_id": "m1", "target_id": "m2",
+                "relationship_type_id": "rt-tinted", "mutual": False,
+                "visibility": "private",
+            },
+            {
+                "source_id": "m1", "target_id": "m3",
+                "relationship_type_id": "rt-tinted", "mutual": False,
+                "visibility": "friends",
+            },
+            {
+                "source_id": "m2", "target_id": "m3",
+                "relationship_type_id": "rt-tinted", "mutual": False,
+                "visibility": "public",
+            },
+        ],
+        "group_relationships": [],
+        "fronts": [],
+        "groups": [],
+        "tags": [],
+        "custom_fields": [],
+    }
+    job = _post_file(auth_client, payload=json.dumps(export).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    dump = auth_client.get("/v1/export").json()
+    tinted = next(t for t in dump["relationship_types"] if t["name"] == "Tinted")
+    assert tinted["color"] == "#ff8800"
+
+    name_of = {m["id"]: m["name"] for m in dump["members"]}
+    # Keyed on the unordered pair: a symmetric edge is canonicalised by uuid, so
+    # which end is stored as source is not the exporter's promise to keep.
+    by_pair = {
+        frozenset((name_of[e["source_id"]], name_of[e["target_id"]])): e["visibility"]
+        for e in dump["member_relationships"]
+    }
+    assert by_pair == {
+        frozenset(("VisAlice", "VisBob")): "private",
+        frozenset(("VisAlice", "VisCass")): "friends",
+        frozenset(("VisBob", "VisCass")): "public",
+    }
+
+
 def test_sheaf_runner_roundtrips_notify_prefs_and_coalesce(auth_client: httpx.Client):
     """Per-member notify_on_front_* prefs and the system coalesce preference
     survive a re-import. The notify_on_front_member_ids cross-reference is

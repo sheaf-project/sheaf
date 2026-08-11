@@ -507,6 +507,30 @@ def test_flag_loosening_on_a_shared_view_is_deferred(auth_client: httpx.Client):
     assert body["pending_include_fronting"] is None
 
 
+def test_turning_relationships_on_for_a_shared_view_is_deferred(
+    auth_client: httpx.Client,
+):
+    """include_relationships is an exposure flag like the other three: turning
+    it on can only ever add to what the view serves, so it is staged."""
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    denied = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_relationships": True}
+    )
+    assert denied.status_code in (400, 403), denied.text
+
+    ok = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"include_relationships": True, "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["include_relationships"] is False
+    assert body["pending_include_relationships"] is True
+    assert body["flags_activate_at"] is not None
+
+
 def test_flag_tightening_is_immediate_and_ungated(auth_client: httpx.Client):
     vid = _shared_view(auth_client, include_fronting=True)
     _arm_visibility_safety(auth_client)

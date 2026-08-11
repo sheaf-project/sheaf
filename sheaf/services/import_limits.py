@@ -91,6 +91,7 @@ REMINDER_BODY = Cap("reminder body", 2000)
 # then these track the column widths so an import can't over-run them.
 REL_TYPE_NAME = Cap("relationship type name", 100)
 REL_TYPE_LABEL = Cap("relationship type label", 100)
+REL_TYPE_COLOR = Cap("relationship type color", 7)
 
 # --- Share views ------------------------------------------------------------
 # Mirrors sheaf/schemas/share.py (ShareViewCreate.name).

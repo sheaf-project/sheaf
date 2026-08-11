@@ -1,6 +1,7 @@
 import type {
   PublicFrontingView,
   PublicMemberView,
+  PublicRelationshipsView,
   PublicSystemView,
 } from "@/types/api";
 
@@ -39,6 +40,12 @@ export function getPublicMembers(src: Source) {
 
 export function getPublicFronting(src: Source) {
   return apiFetch<PublicFrontingView>(`${base(src)}/fronting`, {
+    skipErrorToast: true,
+  });
+}
+
+export function getPublicRelationships(src: Source) {
+  return apiFetch<PublicRelationshipsView>(`${base(src)}/relationships`, {
     skipErrorToast: true,
   });
 }

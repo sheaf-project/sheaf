@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import * as api from "@/lib/relationships";
 import type {
   RelationshipEdgeCreate,
+  RelationshipEdgeUpdate,
   RelationshipTypeCreate,
   RelationshipTypeUpdate,
 } from "@/types/api";
@@ -90,6 +91,31 @@ export function useCreateMemberRelationship() {
   });
 }
 
+export function useUpdateMemberRelationship() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      edgeId,
+      data,
+      skipErrorToast = false,
+    }: {
+      edgeId: string;
+      data: RelationshipEdgeUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateMemberRelationship(edgeId, data, skipErrorToast),
+    onSuccess: (edge) => {
+      invalidateEdges(qc);
+      // A raise that would actually expose the edge is staged, not applied, so
+      // the toast must not claim the new level is live yet.
+      toast.success(
+        edge.visibility_activates_at
+          ? "Change confirmed - it goes live after your grace period."
+          : "Relationship privacy updated",
+      );
+    },
+  });
+}
+
 export function useDeleteMemberRelationship() {
   const qc = useQueryClient();
   return useMutation({
@@ -119,6 +145,25 @@ export function useCreateGroupRelationship() {
     onSuccess: () => {
       invalidateEdges(qc);
       toast.success("Relationship added");
+    },
+  });
+}
+
+export function useUpdateGroupRelationship() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      edgeId,
+      data,
+      skipErrorToast = false,
+    }: {
+      edgeId: string;
+      data: RelationshipEdgeUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateGroupRelationship(edgeId, data, skipErrorToast),
+    onSuccess: () => {
+      invalidateEdges(qc);
+      toast.success("Relationship privacy updated");
     },
   });
 }

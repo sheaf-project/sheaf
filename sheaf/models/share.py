@@ -96,7 +96,16 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, default=True, server_default="true", nullable=False
     )
 
-    # Staged flag flips. Turning one of the three flags ON while the view is
+    # Whether relationships between members in this view are shown. Off by
+    # default, and doubly gated: the flag only decides whether the endpoint
+    # exists at all, while each individual edge still has to be marked `public`
+    # AND have both of its endpoints projected by this view. Turning it on
+    # therefore publishes nothing on its own.
+    include_relationships: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Staged flag flips. Turning one of the four flags ON while the view is
     # already shared exposes more, so the new value parks here and the finalize
     # sweep copies it onto the live flag once `flags_activate_at` passes - the
     # same PENDING lifecycle the member and field rows carry, expressed as
@@ -110,6 +119,9 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, nullable=True
     )
     pending_fronting_show_count: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_relationships: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True
     )
     # Shared activation time for whatever is staged above. NULL whenever no
