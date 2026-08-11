@@ -83,7 +83,6 @@ from sheaf.models.relationship import (
     MemberRelationship,
     RelationshipSymmetry,
     RelationshipType,
-    RelationshipVisibility,
 )
 from sheaf.models.reminder import Reminder, reminder_scope_members
 from sheaf.models.share import (
@@ -149,6 +148,7 @@ from sheaf.services.polls import (
 )
 from sheaf.services.relationships import canonicalize_pair
 from sheaf.services.reminders import encrypt_title_body
+from sheaf.services.sharing import relationship_exposed_member_ids
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -175,7 +175,6 @@ def _field_type(val: object) -> FieldType:
 
 
 _VALID_SYMMETRY = {e.value for e in RelationshipSymmetry}
-_VALID_REL_VISIBILITY = {e.value for e in RelationshipVisibility}
 
 
 def _symmetry(val: object) -> RelationshipSymmetry:
@@ -186,10 +185,15 @@ def _symmetry(val: object) -> RelationshipSymmetry:
     return RelationshipSymmetry.SYMMETRIC
 
 
-def _rel_visibility(val: object) -> RelationshipVisibility:
-    if isinstance(val, str) and val in _VALID_REL_VISIBILITY:
-        return RelationshipVisibility(val)
-    return RelationshipVisibility.PRIVATE
+def _rel_visibility(val: object) -> PrivacyLevel:
+    # Same three-level vocabulary as member privacy (it is the same question),
+    # so it shares `_VALID_PRIVACY`. Untrusted enum string from the import
+    # file: anything unrecognised lands PRIVATE rather than raising, because an
+    # edge names two people at once and the failure mode of a garbled file must
+    # be "too private", never "published".
+    if isinstance(val, str) and val in _VALID_PRIVACY:
+        return PrivacyLevel(val)
+    return PrivacyLevel.PRIVATE
 
 
 _VALID_DATE_FORMAT = {e.value for e in DateFormat}
@@ -666,6 +670,7 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
             s(rt.get("name"), il.REL_TYPE_NAME)
             s(rt.get("forward_label"), il.REL_TYPE_LABEL)
             s(rt.get("reverse_label"), il.REL_TYPE_LABEL)
+            s(rt.get("color"), il.REL_TYPE_COLOR)
 
     for v in _as_list(data.get("share_views")):
         if isinstance(v, dict):
@@ -1438,6 +1443,9 @@ async def run_import(
                 reverse_label=clamp_str(
                     rt_data.get("reverse_label"), il.REL_TYPE_LABEL, report=report
                 ),
+                color=clamp_str(
+                    rt_data.get("color"), il.REL_TYPE_COLOR, report=report
+                ),
             )
             db.add(rtype)
             rel_type_index.register(name, rtype)
@@ -1451,7 +1459,10 @@ async def run_import(
             if dedupe
             else PairGuard()
         )
-        m_imp, m_skip = _import_relationship_edges(
+        # Resolved once for the whole file rather than per edge: it is a single
+        # query and the answer cannot change mid-import.
+        exposed_ids = await relationship_exposed_member_ids(db, system)
+        m_imp, m_skip, m_demoted = _import_relationship_edges(
             db,
             system,
             data.get("member_relationships", []),
@@ -1459,16 +1470,28 @@ async def run_import(
             type_map=old_rtid_to_type,
             model=MemberRelationship,
             guard=member_rel_guard,
+            exposed_ids=exposed_ids,
         )
         result.member_relationships_imported += m_imp
         result.member_relationships_skipped += m_skip
+        if m_demoted:
+            warnings.append(
+                f"{m_demoted} imported relationship(s) were marked public in "
+                "the file and join members who are currently shown on a shared "
+                "view that includes relationships. They were imported as "
+                "private so restoring a backup could not publish them without "
+                "you asking. Set them back to public from the relationships "
+                "screen if you want them shown."
+            )
 
         group_rel_guard = (
             await load_group_relationship_guard(db, system.id)
             if dedupe
             else PairGuard()
         )
-        g_imp, g_skip = _import_relationship_edges(
+        # No `exposed_ids`: nothing projects group edges, so there is nothing
+        # an imported one could publish.
+        g_imp, g_skip, _ = _import_relationship_edges(
             db,
             system,
             data.get("group_relationships", []),
@@ -1529,6 +1552,9 @@ async def run_import(
             include_bio=bool(v_data.get("include_bio", False)),
             include_fronting=bool(v_data.get("include_fronting", False)),
             fronting_show_count=bool(v_data.get("fronting_show_count", True)),
+            include_relationships=bool(
+                v_data.get("include_relationships", False)
+            ),
         )
         db.add(view)
 
@@ -2353,8 +2379,11 @@ def _import_relationship_edges(
     type_map: dict,
     model: type,
     guard: PairGuard,
-) -> tuple[int, int]:
-    """Build member/group relationship edges, returning (imported, skipped).
+    exposed_ids: set[uuid.UUID] | None = None,
+) -> tuple[int, int, int]:
+    """Build member/group relationship edges.
+
+    Returns (imported, skipped, demoted).
 
     Shared by both edge tables (they differ only in the endpoint map and ORM
     model). For each edge: resolve the type and both endpoints through the
@@ -2364,9 +2393,21 @@ def _import_relationship_edges(
     re-import or in-file inverse duplicate is skipped rather than raising.
     ``db.add`` only; the caller flushes. Not a coroutine - it enqueues rows
     on the session without awaiting.
+
+    `exposed_ids` is the set from `relationship_exposed_member_ids`: members an
+    edge could be published through right now. An incoming edge marked `public`
+    whose BOTH endpoints are in that set is stored `private` instead and
+    counted in `demoted`. The owner-side raise path has step-up re-auth and a
+    grace window in front of it; an import has neither, so honouring the file's
+    level here would publish a relationship as a side effect of restoring a
+    backup - the accidental-outing failure this whole feature exists to
+    prevent. Demoting is recoverable in one click (raising the edge afterwards
+    goes through the proper gate); publishing is not. Group edges pass None,
+    because nothing projects them.
     """
     imported = 0
     skipped = 0
+    demoted = 0
     for e_data in _as_list(edges):
         if not isinstance(e_data, dict):
             continue
@@ -2383,6 +2424,15 @@ def _import_relationship_edges(
         if not guard.add(relationship_pair_key(rtype.id, src_id, tgt_id)):
             skipped += 1
             continue
+        visibility = _rel_visibility(e_data.get("visibility"))
+        if (
+            visibility == PrivacyLevel.PUBLIC
+            and exposed_ids
+            and src_id in exposed_ids
+            and tgt_id in exposed_ids
+        ):
+            visibility = PrivacyLevel.PRIVATE
+            demoted += 1
         edge = model(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -2390,14 +2440,14 @@ def _import_relationship_edges(
             target_id=tgt_id,
             relationship_type_id=rtype.id,
             mutual=bool(e_data.get("mutual", False)),
-            visibility=_rel_visibility(e_data.get("visibility")),
+            visibility=visibility,
         )
         created = _parse_iso(e_data.get("created_at"))
         if created:
             edge.created_at = created
         db.add(edge)
         imported += 1
-    return imported, skipped
+    return imported, skipped, demoted
 
 
 def _trunc(val: str | None, max_len: int) -> str | None:

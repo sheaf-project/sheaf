@@ -55,6 +55,7 @@ from sheaf.schemas.share import (
     ShareViewRead,
     ShareViewUpdate,
 )
+from sheaf.services.share_projection import projectable_relationships
 from sheaf.services.sharing import (
     EXPOSURE_FLAGS,
     add_field_to_view,
@@ -140,11 +141,13 @@ def _view_to_read(view: ShareView, *, is_shared: bool) -> ShareViewRead:
         include_bio=view.include_bio,
         include_fronting=view.include_fronting,
         fronting_show_count=view.fronting_show_count,
+        include_relationships=view.include_relationships,
         created_at=view.created_at,
         is_shared=is_shared,
         pending_include_bio=view.pending_include_bio,
         pending_include_fronting=view.pending_include_fronting,
         pending_fronting_show_count=view.pending_fronting_show_count,
+        pending_include_relationships=view.pending_include_relationships,
         flags_activate_at=view.flags_activate_at,
         members=[
             {
@@ -258,6 +261,7 @@ async def create_share_view(
         include_bio=body.include_bio,
         include_fronting=body.include_fronting,
         fronting_show_count=body.fronting_show_count,
+        include_relationships=body.include_relationships,
     )
     db.add(view)
     try:
@@ -296,7 +300,7 @@ async def update_share_view(
 ) -> ShareViewRead:
     """Edit a view's settings.
 
-    Turning one of the three exposure flags ON while the view is already shared
+    Turning one of the exposure flags ON while the view is already shared
     exposes more, so it is deferred and re-auth-gated exactly like adding a
     member: the new value is STAGED (`pending_<flag>` + `flags_activate_at`),
     the live flag does not move, and the finalize sweep promotes it once the
@@ -815,16 +819,23 @@ async def sharing_audit(
         )
         .order_by(ShareGrant.created_at.desc())
     )
-    entries = [
-        ShareAuditEntry(
-            grant=_grant_to_read(grant),
-            view_id=view.id,
-            view_name=view.name,
-            member_count=len(view.members),
-            field_count=len(view.fields),
-            include_bio=view.include_bio,
-            include_fronting=view.include_fronting,
+    entries = []
+    for grant, view in result.all():
+        # Counted through the projection's own helper rather than recomputed
+        # here: an audit that disagreed with what visitors actually get would
+        # be worse than no audit at all.
+        edges = await projectable_relationships(db, view)
+        entries.append(
+            ShareAuditEntry(
+                grant=_grant_to_read(grant),
+                view_id=view.id,
+                view_name=view.name,
+                member_count=len(view.members),
+                field_count=len(view.fields),
+                include_bio=view.include_bio,
+                include_fronting=view.include_fronting,
+                include_relationships=view.include_relationships,
+                relationship_count=len(edges),
+            )
         )
-        for grant, view in result.all()
-    ]
     return ShareAudit(entries=entries)

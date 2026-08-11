@@ -578,6 +578,7 @@ async def export_all(
                 "symmetry": rt.symmetry.value,
                 "forward_label": rt.forward_label,
                 "reverse_label": rt.reverse_label,
+                "color": rt.color,
             }
             for rt in relationship_types
         ],
@@ -649,6 +650,7 @@ def _share_view_dict(view: ShareView) -> dict:
         "include_bio": view.include_bio,
         "include_fronting": view.include_fronting,
         "fronting_show_count": view.fronting_show_count,
+        "include_relationships": view.include_relationships,
         "member_ids": [str(m.member_id) for m in view.members],
         "field_ids": [str(f.field_id) for f in view.fields],
         "group_ids": [str(g.group_id) for g in view.groups],

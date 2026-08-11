@@ -30,10 +30,12 @@ from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException, status
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from sheaf.config import settings
 from sheaf.crypto import hash_share_token
 from sheaf.models.member import Member, group_members
+from sheaf.models.relationship import MemberRelationship
 from sheaf.models.share import (
     ShareGrant,
     ShareGrantStatus,
@@ -88,6 +90,7 @@ EXPOSURE_FLAGS: tuple[str, ...] = (
     "include_bio",
     "include_fronting",
     "fronting_show_count",
+    "include_relationships",
 )
 
 
@@ -234,6 +237,136 @@ async def fronting_guard_release_exposes(
         .limit(1)
     )
     return result.scalar_one_or_none() is not None
+
+
+async def relationship_raise_exposes(
+    db: AsyncSession,
+    system: System,
+    *,
+    source_id: uuid.UUID,
+    target_id: uuid.UUID,
+) -> bool:
+    """Whether publishing this edge would actually put it in front of anybody.
+
+    Takes the two endpoint ids rather than an edge row so the CREATE path can
+    ask the same question about an edge that does not exist yet. Creating one
+    already public and raising an existing one to public are the same exposure,
+    and must not have different gates in front of them - otherwise "delete it
+    and add it back as public" is a way around the slower door.
+
+    The sibling of `fronting_guard_release_exposes`, for the other thing an
+    owner can raise to `public`. An edge is the most relational data in Sheaf -
+    it names two people at once - so it only projects when EVERY gate below is
+    already open, and it is only worth a grace window when the same is true:
+
+    - both endpoints are members of one view (the SAME view: an edge whose ends
+      sit in two different views is never drawn), each with an active or
+      pending row;
+    - that view has `include_relationships` on, or staged on;
+    - a grant points at that view and passes `grant_live_clause()`;
+    - and both endpoints clear the member ceiling the projection applies -
+      `privacy == public` and not `never_shareable`.
+
+    Pending counts on every axis (membership rows, the view flag, the grant)
+    for the reason it counts everywhere else in this module: a pending thing
+    goes live on its own, so a raise requested near the end of someone else's
+    window must serve its own full one rather than inheriting the remainder.
+
+    A False here means the raise is instant, which is correct AND safe: with
+    nothing pointing at the edge there is no exposure to delay, and if a view
+    or grant appears later, that action carries its own gate and its own
+    window.
+    """
+    endpoints = (
+        (
+            await db.execute(
+                select(Member).where(
+                    Member.id.in_([source_id, target_id]),
+                    Member.system_id == system.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Two distinct rows expected; a self-edge cannot exist (CHECK constraint)
+    # and a dangling endpoint cannot project.
+    if len(endpoints) != 2:
+        return False
+    if any(
+        m.never_shareable or m.privacy != PrivacyLevel.PUBLIC for m in endpoints
+    ):
+        return False
+
+    source_row = aliased(ShareViewMember)
+    target_row = aliased(ShareViewMember)
+    eligible = [ShareItemStatus.ACTIVE.value, ShareItemStatus.PENDING.value]
+    result = await db.execute(
+        select(ShareView.id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .join(
+            source_row,
+            (source_row.view_id == ShareView.id)
+            & (source_row.member_id == source_id),
+        )
+        .join(
+            target_row,
+            (target_row.view_id == ShareView.id)
+            & (target_row.member_id == target_id),
+        )
+        .where(
+            ShareView.system_id == system.id,
+            or_(
+                ShareView.include_relationships.is_(True),
+                ShareView.pending_include_relationships.is_(True),
+            ),
+            source_row.status.in_(eligible),
+            target_row.status.in_(eligible),
+            grant_live_clause(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def relationship_exposed_member_ids(
+    db: AsyncSession, system: System
+) -> set[uuid.UUID]:
+    """Members an edge could be published THROUGH right now.
+
+    `relationship_raise_exposes` answers the question for one edge the owner is
+    deliberately raising. This answers it in bulk, for the importer, which has
+    no such deliberate act to hang a gate on: an edge arrives from a file
+    already marked `public`, and if both of its endpoints are in here, storing
+    that level as-is would publish the edge the instant the import commits -
+    no step-up, no grace window, no screen the user had to look at.
+
+    Deliberately coarser than the single-edge test: it does not require both
+    endpoints to share ONE view, so two members published through two different
+    views count. That direction of imprecision keeps an edge private that might
+    have been safe to publish, which is the only direction worth being wrong in.
+    """
+    result = await db.execute(
+        select(Member.id)
+        .join(ShareViewMember, ShareViewMember.member_id == Member.id)
+        .join(ShareView, ShareView.id == ShareViewMember.view_id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .where(
+            Member.system_id == system.id,
+            Member.never_shareable.is_(False),
+            Member.privacy == PrivacyLevel.PUBLIC,
+            ShareViewMember.status.in_(
+                [ShareItemStatus.ACTIVE.value, ShareItemStatus.PENDING.value]
+            ),
+            or_(
+                ShareView.include_relationships.is_(True),
+                ShareView.pending_include_relationships.is_(True),
+            ),
+            grant_live_clause(),
+        )
+        .distinct()
+    )
+    return set(result.scalars().all())
 
 
 # ---------------------------------------------------------------------------
@@ -638,9 +771,15 @@ async def finalize_share_activations(db: AsyncSession) -> int:
                  ShareView.pending_fronting_show_count),
                 else_=ShareView.fronting_show_count,
             ),
+            include_relationships=case(
+                (ShareView.pending_include_relationships.is_not(None),
+                 ShareView.pending_include_relationships),
+                else_=ShareView.include_relationships,
+            ),
             pending_include_bio=None,
             pending_include_fronting=None,
             pending_fronting_show_count=None,
+            pending_include_relationships=None,
             flags_activate_at=None,
         )
         .execution_options(synchronize_session=False)
@@ -661,5 +800,29 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         .execution_options(synchronize_session=False)
     )
     promoted += member_guards.rowcount or 0
+
+    # Staged relationship-edge raises, same atomic shape for the same reason:
+    # a lowering that lands mid-sweep clears `visibility_activates_at` and so
+    # either falls outside the predicate or writes last. The `case()` guards
+    # the ordering where the timestamp survived but the staged level did not -
+    # then the live level is kept rather than nulled out.
+    edge_raises = await db.execute(
+        update(MemberRelationship)
+        .where(
+            MemberRelationship.visibility_activates_at.is_not(None),
+            MemberRelationship.visibility_activates_at <= now,
+        )
+        .values(
+            visibility=case(
+                (MemberRelationship.pending_visibility.is_not(None),
+                 MemberRelationship.pending_visibility),
+                else_=MemberRelationship.visibility,
+            ),
+            pending_visibility=None,
+            visibility_activates_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    promoted += edge_raises.rowcount or 0
 
     return promoted

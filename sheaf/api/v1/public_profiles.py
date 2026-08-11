@@ -36,11 +36,13 @@ from sheaf.models.system import System
 from sheaf.schemas.public_profile import (
     PublicFrontingView,
     PublicMemberView,
+    PublicRelationshipsView,
     PublicSystemView,
 )
 from sheaf.services.share_projection import (
     project_fronting,
     project_members,
+    project_relationships,
     project_system,
 )
 from sheaf.services.sharing import resolve_link_grant, resolve_public_grant
@@ -158,6 +160,26 @@ async def public_system_fronting(
     return await project_fronting(db, view, system)
 
 
+@router.get(
+    "/systems/{system_id}/relationships",
+    response_model=PublicRelationshipsView,
+    dependencies=[_RATE],
+)
+async def public_system_relationships(
+    system_id: uuid.UUID,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> PublicRelationshipsView:
+    _public_headers(response, token_keyed=False)
+    view, _ = await _resolve_system(system_id, db)
+    # Same no-oracle rule as fronting: a view without relationships 404s rather
+    # than returning an empty list, so "does this profile share relationships?"
+    # cannot be answered separately from "is this profile public?".
+    if not view.include_relationships:
+        raise _not_found()
+    return await project_relationships(db, view)
+
+
 # ---------------------------------------------------------------------------
 # Link grant (located by an opaque token)
 # ---------------------------------------------------------------------------
@@ -208,3 +230,20 @@ async def public_shared_fronting(
     if not view.include_fronting:
         raise _not_found()
     return await project_fronting(db, view, system)
+
+
+@router.get(
+    "/shared/{token}/relationships",
+    response_model=PublicRelationshipsView,
+    dependencies=[_RATE],
+)
+async def public_shared_relationships(
+    token: str,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> PublicRelationshipsView:
+    _public_headers(response, token_keyed=True)
+    view, _ = await _resolve_link(token, db)
+    if not view.include_relationships:
+        raise _not_found()
+    return await project_relationships(db, view)

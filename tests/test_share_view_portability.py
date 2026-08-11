@@ -138,6 +138,7 @@ def _native_with_views(view_name: str = "Portable View") -> dict:
                 "include_bio": True,
                 "include_fronting": True,
                 "fronting_show_count": False,
+                "include_relationships": True,
                 "member_ids": ["m1", "m2"],
                 "field_ids": ["f1"],
                 "group_ids": ["g1"],
@@ -150,7 +151,7 @@ def _native_with_views(view_name: str = "Portable View") -> dict:
 
 
 def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
-    """A published system exports its view (name + all three flags + the
+    """A published system exports its view (name + all four flags + the
     member/field/group picks) and nothing at all about the grant that
     publishes it - not the row, not the token, not the token's hash."""
     member = auth_client.post(
@@ -168,6 +169,7 @@ def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
             "include_bio": True,
             "include_fronting": True,
             "fronting_show_count": False,
+            "include_relationships": True,
         },
     )
     assert view.status_code == 201, view.text
@@ -212,6 +214,7 @@ def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
     assert exported["include_bio"] is True
     assert exported["include_fronting"] is True
     assert exported["fronting_show_count"] is False
+    assert exported["include_relationships"] is True
     assert exported["member_ids"] == [member]
     assert exported["field_ids"] == [field]
     assert exported["group_ids"] == [group]
@@ -241,6 +244,9 @@ def test_native_import_restores_views_remapped(auth_client: httpx.Client):
     assert view["include_bio"] is True
     assert view["include_fronting"] is True
     assert view["fronting_show_count"] is False
+    # The relationships flag travels too - and lands inert like the rest of the
+    # view, since no grant comes with it.
+    assert view["include_relationships"] is True
     assert [vm["member_id"] for vm in view["members"]] == [member_id["ShareAda"]]
     assert [vf["field_id"] for vf in view["fields"]] == [field_id["ShareField"]]
     assert [vg["group_id"] for vg in view["groups"]] == [group_id["ShareGroup"]]
@@ -415,6 +421,7 @@ def test_openplural_roundtrip_restores_views_and_relationships(
     view = _view_by_name(auth_client, "OpenPlural View")
     assert view["include_bio"] is True
     assert view["fronting_show_count"] is False
+    assert view["include_relationships"] is True
     # The never-shareable member is stripped on this path too.
     assert [vm["member_id"] for vm in view["members"]] == [member_id["ShareAda"]]
     assert [vf["field_id"] for vf in view["fields"]] == [field_id["ShareField"]]

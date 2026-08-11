@@ -53,7 +53,6 @@ from sheaf.models.relationship import (
     MemberRelationship,
     RelationshipSymmetry,
     RelationshipType,
-    RelationshipVisibility,
 )
 from sheaf.models.reminder import Reminder, ReminderPending, reminder_scope_members
 from sheaf.models.retention_trim_notice import RetentionTrimNotice, RetentionTrimStatus
@@ -134,7 +133,6 @@ __all__ = [
     "MemberRelationship",
     "RelationshipSymmetry",
     "RelationshipType",
-    "RelationshipVisibility",
     "Reminder",
     "ReminderPending",
     "RetentionTrimNotice",

@@ -75,6 +75,7 @@ def _published_system(
     include_bio: bool = False,
     include_fronting: bool = False,
     fronting_show_count: bool = True,
+    include_relationships: bool = False,
 ) -> tuple[str, str]:
     """Create a view with the given members, publish it publicly, and return
     (system_id, view_id)."""
@@ -86,6 +87,7 @@ def _published_system(
             "include_bio": include_bio,
             "include_fronting": include_fronting,
             "fronting_show_count": fronting_show_count,
+            "include_relationships": include_relationships,
         },
     ).json()["id"]
     for m in members or []:
@@ -165,10 +167,57 @@ def _backdate_pending_membership(member_id: str) -> None:
     _in_db(_work)
 
 
+def _set_never_shareable(member_id: str) -> None:
+    """Set the flag straight in the database, so the member's view rows stay
+    put. The API also removes them, which would make a projection test prove
+    only "the member left the view"."""
+
+    async def _work(db) -> None:
+        from sheaf.models.member import Member
+
+        member = await db.get(Member, uuid.UUID(member_id))
+        assert member is not None
+        member.never_shareable = True
+
+    _in_db(_work)
+
+
 def _link_token(c: httpx.Client, view_id: str) -> str:
     r = c.post("/v1/share-grants", json={"view_id": view_id, "subject_type": "link"})
     assert r.status_code == 201, r.text
     return r.json()["token"]
+
+
+def _rel_type(c: httpx.Client, name: str, **kw) -> str:
+    body = {
+        "name": name,
+        "symmetry": "symmetric",
+        "forward_label": "partner",
+        **kw,
+    }
+    r = c.post("/v1/relationship-types", json=body)
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _edge(
+    c: httpx.Client,
+    source: str,
+    target: str,
+    type_id: str,
+    visibility: str = "public",
+) -> str:
+    r = c.post(
+        "/v1/member-relationships",
+        json={
+            "source_id": source,
+            "target_id": target,
+            "relationship_type_id": type_id,
+            "visibility": visibility,
+        },
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -706,4 +755,139 @@ def test_fronting_show_count_off_hides_the_number():
     body = _anon().get(f"/v1/public/systems/{system_id}/fronting").json()
     assert {pm["name"] for pm in body["members"]} == {"OnlyShown"}
     assert body["hidden_count"] == 0
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# Relationships
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.public_profiles
+def test_relationships_404_when_view_excludes_them():
+    """Same no-oracle rule as fronting, on both grant shapes: an empty list
+    would answer "does this profile share relationships?" on its own."""
+    owner = _register()
+    a, b = _member(owner, "RelA"), _member(owner, "RelB")
+    system_id, view = _published_system(
+        owner, members=[a, b], include_relationships=False
+    )
+    _edge(owner, a, b, _rel_type(owner, "Partner"))
+    token = _link_token(owner, view)
+
+    assert _anon().get(f"/v1/public/systems/{system_id}/relationships").status_code == 404
+    assert _anon().get(f"/v1/public/shared/{token}/relationships").status_code == 404
+    # The rest of the profile still resolves, so the 404 really is the flag.
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_relationship_key_set():
+    """The exact key set of the edge payload and of each endpoint - the same
+    fail-closed contract the member and system payloads carry."""
+    owner = _register()
+    a, b = _member(owner, "KeyA"), _member(owner, "KeyB")
+    system_id, _ = _published_system(
+        owner, members=[a, b], include_relationships=True
+    )
+    _edge(owner, a, b, _rel_type(owner, "Partner"))
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/relationships").json()
+    assert set(body) == {"relationships"}
+    edge = body["relationships"][0]
+    assert set(edge) == {
+        "id", "type_name", "type_color", "source", "target",
+        "source_label", "target_label", "mutual",
+    }
+    # An endpoint is an id and a name only; the client joins on id for the rest.
+    assert set(edge["source"]) == {"id", "name"}
+    assert set(edge["target"]) == {"id", "name"}
+    assert {edge["source"]["name"], edge["target"]["name"]} == {"KeyA", "KeyB"}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_only_public_edges_between_projected_members_appear():
+    """An edge is the one payload that names two people at once, so marking it
+    public is a request, not an override: every gate the members themselves
+    pass through applies to both ends first."""
+    owner = _register()
+    shown_a, shown_b = _member(owner, "ShownA"), _member(owner, "ShownB")
+    private = _member(owner, "PrivateEnd", privacy="private")
+    outside = _member(owner, "OutsideEnd")
+    secret = _member(owner, "SecretEnd")
+    system_id, view = _published_system(
+        owner,
+        members=[shown_a, shown_b, private, secret],
+        include_relationships=True,
+    )
+    # `outside` is deliberately left out of the view.
+    published = _rel_type(owner, "Partner")
+    _edge(owner, shown_a, shown_b, published)
+    # Each of these is marked public and still must not be drawn.
+    _edge(owner, shown_a, private, _rel_type(owner, "WithPrivate"))
+    _edge(owner, shown_a, outside, _rel_type(owner, "WithOutside"))
+    _edge(owner, shown_a, secret, _rel_type(owner, "WithSecret"))
+    # And a friends-level edge between two fully projected members: the edge's
+    # own level is a gate too, and every grant today is public-tier.
+    _edge(owner, shown_b, shown_a, _rel_type(owner, "Friendsy"), visibility="friends")
+    _set_never_shareable(secret)
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/relationships").json()
+    assert [e["type_name"] for e in body["relationships"]] == ["Partner"]
+    names = {e["source"]["name"] for e in body["relationships"]} | {
+        e["target"]["name"] for e in body["relationships"]
+    }
+    assert names == {"ShownA", "ShownB"}
+
+    # Identical answer through a link grant on the same view.
+    token = _link_token(owner, view)
+    linked = _anon().get(f"/v1/public/shared/{token}/relationships").json()
+    assert [e["type_name"] for e in linked["relationships"]] == ["Partner"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_relationship_labels_read_from_each_end_of_a_directional_type():
+    """source_label is the forward label, target_label the reverse one - the
+    stored row is canonical and the payload says how it reads from each end."""
+    owner = _register()
+    parent, child = _member(owner, "TheParent"), _member(owner, "TheChild")
+    system_id, _ = _published_system(
+        owner, members=[parent, child], include_relationships=True
+    )
+    rtype = _rel_type(
+        owner,
+        "ParentChild",
+        symmetry="directional",
+        forward_label="parent",
+        reverse_label="child",
+    )
+    _edge(owner, parent, child, rtype)
+
+    edge = _anon().get(
+        f"/v1/public/systems/{system_id}/relationships"
+    ).json()["relationships"][0]
+    assert edge["source"]["name"] == "TheParent"
+    assert edge["target"]["name"] == "TheChild"
+    assert edge["source_label"] == "parent"
+    assert edge["target_label"] == "child"
+    assert edge["mutual"] is False
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_relationship_type_colour_rides_along():
+    """The type's colour says nothing about anyone, so it is published with the
+    edge and must survive the projection unchanged."""
+    owner = _register()
+    a, b = _member(owner, "ColourA"), _member(owner, "ColourB")
+    system_id, _ = _published_system(
+        owner, members=[a, b], include_relationships=True
+    )
+    _edge(owner, a, b, _rel_type(owner, "Tinted", color="#ff8800"))
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/relationships").json()
+    assert body["relationships"][0]["type_color"] == "#ff8800"
     owner.close()

@@ -29,6 +29,7 @@ from sheaf.files import resolve_avatar_url_public, resolve_description_urls_publ
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.front import Front
 from sheaf.models.member import Member, front_members
+from sheaf.models.relationship import MemberRelationship, RelationshipType
 from sheaf.models.share import (
     ShareItemStatus,
     ShareView,
@@ -40,6 +41,9 @@ from sheaf.schemas.public_profile import (
     PublicFrontingMember,
     PublicFrontingView,
     PublicMemberView,
+    PublicRelationship,
+    PublicRelationshipEndpoint,
+    PublicRelationshipsView,
     PublicSystemView,
 )
 from sheaf.services.custom_fields import field_value_plaintext
@@ -47,6 +51,7 @@ from sheaf.services.members import (
     member_description_plaintext,
     member_name_plaintext,
 )
+from sheaf.services.relationships import endpoint_labels
 
 
 def _active_member_filter(stmt: Select, view: ShareView) -> Select:
@@ -137,10 +142,16 @@ async def _field_values_by_member(
     return out
 
 
+def _shown_name(m: Member) -> str:
+    """What a visitor actually reads for this member: the display name if there
+    is one, otherwise the decrypted name."""
+    return m.display_name or member_name_plaintext(m) or ""
+
+
 def _sort_key(m: Member) -> str:
     """Alphabetical by the shown name. Insertion order would leak internal
     structure; the display name (or decrypted name) is what a visitor sees."""
-    return (m.display_name or member_name_plaintext(m) or "").casefold()
+    return _shown_name(m).casefold()
 
 
 def _member_view(
@@ -191,6 +202,115 @@ async def project_members(db: AsyncSession, view: ShareView) -> list[PublicMembe
         )
         for m in members
     ]
+
+
+async def projectable_relationships(
+    db: AsyncSession,
+    view: ShareView,
+    *,
+    active_ids: set[uuid.UUID] | None = None,
+) -> list[tuple[MemberRelationship, RelationshipType]]:
+    """The member edges this view would serve right now, with their types.
+
+    THE choke point for relationship exposure, and the reason it is a single
+    function rather than a filter each caller reassembles: the owner-side audit
+    counts exactly what an anonymous visitor gets, because both go through
+    here. Three gates, all in the query:
+
+    - the view's `include_relationships` flag (an off flag yields nothing here,
+      and the API layer 404s the endpoint outright rather than serving an empty
+      list, so "does this profile share relationships?" is not separately
+      probeable);
+    - `visibility == public` on the EDGE itself - private (the default) and
+      friends-level edges never leave the owner's account;
+    - and both endpoints inside `_active_member_ids`, which is what composes
+      this on top of the member ceiling. That is the load-bearing part: an edge
+      is the one payload that names two people at once, so it can never be the
+      thing that outs an endpoint the view does not already publish in full.
+      Marking an edge public is therefore a request, not an override.
+
+    Group edges are deliberately absent: nothing projects them at all.
+    """
+    if not view.include_relationships:
+        return []
+    if active_ids is None:
+        active_ids = await _active_member_ids(db, view)
+    # An edge needs two projected endpoints, so one lonely member cannot have
+    # one; skip the query entirely.
+    if len(active_ids) < 2:
+        return []
+
+    result = await db.execute(
+        select(MemberRelationship, RelationshipType)
+        .join(
+            RelationshipType,
+            RelationshipType.id == MemberRelationship.relationship_type_id,
+        )
+        .where(
+            # Redundant with the endpoint filter below, and here for the same
+            # reason the member projection pins its tenant: this query feeds
+            # anonymous readers and does not get to assume every writer was
+            # correct.
+            MemberRelationship.system_id == view.system_id,
+            MemberRelationship.visibility == PrivacyLevel.PUBLIC,
+            MemberRelationship.source_id.in_(active_ids),
+            MemberRelationship.target_id.in_(active_ids),
+        )
+    )
+    return list(result.all())
+
+
+async def project_relationships(
+    db: AsyncSession, view: ShareView
+) -> PublicRelationshipsView:
+    """Published edges between members this view shows, as a flat list."""
+    members = await _active_members(db, view)
+    # Same rows `_active_member_ids` would return (identical filter), reused so
+    # the names and the id gate cannot disagree about who is in the view.
+    by_id = {m.id: m for m in members}
+    pairs = await projectable_relationships(db, view, active_ids=set(by_id))
+
+    out: list[PublicRelationship] = []
+    for edge, rtype in pairs:
+        source = by_id.get(edge.source_id)
+        target = by_id.get(edge.target_id)
+        if source is None or target is None:
+            continue
+        source_label, target_label = endpoint_labels(
+            symmetry=rtype.symmetry,
+            forward_label=rtype.forward_label,
+            reverse_label=rtype.reverse_label,
+            mutual=edge.mutual,
+        )
+        out.append(
+            PublicRelationship(
+                id=str(edge.id),
+                type_name=rtype.name,
+                type_color=rtype.color,
+                source=PublicRelationshipEndpoint(
+                    id=str(source.id), name=_shown_name(source)
+                ),
+                target=PublicRelationshipEndpoint(
+                    id=str(target.id), name=_shown_name(target)
+                ),
+                source_label=source_label,
+                target_label=target_label,
+                mutual=edge.mutual,
+            )
+        )
+
+    # Sorted by what a visitor can already read, never by insertion order: the
+    # order edges were created in leaks internal structure (which relationships
+    # the system added first, and therefore which it considers foundational) -
+    # the same reason `_sort_key` exists for members.
+    out.sort(
+        key=lambda r: (
+            r.type_name.casefold(),
+            r.source.name.casefold(),
+            r.target.name.casefold(),
+        )
+    )
+    return PublicRelationshipsView(relationships=out)
 
 
 async def project_system(

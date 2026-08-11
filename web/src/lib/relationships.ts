@@ -1,6 +1,7 @@
 import type {
   RelationshipEdge,
   RelationshipEdgeCreate,
+  RelationshipEdgeUpdate,
   RelationshipFromViewpoint,
   RelationshipGraph,
   RelationshipType,
@@ -49,6 +50,22 @@ export function createMemberRelationship(data: RelationshipEdgeCreate) {
   });
 }
 
+/** Move one member edge up or down the privacy ladder. A raise that would
+ *  actually expose the edge is answered with a 400 asking for step-up
+ *  credentials, so callers pass `skipErrorToast` and re-prompt instead of
+ *  letting a toast fire for something the user can still complete. */
+export function updateMemberRelationship(
+  edgeId: string,
+  data: RelationshipEdgeUpdate,
+  skipErrorToast = false,
+) {
+  return apiFetch<RelationshipEdge>(`/v1/member-relationships/${edgeId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+    skipErrorToast,
+  });
+}
+
 export function deleteMemberRelationship(edgeId: string) {
   return apiFetch<void>(`/v1/member-relationships/${edgeId}`, {
     method: "DELETE",
@@ -67,6 +84,20 @@ export function createGroupRelationship(data: RelationshipEdgeCreate) {
   return apiFetch<RelationshipEdge>("/v1/group-relationships", {
     method: "POST",
     body: JSON.stringify(data),
+  });
+}
+
+/** The group twin. Never deferred server-side (no share view reaches a group
+ *  edge), but it takes the same option so both scopes call the same shape. */
+export function updateGroupRelationship(
+  edgeId: string,
+  data: RelationshipEdgeUpdate,
+  skipErrorToast = false,
+) {
+  return apiFetch<RelationshipEdge>(`/v1/group-relationships/${edgeId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 

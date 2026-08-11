@@ -87,6 +87,14 @@ _SHARE_FLAG_STAGING = (
     "staged flag flip waiting out the grace window; the export carries the "
     "view's live flags, so an import never restores a half-applied loosening"
 )
+# A staged edge raise is the same kind of mid-grace-window state as a staged
+# view flag: the export carries the edge's LIVE visibility, so an import never
+# restores a half-applied raise (and, with no grants imported, could not act on
+# one anyway).
+_EDGE_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "edge's live visibility, so an import never restores a half-applied raise"
+)
 _NO_GRANT_IMPORT = (
     "grants are deliberately never exported or imported: a grant is a live "
     "capability, so restoring one would republish a system from a backup"
@@ -278,6 +286,7 @@ CLASSIFICATION: dict[type, dict] = {
     ShareView: {
         "exported": {
             "name", "include_bio", "include_fronting", "fronting_show_count",
+            "include_relationships",
         },
         "excluded": {
             "id": _SURROGATE_PK,
@@ -287,6 +296,7 @@ CLASSIFICATION: dict[type, dict] = {
             "pending_include_bio": _SHARE_FLAG_STAGING,
             "pending_include_fronting": _SHARE_FLAG_STAGING,
             "pending_fronting_show_count": _SHARE_FLAG_STAGING,
+            "pending_include_relationships": _SHARE_FLAG_STAGING,
             "flags_activate_at": _SHARE_FLAG_STAGING,
         },
     },
@@ -525,7 +535,9 @@ CLASSIFICATION: dict[type, dict] = {
         },
     },
     RelationshipType: {
-        "exported": {"name", "symmetry", "forward_label", "reverse_label"},
+        "exported": {
+            "name", "symmetry", "forward_label", "reverse_label", "color",
+        },
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
@@ -544,6 +556,8 @@ CLASSIFICATION: dict[type, dict] = {
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
+            "pending_visibility": _EDGE_RAISE_STAGING,
+            "visibility_activates_at": _EDGE_RAISE_STAGING,
         },
     },
     GroupRelationship: {

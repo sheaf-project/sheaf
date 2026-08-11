@@ -2,27 +2,19 @@ import { type FormEvent, useState } from "react";
 
 import {
   useRelationshipTypes,
-  useCreateRelationshipType,
   useUpdateRelationshipType,
   useDeleteRelationshipType,
 } from "@/hooks/use-relationships";
-import { RELATIONSHIP_PRESETS } from "@/types/api";
-import type {
-  RelationshipPreset,
-  RelationshipSymmetry,
-  RelationshipType,
-} from "@/types/api";
+import type { RelationshipSymmetry, RelationshipType } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ColorDot } from "@/components/color-dot";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  RelationshipColorField,
+  RelationshipTypeForm,
+} from "@/components/relationship-type-dialog";
 import {
   Dialog,
   DialogContent,
@@ -32,13 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const SYMMETRY_LABELS: { value: RelationshipSymmetry; label: string }[] = [
-  { value: "symmetric", label: "Symmetric (one label)" },
-  { value: "directional", label: "Directional (two labels)" },
-  { value: "either", label: "Either (both / mutual)" },
-];
-
-/** A one-line, human-readable summary of how a type reads. */
+/** A one-line, plain summary of how a type reads. */
 function summariseType(t: {
   symmetry: RelationshipSymmetry;
   forward_label: string;
@@ -73,11 +59,14 @@ export function SettingsRelationshipsPage() {
                   key={t.id}
                   className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
                 >
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{t.name}</p>
-                    <p className="text-xs text-muted-foreground truncate">
-                      {summariseType(t)}
-                    </p>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <ColorDot color={t.color} />
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{t.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {summariseType(t)}
+                      </p>
+                    </div>
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <Button
@@ -129,132 +118,13 @@ export function SettingsRelationshipsPage() {
 }
 
 function NewTypeCard() {
-  const createType = useCreateRelationshipType();
-  const [presetLabel, setPresetLabel] = useState("");
-  const [name, setName] = useState("");
-  const [symmetry, setSymmetry] = useState<RelationshipSymmetry>("symmetric");
-  const [forwardLabel, setForwardLabel] = useState("");
-  const [reverseLabel, setReverseLabel] = useState("");
-
-  const isSymmetric = symmetry === "symmetric";
-
-  function applyPreset(label: string) {
-    setPresetLabel(label);
-    const preset: RelationshipPreset | undefined = RELATIONSHIP_PRESETS.find(
-      (p) => p.label === label,
-    );
-    if (!preset) return;
-    setName(preset.name);
-    setSymmetry(preset.symmetry);
-    setForwardLabel(preset.forward_label);
-    setReverseLabel(preset.reverse_label ?? "");
-  }
-
-  function reset() {
-    setPresetLabel("");
-    setName("");
-    setSymmetry("symmetric");
-    setForwardLabel("");
-    setReverseLabel("");
-  }
-
-  const valid =
-    name.trim() !== "" &&
-    forwardLabel.trim() !== "" &&
-    (isSymmetric || reverseLabel.trim() !== "");
-
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!valid) return;
-    createType.mutate(
-      {
-        name: name.trim(),
-        symmetry,
-        forward_label: forwardLabel.trim(),
-        reverse_label: isSymmetric ? null : reverseLabel.trim(),
-      },
-      { onSuccess: reset },
-    );
-  }
-
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">New type</CardTitle>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="rel-preset">Start from a preset</Label>
-            <Select value={presetLabel} onValueChange={applyPreset}>
-              <SelectTrigger id="rel-preset" className="w-full">
-                <SelectValue placeholder="Start from a preset..." />
-              </SelectTrigger>
-              <SelectContent>
-                {RELATIONSHIP_PRESETS.map((p) => (
-                  <SelectItem key={p.label} value={p.label}>
-                    {p.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rel-name">Name</Label>
-            <Input
-              id="rel-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Partner"
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rel-symmetry">Kind</Label>
-            <Select
-              value={symmetry}
-              onValueChange={(v) => setSymmetry(v as RelationshipSymmetry)}
-            >
-              <SelectTrigger id="rel-symmetry" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SYMMETRY_LABELS.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rel-forward">
-              {isSymmetric ? "Label" : "Forward label (source side)"}
-            </Label>
-            <Input
-              id="rel-forward"
-              value={forwardLabel}
-              onChange={(e) => setForwardLabel(e.target.value)}
-              placeholder={isSymmetric ? "e.g. partner" : "e.g. parent"}
-              required
-            />
-          </div>
-          {!isSymmetric && (
-            <div className="space-y-2">
-              <Label htmlFor="rel-reverse">Reverse label (target side)</Label>
-              <Input
-                id="rel-reverse"
-                value={reverseLabel}
-                onChange={(e) => setReverseLabel(e.target.value)}
-                placeholder="e.g. child"
-                required
-              />
-            </div>
-          )}
-          <Button type="submit" disabled={createType.isPending || !valid}>
-            {createType.isPending ? "Creating..." : "Create type"}
-          </Button>
-        </form>
+        <RelationshipTypeForm />
       </CardContent>
     </Card>
   );
@@ -271,12 +141,14 @@ function EditTypeDialog({
   const [name, setName] = useState(type.name);
   const [forwardLabel, setForwardLabel] = useState(type.forward_label);
   const [reverseLabel, setReverseLabel] = useState(type.reverse_label ?? "");
+  const [color, setColor] = useState<string | null>(type.color);
 
   const isSymmetric = type.symmetry === "symmetric";
   const valid =
     name.trim() !== "" &&
     forwardLabel.trim() !== "" &&
-    (isSymmetric || reverseLabel.trim() !== "");
+    (isSymmetric || reverseLabel.trim() !== "") &&
+    (color === null || /^#[0-9a-f]{6}$/i.test(color));
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -288,6 +160,8 @@ function EditTypeDialog({
           name: name.trim(),
           forward_label: forwardLabel.trim(),
           reverse_label: isSymmetric ? null : reverseLabel.trim(),
+          // An explicit null really does clear the colour server-side.
+          color,
         },
       },
       { onSuccess: () => onOpenChange(false) },
@@ -339,6 +213,11 @@ function EditTypeDialog({
               />
             </div>
           )}
+          <RelationshipColorField
+            idPrefix="rel-edit"
+            color={color}
+            onChange={setColor}
+          />
           <DialogFooter>
             <Button
               type="button"

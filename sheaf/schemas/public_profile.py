@@ -74,3 +74,45 @@ class PublicFrontingView(BaseModel):
     # fronting-private members - their front state does not propagate at all.
     # Always 0 when the view has fronting_show_count off.
     hidden_count: int = 0
+
+
+class PublicRelationshipEndpoint(BaseModel):
+    """One end of a published edge.
+
+    Just an id and a name, on purpose. The endpoint is always a member the same
+    view already publishes in full through /members, so repeating avatars and
+    pronouns here would only add a second place for the member payload to drift
+    - the client joins on `id` for anything richer.
+    """
+
+    id: str
+    name: str
+
+
+class PublicRelationship(BaseModel):
+    """One edge between two members this view publishes.
+
+    Reaching this schema at all means three separate gates were passed: the
+    view has include_relationships on, the edge itself is marked `public`, and
+    BOTH endpoints cleared the member ceiling. Nothing about the relationship
+    TYPE is sensitive on its own, so the type's name and colour ride along; the
+    private thing is which two people it joins, and that is what the gates
+    protect.
+    """
+
+    id: str
+    type_name: str
+    type_color: str | None = None
+    source: PublicRelationshipEndpoint
+    target: PublicRelationshipEndpoint
+    # How the edge reads from each end ("parent" / "child"). Both are
+    # forward_label for symmetric types and for mutual either-edges.
+    source_label: str
+    target_label: str
+    # True only for an `either` type edge the owner marked mutual. The client
+    # uses it, with the two labels, to decide whether to draw an arrow.
+    mutual: bool
+
+
+class PublicRelationshipsView(BaseModel):
+    relationships: list[PublicRelationship] = []

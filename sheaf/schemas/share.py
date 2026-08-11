@@ -24,6 +24,7 @@ class ShareViewCreate(BaseModel):
     include_bio: bool = False
     include_fronting: bool = False
     fronting_show_count: bool = True
+    include_relationships: bool = False
 
 
 class ShareViewUpdate(BaseModel):
@@ -31,6 +32,7 @@ class ShareViewUpdate(BaseModel):
     include_bio: bool | None = None
     include_fronting: bool | None = None
     fronting_show_count: bool | None = None
+    include_relationships: bool | None = None
 
     password: str | None = _PASSWORD
     totp_code: str | None = None
@@ -62,6 +64,7 @@ class ShareViewRead(BaseModel):
     include_bio: bool
     include_fronting: bool
     fronting_show_count: bool
+    include_relationships: bool
     created_at: datetime
     # True when any non-revoked grant points at this view, including one still
     # inside its grace window. Drives the "this view is live" indicator.
@@ -72,6 +75,7 @@ class ShareViewRead(BaseModel):
     pending_include_bio: bool | None = None
     pending_include_fronting: bool | None = None
     pending_fronting_show_count: bool | None = None
+    pending_include_relationships: bool | None = None
     flags_activate_at: datetime | None = None
     members: list[ShareViewMemberRead]
     fields: list[ShareViewFieldRead]
@@ -155,6 +159,13 @@ class ShareAuditEntry(BaseModel):
     field_count: int
     include_bio: bool
     include_fronting: bool
+    include_relationships: bool
+    # Edges this view would actually serve right now, computed with the same
+    # query the projection uses. Zero whenever include_relationships is off, and
+    # zero when the flag is on but no edge clears both the per-edge `public`
+    # level and the member ceiling - so the audit says what a visitor sees, not
+    # what the flag permits.
+    relationship_count: int
 
 
 class ShareAudit(BaseModel):

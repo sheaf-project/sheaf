@@ -34,9 +34,29 @@ import {
   useRelationshipGraph,
   useRelationshipTypes,
 } from "@/hooks/use-relationships";
-import type { RelationshipEdgeCreate, RelationshipGraph } from "@/types/api";
+import { RelationshipTypeDialog } from "@/components/relationship-type-dialog";
+import {
+  EDGE_VISIBILITY_HELP,
+  EDGE_VISIBILITY_LEVELS,
+} from "@/lib/relationship-privacy";
+import type {
+  PrivacyLevel,
+  RelationshipEdgeCreate,
+  RelationshipGraph,
+} from "@/types/api";
 
 const NODE_R = 22;
+
+/** Shared geometry for the edge arrowheads. One marker per colour in use has
+ *  to be declared, since SVG markers can't inherit the path's stroke. */
+const ARROW_MARKER_PROPS = {
+  viewBox: "0 0 10 10",
+  refX: "9",
+  refY: "5",
+  markerWidth: 7,
+  markerHeight: 7,
+  orient: "auto-start-reverse",
+} as const;
 
 interface SimNode extends SimulationNodeDatum {
   id: string;
@@ -80,6 +100,7 @@ function GraphCanvas({
   const [pending, setPending] = useState<SimNode | null>(null);
   const [target, setTarget] = useState<SimNode | null>(null);
   const nodeNoun = scope === "members" ? "member" : "group";
+  const { data: types } = useRelationshipTypes();
 
   // d3 mutates node x/y in place; each tick publishes fresh array wrappers to
   // state so the SVG re-renders (reading live refs during render is disallowed
@@ -249,6 +270,19 @@ function GraphCanvas({
 
   const { nodes, links } = sim;
 
+  // Edge colour is a client-side join: the graph payload carries the type id,
+  // the type carries the colour. Resolved at render rather than inside the
+  // simulation so recolouring a type repaints without relaying out the graph.
+  const colorByType = new Map(
+    (types ?? []).map((t) => [t.id, t.color] as const),
+  );
+  const edgeColor = new Map<string, string>();
+  for (const e of graph.edges) {
+    const c = colorByType.get(e.relationship_type_id);
+    if (c) edgeColor.set(e.id, c);
+  }
+  const arrowColors = [...new Set(edgeColor.values())];
+
   // Fan out multiple relationships between the same pair: group by unordered
   // node pair and give each edge a slot so it draws as its own curve instead of
   // overlapping (which otherwise hid all but one).
@@ -303,17 +337,14 @@ function GraphCanvas({
         onWheel={onWheel}
       >
         <defs>
-          <marker
-            id="rel-arrow"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
+          <marker id="rel-arrow" {...ARROW_MARKER_PROPS}>
             <path d="M 0 0 L 10 5 L 0 10 z" className="fill-muted-foreground" />
           </marker>
+          {arrowColors.map((c, i) => (
+            <marker key={c} id={`rel-arrow-${i}`} {...ARROW_MARKER_PROPS}>
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={c} />
+            </marker>
+          ))}
           {nodes.map((n) => (
             <clipPath id={`rel-clip-${n.id}`} key={n.id}>
               <circle r={NODE_R} />
@@ -355,14 +386,21 @@ function GraphCanvas({
             const apexX = mx + perpX * offset;
             const apexY = my + perpY * offset;
 
+            // A type with no colour keeps the neutral default.
+            const stroke = edgeColor.get(l.id);
+            const marker = stroke
+              ? `url(#rel-arrow-${arrowColors.indexOf(stroke)})`
+              : "url(#rel-arrow)";
+
             return (
               <g key={l.id}>
                 <path
                   d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
                   fill="none"
-                  className="stroke-muted-foreground/40"
+                  className={stroke ? undefined : "stroke-muted-foreground/40"}
+                  stroke={stroke}
                   strokeWidth={1.5}
-                  markerEnd={l.directed ? "url(#rel-arrow)" : undefined}
+                  markerEnd={l.directed ? marker : undefined}
                 />
                 <text
                   x={apexX}
@@ -473,6 +511,9 @@ function AddEdgeDialog({
   const [typeId, setTypeId] = useState("");
   const [role, setRole] = useState<"forward" | "reverse">("forward");
   const [mutual, setMutual] = useState(false);
+  // Private until said otherwise, same as the per-member editor.
+  const [visibility, setVisibility] = useState<PrivacyLevel>("private");
+  const [showNewType, setShowNewType] = useState(false);
 
   const type = types?.find((t) => t.id === typeId);
   const symmetry = type?.symmetry;
@@ -498,7 +539,7 @@ function AddEdgeDialog({
     } else {
       payload = { source_id: target.id, target_id: source.id, relationship_type_id: type.id };
     }
-    create.mutate(payload, { onSuccess: onClose });
+    create.mutate({ ...payload, visibility }, { onSuccess: onClose });
   }
 
   return (
@@ -525,11 +566,14 @@ function AddEdgeDialog({
                 ))}
               </SelectContent>
             </Select>
-            {types && types.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                Define a relationship type in Settings &gt; Relationships first.
-              </p>
-            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setShowNewType(true)}
+            >
+              New relationship type
+            </Button>
           </div>
           {showRole && !roleHidden && type && (
             <div className="space-y-1">
@@ -558,6 +602,27 @@ function AddEdgeDialog({
               Mutual (both are {type.forward_label})
             </label>
           )}
+          <div className="space-y-1">
+            <Label className="text-xs">Visibility</Label>
+            <Select
+              value={visibility}
+              onValueChange={(v) => setVisibility(v as PrivacyLevel)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDGE_VISIBILITY_LEVELS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>
+                    {l.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {EDGE_VISIBILITY_HELP}
+            </p>
+          </div>
         </div>
         <DialogFooter>
           <Button onClick={submit} disabled={!typeId || create.isPending}>
@@ -565,6 +630,12 @@ function AddEdgeDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      {showNewType && (
+        <RelationshipTypeDialog
+          onOpenChange={(open) => !open && setShowNewType(false)}
+          onCreated={(created) => onTypeChange(created.id)}
+        />
+      )}
     </Dialog>
   );
 }
@@ -579,8 +650,9 @@ export function RelationshipsPage() {
         <div>
           <h1 className="text-xl font-semibold">Relationships</h1>
           <p className="text-sm text-muted-foreground">
-            Drag to pan, scroll to zoom, drag a node to nudge it. Manage
-            relationships from each member or group; define types in Settings.
+            Drag to pan, scroll to zoom, drag a node to nudge it. Add
+            relationships here or from a member or group, and create a new type
+            as you go; existing types are edited in Settings.
           </p>
         </div>
         <div className="flex gap-1 rounded-md border p-1">
