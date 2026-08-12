@@ -257,8 +257,12 @@ def test_public_system_view_key_set():
     body = _anon().get(f"/v1/public/systems/{system_id}").json()
     assert set(body) == {
         "id", "name", "description", "avatar_url", "color", "tag", "member_count",
+        "member_permalinks",
     }
     assert body["member_count"] == 1
+    # Presentation configuration the client reads to decide whether a member
+    # card links to a page of its own. Off unless the view says otherwise.
+    assert body["member_permalinks"] is False
     # Age of a system is deliberately not exposed.
     assert "created_at" not in body
     owner.close()
@@ -1184,6 +1188,10 @@ def test_member_permalink_serves_the_same_card_as_the_list():
         owner, members=[m], member_permalinks=True
     )
     token = _link_token(owner, view)
+
+    # The system payload advertises the flag, so a client knows to link to the
+    # member's own address instead of opening the card in place.
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["member_permalinks"]
 
     listed = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
     single = _anon().get(f"/v1/public/systems/{system_id}/members/{m}")

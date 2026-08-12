@@ -1371,6 +1371,10 @@ export interface PublicSystemView {
    *  refuses to show must not be countable either, and null says that where a
    *  zero would be a claim. */
   member_count: number | null;
+  /** Whether this view gives each member an address of its own. Presentation
+   *  configuration: the client uses it to decide whether a member card is a
+   *  link or opens in place. */
+  member_permalinks: boolean;
 }
 
 /** One member of a published group: id and name only, like a relationship

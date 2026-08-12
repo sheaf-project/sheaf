@@ -459,6 +459,7 @@ async def project_system(
         color=system.color,
         tag=system.tag,
         member_count=member_count,
+        member_permalinks=view.member_permalinks,
     )
 
 

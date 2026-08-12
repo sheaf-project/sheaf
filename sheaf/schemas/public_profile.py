@@ -49,6 +49,12 @@ class PublicSystemView(BaseModel):
     # cannot see" is still a fact about the system, and it is exactly the fact
     # someone turning the roster off was trying not to publish.
     member_count: int | None = None
+    # Whether this view hands out per-member addresses. Presentation
+    # configuration, not a secret: the client needs it to decide whether a
+    # member card is a link to a page of its own or opens in place, and a
+    # visitor could learn the same thing by clicking. It discloses nothing the
+    # /members/{id} route does not already answer.
+    member_permalinks: bool = False
 
 
 class PublicFrontingMember(BaseModel):

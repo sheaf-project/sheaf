@@ -1,5 +1,6 @@
 import type {
   PublicFrontingView,
+  PublicGroupsView,
   PublicMemberView,
   PublicRelationshipsView,
   PublicSystemView,
@@ -48,4 +49,22 @@ export function getPublicRelationships(src: Source) {
   return apiFetch<PublicRelationshipsView>(`${base(src)}/relationships`, {
     skipErrorToast: true,
   });
+}
+
+export function getPublicGroups(src: Source) {
+  return apiFetch<PublicGroupsView>(`${base(src)}/groups`, {
+    skipErrorToast: true,
+  });
+}
+
+/**
+ * One member, at the address the view publishes for them. 404s the same way
+ * everything else here does when the view doesn't hand out member links, isn't
+ * serving its roster, or doesn't include that member.
+ */
+export function getPublicMember(src: Source, memberId: string) {
+  return apiFetch<PublicMemberView>(
+    `${base(src)}/members/${encodeURIComponent(memberId)}`,
+    { skipErrorToast: true },
+  );
 }

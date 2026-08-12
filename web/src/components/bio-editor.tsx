@@ -68,7 +68,9 @@ function MarkdownPreview({
   publicSurface?: boolean;
 }) {
   const [defaultBadges] = useShowImageBadges();
-  const showBadges = showBadgesOverride ?? defaultBadges;
+  // Never on a public surface: the badges are an editing aid, and a visitor
+  // reading somebody else's profile is not editing it.
+  const showBadges = publicSurface ? false : (showBadgesOverride ?? defaultBadges);
   const [cdnBase, setCdnBase] = useState<string | null>(null);
   useHljsTheme();
 
