@@ -23,6 +23,7 @@ import {
   BarChart3,
   Vote,
   MessageSquare,
+  Globe,
   LifeBuoy,
   PanelLeftClose,
   PanelLeftOpen,
@@ -30,21 +31,31 @@ import {
 } from "lucide-react";
 import type { ComponentType } from "react";
 
-const navItems = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/members", label: "Members", icon: Users },
-  { to: "/journals", label: "Journals", icon: BookOpen },
-  { to: "/fronts", label: "Fronts", icon: Clock },
-  { to: "/analytics", label: "Analytics", icon: BarChart3 },
-  { to: "/groups", label: "Groups", icon: FolderOpen },
-  { to: "/relationships", label: "Relationships", icon: Network },
-  { to: "/notifications", label: "Notifications", icon: Bell },
-  { to: "/reminders", label: "Reminders", icon: BellRing },
-  { to: "/polls", label: "Polls", icon: Vote },
-  { to: "/messages", label: "Messages", icon: MessageSquare },
-  { to: "/support", label: "Support", icon: LifeBuoy },
-  { to: "/settings", label: "Settings", icon: Settings },
-];
+/** Sharing is a screen you go to in order to do something (publish, revoke,
+ *  check who can see what), so it sits with the rest of the system rather than
+ *  in Settings - but only when the operator serves a public surface at all,
+ *  the same condition the settings entry used to carry. Globe keeps the icon
+ *  it has always had there. */
+function navItemsFor(publicProfiles: boolean) {
+  return [
+    { to: "/", label: "Dashboard", icon: LayoutDashboard },
+    { to: "/members", label: "Members", icon: Users },
+    { to: "/journals", label: "Journals", icon: BookOpen },
+    { to: "/fronts", label: "Fronts", icon: Clock },
+    { to: "/analytics", label: "Analytics", icon: BarChart3 },
+    { to: "/groups", label: "Groups", icon: FolderOpen },
+    { to: "/relationships", label: "Relationships", icon: Network },
+    { to: "/notifications", label: "Notifications", icon: Bell },
+    { to: "/reminders", label: "Reminders", icon: BellRing },
+    { to: "/polls", label: "Polls", icon: Vote },
+    { to: "/messages", label: "Messages", icon: MessageSquare },
+    ...(publicProfiles
+      ? [{ to: "/sharing", label: "Sharing", icon: Globe }]
+      : []),
+    { to: "/support", label: "Support", icon: LifeBuoy },
+    { to: "/settings", label: "Settings", icon: Settings },
+  ];
+}
 
 const adminItems = [
   { to: "/admin", label: "Admin", icon: Shield, exact: true, top: true },
@@ -69,6 +80,7 @@ export function AppSidebar({
   onMobileClose?: () => void;
 }) {
   const { user, logout } = useAuth();
+  const navItems = navItemsFor(Boolean(user?.public_profiles_enabled));
 
   // Pick the first fronting member as the perspective for unread counts.
   // If no one is fronting, skip the query - badge stays hidden.

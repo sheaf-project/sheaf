@@ -58,33 +58,46 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { PageHeader } from "@/components/page-header";
 import type { DeleteConfirmation, DestructiveConfirm } from "@/types/api";
 
 /** The instance-level gate: hide the whole surface when the operator hasn't
- *  enabled public profiles. Also serves as an honest "off" explainer. */
-export function SettingsSharingPage() {
+ *  enabled public profiles. Also serves as an honest "off" explainer.
+ *
+ *  Sharing lives at the top level rather than under Settings: it is somewhere
+ *  you go to do a thing (publish, revoke, check who can see what), not a
+ *  preference you set once. The page supplies its own header and column, which
+ *  the settings layout used to provide. */
+export function SharingPage() {
   const { user } = useAuth();
-  if (user && !user.public_profiles_enabled) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Sharing</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Public profiles and share links are turned off on this instance.
-            The server operator can enable them by setting
-            {" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">
-              PUBLIC_PROFILES_ENABLED=true
-            </code>
-            .
-          </p>
-        </CardContent>
-      </Card>
-    );
-  }
-  return <SharingManager />;
+  const off = Boolean(user && !user.public_profiles_enabled);
+  return (
+    <>
+      <PageHeader title="Sharing" />
+      <div className="grid gap-6 max-w-2xl">
+        {off ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Sharing is off here</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Public profiles and share links are turned off on this instance.
+                The server operator can enable them by setting
+                {" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                  PUBLIC_PROFILES_ENABLED=true
+                </code>
+                .
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <SharingManager />
+        )}
+      </div>
+    </>
+  );
 }
 
 // Re-auth context shared by every exposing action on the page.
@@ -147,7 +160,7 @@ function SharingManager() {
     <>
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Sharing</CardTitle>
+          <CardTitle className="text-base">How sharing works</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>

@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router";
+import { createBrowserRouter, Navigate } from "react-router";
 import { AppLayout } from "./_layout";
 import { LoginPage } from "./login";
 import { DashboardPage } from "./dashboard";
@@ -15,8 +15,13 @@ import { SettingsAccountPage } from "./settings/account";
 import { SettingsAdvancedPage } from "./settings/advanced";
 import { SettingsAppearancePage } from "./settings/appearance";
 import { SettingsRelationshipsPage } from "./settings/relationships";
-import { SettingsSharingPage } from "./settings/sharing";
-import { PublicSystemProfilePage, SharedViewPage } from "./public-profile";
+import { SharingPage } from "./sharing";
+import {
+  PublicSystemMemberPage,
+  PublicSystemProfilePage,
+  SharedViewMemberPage,
+  SharedViewPage,
+} from "./public-profile";
 import { SettingsDataPage } from "./settings/data";
 import { SettingsDangerPage } from "./settings/danger";
 import { ImportPage } from "./import";
@@ -84,6 +89,17 @@ export const router = createBrowserRouter([
     element: <SharedViewPage />,
   },
   {
+    // A single member at an address of their own. Only resolves when the view
+    // publishes member permalinks; every other case is the same 404 the
+    // profile pages render.
+    path: "/p/:systemId/member/:memberId",
+    element: <PublicSystemMemberPage />,
+  },
+  {
+    path: "/s/:token/member/:memberId",
+    element: <SharedViewMemberPage />,
+  },
+  {
     element: <AppLayout />,
     children: [
       { index: true, element: <DashboardPage /> },
@@ -100,6 +116,7 @@ export const router = createBrowserRouter([
       { path: "polls", element: <PollsPage /> },
       { path: "polls/:pollId", element: <PollDetailPage /> },
       { path: "messages", element: <MessagesPage /> },
+      { path: "sharing", element: <SharingPage /> },
       {
         path: "settings",
         element: <SettingsLayout />,
@@ -110,7 +127,9 @@ export const router = createBrowserRouter([
           { path: "account", element: <SettingsAccountPage /> },
           { path: "appearance", element: <SettingsAppearancePage /> },
           { path: "relationships", element: <SettingsRelationshipsPage /> },
-          { path: "sharing", element: <SettingsSharingPage /> },
+          // Sharing graduated to the top level; keep the old address working
+          // for bookmarks and muscle memory.
+          { path: "sharing", element: <Navigate to="/sharing" replace /> },
           { path: "data", element: <SettingsDataPage /> },
           { path: "advanced", element: <SettingsAdvancedPage /> },
           { path: "danger", element: <SettingsDangerPage /> },
