@@ -7,7 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -30,11 +30,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ColorDot } from "@/components/color-dot";
 import { Logo } from "@/components/logo";
+import { RelationshipGraphCanvas } from "@/components/relationship-graph";
 import { ApiError } from "@/lib/api-error";
 import { isPublicImageAllowed } from "@/lib/image-sources";
+import {
+  isDirectedEdge,
+  type GraphEdge,
+  type GraphNode,
+} from "@/lib/relationship-graph";
 import { cn } from "@/lib/utils";
 import {
   getPublicFronting,
@@ -628,8 +635,67 @@ function MemberChip({
   );
 }
 
+/**
+ * Relationships as the same force-directed graph the owner sees, with every
+ * owner affordance simply not passed: no edit mode, no edge dialog, nothing to
+ * change. Pan, zoom and nudge still work, because looking around a picture is
+ * part of looking at it.
+ *
+ * The list underneath is not a fallback, it is the readable version: it says
+ * the relationship in words ("A is the parent of B"), it is what a screen
+ * reader gets, and it is where each end is a link to that member's card.
+ */
 function RelationshipsSection({ view }: { view: PublicRelationshipsView }) {
   const { relationships } = view;
+  const nav = useContext(MemberNavContext);
+  const navigate = useNavigate();
+
+  // The nodes come out of the relationships themselves: every published
+  // relationship names both of its ends, so the graph stands up on its own
+  // even when the view serves no member list at all. Colour is the one thing
+  // the relationship payload can't say, so it is joined from the roster when
+  // there is one, and left neutral when there isn't.
+  const nodes = useMemo<GraphNode[]>(() => {
+    const seen = new Map<string, GraphNode>();
+    for (const r of relationships) {
+      for (const end of [r.source, r.target]) {
+        if (!seen.has(end.id)) {
+          seen.set(end.id, {
+            id: end.id,
+            name: end.name,
+            color: nav?.card(end.id)?.color ?? null,
+          });
+        }
+      }
+    }
+    return [...seen.values()];
+  }, [relationships, nav]);
+
+  const edges = useMemo<GraphEdge[]>(
+    () =>
+      relationships.map((r) => ({
+        id: r.id,
+        source_id: r.source.id,
+        target_id: r.target.id,
+        source_label: r.source_label,
+        target_label: r.target_label,
+        mutual: r.mutual,
+        color: r.type_color,
+      })),
+    [relationships],
+  );
+
+  /** A node opens the member the same way their name does anywhere else on
+   *  this page: their own page where the view publishes member links, in place
+   *  where it doesn't. A node this page holds no card for is inert, exactly as
+   *  their name is in the list below. */
+  function openNode(id: string) {
+    if (!nav?.card(id)) return;
+    const href = nav.linkTo?.(id);
+    if (href) navigate(href);
+    else nav.open(id);
+  }
+
   if (relationships.length === 0) {
     return (
       <Card>
@@ -640,22 +706,40 @@ function RelationshipsSection({ view }: { view: PublicRelationshipsView }) {
     );
   }
   return (
-    <Card>
-      <CardContent className="space-y-2 p-4">
-        {relationships.map((r) => (
-          <RelationshipRow key={r.id} relationship={r} />
-        ))}
-      </CardContent>
-    </Card>
+    <div className="space-y-3">
+      <RelationshipGraphCanvas
+        nodes={nodes}
+        edges={edges}
+        onNodeClick={openNode}
+        className="h-[55vh] min-h-[360px]"
+        touchAction="pan-y"
+        ariaLabel={`Relationship graph: ${nodes.length} member${
+          nodes.length === 1 ? "" : "s"
+        } joined by ${relationships.length} relationship${
+          relationships.length === 1 ? "" : "s"
+        }. Every one of them is listed in words below the graph.`}
+      />
+      <p className="text-xs text-muted-foreground">
+        Drag to pan, scroll to zoom, drag a member to nudge them.
+      </p>
+      <Separator />
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          {relationships.map((r) => (
+            <RelationshipRow key={r.id} relationship={r} />
+          ))}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
 function RelationshipRow({ relationship: r }: { relationship: PublicRelationship }) {
   // Both ends read the same way for a symmetric type and for a mutual
-  // either-edge, and the server says so twice over: `mutual`, and two labels
-  // that come back identical. Either one means there is no direction to draw,
-  // so no arrow is drawn and the single label speaks for both ends.
-  const undirected = r.mutual || r.source_label === r.target_label;
+  // either-edge; `isDirectedEdge` is the same rule the graph draws its arrows
+  // by, so the row and the line can't disagree about which way a relationship
+  // points. No arrow means the single label speaks for both ends.
+  const undirected = !isDirectedEdge(r);
   const iconCls = "h-3.5 w-3.5 shrink-0 text-muted-foreground";
   const endCls = "truncate rounded px-1 font-medium";
 
