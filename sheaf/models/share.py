@@ -78,6 +78,18 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
+    # Whether the member roster is served at all. ON by default (and a
+    # server_default of true, so every view that existed before this column did
+    # keeps serving exactly the roster it served then). Turning it off does not
+    # empty the view's allowlist - the curation is still there, it is simply
+    # not published, so switching it back on restores the same roster rather
+    # than asking the owner to rebuild it. With it off the members endpoint
+    # 404s outright: an empty list would answer "does this profile have a
+    # roster?" for anyone who asked.
+    include_members: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+
     # Whether member bios are included for members in this view. Bios are
     # markdown and go through the usual image-ref resolution on render.
     include_bio: Mapped[bool] = mapped_column(
@@ -105,13 +117,35 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, default=False, server_default="false", nullable=False
     )
 
-    # Staged flag flips. Turning one of the four flags ON while the view is
-    # already shared exposes more, so the new value parks here and the finalize
-    # sweep copies it onto the live flag once `flags_activate_at` passes - the
-    # same PENDING lifecycle the member and field rows carry, expressed as
-    # columns because a flag has nowhere else to live. NULL means "nothing
-    # staged for this flag". Turning a flag OFF is immediate and clears its
-    # pending value: going dark always wins.
+    # Whether this view shows the system's public groups. Off by default, and
+    # gated twice over like relationships: the flag decides whether the
+    # endpoint exists, while each group still has to be marked `public`
+    # itself. A published group's roster is the intersection of its members
+    # with the members this view already shows, so turning this on can never
+    # name somebody the view was not already naming.
+    include_groups: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Whether each shown member also gets a stable public URL of their own.
+    # Deliberately NOT one of the EXPOSURE_FLAGS above, and deliberately
+    # without a pending twin: it publishes no data the roster does not already
+    # publish, it only gives that data an address. Both directions are
+    # therefore immediate and ungated - staging a change that exposes nothing
+    # would only teach people the grace window is theatre. It is still off by
+    # default, because a durable link is a different thing to hand out than a
+    # row in a list, and that choice should be made rather than inherited.
+    member_permalinks: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Staged flag flips. Turning one of the six exposure flags ON while the
+    # view is already shared exposes more, so the new value parks here and the
+    # finalize sweep copies it onto the live flag once `flags_activate_at`
+    # passes - the same PENDING lifecycle the member and field rows carry,
+    # expressed as columns because a flag has nowhere else to live. NULL means
+    # "nothing staged for this flag". Turning a flag OFF is immediate and
+    # clears its pending value: going dark always wins.
     pending_include_bio: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True
     )
@@ -122,6 +156,12 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, nullable=True
     )
     pending_include_relationships: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_members: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_groups: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True
     )
     # Shared activation time for whatever is staged above. NULL whenever no

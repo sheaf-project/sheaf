@@ -476,10 +476,13 @@ async def get_account_data(
                 "revoked_at": _iso(g.revoked_at),
                 "view_id": str(v.id),
                 "view_name": v.name,
+                "view_include_members": v.include_members,
                 "view_include_bio": v.include_bio,
                 "view_include_fronting": v.include_fronting,
                 "view_fronting_show_count": v.fronting_show_count,
                 "view_include_relationships": v.include_relationships,
+                "view_include_groups": v.include_groups,
+                "view_member_permalinks": v.member_permalinks,
             }
             for g, v in share_grants
         ],

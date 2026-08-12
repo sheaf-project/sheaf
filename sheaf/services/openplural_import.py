@@ -301,6 +301,11 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 "description": g.get("description"),
                 "color": g.get("color"),
                 "parent_id": g.get("parent_group_id"),
+                # v0.1 has no core group privacy, so it rides the sheaf
+                # extension. A foreign file that carries none leaves this
+                # absent and the native importer's coercer defaults it to
+                # private, which is the direction to be wrong in.
+                "privacy": _ext(g).get("privacy"),
                 "member_ids": group_members.get(g.get("id"), []),
             }
         )

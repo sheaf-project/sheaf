@@ -189,6 +189,7 @@ Sheaf fields that land in OpenPlural core records.
 | `groups[].id` / `name` / `description` / `color` | `Group.id` / `name` / `description` / `color` |
 | `groups[].parent_id` | `Group.parent_group_id` |
 | `groups[].member_ids` | `GroupMembership[]` (one row per id) |
+| `groups[].privacy` | `Group.extensions.sheaf.privacy` (no core field; see extensions) |
 | `tags[].id` / `name` / `color` | `TaxonomyTerm` (kind `tag`) `.id` / `name` / `color` |
 | `tags[].member_ids` | `TaxonomyAssignment[]` (subject_type `member`) |
 | `custom_fields[].id` / `name` / `field_type` / `options` | `CustomFieldDefinition.id` / `name` / `field_type` / `options` |
@@ -237,6 +238,7 @@ opaque to apps that do not speak Sheaf.
 | Member | `emoji` | No core member-emoji field yet; a candidate shared optional in a later spec (Prism has an analogue). |
 | Member | `quick_switch_pin` | Sheaf quick-switch convenience field, app-specific. |
 | Member | `notify_on_front_global`, `notify_on_front_self`, `notify_on_front_member_ids` | Front-notification preferences; await a notifications module. |
+| Group | `privacy` | v0.1 has no group privacy field; without this a group's exposure ceiling would be lost on a round-trip. |
 | Note (journal) | `member_id` | Sheaf journals can be scoped to one member; the core `Note` has no owning-member field. |
 | Note (journal) | `author_member_names` | Denormalised author names retained alongside `author_member_ids` for display fidelity. |
 | Board post | `board_kind` | Distinguishes system board vs per-member wall; no core distinction yet. |

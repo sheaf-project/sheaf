@@ -266,6 +266,14 @@ def build_envelope(
                 "description": g.get("description"),
                 "color": g.get("color"),
                 "parent_group_id": g.get("parent_id"),
+                # OpenPlural v0.1 has no group privacy field, so the group's
+                # exposure ceiling rides the sheaf extension rather than being
+                # invented as a core key. Carried for the same reason
+                # `never_shareable` is carried on a member: a round-trip must
+                # never return somebody less protected than they left.
+                "extensions": {
+                    EXT_NS: _prune({"privacy": _privacy(g.get("privacy"))})
+                },
             }
         )
         for mid in g.get("member_ids", []) or []:

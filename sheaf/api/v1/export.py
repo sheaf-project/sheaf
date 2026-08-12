@@ -529,6 +529,10 @@ async def export_all(
                 "description": g.description,
                 "color": g.color,
                 "parent_id": str(g.parent_id) if g.parent_id else None,
+                # The group's own exposure ceiling. The LIVE level only: a
+                # staged raise is mid-grace-window state, not curation, so a
+                # restore never resurrects a half-applied publish.
+                "privacy": g.privacy.value,
                 "member_ids": [str(m.id) for m in g.members],
             }
             for g in groups
@@ -647,10 +651,13 @@ def _share_view_dict(view: ShareView) -> dict:
     """
     return {
         "name": view.name,
+        "include_members": view.include_members,
         "include_bio": view.include_bio,
         "include_fronting": view.include_fronting,
         "fronting_show_count": view.fronting_show_count,
         "include_relationships": view.include_relationships,
+        "include_groups": view.include_groups,
+        "member_permalinks": view.member_permalinks,
         "member_ids": [str(m.member_id) for m in view.members],
         "field_ids": [str(f.field_id) for f in view.fields],
         "group_ids": [str(g.group_id) for g in view.groups],

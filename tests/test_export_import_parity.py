@@ -95,6 +95,13 @@ _EDGE_RAISE_STAGING = (
     "staged privacy raise waiting out the grace window; the export carries the "
     "edge's live visibility, so an import never restores a half-applied raise"
 )
+# Same kind of mid-grace-window state as a staged edge raise, for the same
+# reason: the export carries the group's LIVE privacy, so an import never
+# restores a half-applied publish.
+_GROUP_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "group's live privacy, so an import never restores a half-applied raise"
+)
 _NO_GRANT_IMPORT = (
     "grants are deliberately never exported or imported: a grant is a live "
     "capability, so restoring one would republish a system from a backup"
@@ -264,12 +271,14 @@ CLASSIFICATION: dict[type, dict] = {
         },
     },
     Group: {
-        "exported": {"name", "description", "color", "parent_id"},
+        "exported": {"name", "description", "color", "parent_id", "privacy"},
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "pending_privacy": _GROUP_RAISE_STAGING,
+            "privacy_activates_at": _GROUP_RAISE_STAGING,
         },
     },
     Tag: {
@@ -285,8 +294,11 @@ CLASSIFICATION: dict[type, dict] = {
     # Share GRANTS deliberately do not - see the ShareGrant entry below.
     ShareView: {
         "exported": {
-            "name", "include_bio", "include_fronting", "fronting_show_count",
-            "include_relationships",
+            "name", "include_members", "include_bio", "include_fronting",
+            "fronting_show_count", "include_relationships", "include_groups",
+            # Not a staged flag (it exposes nothing new, so it never waits),
+            # but it IS the owner's setting, so it round-trips like the rest.
+            "member_permalinks",
         },
         "excluded": {
             "id": _SURROGATE_PK,
@@ -297,6 +309,8 @@ CLASSIFICATION: dict[type, dict] = {
             "pending_include_fronting": _SHARE_FLAG_STAGING,
             "pending_fronting_show_count": _SHARE_FLAG_STAGING,
             "pending_include_relationships": _SHARE_FLAG_STAGING,
+            "pending_include_members": _SHARE_FLAG_STAGING,
+            "pending_include_groups": _SHARE_FLAG_STAGING,
             "flags_activate_at": _SHARE_FLAG_STAGING,
         },
     },

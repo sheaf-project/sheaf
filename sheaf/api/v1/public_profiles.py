@@ -35,12 +35,14 @@ from sheaf.models.share import ShareView
 from sheaf.models.system import System
 from sheaf.schemas.public_profile import (
     PublicFrontingView,
+    PublicGroupsView,
     PublicMemberView,
     PublicRelationshipsView,
     PublicSystemView,
 )
 from sheaf.services.share_projection import (
     project_fronting,
+    project_groups,
     project_members,
     project_relationships,
     project_system,
@@ -50,7 +52,11 @@ from sheaf.services.sharing import resolve_link_grant, resolve_public_grant
 # One shared per-IP throttle across every public-profile route. A fixed bucket
 # means varying system ids or bearer tokens cannot create fresh quotas, and raw
 # link capabilities never become part of Redis key names. Sixty requests still
-# permits twenty complete three-endpoint page loads per minute from one IP.
+# permits a dozen complete page loads per minute from one IP, with the page now
+# spanning up to five endpoints (system, members, fronting, relationships,
+# groups). Member permalinks share the bucket deliberately: they are the one
+# route whose path a visitor can vary freely, so they must not have a quota of
+# their own to walk a system's member ids through.
 _RATE = rate_limit(60, 60, bucket="public_profiles")
 
 router = APIRouter(prefix="/public", tags=["public-profiles"])
@@ -90,6 +96,42 @@ async def _resolve_system(
     if system is None:
         raise _not_found()
     return view, system
+
+
+def _require_roster(view: ShareView) -> None:
+    """404 the member surfaces when the view does not serve its roster.
+
+    Same no-oracle rule as fronting and relationships, and worth spelling out:
+    turning `include_members` off makes the roster UNADDRESSABLE, not empty.
+    An empty list would answer "does this profile have members?" for anyone
+    who asked, which is a fact about the system and not one the owner chose to
+    publish. The curation itself is untouched and comes straight back when the
+    flag does.
+    """
+    if not view.include_members:
+        raise _not_found()
+
+
+async def _member_permalink(
+    db: AsyncSession, view: ShareView, member_id: uuid.UUID
+) -> PublicMemberView:
+    """The single-member payload, built once for both grant types.
+
+    It goes back through `project_members` filtered to one id rather than
+    fetching the member itself: a permalink must serve exactly the card the
+    list would have served, and the only way to guarantee that is for there to
+    be one place that builds it. Every guard the list obeys - the view's
+    allowlist, the ACTIVE status, `never_shareable`, the member privacy
+    ceiling, the bio flag, the exposed field set - therefore applies here
+    without being restated, which is the point.
+    """
+    if not view.member_permalinks:
+        raise _not_found()
+    _require_roster(view)
+    cards = await project_members(db, view, only_id=member_id)
+    if not cards:
+        raise _not_found()
+    return cards[0]
 
 
 async def _resolve_link(token: str, db: AsyncSession) -> tuple[ShareView, System]:
@@ -137,7 +179,32 @@ async def public_system_members(
 ) -> list[PublicMemberView]:
     _public_headers(response, token_keyed=False)
     view, _ = await _resolve_system(system_id, db)
+    _require_roster(view)
     return await project_members(db, view)
+
+
+@router.get(
+    "/systems/{system_id}/members/{member_id}",
+    response_model=PublicMemberView,
+    dependencies=[_RATE],
+)
+async def public_system_member(
+    system_id: uuid.UUID,
+    member_id: uuid.UUID,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> PublicMemberView:
+    """One member, at a stable address of their own.
+
+    Three ways to get the same 404, and they are indistinguishable on purpose:
+    the view does not hand out permalinks, the view does not serve its roster
+    at all, or that member is not one this view projects. A visitor who tries a
+    member id from somewhere else learns nothing about whether it exists, is in
+    this system, or was quietly removed.
+    """
+    _public_headers(response, token_keyed=False)
+    view, _ = await _resolve_system(system_id, db)
+    return await _member_permalink(db, view, member_id)
 
 
 @router.get(
@@ -180,6 +247,26 @@ async def public_system_relationships(
     return await project_relationships(db, view)
 
 
+@router.get(
+    "/systems/{system_id}/groups",
+    response_model=PublicGroupsView,
+    dependencies=[_RATE],
+)
+async def public_system_groups(
+    system_id: uuid.UUID,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> PublicGroupsView:
+    _public_headers(response, token_keyed=False)
+    view, _ = await _resolve_system(system_id, db)
+    # Same no-oracle rule as fronting and relationships: a view without groups
+    # 404s rather than returning an empty list, so "does this profile show
+    # groups?" cannot be answered separately from "is this profile public?".
+    if not view.include_groups:
+        raise _not_found()
+    return await project_groups(db, view)
+
+
 # ---------------------------------------------------------------------------
 # Link grant (located by an opaque token)
 # ---------------------------------------------------------------------------
@@ -212,7 +299,24 @@ async def public_shared_members(
 ) -> list[PublicMemberView]:
     _public_headers(response, token_keyed=True)
     view, _ = await _resolve_link(token, db)
+    _require_roster(view)
     return await project_members(db, view)
+
+
+@router.get(
+    "/shared/{token}/members/{member_id}",
+    response_model=PublicMemberView,
+    dependencies=[_RATE],
+)
+async def public_shared_member(
+    token: str,
+    member_id: uuid.UUID,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> PublicMemberView:
+    _public_headers(response, token_keyed=True)
+    view, _ = await _resolve_link(token, db)
+    return await _member_permalink(db, view, member_id)
 
 
 @router.get(
@@ -247,3 +351,20 @@ async def public_shared_relationships(
     if not view.include_relationships:
         raise _not_found()
     return await project_relationships(db, view)
+
+
+@router.get(
+    "/shared/{token}/groups",
+    response_model=PublicGroupsView,
+    dependencies=[_RATE],
+)
+async def public_shared_groups(
+    token: str,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> PublicGroupsView:
+    _public_headers(response, token_keyed=True)
+    view, _ = await _resolve_link(token, db)
+    if not view.include_groups:
+        raise _not_found()
+    return await project_groups(db, view)

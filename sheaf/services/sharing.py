@@ -34,6 +34,7 @@ from sqlalchemy.orm import aliased
 
 from sheaf.config import settings
 from sheaf.crypto import hash_share_token
+from sheaf.models.group import Group
 from sheaf.models.member import Member, group_members
 from sheaf.models.relationship import MemberRelationship
 from sheaf.models.share import (
@@ -86,11 +87,20 @@ def require_adult_attestation(user: User) -> None:
 # The per-view booleans that widen what a view shows. Named once so the update
 # endpoint and the finalize sweep cannot drift apart over which flags carry a
 # pending_* twin.
+#
+# `member_permalinks` is deliberately absent. It publishes nothing the roster
+# does not already publish - it only gives already-shown members a stable
+# address - so there is no exposure to wait out, and putting it here would
+# demand step-up and a grace window for a change that reveals nobody. Flags in
+# this tuple are the ones where flipping to True means a stranger can read
+# something they could not read before.
 EXPOSURE_FLAGS: tuple[str, ...] = (
     "include_bio",
     "include_fronting",
     "fronting_show_count",
     "include_relationships",
+    "include_members",
+    "include_groups",
 )
 
 
@@ -367,6 +377,56 @@ async def relationship_exposed_member_ids(
         .distinct()
     )
     return set(result.scalars().all())
+
+
+async def group_raise_exposes(
+    db: AsyncSession, system: System, group_id: uuid.UUID | None = None
+) -> bool:
+    """Whether publishing this group would actually put it in front of anybody.
+
+    The third sibling of `fronting_guard_release_exposes` and
+    `relationship_raise_exposes`, for the other thing an owner can raise to
+    `public`. True when a view with `include_groups` on (or staged on) has a
+    grant passing `grant_live_clause()`. Pending counts on both axes for the
+    reason it counts everywhere in this module: a pending thing goes live on
+    its own, so a raise requested near the end of someone else's window must
+    serve its own full one rather than inheriting the remainder.
+
+    Note the deliberate difference from the edge test above, which insists on
+    BOTH endpoints being projected by the SAME view. A group has no endpoints
+    to protect: the group itself is the payload - its name, description and
+    colour, all of them things the owner wrote about the group. Its roster is
+    not a second exposure decision, because `share_projection.project_groups`
+    intersects it with the members that view already serves, so a public group
+    can never name somebody the view was not already naming. There is
+    therefore nothing here for a both-ends test to guard, and inventing one
+    would only make the gate lie about what it protects.
+
+    `group_id` is taken so a call site reads as a question about the group in
+    hand, and it is OPTIONAL because the answer deliberately does not depend on
+    it - which is exactly why the CREATE path (a group that does not exist yet)
+    and the importer (asking once for a whole file) can both ask without one.
+    Creating a group already public and raising an existing one are the same
+    exposure and must not have different doors in front of them.
+
+    A False means the raise is instant, which is correct AND safe: with no view
+    serving groups there is nothing to delay, and if such a view or grant
+    appears later, that action carries its own gate and its own window.
+    """
+    result = await db.execute(
+        select(ShareView.id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .where(
+            ShareView.system_id == system.id,
+            or_(
+                ShareView.include_groups.is_(True),
+                ShareView.pending_include_groups.is_(True),
+            ),
+            grant_live_clause(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -776,10 +836,22 @@ async def finalize_share_activations(db: AsyncSession) -> int:
                  ShareView.pending_include_relationships),
                 else_=ShareView.include_relationships,
             ),
+            include_members=case(
+                (ShareView.pending_include_members.is_not(None),
+                 ShareView.pending_include_members),
+                else_=ShareView.include_members,
+            ),
+            include_groups=case(
+                (ShareView.pending_include_groups.is_not(None),
+                 ShareView.pending_include_groups),
+                else_=ShareView.include_groups,
+            ),
             pending_include_bio=None,
             pending_include_fronting=None,
             pending_fronting_show_count=None,
             pending_include_relationships=None,
+            pending_include_members=None,
+            pending_include_groups=None,
             flags_activate_at=None,
         )
         .execution_options(synchronize_session=False)
@@ -824,5 +896,28 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         .execution_options(synchronize_session=False)
     )
     promoted += edge_raises.rowcount or 0
+
+    # Staged group raises, same atomic shape and the same reasoning as the
+    # edges above: a lowering that lands mid-sweep clears
+    # `privacy_activates_at` and so either falls outside the predicate or
+    # writes last, and the `case()` covers the ordering where the timestamp
+    # survived but the staged level did not.
+    group_raises = await db.execute(
+        update(Group)
+        .where(
+            Group.privacy_activates_at.is_not(None),
+            Group.privacy_activates_at <= now,
+        )
+        .values(
+            privacy=case(
+                (Group.pending_privacy.is_not(None), Group.pending_privacy),
+                else_=Group.privacy,
+            ),
+            pending_privacy=None,
+            privacy_activates_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    promoted += group_raises.rowcount or 0
 
     return promoted

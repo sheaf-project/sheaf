@@ -98,11 +98,19 @@ interface SafetyContext {
  *  step-up gate below both derive from it, so a flag added here is covered
  *  everywhere instead of being covered in two places out of three. */
 const EXPOSURE_FLAGS = [
+  "include_members",
   "include_bio",
   "include_fronting",
   "fronting_show_count",
   "include_relationships",
+  "include_groups",
 ] as const;
+
+// `member_permalinks` is deliberately NOT in that list. It stages nothing
+// because it exposes nothing new - a permalink is only a stable address for a
+// member the view already shows - so it must not ride the staged-flag
+// machinery, which would make it demand a step-up and sit out a grace period
+// for a change that reveals no one.
 
 type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
 
@@ -203,13 +211,23 @@ function SharingManager() {
                   <span className="font-medium">{e.view_name}</span>
                   <GrantStatusBadge grant={e.grant} />
                 </div>
+                {/* Reads as the list of what a visitor actually gets. With
+                    the roster off the member count is not served at all, so
+                    leading with it - or with anything hanging off it - would
+                    describe a page nobody can see. */}
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {e.member_count} member{e.member_count === 1 ? "" : "s"}
+                  {e.include_members
+                    ? `${e.member_count} member${e.member_count === 1 ? "" : "s"}`
+                    : "no member list"}
                   {e.field_count > 0 && `, ${e.field_count} field${e.field_count === 1 ? "" : "s"}`}
-                  {e.include_bio && ", bios"}
+                  {e.include_members && e.include_bio && ", bios"}
                   {e.include_fronting && ", live fronting"}
-                  {e.include_relationships &&
+                  {e.include_members &&
+                    e.include_relationships &&
                     `, ${e.relationship_count} relationship${e.relationship_count === 1 ? "" : "s"}`}
+                  {e.include_groups &&
+                    `, ${e.group_count} group${e.group_count === 1 ? "" : "s"}`}
+                  {e.include_members && e.member_permalinks && ", member links"}
                 </p>
               </div>
             ))}
@@ -258,17 +276,25 @@ function GrantStatusBadge({ grant }: { grant: ShareGrant }) {
 function NewViewCard() {
   const create = useCreateShareView();
   const [name, setName] = useState("");
+  // Same defaults the server applies, spelled out here so the form shows the
+  // truth about what it is about to create: a roster and nothing else.
+  const [includeMembers, setIncludeMembers] = useState(true);
   const [includeBio, setIncludeBio] = useState(false);
   const [includeFronting, setIncludeFronting] = useState(false);
   const [frontingShowCount, setFrontingShowCount] = useState(true);
   const [includeRelationships, setIncludeRelationships] = useState(false);
+  const [includeGroups, setIncludeGroups] = useState(false);
+  const [memberPermalinks, setMemberPermalinks] = useState(false);
 
   function reset() {
     setName("");
+    setIncludeMembers(true);
     setIncludeBio(false);
     setIncludeFronting(false);
     setFrontingShowCount(true);
     setIncludeRelationships(false);
+    setIncludeGroups(false);
+    setMemberPermalinks(false);
   }
 
   function handleSubmit(e: FormEvent) {
@@ -276,10 +302,13 @@ function NewViewCard() {
     if (!name.trim()) return;
     const data: ShareViewCreate = {
       name: name.trim(),
+      include_members: includeMembers,
       include_bio: includeBio,
       include_fronting: includeFronting,
       fronting_show_count: frontingShowCount,
       include_relationships: includeRelationships,
+      include_groups: includeGroups,
+      member_permalinks: memberPermalinks,
     };
     create.mutate(data, { onSuccess: reset });
   }
@@ -301,33 +330,69 @@ function NewViewCard() {
               required
             />
           </div>
-          <CheckboxRow
-            checked={includeBio}
-            onChange={setIncludeBio}
-            label="Include member bios"
-            desc="Show each shown member's bio."
-          />
-          <CheckboxRow
-            checked={includeFronting}
-            onChange={setIncludeFronting}
-            label="Show who's currently fronting"
-            desc="Adds a live 'who's fronting now' view. Front history is never shown."
-          />
-          {includeFronting && (
+          <div className="space-y-2">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+              What this view shows
+            </Label>
             <CheckboxRow
-              checked={frontingShowCount}
-              onChange={setFrontingShowCount}
-              label="Count members fronting who aren't in this view"
-              desc="Show them as an anonymous number rather than hiding them entirely."
+              checked={includeMembers}
+              onChange={setIncludeMembers}
+              label="Member list"
+              desc="The members you add to it afterwards. With this off, nobody is named and nothing member-shaped is served."
+            />
+            {!includeMembers && (
+              <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
+                The member list is off, so bios, relationships and permalinks
+                are not shown to anyone, whatever they are set to here.
+              </p>
+            )}
+            <CheckboxRow
+              checked={includeBio}
+              onChange={setIncludeBio}
+              label="Member bios"
+              desc="Show each shown member's bio."
+              disabled={!includeMembers}
               indent
             />
-          )}
-          <CheckboxRow
-            checked={includeRelationships}
-            onChange={setIncludeRelationships}
-            label="Include relationships between members"
-            desc="Only relationships you marked public, and only where both members are shown here."
-          />
+            <CheckboxRow
+              checked={includeRelationships}
+              onChange={setIncludeRelationships}
+              label="Relationships between members"
+              desc="Only relationships you marked public, and only where both members are shown here."
+              disabled={!includeMembers}
+              indent
+            />
+            <CheckboxRow
+              checked={includeFronting}
+              onChange={setIncludeFronting}
+              label="Who's currently fronting"
+              desc="Adds a live 'who is fronting now'. Front history is never shown."
+            />
+            {includeFronting && (
+              <CheckboxRow
+                checked={frontingShowCount}
+                onChange={setFrontingShowCount}
+                label="Count members fronting who aren't in this view"
+                desc="Show them as an anonymous number rather than hiding them entirely."
+                indent
+              />
+            )}
+            <CheckboxRow
+              checked={includeGroups}
+              onChange={setIncludeGroups}
+              label="Groups"
+              desc="Show the groups themselves, and only those you set to Public in the group editor. Using a group to pick members does not show that group."
+            />
+          </div>
+          <div className="space-y-2 border-t pt-4">
+            <CheckboxRow
+              checked={memberPermalinks}
+              onChange={setMemberPermalinks}
+              label="Member permalinks"
+              desc="Give each member this view shows their own stable link, so you can point someone at one member. It reveals nothing the view does not already show, so it applies immediately - on and off alike."
+              disabled={!includeMembers}
+            />
+          </div>
           <Button type="submit" disabled={create.isPending || !name.trim()}>
             {create.isPending ? "Creating..." : "Create view"}
           </Button>
@@ -442,37 +507,86 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
     update.mutate({ id: view.id, data: { [field]: value } });
   }
 
+  /** Member permalinks bypass `change()` on purpose: nothing is exposed that
+   *  the roster does not already expose, so there is nothing to stage and
+   *  nothing to step up for, in either direction. */
+  function changePermalinks(value: boolean) {
+    update.mutate({ id: view.id, data: { member_permalinks: value } });
+  }
+
+  // With the roster off the view serves nothing member-shaped, so the options
+  // that decorate a member have nothing to attach to. They keep their stored
+  // value - turning the roster back on should not silently forget them - but
+  // they are shown as inert rather than pretending to do something.
+  const membersOff = !view.include_members;
+
   return (
-    <div className="space-y-2">
-      <CheckboxRow
-        checked={view.include_bio}
-        onChange={(v) => change("include_bio", v)}
-        label="Include member bios"
-      />
-      <CheckboxRow
-        checked={view.include_fronting}
-        onChange={(v) => change("include_fronting", v)}
-        label="Show who's currently fronting"
-      />
-      {view.include_fronting && (
+    <div className="space-y-3">
+      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+        What this view shows
+      </Label>
+      <div className="space-y-2">
         <CheckboxRow
-          checked={view.fronting_show_count}
-          onChange={(v) => change("fronting_show_count", v)}
-          label="Count fronting members not in this view"
+          checked={view.include_members}
+          onChange={(v) => change("include_members", v)}
+          label="Member list"
+          desc="The members listed below. With this off, nobody is named and nothing member-shaped is served."
+        />
+        {membersOff && (
+          <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
+            The member list is off, so bios, relationships and permalinks are
+            not shown to anyone, whatever they are set to here.
+          </p>
+        )}
+        <CheckboxRow
+          checked={view.include_bio}
+          onChange={(v) => change("include_bio", v)}
+          label="Member bios"
+          disabled={membersOff}
           indent
         />
-      )}
-      <CheckboxRow
-        checked={view.include_relationships}
-        onChange={(v) => change("include_relationships", v)}
-        label="Include relationships between members"
-      />
-      {view.include_relationships && (
-        <p className="text-[11px] text-muted-foreground">
-          Only relationships you marked public show, and only where both
-          members are shown in this view.
-        </p>
-      )}
+        <CheckboxRow
+          checked={view.include_relationships}
+          onChange={(v) => change("include_relationships", v)}
+          label="Relationships between members"
+          desc="Only relationships you marked public show, and only where both members are shown in this view."
+          disabled={membersOff}
+          indent
+        />
+        <CheckboxRow
+          checked={view.include_fronting}
+          onChange={(v) => change("include_fronting", v)}
+          label="Who's currently fronting"
+          desc="A live 'who is fronting now'. Front history is never shown."
+        />
+        {view.include_fronting && (
+          <CheckboxRow
+            checked={view.fronting_show_count}
+            onChange={(v) => change("fronting_show_count", v)}
+            label="Count fronting members not in this view"
+            desc="Show them as an anonymous number rather than hiding them entirely."
+            indent
+          />
+        )}
+        <CheckboxRow
+          checked={view.include_groups}
+          onChange={(v) => change("include_groups", v)}
+          label="Groups"
+          desc="Show the groups themselves, and only those you set to Public in the group editor. Using a group below to pick members does not show that group."
+        />
+      </div>
+
+      {/* Outside the block above, because it is the one display option here
+          that neither stages nor exposes: it addresses what is already shown. */}
+      <div className="space-y-2 border-t pt-3">
+        <CheckboxRow
+          checked={view.member_permalinks}
+          onChange={changePermalinks}
+          label="Member permalinks"
+          desc="Give each member this view already shows their own stable link, so you can point someone at one member. It reveals nothing the view does not already show, so it applies immediately - turning it on and turning it off both take effect at once."
+          disabled={membersOff}
+        />
+      </div>
       {reauth && (
         <DestructiveConfirmDialog
           open
@@ -1284,18 +1398,26 @@ function CheckboxRow({
   label,
   desc,
   indent,
+  disabled,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   desc?: string;
   indent?: boolean;
+  /** For an option that depends on another one that is off: the stored value
+   *  still shows, so nothing is forgotten, but the row reads as inert rather
+   *  than as a promise the view can't keep. */
+  disabled?: boolean;
 }) {
   return (
-    <label className={`flex items-start gap-3 cursor-pointer ${indent ? "ml-6" : ""}`}>
+    <label
+      className={`flex items-start gap-3 ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${indent ? "ml-6" : ""}`}
+    >
       <Checkbox
         checked={checked}
         onCheckedChange={(v) => onChange(v === true)}
+        disabled={disabled}
         className="mt-0.5"
       />
       <div>

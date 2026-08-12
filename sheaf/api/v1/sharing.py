@@ -55,7 +55,10 @@ from sheaf.schemas.share import (
     ShareViewRead,
     ShareViewUpdate,
 )
-from sheaf.services.share_projection import projectable_relationships
+from sheaf.services.share_projection import (
+    projectable_groups,
+    projectable_relationships,
+)
 from sheaf.services.sharing import (
     EXPOSURE_FLAGS,
     add_field_to_view,
@@ -138,16 +141,21 @@ def _view_to_read(view: ShareView, *, is_shared: bool) -> ShareViewRead:
     return ShareViewRead(
         id=view.id,
         name=view.name,
+        include_members=view.include_members,
         include_bio=view.include_bio,
         include_fronting=view.include_fronting,
         fronting_show_count=view.fronting_show_count,
         include_relationships=view.include_relationships,
+        include_groups=view.include_groups,
+        member_permalinks=view.member_permalinks,
         created_at=view.created_at,
         is_shared=is_shared,
         pending_include_bio=view.pending_include_bio,
         pending_include_fronting=view.pending_include_fronting,
         pending_fronting_show_count=view.pending_fronting_show_count,
         pending_include_relationships=view.pending_include_relationships,
+        pending_include_members=view.pending_include_members,
+        pending_include_groups=view.pending_include_groups,
         flags_activate_at=view.flags_activate_at,
         members=[
             {
@@ -258,10 +266,13 @@ async def create_share_view(
         id=uuid.uuid4(),
         system_id=system.id,
         name=body.name.strip(),
+        include_members=body.include_members,
         include_bio=body.include_bio,
         include_fronting=body.include_fronting,
         fronting_show_count=body.fronting_show_count,
         include_relationships=body.include_relationships,
+        include_groups=body.include_groups,
+        member_permalinks=body.member_permalinks,
     )
     db.add(view)
     try:
@@ -307,6 +318,13 @@ async def update_share_view(
     grace window has elapsed. Turning a flag off is immediate, ungated, and
     cancels any staged flip of that flag. Renaming exposes nothing and is
     always immediate.
+
+    `member_permalinks` is handled outside that machinery on purpose. It is not
+    in `EXPOSURE_FLAGS`, has no pending twin, and is applied in both directions
+    the moment it is asked for, because it publishes nothing new: every member
+    it gives an address to is already on the roster this view serves. Staging a
+    change that reveals nobody would cost the owner a re-auth and a wait for no
+    protection, and would teach them that the grace window is a formality.
     """
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db, load=True, for_update=True)
@@ -333,6 +351,8 @@ async def update_share_view(
 
     if body.name is not None:
         view.name = body.name.strip()
+    if body.member_permalinks is not None:
+        view.member_permalinks = body.member_permalinks
 
     activates_at = datetime.now(UTC) + timedelta(
         days=system.safety_grace_period_days
@@ -821,21 +841,31 @@ async def sharing_audit(
     )
     entries = []
     for grant, view in result.all():
-        # Counted through the projection's own helper rather than recomputed
+        # Counted through the projection's own helpers rather than recomputed
         # here: an audit that disagreed with what visitors actually get would
         # be worse than no audit at all.
         edges = await projectable_relationships(db, view)
+        groups = await projectable_groups(db, view)
         entries.append(
             ShareAuditEntry(
                 grant=_grant_to_read(grant),
                 view_id=view.id,
                 view_name=view.name,
+                # Deliberately the curated count, not a served count: with the
+                # roster off it is still the number of people this view is set
+                # up to show, and `include_members` beside it says whether they
+                # are being shown. Zeroing it would read as "your curation is
+                # gone" for a flag that destroyed nothing.
                 member_count=len(view.members),
                 field_count=len(view.fields),
+                include_members=view.include_members,
                 include_bio=view.include_bio,
                 include_fronting=view.include_fronting,
                 include_relationships=view.include_relationships,
+                include_groups=view.include_groups,
+                member_permalinks=view.member_permalinks,
                 relationship_count=len(edges),
+                group_count=len(groups),
             )
         )
     return ShareAudit(entries=entries)

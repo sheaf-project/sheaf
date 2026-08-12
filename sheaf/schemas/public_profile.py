@@ -43,7 +43,12 @@ class PublicSystemView(BaseModel):
     # Count of members actually visible in this view (after the hard guards),
     # not the system's real member count. Deliberately no created_at: the age
     # of a system is mildly sensitive and worthless to a visitor.
-    member_count: int
+    #
+    # NULL when the view does not include the member roster at all. A roster
+    # the view refuses to serve must not be countable either: "23 members you
+    # cannot see" is still a fact about the system, and it is exactly the fact
+    # someone turning the roster off was trying not to publish.
+    member_count: int | None = None
 
 
 class PublicFrontingMember(BaseModel):
@@ -116,3 +121,39 @@ class PublicRelationship(BaseModel):
 
 class PublicRelationshipsView(BaseModel):
     relationships: list[PublicRelationship] = []
+
+
+class PublicGroupMember(BaseModel):
+    """One member of a published group.
+
+    Id and name only, exactly like `PublicRelationshipEndpoint` and for the
+    same reason: everyone listed here is already published in full through
+    /members, so repeating the member payload would only give it a second
+    place to drift. The client joins on `id` for anything richer.
+    """
+
+    id: str
+    name: str
+
+
+class PublicGroupView(BaseModel):
+    """One group this view publishes.
+
+    Reaching this schema means two gates were passed: the view has
+    include_groups on, and the group itself is marked `public`. The roster is
+    not a third gate but an INTERSECTION - it lists only members this view was
+    already showing, so publishing a group can never name somebody new. A
+    public group whose intersection is empty still appears: its name,
+    description and colour are what the owner chose to publish about the
+    group, and an empty roster discloses nothing about who is in it.
+    """
+
+    id: str
+    name: str
+    description: str | None = None
+    color: str | None = None
+    members: list[PublicGroupMember] = []
+
+
+class PublicGroupsView(BaseModel):
+    groups: list[PublicGroupView] = []
