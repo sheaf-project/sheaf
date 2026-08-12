@@ -398,6 +398,62 @@ async def _get_edge_for_update(
     return edge
 
 
+async def _apply_orientation(
+    edge: MemberRelationship | GroupRelationship,
+    *,
+    flip: bool | None,
+    mutual: bool | None,
+    system: System,
+    db: AsyncSession,
+) -> bool:
+    """Apply a direction flip and/or a `mutual` change in place. Returns True
+    when the row actually changed.
+
+    Both are INSTANT and ungated, deliberately, and unlike a privacy raise they
+    never take step-up credentials. Neither one shows this edge to anybody new:
+    the same two endpoints are already named, at the same visibility, in the
+    same views, and all that moves is which of them reads which label. There is
+    no exposure to defer, and a grace window on a change that exposes nothing
+    would only teach people the gate is theatre. A staged raise is left exactly
+    where it was - reorienting an edge is not a way to cancel or hurry one.
+
+    Safe against the uniqueness guarantee: the functional unique index is over
+    least()/greatest() of the pair, so swapping source and target lands on the
+    same index key the row already held and can neither collide with itself nor
+    reach a key belonging to another row.
+    """
+    if not flip and mutual is None:
+        return False
+
+    rtype = await _get_type_in_system(edge.relationship_type_id, system, db)
+    changed = False
+
+    if flip:
+        if rtype.symmetry == RelationshipSymmetry.SYMMETRIC:
+            # Refused rather than normalised away: a symmetric edge stores its
+            # pair in uuid order purely for stable dedup, so "reversing" it
+            # would either do nothing visible or break that canonical order.
+            # `mutual` below is a state whose false value is honest for any
+            # type; a flip is an instruction, and quietly not carrying one out
+            # is worse than saying so.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A symmetric relationship type has no direction to reverse",
+            )
+        edge.source_id, edge.target_id = edge.target_id, edge.source_id
+        changed = True
+
+    if mutual is not None:
+        # Same normalisation as create: `mutual` only means anything for
+        # `either` types.
+        new_mutual = mutual and rtype.symmetry == RelationshipSymmetry.EITHER
+        if new_mutual != edge.mutual:
+            edge.mutual = new_mutual
+            changed = True
+
+    return changed
+
+
 async def _delete_edge(
     edge_id: uuid.UUID,
     *,
@@ -477,7 +533,7 @@ async def update_member_relationship(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Move one member edge up or down the privacy ladder.
+    """Move one member edge up or down the privacy ladder, or reorient it.
 
     Raising an edge to `public` EXPOSES it, but only if the whole chain that
     would draw it is already in place - see `relationship_raise_exposes`. When
@@ -496,6 +552,9 @@ async def update_member_relationship(
     nobody. When friends lands, this check and
     `share_projection.projectable_relationships` have to become audience-aware
     together.
+
+    `flip` and `mutual` are a different axis and never gated - see
+    `_apply_orientation`. A request carrying both axes applies both.
     """
     system = await _get_user_system(user, db)
     update_data = body.model_dump(exclude_unset=True)
@@ -507,8 +566,18 @@ async def update_member_relationship(
     edge = await _get_edge_for_update(
         edge_id, edge_model=MemberRelationship, system=system, db=db
     )
+    reoriented = await _apply_orientation(
+        edge,
+        flip=update_data.get("flip"),
+        mutual=update_data.get("mutual"),
+        system=system,
+        db=db,
+    )
     requested = update_data.get("visibility")
     if requested is None:
+        if reoriented:
+            await db.commit()
+            await db.refresh(edge)
         return edge
 
     deferred = False
@@ -609,7 +678,8 @@ async def update_group_relationship(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Set one group edge's privacy level. Always instant, never gated.
+    """Set one group edge's privacy level, direction or `mutual` flag. Always
+    instant, never gated.
 
     Deliberately unlike the member endpoint above: no share view flag reaches
     group edges and `share_projection` never queries that table, so a group edge
@@ -629,8 +699,18 @@ async def update_group_relationship(
     edge = await _get_edge_for_update(
         edge_id, edge_model=GroupRelationship, system=system, db=db
     )
+    reoriented = await _apply_orientation(
+        edge,
+        flip=update_data.get("flip"),
+        mutual=update_data.get("mutual"),
+        system=system,
+        db=db,
+    )
     requested = update_data.get("visibility")
     if requested is None:
+        if reoriented:
+            await db.commit()
+            await db.refresh(edge)
         return edge
 
     edge.visibility = requested

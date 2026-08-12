@@ -1114,6 +1114,11 @@ export interface RelationshipEdge {
 
 export interface RelationshipEdgeUpdate {
   visibility?: PrivacyLevel;
+  /** Swap the endpoints, so each reads the other's label. Directional and
+   *  either types only; a symmetric type answers 400. */
+  flip?: boolean;
+  /** `either` types only, normalised off elsewhere (as on create). */
+  mutual?: boolean;
   password?: string;
   totp_code?: string;
 }

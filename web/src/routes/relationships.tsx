@@ -10,8 +10,10 @@ import {
 } from "d3-force";
 import { useEffect, useRef, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ColorDot } from "@/components/color-dot";
 import {
   Dialog,
   DialogContent,
@@ -31,9 +33,16 @@ import {
 import {
   useCreateGroupRelationship,
   useCreateMemberRelationship,
+  useDeleteGroupRelationship,
+  useDeleteMemberRelationship,
+  useGroupRelationships,
+  useMemberRelationships,
   useRelationshipGraph,
   useRelationshipTypes,
+  useUpdateGroupRelationship,
+  useUpdateMemberRelationship,
 } from "@/hooks/use-relationships";
+import { RelationshipPrivacyControl } from "@/components/relationship-privacy-control";
 import { RelationshipTypeDialog } from "@/components/relationship-type-dialog";
 import {
   EDGE_VISIBILITY_HELP,
@@ -43,9 +52,16 @@ import type {
   PrivacyLevel,
   RelationshipEdgeCreate,
   RelationshipGraph,
+  RelationshipGraphEdge,
 } from "@/types/api";
 
 const NODE_R = 22;
+
+/** How far a pointer may travel between down and up and still count as a click
+ *  rather than a drag. The graph pans from anywhere, edges included, so this is
+ *  the only thing separating "I grabbed the canvas here" from "I picked this
+ *  edge" - a couple of pixels of hand tremor must not lose either. */
+const CLICK_SLOP = 4;
 
 /** Shared geometry for the edge arrowheads. One marker per colour in use has
  *  to be declared, since SVG markers can't inherit the path's stroke. */
@@ -87,9 +103,13 @@ function clamp(v: number, lo: number, hi: number) {
 function GraphCanvas({
   graph,
   scope,
+  editMode,
 }: {
   graph: RelationshipGraph;
   scope: "members" | "groups";
+  /** Off: the graph is something to read, and an edge opens read-only. On:
+   *  relationships can be added, reoriented, republished and removed. */
+  editMode: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -99,8 +119,15 @@ function GraphCanvas({
   const [addMode, setAddMode] = useState(false);
   const [pending, setPending] = useState<SimNode | null>(null);
   const [target, setTarget] = useState<SimNode | null>(null);
+  // The edge whose dialog is open, and the one under the pointer.
+  const [openEdgeId, setOpenEdgeId] = useState<string | null>(null);
+  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
   const nodeNoun = scope === "members" ? "member" : "group";
   const { data: types } = useRelationshipTypes();
+
+  // Add mode is derived, not stored twice: leaving edit mode suspends it
+  // rather than needing an effect to go and switch it off.
+  const adding = editMode && addMode;
 
   // d3 mutates node x/y in place; each tick publishes fresh array wrappers to
   // state so the SVG re-renders (reading live refs during render is disallowed
@@ -121,6 +148,9 @@ function GraphCanvas({
     | { mode: "pan"; startX: number; startY: number; startTx: number; startTy: number }
     | null
   >(null);
+  // Where a press that landed on an edge started, so pointer-up can tell a
+  // click on that edge from a pan that happened to begin on top of it.
+  const edgePress = useRef<{ id: string; x: number; y: number } | null>(null);
 
   // Track container size.
   useEffect(() => {
@@ -193,7 +223,7 @@ function GraphCanvas({
 
   function onNodePointerDown(e: React.PointerEvent, node: SimNode) {
     e.stopPropagation();
-    if (addMode) {
+    if (adding) {
       // Pick source, then a distinct target opens the add dialog.
       if (!pending) setPending(node);
       else if (pending.id === node.id) setPending(null);
@@ -203,6 +233,14 @@ function GraphCanvas({
     (e.target as Element).setPointerCapture?.(e.pointerId);
     drag.current = { mode: "node", node };
     simRef.current?.alphaTarget(0.3).restart();
+  }
+
+  /** Deliberately does NOT stop propagation: the press still reaches the
+   *  background handler and starts a pan, so a drag that begins on an edge
+   *  pans like a drag anywhere else. Only a press that ends without travelling
+   *  (see `onPointerUp`) opens the edge. */
+  function onEdgePointerDown(e: React.PointerEvent, id: string) {
+    edgePress.current = { id, x: e.clientX, y: e.clientY };
   }
 
   function toggleAddMode() {
@@ -238,7 +276,9 @@ function GraphCanvas({
     }
   }
 
-  function onPointerUp() {
+  /** Called with the event on a real pointer-up, and without one when the
+   *  pointer leaves the canvas - which ends the drag but is not a click. */
+  function onPointerUp(e?: React.PointerEvent) {
     const d = drag.current;
     if (d?.mode === "node") {
       // Release the pin so the node relaxes back into the organic layout.
@@ -247,6 +287,16 @@ function GraphCanvas({
       simRef.current?.alphaTarget(0);
     }
     drag.current = null;
+
+    const press = edgePress.current;
+    edgePress.current = null;
+    if (
+      press &&
+      e &&
+      Math.hypot(e.clientX - press.x, e.clientY - press.y) <= CLICK_SLOP
+    ) {
+      setOpenEdgeId(press.id);
+    }
   }
 
   function onWheel(e: React.WheelEvent) {
@@ -269,6 +319,13 @@ function GraphCanvas({
   }
 
   const { nodes, links } = sim;
+
+  // The edge dialog reads the payload edge, not the simulation link: the raw
+  // edge keeps the labels, mutual flag and type id d3 has no use for. An edge
+  // that disappears (removed here or elsewhere) simply closes the dialog.
+  const openEdge = graph.edges.find((e) => e.id === openEdgeId) ?? null;
+  const nodeName = (id: string) =>
+    graph.nodes.find((n) => n.id === id)?.name ?? id.slice(0, 8);
 
   // Edge colour is a client-side join: the graph payload carries the type id,
   // the type carries the colour. Resolved at render rather than inside the
@@ -307,18 +364,20 @@ function GraphCanvas({
       className="relative h-[70vh] w-full overflow-hidden rounded-lg border bg-muted/10"
     >
       <div className="absolute right-2 top-2 z-10 flex gap-2">
-        <Button
-          variant={addMode ? "default" : "outline"}
-          size="sm"
-          onClick={toggleAddMode}
-        >
-          {addMode ? "Adding relationships" : "Add relationship"}
-        </Button>
+        {editMode && (
+          <Button
+            variant={adding ? "default" : "outline"}
+            size="sm"
+            onClick={toggleAddMode}
+          >
+            {adding ? "Adding relationships" : "Add relationship"}
+          </Button>
+        )}
         <Button variant="outline" size="sm" onClick={resetView}>
           Reset view
         </Button>
       </div>
-      {addMode && (
+      {adding && (
         <div className="absolute left-2 top-2 z-10 rounded-md border bg-background/90 px-2 py-1 text-xs text-muted-foreground">
           {pending
             ? `${pending.name} selected. Click another ${nodeNoun} to connect them.`
@@ -333,7 +392,7 @@ function GraphCanvas({
         onPointerDown={onBackgroundPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerLeave={onPointerUp}
+        onPointerLeave={() => onPointerUp()}
         onWheel={onWheel}
       >
         <defs>
@@ -392,14 +451,28 @@ function GraphCanvas({
               ? `url(#rel-arrow-${arrowColors.indexOf(stroke)})`
               : "url(#rel-arrow)";
 
+            const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+            // Picking an edge is picking a relationship, which is a thing you
+            // can do while just reading the graph; only what the dialog then
+            // offers depends on edit mode. Add mode is the exception: there,
+            // every click is part of "pick two nodes".
+            const pickable = !adding;
+            const lit = hoverEdgeId === l.id || openEdgeId === l.id;
+
             return (
               <g key={l.id}>
                 <path
-                  d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
+                  d={d}
                   fill="none"
-                  className={stroke ? undefined : "stroke-muted-foreground/40"}
+                  className={
+                    stroke
+                      ? undefined
+                      : lit
+                        ? "stroke-muted-foreground/80"
+                        : "stroke-muted-foreground/40"
+                  }
                   stroke={stroke}
-                  strokeWidth={1.5}
+                  strokeWidth={lit ? 3 : 1.5}
                   markerEnd={l.directed ? marker : undefined}
                 />
                 <text
@@ -407,13 +480,29 @@ function GraphCanvas({
                   y={apexY}
                   dy={-3}
                   textAnchor="middle"
-                  className="fill-muted-foreground text-[10px]"
+                  className="pointer-events-none fill-muted-foreground text-[10px]"
                   stroke="var(--background)"
                   strokeWidth={3}
                   paintOrder="stroke"
                 >
                   {l.label}
                 </text>
+                {/* Invisible, fat, and on top: a 1.5px line is a miserable
+                    thing to hit. `pointerEvents: stroke` makes only this band
+                    clickable, whatever it is painted (or not painted) with. */}
+                <path
+                  d={d}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14}
+                  className={pickable ? "cursor-pointer" : undefined}
+                  style={{ pointerEvents: pickable ? "stroke" : "none" }}
+                  onPointerDown={(e) => onEdgePointerDown(e, l.id)}
+                  onPointerEnter={() => setHoverEdgeId(l.id)}
+                  onPointerLeave={() =>
+                    setHoverEdgeId((cur) => (cur === l.id ? null : cur))
+                  }
+                />
               </g>
             );
           })}
@@ -423,7 +512,7 @@ function GraphCanvas({
               <g
                 key={n.id}
                 transform={`translate(${n.x} ${n.y})`}
-                className={addMode ? "cursor-pointer" : "cursor-grab"}
+                className={adding ? "cursor-pointer" : "cursor-grab"}
                 onPointerDown={(e) => onNodePointerDown(e, n)}
               >
                 {pending?.id === n.id && (
@@ -474,7 +563,7 @@ function GraphCanvas({
           })}
         </g>
       </svg>
-      {addMode && pending && target && (
+      {adding && pending && target && (
         <AddEdgeDialog
           scope={scope}
           source={{ id: pending.id, name: pending.name }}
@@ -485,7 +574,166 @@ function GraphCanvas({
           }}
         />
       )}
+      {openEdge && (
+        <EdgeDialog
+          scope={scope}
+          edge={openEdge}
+          sourceName={nodeName(openEdge.source_id)}
+          targetName={nodeName(openEdge.target_id)}
+          editable={editMode}
+          onClose={() => setOpenEdgeId(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * One existing edge, opened by clicking it on the graph. The graph is where
+ * relationships are actually looked at, so it is also where they are managed:
+ * this is the edge's whole management surface (privacy, direction, mutual,
+ * removal), the same set of things the per-member editor offers, on the same
+ * shared privacy control.
+ *
+ * One component, two presentations. Without edit mode it states what the edge
+ * is and stops there - no select, no buttons, nothing that can change anything
+ * by being clicked at.
+ */
+function EdgeDialog({
+  scope,
+  edge,
+  sourceName,
+  targetName,
+  editable,
+  onClose,
+}: {
+  scope: "members" | "groups";
+  edge: RelationshipGraphEdge;
+  sourceName: string;
+  targetName: string;
+  editable: boolean;
+  onClose: () => void;
+}) {
+  const isMember = scope === "members";
+  const nodeNoun = isMember ? "member" : "group";
+  const { data: types } = useRelationshipTypes();
+  const type = types?.find((t) => t.id === edge.relationship_type_id);
+
+  // The graph payload carries no privacy fields, and that is fine: the
+  // per-endpoint relationship list does, it is already a cached query, and the
+  // same key prefix invalidates it whenever anything about an edge changes.
+  // Either endpoint's list holds this edge, so one fetch answers it - cheaper
+  // and less to keep in step than widening the graph response.
+  const memberRows = useMemberRelationships(isMember ? edge.source_id : null);
+  const groupRows = useGroupRelationships(isMember ? null : edge.source_id);
+  const rows = isMember ? memberRows.data : groupRows.data;
+  const row = rows?.find((e) => e.id === edge.id);
+
+  const updateMember = useUpdateMemberRelationship();
+  const updateGroup = useUpdateGroupRelationship();
+  const update = isMember ? updateMember : updateGroup;
+  const deleteMember = useDeleteMemberRelationship();
+  const deleteGroup = useDeleteGroupRelationship();
+  const remove = isMember ? deleteMember : deleteGroup;
+
+  // A symmetric type has no direction to reverse, and a mutual either-edge
+  // reads the same label at both ends, so neither offers a flip.
+  const canFlip = !!type && type.symmetry !== "symmetric" && !edge.mutual;
+  const canBeMutual = type?.symmetry === "either";
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Relationship</DialogTitle>
+          <DialogDescription>
+            {editable
+              ? `Between these two ${nodeNoun}s. Changes save as you make them.`
+              : `Between these two ${nodeNoun}s. Turn on Edit to change it.`}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-1.5 text-sm">
+            <ColorDot color={type?.color ?? null} />
+            <span className="font-medium">{edge.type_name}</span>
+            {edge.mutual && (
+              <Badge variant="outline" className="text-[10px]">
+                mutual
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {sourceName} is the {edge.source_label}. {targetName} is the{" "}
+            {edge.target_label}.
+          </p>
+
+          {row ? (
+            <RelationshipPrivacyControl
+              scope={isMember ? "member" : "group"}
+              edge={row}
+              layout="stacked"
+              label="Visibility"
+              readOnly={!editable}
+            />
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {rows ? "This relationship is gone." : "Loading visibility..."}
+            </p>
+          )}
+
+          {editable && canBeMutual && type && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={edge.mutual}
+                disabled={update.isPending}
+                onCheckedChange={(v) =>
+                  update.mutate({
+                    edgeId: edge.id,
+                    data: { mutual: v === true },
+                  })
+                }
+              />
+              Mutual (both are {type.forward_label})
+            </label>
+          )}
+
+          {editable && canFlip && (
+            <div className="space-y-1">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={update.isPending}
+                onClick={() =>
+                  update.mutate({ edgeId: edge.id, data: { flip: true } })
+                }
+              >
+                Reverse direction
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                Makes {targetName} the {edge.source_label} and {sourceName} the{" "}
+                {edge.target_label}.
+              </p>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          {editable ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate(edge.id, { onSuccess: onClose })}
+            >
+              {remove.isPending ? "Removing..." : "Remove relationship"}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -642,6 +890,10 @@ function AddEdgeDialog({
 
 export function RelationshipsPage() {
   const [scope, setScope] = useState<"members" | "groups">("members");
+  // Off by default: this page is mostly something you look at, and a graph you
+  // are dragging around is not a place to be one stray click from changing
+  // who is whose anything.
+  const [editMode, setEditMode] = useState(false);
   const { data: graph, isLoading } = useRelationshipGraph(scope);
 
   return (
@@ -650,23 +902,34 @@ export function RelationshipsPage() {
         <div>
           <h1 className="text-xl font-semibold">Relationships</h1>
           <p className="text-sm text-muted-foreground">
-            Drag to pan, scroll to zoom, drag a node to nudge it. Add
-            relationships here or from a member or group, and create a new type
-            as you go; existing types are edited in Settings.
+            Drag to pan, scroll to zoom, drag a node to nudge it. Click a line
+            between two to see the relationship it draws. Turn on Edit to add,
+            reverse, republish or remove them; existing types are edited in
+            Settings.
           </p>
         </div>
-        <div className="flex gap-1 rounded-md border p-1">
-          {(["members", "groups"] as const).map((s) => (
-            <Button
-              key={s}
-              variant={scope === s ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setScope(s)}
-              className="capitalize"
-            >
-              {s}
-            </Button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={editMode ? "default" : "outline"}
+            size="sm"
+            onClick={() => setEditMode((m) => !m)}
+            aria-pressed={editMode}
+          >
+            {editMode ? "Editing" : "Edit"}
+          </Button>
+          <div className="flex gap-1 rounded-md border p-1">
+            {(["members", "groups"] as const).map((s) => (
+              <Button
+                key={s}
+                variant={scope === s ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setScope(s)}
+                className="capitalize"
+              >
+                {s}
+              </Button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -679,7 +942,7 @@ export function RelationshipsPage() {
           they will map out here.
         </div>
       ) : (
-        <GraphCanvas graph={graph} scope={scope} />
+        <GraphCanvas graph={graph} scope={scope} editMode={editMode} />
       )}
     </div>
   );

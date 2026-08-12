@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowLeftRight, ArrowRight } from "lucide-react";
 import { useState } from "react";
 
@@ -7,32 +6,25 @@ import {
   useMemberRelationships,
   useCreateMemberRelationship,
   useDeleteMemberRelationship,
-  useUpdateMemberRelationship,
   useGroupRelationships,
   useCreateGroupRelationship,
   useDeleteGroupRelationship,
-  useUpdateGroupRelationship,
 } from "@/hooks/use-relationships";
-import { useDateFormatters } from "@/hooks/use-date-formatters";
-import { ApiError } from "@/lib/api-error";
-import { showApiErrorToast } from "@/lib/api-errors";
-import { getSystemSafety } from "@/lib/system-safety";
-import { getMySystem } from "@/lib/systems";
 import type {
-  DeleteConfirmation,
-  DestructiveConfirm,
   PrivacyLevel,
   RelationshipDirection,
   RelationshipEdgeCreate,
   RelationshipFromViewpoint,
   RelationshipType,
 } from "@/types/api";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ColorDot } from "@/components/color-dot";
-import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Label } from "@/components/ui/label";
+import {
+  RelationshipPrivacyControl,
+  RelationshipVisibilityBadge,
+} from "@/components/relationship-privacy-control";
 import { RelationshipTypeDialog } from "@/components/relationship-type-dialog";
 import {
   Select,
@@ -105,22 +97,8 @@ export function RelationshipsEditor({
   const createGroupEdge = useCreateGroupRelationship();
   const deleteMemberEdge = useDeleteMemberRelationship();
   const deleteGroupEdge = useDeleteGroupRelationship();
-  const updateMemberEdge = useUpdateMemberRelationship();
-  const updateGroupEdge = useUpdateGroupRelationship();
   const createEdge = isMember ? createMemberEdge : createGroupEdge;
   const deleteEdge = isMember ? deleteMemberEdge : deleteGroupEdge;
-  const updateEdge = isMember ? updateMemberEdge : updateGroupEdge;
-
-  // Only read for the re-auth prompt below; both are cached queries the rest
-  // of the app already keeps warm.
-  const { data: safety } = useQuery({
-    queryKey: ["system-safety"],
-    queryFn: getSystemSafety,
-  });
-  const { data: system } = useQuery({
-    queryKey: ["system", "me"],
-    queryFn: getMySystem,
-  });
 
   // The full list resolves names in existing edges; the picker excludes
   // self and non-selectable nodes (e.g. custom fronts).
@@ -136,11 +114,6 @@ export function RelationshipsEditor({
   // private no matter what either of them is set to.
   const [visibility, setVisibility] = useState<PrivacyLevel>("private");
   const [showNewType, setShowNewType] = useState(false);
-  const [pendingRaise, setPendingRaise] = useState<{
-    edgeId: string;
-    visibility: PrivacyLevel;
-    tier: DeleteConfirmation;
-  } | null>(null);
 
   const selectedType: RelationshipType | undefined = types?.find(
     (t) => t.id === typeId,
@@ -166,42 +139,6 @@ export function RelationshipsEditor({
     setRole("forward");
     setMutual(false);
     setVisibility("private");
-  }
-
-  /** Move one existing edge to another privacy level.
-   *
-   * Sent without credentials first: only a raise that would actually put the
-   * edge in front of someone is answered with a 400 asking for them, so the
-   * common case stays a single click and the prompt only appears when it is
-   * genuinely a step-up. Lowering is never gated.
-   */
-  function changeVisibility(edgeId: string, next: PrivacyLevel) {
-    updateEdge.mutate(
-      { edgeId, data: { visibility: next }, skipErrorToast: true },
-      {
-        onError: (err) => {
-          if (
-            err instanceof ApiError &&
-            err.status === 400 &&
-            (err.detail === "Password required" ||
-              err.detail === "TOTP code required")
-          ) {
-            setPendingRaise({
-              edgeId,
-              visibility: next,
-              tier:
-                safety?.settings.auth_tier ??
-                system?.delete_confirmation ??
-                "password",
-            });
-            return;
-          }
-          showApiErrorToast(err, "Couldn't update this relationship.", {
-            force: true,
-          });
-        },
-      },
-    );
   }
 
   function handleAdd() {
@@ -255,11 +192,10 @@ export function RelationshipsEditor({
             <EdgeRow
               key={edge.id}
               edge={edge}
+              scope={scope}
               color={typeColor(edge.relationship_type_id)}
               otherName={nodeName(edge.other_id)}
               readOnly={readOnly}
-              busy={updateEdge.isPending}
-              onVisibilityChange={(v) => changeVisibility(edge.id, v)}
               onRemove={() => deleteEdge.mutate(edge.id)}
               removing={deleteEdge.isPending}
             />
@@ -394,116 +330,66 @@ export function RelationshipsEditor({
           onCreated={(created) => onTypeChange(created.id)}
         />
       )}
-
-      <DestructiveConfirmDialog
-        open={!!pendingRaise}
-        onOpenChange={(open) => !open && setPendingRaise(null)}
-        title="Confirm public visibility change"
-        description="Publishing this relationship can reveal it through an existing public profile or share link. Confirm now; it takes effect after your System Safety grace period."
-        tier={pendingRaise?.tier ?? "none"}
-        actionLabel="Confirm change"
-        actionLabelLoading="Saving..."
-        loading={updateEdge.isPending}
-        onConfirm={(confirm?: DestructiveConfirm) => {
-          if (!pendingRaise) return;
-          updateEdge.mutate(
-            {
-              edgeId: pendingRaise.edgeId,
-              data: { visibility: pendingRaise.visibility, ...confirm },
-            },
-            { onSuccess: () => setPendingRaise(null) },
-          );
-        }}
-      />
     </div>
   );
 }
 
 /**
- * One existing edge. The privacy level only earns chrome when it is not
- * private: private is the default and the safe state, so saying so on every
- * row would be noise that trains people to stop reading the badge that
- * matters.
+ * One existing edge: what it is, and (unless this is a profile view) the
+ * controls for it. The privacy select, its step-up prompt and the staged-raise
+ * note all come from the shared control, so this row and the graph's edge
+ * dialog cannot drift apart about the same setting.
+ *
+ * The badge shows in both modes, including a read-only profile: somebody
+ * looking at a member should be able to see that a relationship is public
+ * without having to open the editor to find out.
  */
 function EdgeRow({
   edge,
+  scope,
   color,
   otherName,
   readOnly,
-  busy,
-  onVisibilityChange,
   onRemove,
   removing,
 }: {
   edge: RelationshipFromViewpoint;
+  scope: "member" | "group";
   color: string | null;
   otherName: string;
   readOnly: boolean;
-  busy: boolean;
-  onVisibilityChange: (visibility: PrivacyLevel) => void;
   onRemove: () => void;
   removing: boolean;
 }) {
-  const { formatDate } = useDateFormatters();
-
   return (
-    <div className="space-y-1 rounded-md border px-2 py-1 text-sm">
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-1.5 truncate">
-          <ColorDot color={color} />
-          <DirectionIcon direction={edge.direction} />
-          <span className="min-w-0 truncate">
-            <span className="text-muted-foreground">{edge.label}:</span>{" "}
-            {otherName}
-          </span>
-          {edge.visibility !== "private" && (
-            <Badge variant="outline" className="shrink-0 text-[10px]">
-              {edge.visibility}
-            </Badge>
-          )}
+    <RelationshipPrivacyControl
+      scope={scope}
+      edge={edge}
+      readOnly={readOnly}
+      className="rounded-md border px-2 py-1 text-sm"
+      trailing={
+        readOnly ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs text-destructive hover:text-destructive"
+            onClick={onRemove}
+            disabled={removing}
+          >
+            Remove
+          </Button>
+        )
+      }
+    >
+      <span className="flex min-w-0 items-center gap-1.5 truncate">
+        <ColorDot color={color} />
+        <DirectionIcon direction={edge.direction} />
+        <span className="min-w-0 truncate">
+          <span className="text-muted-foreground">{edge.label}:</span>{" "}
+          {otherName}
         </span>
-        <div className="flex shrink-0 items-center gap-1">
-          {!readOnly && (
-            <>
-              <Select
-                value={edge.visibility}
-                onValueChange={(v) => onVisibilityChange(v as PrivacyLevel)}
-                disabled={busy}
-              >
-                <SelectTrigger
-                  className="h-6 w-28 text-xs"
-                  aria-label="Visibility"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EDGE_VISIBILITY_LEVELS.map((l) => (
-                    <SelectItem key={l.value} value={l.value}>
-                      {l.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 text-xs text-destructive hover:text-destructive"
-                onClick={onRemove}
-                disabled={removing}
-              >
-                Remove
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
-      {edge.visibility_activates_at && (
-        <p className="text-[11px] text-amber-600 dark:text-amber-500">
-          {edge.pending_visibility ?? "public"} - activates{" "}
-          {formatDate(edge.visibility_activates_at)}. Until then this stays{" "}
-          {edge.visibility}.
-        </p>
-      )}
-    </div>
+        <RelationshipVisibilityBadge visibility={edge.visibility} />
+      </span>
+    </RelationshipPrivacyControl>
   );
 }

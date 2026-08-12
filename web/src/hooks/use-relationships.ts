@@ -103,8 +103,14 @@ export function useUpdateMemberRelationship() {
       data: RelationshipEdgeUpdate;
       skipErrorToast?: boolean;
     }) => api.updateMemberRelationship(edgeId, data, skipErrorToast),
-    onSuccess: (edge) => {
+    onSuccess: (edge, vars) => {
       invalidateEdges(qc);
+      // Direction and `mutual` travel on the same endpoint as privacy but are
+      // a different thing to have changed, so don't report them as one.
+      if (vars.data.visibility === undefined) {
+        toast.success("Relationship updated");
+        return;
+      }
       // A raise that would actually expose the edge is staged, not applied, so
       // the toast must not claim the new level is live yet.
       toast.success(
@@ -161,9 +167,13 @@ export function useUpdateGroupRelationship() {
       data: RelationshipEdgeUpdate;
       skipErrorToast?: boolean;
     }) => api.updateGroupRelationship(edgeId, data, skipErrorToast),
-    onSuccess: () => {
+    onSuccess: (_edge, vars) => {
       invalidateEdges(qc);
-      toast.success("Relationship privacy updated");
+      toast.success(
+        vars.data.visibility === undefined
+          ? "Relationship updated"
+          : "Relationship privacy updated",
+      );
     },
   });
 }

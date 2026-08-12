@@ -600,6 +600,166 @@ def test_group_edge_raise_is_never_gated(auth_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Reorienting an edge: instant, ungated, and blind to what privacy is doing
+# ---------------------------------------------------------------------------
+
+
+def _directional_type(c: httpx.Client) -> str:
+    return _type(
+        c, symmetry="directional", forward_label="parent", reverse_label="child"
+    )
+
+
+def _row(c: httpx.Client, node_id: str, edge_id: str) -> dict:
+    rows = c.get(f"/v1/members/{node_id}/relationships").json()
+    return next(e for e in rows if e["id"] == edge_id)
+
+
+def test_flip_swaps_the_labels_on_a_directional_edge(auth_client: httpx.Client):
+    a, b = _member(auth_client, "FlipA"), _member(auth_client, "FlipB")
+    edge = _edge(auth_client, a, b, _directional_type(auth_client))
+    assert _row(auth_client, a, edge)["label"] == "parent"
+
+    flipped = auth_client.patch(
+        f"/v1/member-relationships/{edge}", json={"flip": True}
+    )
+    assert flipped.status_code == 200, flipped.text
+    assert flipped.json()["source_id"] == b
+    assert flipped.json()["target_id"] == a
+
+    # The whole point: both endpoints now read the other label.
+    assert _row(auth_client, a, edge)["label"] == "child"
+    assert _row(auth_client, a, edge)["direction"] == "incoming"
+    assert _row(auth_client, b, edge)["label"] == "parent"
+
+
+def test_flip_is_refused_on_a_symmetric_edge(auth_client: httpx.Client):
+    """A symmetric edge stores its pair in uuid order for stable dedup, so
+    there is no direction to reverse - and quietly doing nothing would leave
+    the caller believing it had been reversed."""
+    a, b = _member(auth_client, "SymA"), _member(auth_client, "SymB")
+    edge = _edge(auth_client, a, b, _type(auth_client))
+    before = _row(auth_client, a, edge)
+
+    refused = auth_client.patch(
+        f"/v1/member-relationships/{edge}", json={"flip": True}
+    )
+    assert refused.status_code == 400, refused.text
+    assert _row(auth_client, a, edge) == before
+
+
+def test_mutual_is_normalised_the_way_create_normalises_it(
+    auth_client: httpx.Client,
+):
+    """`mutual` only means anything on an `either` type; asking for it on a
+    directional one stores false, exactly as create does."""
+    a, b = _member(auth_client, "MutA"), _member(auth_client, "MutB")
+    c = _member(auth_client, "MutC")
+    either = _type(
+        auth_client,
+        symmetry="either",
+        forward_label="protector",
+        reverse_label="protectee",
+    )
+    either_edge = _edge(auth_client, a, b, either)
+    directional_edge = _edge(auth_client, a, c, _directional_type(auth_client))
+
+    on = auth_client.patch(
+        f"/v1/member-relationships/{either_edge}", json={"mutual": True}
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()["mutual"] is True
+    # Both ends of a mutual either-edge read the forward label, with no
+    # direction to speak of.
+    assert _row(auth_client, b, either_edge)["label"] == "protector"
+    assert _row(auth_client, b, either_edge)["direction"] == "none"
+
+    off = auth_client.patch(
+        f"/v1/member-relationships/{either_edge}", json={"mutual": False}
+    )
+    assert off.json()["mutual"] is False
+    assert _row(auth_client, b, either_edge)["label"] == "protectee"
+
+    ignored = auth_client.patch(
+        f"/v1/member-relationships/{directional_edge}", json={"mutual": True}
+    )
+    assert ignored.status_code == 200, ignored.text
+    assert ignored.json()["mutual"] is False
+
+
+def test_reorienting_a_published_edge_is_instant_and_ungated(
+    auth_client: httpx.Client,
+):
+    """The edge is live-public on a published view and the grace window is
+    armed - the setup that defers a privacy raise. A flip still lands on the
+    spot, with no credential, because it shows the edge to nobody new."""
+    _, a, b = _exposing_pair(auth_client)
+    edge = _edge(auth_client, a, b, _directional_type(auth_client))
+    assert _raise(auth_client, edge).json()["visibility"] == "public"
+    _arm_visibility_safety(auth_client)
+
+    flipped = auth_client.patch(
+        f"/v1/member-relationships/{edge}", json={"flip": True, "mutual": False}
+    )
+    assert flipped.status_code == 200, flipped.text
+    body = flipped.json()
+    assert body["source_id"] == b
+    assert body["visibility"] == "public"
+    assert body["pending_visibility"] is None
+    assert body["visibility_activates_at"] is None
+
+
+def test_flip_does_not_disturb_a_staged_raise(auth_client: httpx.Client):
+    """Reorienting is not a way to cancel a pending publication, or to hurry
+    one along."""
+    _, a, b = _exposing_pair(auth_client)
+    edge = _edge(auth_client, a, b, _directional_type(auth_client))
+    _arm_visibility_safety(auth_client)
+    staged = _raise(auth_client, edge, password="testpassword123").json()
+    assert staged["pending_visibility"] == "public"
+
+    flipped = auth_client.patch(
+        f"/v1/member-relationships/{edge}", json={"flip": True}
+    )
+    assert flipped.status_code == 200, flipped.text
+    body = flipped.json()
+    assert body["source_id"] == b
+    assert body["visibility"] == "private"
+    assert body["pending_visibility"] == "public"
+    assert body["visibility_activates_at"] == staged["visibility_activates_at"]
+
+
+def test_group_edges_reorient_the_same_way(auth_client: httpx.Client):
+    g1, g2 = _group(auth_client, "FlipGrpOne"), _group(auth_client, "FlipGrpTwo")
+    t = _directional_type(auth_client)
+    created = auth_client.post(
+        "/v1/group-relationships",
+        json={"source_id": g1, "target_id": g2, "relationship_type_id": t},
+    )
+    assert created.status_code == 201, created.text
+    edge = created.json()["id"]
+
+    flipped = auth_client.patch(
+        f"/v1/group-relationships/{edge}", json={"flip": True}
+    )
+    assert flipped.status_code == 200, flipped.text
+    assert flipped.json()["source_id"] == g2
+
+    symmetric_edge = auth_client.post(
+        "/v1/group-relationships",
+        json={
+            "source_id": g1,
+            "target_id": g2,
+            "relationship_type_id": _type(auth_client),
+        },
+    ).json()["id"]
+    refused = auth_client.patch(
+        f"/v1/group-relationships/{symmetric_edge}", json={"flip": True}
+    )
+    assert refused.status_code == 400, refused.text
+
+
+# ---------------------------------------------------------------------------
 # Tenant isolation
 # ---------------------------------------------------------------------------
 

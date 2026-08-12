@@ -87,16 +87,28 @@ class RelationshipEdgeCreate(BaseModel):
 
 
 class RelationshipEdgeUpdate(BaseModel):
-    """Change one edge's privacy level.
+    """Change one edge's privacy level, its direction, or its `mutual` flag.
 
-    Deliberately narrow: endpoints, type and `mutual` are not editable here
-    (they define WHICH relationship this row is - change those by deleting and
-    re-adding), so this schema exists purely to move an edge up or down the
-    privacy ladder. The step-up credentials ride along for the case where the
-    raise is actually deferred, exactly like `ShareViewUpdate`.
+    Still deliberately narrow: the endpoints and the type define WHICH
+    relationship this row is, and changing those is deleting and re-adding.
+    What is editable is how the same two endpoints READ - which of them takes
+    the forward label (`flip`), and whether both do (`mutual`) - plus where the
+    row sits on the privacy ladder.
+
+    The step-up credentials ride along for the case where a privacy raise is
+    actually deferred, exactly like `ShareViewUpdate`. They are never needed for
+    `flip` or `mutual`: neither shows the edge to anybody new (see
+    `_apply_orientation`).
     """
 
     visibility: PrivacyLevel | None = None
+    # Swap source and target. Only meaningful for directional / either types;
+    # a symmetric type has no direction to reverse and is refused rather than
+    # silently ignored, because this is an instruction, not a state.
+    flip: bool | None = None
+    # Only meaningful for `either` types; normalised off for the others exactly
+    # as on create, because false is what the row would mean anyway.
+    mutual: bool | None = None
     password: str | None = Field(
         default=None, description="Required when the change is deferred"
     )
