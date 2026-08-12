@@ -10,7 +10,10 @@ import {
 } from "@/hooks/use-groups";
 import { useQuery } from "@tanstack/react-query";
 import { getMySystem } from "@/lib/systems";
+import { getSystemSafety } from "@/lib/system-safety";
+import { ApiError } from "@/lib/api-error";
 import { showApiErrorToast } from "@/lib/api-errors";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   buildGroupTree,
   flattenGroupTree,
@@ -22,11 +25,19 @@ import { MemberSelect } from "@/components/member-select";
 import { RelationshipsEditor } from "@/components/relationships-editor";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +45,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { Group } from "@/types/api";
+import type {
+  DeleteConfirmation,
+  DestructiveConfirm,
+  Group,
+  GroupUpdate,
+  PrivacyLevel,
+} from "@/types/api";
+
+/** Same three words, in the same order, as the member and per-edge privacy
+ *  selects: "who may see this" is one question, so it gets one vocabulary. */
+const GROUP_PRIVACY_LEVELS: { value: PrivacyLevel; label: string }[] = [
+  { value: "private", label: "Private" },
+  { value: "friends", label: "Friends only" },
+  { value: "public", label: "Public" },
+];
+
+/** Permission, never a promise: a public group still has to be in a view that
+ *  was told to show groups before anyone sees it. One line, because a
+ *  paragraph next to a select is a paragraph nobody reads. */
+const GROUP_PRIVACY_HELP =
+  "Public means this group can appear on shared views and public profiles, but only on a view you set to show groups.";
 
 function GroupMembersEditor({ groupId }: { groupId: string }) {
   const { data: groupMembers } = useGroupMembers(groupId);
@@ -116,6 +147,13 @@ export function GroupsPage() {
     queryKey: ["system", "me"],
     queryFn: getMySystem,
   });
+  // Read only to pick the re-auth tier for a staged privacy raise; both are
+  // cached queries the rest of the app already keeps warm.
+  const { data: safety } = useQuery({
+    queryKey: ["system-safety"],
+    queryFn: getSystemSafety,
+  });
+  const { formatDate } = useDateFormatters();
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Group | null>(null);
   const [deleting, setDeleting] = useState<Group | null>(null);
@@ -123,6 +161,16 @@ export function GroupsPage() {
   const [name, setName] = useState("");
   const [color, setColor] = useState("#6366f1");
   const [parentId, setParentId] = useState("");
+  // A group says something about everyone in it, so a new one starts private
+  // no matter what its members are set to.
+  const [privacy, setPrivacy] = useState<PrivacyLevel>("private");
+  // The bounced save, held so the step-up dialog can retry the exact same
+  // payload with credentials attached rather than reconstructing it.
+  const [stepUp, setStepUp] = useState<{
+    id: string;
+    data: GroupUpdate;
+    tier: DeleteConfirmation;
+  } | null>(null);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -134,16 +182,23 @@ export function GroupsPage() {
     [allGroups, collapsed],
   );
 
+  // The dialog holds the group it was opened with; read the live row back out
+  // so a staged raise shows up the moment the list refetches.
+  const editingLive = editing
+    ? (allGroups.find((g) => g.id === editing.id) ?? editing)
+    : null;
+
   function resetForm() {
     setName("");
     setColor("#6366f1");
     setParentId("");
+    setPrivacy("private");
   }
 
   function handleCreate(e: FormEvent) {
     e.preventDefault();
     createGroup.mutate(
-      { name, color: color || null, parent_id: parentId || null },
+      { name, color: color || null, parent_id: parentId || null, privacy },
       {
         onSuccess: () => {
           setShowCreate(false);
@@ -153,15 +208,47 @@ export function GroupsPage() {
     );
   }
 
+  /** Save the edit form.
+   *
+   * Sent without credentials first: only a raise that would actually put the
+   * group in front of someone is answered with a 400 asking for them, so the
+   * common case stays a single click and the prompt only appears when it is
+   * genuinely a step-up. Lowering is never gated.
+   */
   function handleUpdate(e: FormEvent) {
     e.preventDefault();
     if (!editing) return;
+    const id = editing.id;
+    const data: GroupUpdate = {
+      name,
+      color: color || null,
+      parent_id: parentId || null,
+      privacy,
+    };
     updateGroup.mutate(
+      { id, data, skipErrorToast: true },
       {
-        id: editing.id,
-        data: { name, color: color || null, parent_id: parentId || null },
+        onSuccess: () => setEditing(null),
+        onError: (err) => {
+          if (
+            err instanceof ApiError &&
+            err.status === 400 &&
+            (err.detail === "Password required" ||
+              err.detail === "TOTP code required")
+          ) {
+            setStepUp({
+              id,
+              data,
+              tier:
+                safety?.settings.auth_tier ??
+                system?.delete_confirmation ??
+                "password",
+            });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't update this group.", { force: true });
+        },
       },
-      { onSuccess: () => setEditing(null) },
     );
   }
 
@@ -169,6 +256,7 @@ export function GroupsPage() {
     setName(group.name);
     setColor(group.color ?? "#6366f1");
     setParentId(group.parent_id ?? "");
+    setPrivacy(group.privacy);
     setEditing(group);
   }
 
@@ -303,6 +391,14 @@ export function GroupsPage() {
                 >
                   {g.name}
                 </button>
+                {/* Private is the default and the safe state, so saying so on
+                    every row would be noise that trains people to stop reading
+                    the badge that matters. */}
+                {g.privacy !== "private" && (
+                  <Badge variant="outline" className="shrink-0 text-[10px]">
+                    {g.privacy}
+                  </Badge>
+                )}
                 <PendingDeleteBadge finalizeAt={g.pending_delete_at} />
               </div>
             );
@@ -351,6 +447,27 @@ export function GroupsPage() {
                   className="flex-1"
                 />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="group-create-privacy">Privacy</Label>
+              <Select
+                value={privacy}
+                onValueChange={(v) => setPrivacy(v as PrivacyLevel)}
+              >
+                <SelectTrigger id="group-create-privacy">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GROUP_PRIVACY_LEVELS.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>
+                      {l.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {GROUP_PRIVACY_HELP}
+              </p>
             </div>
             <DialogFooter>
               <Button type="submit" disabled={createGroup.isPending || !name}>
@@ -406,6 +523,36 @@ export function GroupsPage() {
                 />
               </div>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="group-edit-privacy">Privacy</Label>
+              <Select
+                value={privacy}
+                onValueChange={(v) => setPrivacy(v as PrivacyLevel)}
+              >
+                <SelectTrigger id="group-edit-privacy">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GROUP_PRIVACY_LEVELS.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>
+                      {l.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {GROUP_PRIVACY_HELP}
+              </p>
+              {/* A raise is staged, so the live level is still the old one
+                  until the grace window elapses; say which is which. */}
+              {editingLive?.privacy_activates_at && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                  {editingLive.pending_privacy ?? "public"} - activates{" "}
+                  {formatDate(editingLive.privacy_activates_at)}. Until then
+                  this stays {editingLive.privacy}.
+                </p>
+              )}
+            </div>
             <DialogFooter>
               <Button type="submit" disabled={updateGroup.isPending || !name}>
                 {updateGroup.isPending ? "Saving..." : "Save"}
@@ -438,6 +585,31 @@ export function GroupsPage() {
           </Button>
         </DialogContent>
       </Dialog>
+
+      {/* Step-up for a privacy raise the server bounced. Retries the same
+          save with credentials attached; the raise is still staged after. */}
+      <DestructiveConfirmDialog
+        open={!!stepUp}
+        onOpenChange={(open) => !open && setStepUp(null)}
+        title="Confirm public visibility change"
+        description="Publishing this group can reveal it, and everyone shown in it, through an existing public profile or share link. Confirm now; it takes effect after your System Safety grace period."
+        tier={stepUp?.tier ?? "none"}
+        actionLabel="Confirm change"
+        actionLabelLoading="Saving..."
+        loading={updateGroup.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!stepUp) return;
+          updateGroup.mutate(
+            { id: stepUp.id, data: { ...stepUp.data, ...confirm } },
+            {
+              onSuccess: () => {
+                setStepUp(null);
+                setEditing(null);
+              },
+            },
+          );
+        }}
+      />
 
       {/* Delete confirm */}
       <DestructiveConfirmDialog

@@ -345,6 +345,15 @@ export interface Group {
   description: string | null;
   color: string | null;
   parent_id: string | null;
+  /** The same `PrivacyLevel` vocabulary a member carries, and the same
+   *  meaning: a ceiling, not a promise. A group still only appears where a
+   *  view was told to show groups. Private unless said otherwise. */
+  privacy: PrivacyLevel;
+  /** A raise still waiting out the safety grace window. `privacy` above is
+   *  the truth right now; these say what it becomes and when. Both null when
+   *  nothing is staged. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
@@ -356,6 +365,7 @@ export interface GroupCreate {
   description?: string | null;
   color?: string | null;
   parent_id?: string | null;
+  privacy?: PrivacyLevel;
 }
 
 export interface GroupUpdate {
@@ -363,6 +373,12 @@ export interface GroupUpdate {
   description?: string | null;
   color?: string | null;
   parent_id?: string | null;
+  privacy?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them: a raise that would actually put this group in front of someone is
+   *  refused until it is confirmed. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface Tag {
@@ -1203,17 +1219,30 @@ export interface ShareViewGroupRow {
 export interface ShareView {
   id: string;
   name: string;
+  /** Whether the view serves the member roster at all. With it off nothing
+   *  member-shaped is served, so the options that decorate a member (bios,
+   *  relationships, permalinks) have nothing to attach to. */
+  include_members: boolean;
   include_bio: boolean;
   include_fronting: boolean;
   fronting_show_count: boolean;
   include_relationships: boolean;
-  /** A loosening of one of the flags above that is still waiting out the
-   *  grace period: null (or absent) when nothing is queued for that flag.
+  /** Whether the view serves the system's public groups. */
+  include_groups: boolean;
+  /** Stable per-member URLs for members this view already shows. Deliberately
+   *  NOT an exposure flag: it publishes no data that the roster doesn't
+   *  already publish, only an address for it. So it has no pending twin,
+   *  applies immediately in both directions, and never demands step-up. */
+  member_permalinks: boolean;
+  /** A loosening of one of the exposure flags above that is still waiting out
+   *  the grace period: null (or absent) when nothing is queued for that flag.
    *  Optional so the UI works against a server that doesn't defer them. */
+  pending_include_members?: boolean | null;
   pending_include_bio?: boolean | null;
   pending_include_fronting?: boolean | null;
   pending_fronting_show_count?: boolean | null;
   pending_include_relationships?: boolean | null;
+  pending_include_groups?: boolean | null;
   /** When the queued flag change above becomes live. */
   flags_activate_at?: string | null;
   created_at: string;
@@ -1227,18 +1256,24 @@ export interface ShareView {
 
 export interface ShareViewCreate {
   name: string;
+  include_members?: boolean;
   include_bio?: boolean;
   include_fronting?: boolean;
   fronting_show_count?: boolean;
   include_relationships?: boolean;
+  include_groups?: boolean;
+  member_permalinks?: boolean;
 }
 
 export interface ShareViewUpdate {
   name?: string;
+  include_members?: boolean;
   include_bio?: boolean;
   include_fronting?: boolean;
   fronting_show_count?: boolean;
   include_relationships?: boolean;
+  include_groups?: boolean;
+  member_permalinks?: boolean;
   password?: string;
   totp_code?: string;
 }
@@ -1285,13 +1320,22 @@ export interface ShareAuditEntry {
   view_name: string;
   member_count: number;
   field_count: number;
+  /** False when the roster is off entirely - `member_count` then counts
+   *  members that are in the view but not served, so an audit line has to say
+   *  so rather than quoting the count on its own. */
+  include_members: boolean;
   include_bio: boolean;
   include_fronting: boolean;
   include_relationships: boolean;
+  include_groups: boolean;
+  member_permalinks: boolean;
   /** Edges this view would actually serve right now, not what the flag
    *  permits: zero when the flag is off, and zero when it is on but no edge
    *  clears both its own `public` level and the member ceiling. */
   relationship_count: number;
+  /** Groups this view would actually serve right now, on the same "what is
+   *  really served" basis as `relationship_count`: zero when the flag is off. */
+  group_count: number;
 }
 
 export interface ShareAudit {
@@ -1323,7 +1367,34 @@ export interface PublicSystemView {
   avatar_url: string | null;
   color: string | null;
   tag: string | null;
-  member_count: number;
+  /** Null when the view does not serve its member roster. A roster the view
+   *  refuses to show must not be countable either, and null says that where a
+   *  zero would be a claim. */
+  member_count: number | null;
+}
+
+/** One member of a published group: id and name only, like a relationship
+ *  endpoint. Everyone listed is already published in full through /members. */
+export interface PublicGroupMember {
+  id: string;
+  name: string;
+}
+
+/** One group a view publishes. Its member list is an INTERSECTION with the
+ *  members the view already shows, never a second allowlist, so a published
+ *  group can never name somebody new - and a public group whose intersection
+ *  is empty still appears, because its name and description are what the
+ *  owner chose to publish about it. */
+export interface PublicGroupView {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  members: PublicGroupMember[];
+}
+
+export interface PublicGroupsView {
+  groups: PublicGroupView[];
 }
 
 export interface PublicFrontingMember {

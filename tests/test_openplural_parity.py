@@ -80,6 +80,10 @@ DISPOSITION: dict[str, dict[str, object]] = {
     },
     "Group": {
         "name": CORE, "description": CORE, "color": CORE, "parent_id": CORE,
+        # v0.1 has no group privacy field, so the group's exposure ceiling
+        # rides extensions.sheaf on the group record, same as the member
+        # protective guards.
+        "privacy": EXT,
     },
     "Tag": {
         "name": CORE, "color": CORE,

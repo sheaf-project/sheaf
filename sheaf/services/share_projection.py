@@ -28,7 +28,8 @@ from sqlalchemy.sql import Select
 from sheaf.files import resolve_avatar_url_public, resolve_description_urls_public
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.front import Front
-from sheaf.models.member import Member, front_members
+from sheaf.models.group import Group
+from sheaf.models.member import Member, front_members, group_members
 from sheaf.models.relationship import MemberRelationship, RelationshipType
 from sheaf.models.share import (
     ShareItemStatus,
@@ -40,6 +41,9 @@ from sheaf.models.system import PrivacyLevel, System
 from sheaf.schemas.public_profile import (
     PublicFrontingMember,
     PublicFrontingView,
+    PublicGroupMember,
+    PublicGroupsView,
+    PublicGroupView,
     PublicMemberView,
     PublicRelationship,
     PublicRelationshipEndpoint,
@@ -186,8 +190,28 @@ def _member_view(
     )
 
 
-async def project_members(db: AsyncSession, view: ShareView) -> list[PublicMemberView]:
+async def project_members(
+    db: AsyncSession, view: ShareView, *, only_id: uuid.UUID | None = None
+) -> list[PublicMemberView]:
+    """The member cards this view serves, in display order.
+
+    Gated on `include_members` HERE rather than only at the API layer, for the
+    same reason `never_shareable` is refused in the query rather than only at
+    the point of adding: the flag is the whole roster's on/off switch, so the
+    one function that builds member payloads is where it has to bite. The
+    endpoints 404 on top of this so an off flag is not separately probeable.
+
+    `only_id` narrows the result to a single member for the permalink route.
+    It is a filter on this function rather than a second fetch elsewhere on
+    purpose: a permalink must serve exactly the card the list would have
+    served, no more, and the way to guarantee that is for there to be only one
+    place that builds it.
+    """
+    if not view.include_members:
+        return []
     members = await _active_members(db, view)
+    if only_id is not None:
+        members = [m for m in members if m.id == only_id]
     members.sort(key=_sort_key)
     field_names = await _exposed_fields(db, view)
     values_by_member = await _field_values_by_member(
@@ -230,8 +254,17 @@ async def projectable_relationships(
       Marking an edge public is therefore a request, not an override.
 
     Group edges are deliberately absent: nothing projects them at all.
+
+    `include_members` gates this too, and that follows from the third bullet
+    rather than being a separate policy: with the roster off, the view does not
+    publish ANY endpoint in full, so no edge can clear the bar. It matters
+    practically as well - an endpoint here is deliberately just an id and a
+    name, meant to be joined against /members for anything richer, so with
+    /members gone the name in the edge would be the only thing a visitor got,
+    which is precisely the "edge outs an endpoint" case this function exists to
+    make impossible.
     """
-    if not view.include_relationships:
+    if not view.include_relationships or not view.include_members:
         return []
     if active_ids is None:
         active_ids = await _active_member_ids(db, view)
@@ -313,10 +346,108 @@ async def project_relationships(
     return PublicRelationshipsView(relationships=out)
 
 
+async def projectable_groups(
+    db: AsyncSession, view: ShareView
+) -> list[Group]:
+    """The groups this view would serve right now.
+
+    THE choke point for group exposure, and a single function for the same
+    reason `projectable_relationships` is one: the owner-side audit counts
+    exactly what an anonymous visitor gets, because both come through here.
+    Two gates, both in the query:
+
+    - the view's `include_groups` flag (an off flag yields nothing, and the API
+      layer 404s the endpoint outright rather than serving an empty list, so
+      "does this profile show groups?" is not separately probeable);
+    - `privacy == public` on the GROUP itself - private (the default) and
+      friends-level groups never leave the owner's account.
+
+    There is deliberately no per-view group allowlist and no third gate on who
+    is IN the group. A group's published payload is what the owner wrote about
+    the group; its roster is assembled in `project_groups` as an intersection
+    with the members this view already serves, so a public group can never be
+    the thing that names somebody new.
+
+    The tenant predicate is redundant with the write paths and is here anyway,
+    for the reason every query on this surface pins its tenant: it feeds
+    anonymous readers and does not get to assume every writer was correct.
+    """
+    if not view.include_groups:
+        return []
+    result = await db.execute(
+        select(Group).where(
+            Group.system_id == view.system_id,
+            Group.privacy == PrivacyLevel.PUBLIC,
+        )
+    )
+    return list(result.scalars().unique().all())
+
+
+async def project_groups(db: AsyncSession, view: ShareView) -> PublicGroupsView:
+    """Published groups, each with the part of its roster this view shows."""
+    groups = await projectable_groups(db, view)
+    if not groups:
+        return PublicGroupsView(groups=[])
+
+    # The same rows `project_members` serves (identical filter, and skipped
+    # entirely when the roster is off), reused so a group's member list and the
+    # /members list cannot disagree about who is in the view or what they are
+    # called.
+    members = await _active_members(db, view) if view.include_members else []
+    by_id = {m.id: m for m in members}
+
+    roster: dict[uuid.UUID, list[Member]] = {}
+    if by_id:
+        rows = await db.execute(
+            select(group_members.c.group_id, group_members.c.member_id).where(
+                group_members.c.group_id.in_([g.id for g in groups]),
+                group_members.c.member_id.in_(by_id),
+            )
+        )
+        for group_id, member_id in rows:
+            member = by_id.get(member_id)
+            if member is not None:
+                roster.setdefault(group_id, []).append(member)
+
+    out: list[PublicGroupView] = []
+    for group in groups:
+        shown = roster.get(group.id, [])
+        shown.sort(key=_sort_key)
+        out.append(
+            PublicGroupView(
+                id=str(group.id),
+                name=group.name,
+                # Group descriptions are markdown and can carry image refs (the
+                # importer rewrites internal ones in them), so they take the
+                # same public resolve pass as a system description or a member
+                # bio: internal refs get signed same-origin URLs and external
+                # ones are hidden, because an anonymous visitor's browser must
+                # never be sent to an owner-chosen host.
+                description=resolve_description_urls_public(group.description),
+                color=group.color,
+                members=[
+                    PublicGroupMember(id=str(m.id), name=_shown_name(m))
+                    for m in shown
+                ],
+            )
+        )
+
+    # By name, never by insertion order, for the reason `_sort_key` exists:
+    # creation order says which groups the system considers foundational.
+    out.sort(key=lambda g: g.name.casefold())
+    return PublicGroupsView(groups=out)
+
+
 async def project_system(
     db: AsyncSession, view: ShareView, system: System
 ) -> PublicSystemView:
-    member_count = await _active_member_count(db, view)
+    # A roster this view refuses to serve must not be countable either:
+    # "23 members you cannot see" is still a fact about the system, and it is
+    # exactly the fact somebody turning the roster off was trying not to
+    # publish. Null, not zero - zero would be a claim, and a false one.
+    member_count = (
+        await _active_member_count(db, view) if view.include_members else None
+    )
     return PublicSystemView(
         id=str(system.id),
         name=system.name,
@@ -341,6 +472,14 @@ async def project_fronting(
     the view allows it). Never-shareable and fronting-private members are
     excluded from the count too: their front state must not propagate at all,
     so even "someone is fronting" would be a leak.
+
+    Deliberately NOT gated on `include_members`, unlike the roster, the group
+    rosters and the relationship edges. Fronting is its own surface with its
+    own flag, its own deliberately-reduced card, and its own reason to be on -
+    "who is around right now" is a thing people publish without wanting a
+    directory next to it. Turning the roster off is therefore not a
+    member-anonymity switch and nothing here should pretend it is; an owner who
+    wants nobody named anywhere turns this off as well.
     """
     if not view.include_fronting:
         return PublicFrontingView(members=[], hidden_count=0)

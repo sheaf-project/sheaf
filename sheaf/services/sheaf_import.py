@@ -148,7 +148,10 @@ from sheaf.services.polls import (
 )
 from sheaf.services.relationships import canonicalize_pair
 from sheaf.services.reminders import encrypt_title_body
-from sheaf.services.sharing import relationship_exposed_member_ids
+from sheaf.services.sharing import (
+    group_raise_exposes,
+    relationship_exposed_member_ids,
+)
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -183,6 +186,43 @@ def _symmetry(val: object) -> RelationshipSymmetry:
     if isinstance(val, str) and val in _VALID_SYMMETRY:
         return RelationshipSymmetry(val)
     return RelationshipSymmetry.SYMMETRIC
+
+
+def _group_privacy(
+    val: object, *, would_show: bool
+) -> tuple[PrivacyLevel, bool]:
+    """Coerce a group's privacy out of an import file. Returns (level, held).
+
+    The coercion half matches `_rel_visibility`: same three-level vocabulary,
+    and anything unrecognised lands PRIVATE rather than raising, because the
+    failure mode of a garbled file must be "too private", never "published".
+
+    The second half is the one that matters. `would_show` says whether any view
+    with `include_groups` and a live-or-pending grant exists right now (see
+    `sharing.group_raise_exposes`). If it does, a group arriving already
+    `public` is stored PRIVATE and flagged: the owner-side raise has step-up
+    re-auth and a grace window in front of it, an import job has neither, so
+    honouring the file here would publish a group as a side effect of restoring
+    a backup - the accidental-outing failure the whole feature exists to
+    prevent. Demoting is recoverable in one click, through the proper gate;
+    publishing is not.
+
+    One answer for the whole file rather than one per group, and that is the
+    honest granularity rather than a shortcut: a group's exposure does not
+    depend on which group it is, only on whether anything is serving groups at
+    all. Where it IS coarse is in not asking whether the group would look like
+    much once projected (a group whose whole roster sits outside the view still
+    counts). That direction of imprecision keeps a group private that might
+    have been safe to publish, which is the only direction worth being wrong in.
+    """
+    level = (
+        PrivacyLevel(val)
+        if isinstance(val, str) and val in _VALID_PRIVACY
+        else PrivacyLevel.PRIVATE
+    )
+    if level == PrivacyLevel.PUBLIC and would_show:
+        return PrivacyLevel.PRIVATE, True
+    return level, False
 
 
 def _rel_visibility(val: object) -> PrivacyLevel:
@@ -1300,24 +1340,42 @@ async def run_import(
             await load_group_index(db, system.id) if dedupe else ContentMatchIndex()
         )
         created_group_ids: set[uuid.UUID] = set()
+        # Resolved once for the whole file rather than per group: it is a
+        # single query, the answer cannot change mid-import, and unlike members
+        # it does not vary by group - a view either serves this system's public
+        # groups right now or it does not.
+        groups_would_show = await group_raise_exposes(db, system)
+        groups_held = 0
 
         # First pass: create groups without parent links
         for g_data in export_groups:
             old_gid = g_data.get("id", "")
             name = clamp_str(g_data.get("name") or "unnamed", il.GROUP_NAME, report=report)
+            privacy, held = _group_privacy(
+                g_data.get("privacy"), would_show=groups_would_show
+            )
             existing_group = group_index.get(name) if dedupe else None
             if existing_group is not None:
                 # Reuse the existing same-named group so membership and
-                # channel group-rules land on it.
+                # channel group-rules land on it. Its own columns - privacy
+                # included - are left exactly as they are: content dedup skips
+                # a matching group wholesale rather than merging into it (the
+                # same rule the parent-link pass states below), so there is no
+                # UPDATE path here for a file's privacy level to ride in on.
+                # That is the conservative direction anyway: a file can neither
+                # publish an existing group nor un-publish one.
                 old_gid_to_group[old_gid] = existing_group
                 result.groups_skipped += 1
                 continue
+            if held:
+                groups_held += 1
             group = Group(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
                 description=_resolve_md(g_data.get("description")),
                 color=clamp_str(g_data.get("color"), il.GROUP_COLOR, report=report),
+                privacy=privacy,
             )
             db.add(group)
             group_index.register(name, group)
@@ -1401,6 +1459,15 @@ async def run_import(
                     f"{cycle_moved} group(s) had a looping parent reference and "
                     "were moved to the top level."
                 )
+
+        if groups_held:
+            warnings.append(
+                f"{groups_held} imported group(s) were marked public in the "
+                "file, and this system has a shared view set to show groups. "
+                "They were imported as private so restoring a backup could not "
+                "publish them without you asking. Set them back to public from "
+                "the groups screen if you want them shown."
+            )
 
     # --- Relationships (types + member/group edges) ---
     # Types dedupe by name (like tags/groups). Edges resolve their endpoints
@@ -1549,12 +1616,19 @@ async def run_import(
             id=uuid.uuid4(),
             system_id=system.id,
             name=name,
+            # Defaults match the columns': the roster on, everything that
+            # widens the page beyond it off. A file written before these flags
+            # existed therefore restores a view that shows what it always
+            # showed.
+            include_members=bool(v_data.get("include_members", True)),
             include_bio=bool(v_data.get("include_bio", False)),
             include_fronting=bool(v_data.get("include_fronting", False)),
             fronting_show_count=bool(v_data.get("fronting_show_count", True)),
             include_relationships=bool(
                 v_data.get("include_relationships", False)
             ),
+            include_groups=bool(v_data.get("include_groups", False)),
+            member_permalinks=bool(v_data.get("member_permalinks", False)),
         )
         db.add(view)
 

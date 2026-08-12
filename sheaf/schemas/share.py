@@ -21,18 +21,28 @@ _PASSWORD = Field(default=None, description="Required when the change is deferre
 
 class ShareViewCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    # The roster is what a view is FOR, so it defaults on; everything that
+    # widens the page beyond it defaults off.
+    include_members: bool = True
     include_bio: bool = False
     include_fronting: bool = False
     fronting_show_count: bool = True
     include_relationships: bool = False
+    include_groups: bool = False
+    # Not an exposure flag (see services/sharing.EXPOSURE_FLAGS): it addresses
+    # members the roster already shows rather than showing anyone new.
+    member_permalinks: bool = False
 
 
 class ShareViewUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
+    include_members: bool | None = None
     include_bio: bool | None = None
     include_fronting: bool | None = None
     fronting_show_count: bool | None = None
     include_relationships: bool | None = None
+    include_groups: bool | None = None
+    member_permalinks: bool | None = None
 
     password: str | None = _PASSWORD
     totp_code: str | None = None
@@ -61,10 +71,16 @@ class ShareViewGroupRead(BaseModel):
 class ShareViewRead(BaseModel):
     id: uuid.UUID
     name: str
+    include_members: bool
     include_bio: bool
     include_fronting: bool
     fronting_show_count: bool
     include_relationships: bool
+    include_groups: bool
+    # Instant in both directions and never staged, so it has no pending twin
+    # below: it exposes no new data, only a stable address for members the
+    # roster already shows.
+    member_permalinks: bool
     created_at: datetime
     # True when any non-revoked grant points at this view, including one still
     # inside its grace window. Drives the "this view is live" indicator.
@@ -76,6 +92,8 @@ class ShareViewRead(BaseModel):
     pending_include_fronting: bool | None = None
     pending_fronting_show_count: bool | None = None
     pending_include_relationships: bool | None = None
+    pending_include_members: bool | None = None
+    pending_include_groups: bool | None = None
     flags_activate_at: datetime | None = None
     members: list[ShareViewMemberRead]
     fields: list[ShareViewFieldRead]
@@ -157,15 +175,25 @@ class ShareAuditEntry(BaseModel):
     view_name: str
     member_count: int
     field_count: int
+    # Whether the curated roster above is actually served. With this off the
+    # counts still describe real curation, they are just not published - which
+    # is why the audit reports the flag rather than zeroing the count and
+    # letting the owner think their work vanished.
+    include_members: bool
     include_bio: bool
     include_fronting: bool
     include_relationships: bool
+    include_groups: bool
+    member_permalinks: bool
     # Edges this view would actually serve right now, computed with the same
     # query the projection uses. Zero whenever include_relationships is off, and
     # zero when the flag is on but no edge clears both the per-edge `public`
     # level and the member ceiling - so the audit says what a visitor sees, not
     # what the flag permits.
     relationship_count: int
+    # Groups this view would actually serve right now, through the projection's
+    # own choke point for the same reason. Zero whenever include_groups is off.
+    group_count: int
 
 
 class ShareAudit(BaseModel):

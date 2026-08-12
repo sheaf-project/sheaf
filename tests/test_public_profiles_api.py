@@ -72,10 +72,13 @@ def _published_system(
     c: httpx.Client,
     *,
     members: list[str] | None = None,
+    include_members: bool = True,
     include_bio: bool = False,
     include_fronting: bool = False,
     fronting_show_count: bool = True,
     include_relationships: bool = False,
+    include_groups: bool = False,
+    member_permalinks: bool = False,
 ) -> tuple[str, str]:
     """Create a view with the given members, publish it publicly, and return
     (system_id, view_id)."""
@@ -84,10 +87,13 @@ def _published_system(
         "/v1/share-views",
         json={
             "name": f"V-{uuid.uuid4().hex[:6]}",
+            "include_members": include_members,
             "include_bio": include_bio,
             "include_fronting": include_fronting,
             "fronting_show_count": fronting_show_count,
             "include_relationships": include_relationships,
+            "include_groups": include_groups,
+            "member_permalinks": member_permalinks,
         },
     ).json()["id"]
     for m in members or []:
@@ -890,4 +896,367 @@ def test_relationship_type_colour_rides_along():
 
     body = _anon().get(f"/v1/public/systems/{system_id}/relationships").json()
     assert body["relationships"][0]["type_color"] == "#ff8800"
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# The member roster as a switch (include_members)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.public_profiles
+def test_members_404_when_the_roster_is_off():
+    """Off makes the roster UNADDRESSABLE, not empty.
+
+    An empty list would answer "does this profile have members?" for anyone who
+    asked, which is a fact about the system and not one the owner published.
+    The rest of the profile still resolves, so the 404 really is the flag.
+    """
+    owner = _register()
+    m = _member(owner, "Curated")
+    system_id, view = _published_system(
+        owner, members=[m], include_members=False
+    )
+    token = _link_token(owner, view)
+
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").status_code == 404
+    assert _anon().get(f"/v1/public/shared/{token}/members").status_code == 404
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_member_count_is_null_when_the_roster_is_off():
+    """A roster the view refuses to serve must not be countable either: "23
+    members you cannot see" is exactly the fact being withheld. Null, not zero
+    - zero would be a claim, and a false one."""
+    owner = _register()
+    a, b = _member(owner, "CountA"), _member(owner, "CountB")
+    system_id, _ = _published_system(
+        owner, members=[a, b], include_members=False
+    )
+
+    body = _anon().get(f"/v1/public/systems/{system_id}").json()
+    assert body["member_count"] is None
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_relationships_need_the_roster_too():
+    """An edge may only name endpoints the view publishes IN FULL. With the
+    roster off it publishes none of them, and an edge endpoint is deliberately
+    just an id and a name meant to be joined against /members - so the name in
+    the edge would be all a visitor got, which is the exact leak the edge gates
+    exist to prevent."""
+    owner = _register()
+    a, b = _member(owner, "EdgeA"), _member(owner, "EdgeB")
+    system_id, _ = _published_system(
+        owner,
+        members=[a, b],
+        include_members=False,
+        include_relationships=True,
+    )
+    _edge(owner, a, b, _rel_type(owner, "Partner"))
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/relationships").json()
+    assert body["relationships"] == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_fronting_is_deliberately_independent_of_the_roster():
+    """Turning the roster off is not a member-anonymity switch.
+
+    Fronting is its own surface with its own flag, its own reduced card and its
+    own reason to be on - "who is around right now" is published by people who
+    want no directory beside it. An owner who wants nobody named anywhere turns
+    this off as well, and the UI says so.
+    """
+    owner = _register()
+    m = _member(owner, "Fronter")
+    system_id, _ = _published_system(
+        owner,
+        members=[m],
+        include_members=False,
+        include_fronting=True,
+    )
+    r = owner.post("/v1/fronts", json={"member_ids": [m]})
+    assert r.status_code == 201, r.text
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/fronting").json()
+    assert [pm["name"] for pm in body["members"]] == ["Fronter"]
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# Groups on a profile
+# ---------------------------------------------------------------------------
+
+
+def _group(c: httpx.Client, name: str, members: list[str] | None = None) -> str:
+    r = c.post("/v1/groups", json={"name": name})
+    assert r.status_code == 201, r.text
+    gid = r.json()["id"]
+    if members:
+        assert (
+            c.put(f"/v1/groups/{gid}/members", json={"member_ids": members}).status_code
+            == 200
+        )
+    return gid
+
+
+def _publish_group(c: httpx.Client, group_id: str) -> None:
+    r = c.patch(f"/v1/groups/{group_id}", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "public"
+
+
+@pytest.mark.public_profiles
+def test_groups_404_when_the_flag_is_off():
+    """Same no-oracle rule as fronting and relationships: an empty list would
+    answer "does this profile show groups?" separately from "is this profile
+    public?"."""
+    owner = _register()
+    m = _member(owner, "GroupMember")
+    system_id, view = _published_system(owner, members=[m])
+    _publish_group(owner, _group(owner, "Published", members=[m]))
+    token = _link_token(owner, view)
+
+    assert _anon().get(f"/v1/public/systems/{system_id}/groups").status_code == 404
+    assert _anon().get(f"/v1/public/shared/{token}/groups").status_code == 404
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_group_key_set():
+    owner = _register()
+    m = _member(owner, "InGroup")
+    system_id, _ = _published_system(
+        owner, members=[m], include_groups=True
+    )
+    gid = _group(owner, "Littles", members=[m])
+    assert (
+        owner.patch(
+            f"/v1/groups/{gid}", json={"description": "desc", "color": "#123456"}
+        ).status_code
+        == 200
+    )
+    _publish_group(owner, gid)
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/groups").json()
+    assert set(body) == {"groups"}
+    group = body["groups"][0]
+    assert set(group) == {"id", "name", "description", "color", "members"}
+    assert group["name"] == "Littles"
+    assert group["description"] == "desc"
+    assert group["color"] == "#123456"
+    # A group member is an id and a name only, like a relationship endpoint.
+    assert set(group["members"][0]) == {"id", "name"}
+    # parent_id and the staging columns must never reach the public payload.
+    assert "parent_id" not in group
+    assert "privacy" not in group
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_only_public_groups_are_projected():
+    owner = _register()
+    m = _member(owner, "Shared")
+    system_id, _ = _published_system(owner, members=[m], include_groups=True)
+    _publish_group(owner, _group(owner, "Open", members=[m]))
+    _group(owner, "Closed", members=[m])  # left at the default `private`
+    friends = _group(owner, "Friendly", members=[m])
+    assert (
+        owner.patch(f"/v1/groups/{friends}", json={"privacy": "friends"}).status_code
+        == 200
+    )
+
+    names = {
+        g["name"]
+        for g in _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"]
+    }
+    assert names == {"Open"}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_group_roster_is_an_intersection_not_a_second_allowlist():
+    """A published group can never name somebody the view was not already
+    naming: its roster is intersected with the members this view projects, so
+    every guard the member list obeys applies here without being restated."""
+    owner = _register()
+    shown = _member(owner, "GroupShown")
+    outside = _member(owner, "GroupOutside")
+    private = _member(owner, "GroupPrivate", privacy="private")
+    secret = _member(owner, "GroupSecret")
+    system_id, _ = _published_system(
+        owner, members=[shown, private, secret], include_groups=True
+    )
+    _set_never_shareable(secret)
+    _publish_group(
+        owner,
+        _group(owner, "Everyone", members=[shown, outside, private, secret]),
+    )
+
+    group = _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"][0]
+    assert [gm["name"] for gm in group["members"]] == ["GroupShown"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_group_with_an_empty_roster_still_shows():
+    """Name, description and colour are what the owner chose to publish about
+    the group. An empty roster discloses nothing about who is in it, so hiding
+    the group would be withholding something the owner did publish."""
+    owner = _register()
+    shown = _member(owner, "Elsewhere")
+    outside = _member(owner, "NotInView")
+    system_id, _ = _published_system(
+        owner, members=[shown], include_groups=True
+    )
+    _publish_group(owner, _group(owner, "Offstage", members=[outside]))
+
+    groups = _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"]
+    assert [g["name"] for g in groups] == ["Offstage"]
+    assert groups[0]["members"] == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_group_roster_is_empty_when_the_member_list_is_off():
+    """The roster comes from the same rows /members serves, so with the roster
+    off there is nobody to intersect with and the group stands on its own."""
+    owner = _register()
+    m = _member(owner, "Hidden")
+    system_id, _ = _published_system(
+        owner, members=[m], include_members=False, include_groups=True
+    )
+    _publish_group(owner, _group(owner, "Standalone", members=[m]))
+
+    groups = _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"]
+    assert [g["name"] for g in groups] == ["Standalone"]
+    assert groups[0]["members"] == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_group_description_hides_external_images():
+    """Group descriptions take the same public resolve pass as a system
+    description or a member bio: an external image would make an anonymous
+    visitor's browser announce itself to an owner-chosen host."""
+    owner = _register()
+    m = _member(owner, "GroupImg")
+    system_id, _ = _published_system(
+        owner, members=[m], include_groups=True
+    )
+    key = _upload(owner, purpose="bio")
+    gid = _group(owner, "Illustrated", members=[m])
+    assert (
+        owner.patch(
+            f"/v1/groups/{gid}",
+            json={
+                "description": f"![mine](/v1/files/{key}) ![theirs]({_TRACKER})"
+            },
+        ).status_code
+        == 200
+    )
+    _publish_group(owner, gid)
+
+    desc = _anon().get(
+        f"/v1/public/systems/{system_id}/groups"
+    ).json()["groups"][0]["description"]
+    assert f"/v1/public/files/{key}" in desc
+    assert _TRACKER not in desc
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# Member permalinks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.public_profiles
+def test_member_permalink_serves_the_same_card_as_the_list():
+    owner = _register()
+    m = _member(owner, "Linkable", pronouns="they/them")
+    system_id, view = _published_system(
+        owner, members=[m], member_permalinks=True
+    )
+    token = _link_token(owner, view)
+
+    listed = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
+    single = _anon().get(f"/v1/public/systems/{system_id}/members/{m}")
+    assert single.status_code == 200, single.text
+    assert single.json() == listed
+    # Both grant types address it the same way.
+    via_link = _anon().get(f"/v1/public/shared/{token}/members/{m}")
+    assert via_link.status_code == 200, via_link.text
+    assert via_link.json() == listed
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_member_permalink_404_matrix():
+    """Every reason a permalink does not resolve is the same 404: the flag is
+    off, the roster is off, the member is not projected, or the member is not
+    public. A visitor trying an id from elsewhere learns nothing."""
+    owner = _register()
+    shown = _member(owner, "PermaShown")
+    outside = _member(owner, "PermaOutside")
+    private = _member(owner, "PermaPrivate", privacy="private")
+    system_id, view = _published_system(
+        owner, members=[shown, private], member_permalinks=True
+    )
+    anon = _anon()
+
+    # Sanity: the one member who should resolve, does.
+    assert anon.get(f"/v1/public/systems/{system_id}/members/{shown}").status_code == 200
+    # Not in the view; in the view but below the privacy ceiling; nonexistent.
+    for mid in (outside, private, str(uuid.uuid4())):
+        assert anon.get(
+            f"/v1/public/systems/{system_id}/members/{mid}"
+        ).status_code == 404
+
+    # Flag off -> even the projected member is unaddressable.
+    assert (
+        owner.patch(
+            f"/v1/share-views/{view}", json={"member_permalinks": False}
+        ).status_code
+        == 200
+    )
+    assert anon.get(f"/v1/public/systems/{system_id}/members/{shown}").status_code == 404
+
+    # Roster off (with permalinks back on) -> unaddressable for the other reason.
+    assert (
+        owner.patch(
+            f"/v1/share-views/{view}",
+            json={"member_permalinks": True, "include_members": False},
+        ).status_code
+        == 200
+    )
+    assert anon.get(f"/v1/public/systems/{system_id}/members/{shown}").status_code == 404
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_member_permalink_obeys_the_bio_flag():
+    """A permalink is `project_members` filtered to one id, so every per-view
+    setting applies without being restated - including the one that decides
+    whether a bio is served at all."""
+    owner = _register()
+    m = _member(owner, "BioLink", description="a bio")
+    system_id, view = _published_system(
+        owner, members=[m], member_permalinks=True
+    )
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/members/{m}").json()
+    assert body["bio"] is None
+
+    assert (
+        owner.patch(f"/v1/share-views/{view}", json={"include_bio": True}).status_code
+        == 200
+    )
+    body = _anon().get(f"/v1/public/systems/{system_id}/members/{m}").json()
+    assert body["bio"] == "a bio"
     owner.close()

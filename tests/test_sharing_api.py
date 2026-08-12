@@ -531,6 +531,118 @@ def test_turning_relationships_on_for_a_shared_view_is_deferred(
     assert body["flags_activate_at"] is not None
 
 
+def test_turning_groups_on_for_a_shared_view_is_deferred(
+    auth_client: httpx.Client,
+):
+    """include_groups is an exposure flag: the endpoint it opens did not exist
+    for visitors before, so turning it on can only add to what is served."""
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    denied = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_groups": True}
+    )
+    assert denied.status_code in (400, 403), denied.text
+
+    ok = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"include_groups": True, "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["include_groups"] is False
+    assert body["pending_include_groups"] is True
+    assert body["flags_activate_at"] is not None
+
+
+def test_turning_the_member_list_back_on_is_deferred(auth_client: httpx.Client):
+    """include_members is an exposure flag in the ON direction only.
+
+    Turning it off is going dark and lands at once (see the tightening test);
+    turning it back on republishes the whole roster, which is the largest
+    single loosening a view has, so it waits like everything else."""
+    vid = _shared_view(auth_client, include_members=False)
+    _arm_visibility_safety(auth_client)
+
+    denied = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_members": True}
+    )
+    assert denied.status_code in (400, 403), denied.text
+
+    ok = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"include_members": True, "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["include_members"] is False
+    assert body["pending_include_members"] is True
+    assert body["flags_activate_at"] is not None
+
+
+def test_turning_the_member_list_off_is_immediate(auth_client: httpx.Client):
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_members": False}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["include_members"] is False
+    assert r.json()["pending_include_members"] is None
+    assert r.json()["flags_activate_at"] is None
+
+
+def test_member_permalinks_never_defers(auth_client: httpx.Client):
+    """Permalinks are deliberately not an exposure flag.
+
+    They publish nothing the roster does not already publish - they only give
+    already-shown members a stable address - so turning them on while the view
+    is shared and the safety category is armed still takes effect at once, with
+    no step-up and nothing staged. There is no `pending_member_permalinks` to
+    check because the column does not exist.
+    """
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    on = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"member_permalinks": True}
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()["member_permalinks"] is True
+    assert on.json()["flags_activate_at"] is None
+    assert "pending_member_permalinks" not in on.json()
+
+    off = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"member_permalinks": False}
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["member_permalinks"] is False
+
+
+def test_permalinks_alongside_a_staged_flag_still_lands_at_once(
+    auth_client: httpx.Client,
+):
+    """One PATCH carrying both kinds of change: the exposure flag stages, the
+    permalink toggle does not get dragged into the grace window with it."""
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={
+            "include_bio": True,
+            "member_permalinks": True,
+            "password": "testpassword123",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["include_bio"] is False
+    assert body["pending_include_bio"] is True
+    assert body["member_permalinks"] is True
+
+
 def test_flag_tightening_is_immediate_and_ungated(auth_client: httpx.Client):
     vid = _shared_view(auth_client, include_fronting=True)
     _arm_visibility_safety(auth_client)
@@ -603,6 +715,35 @@ def test_finalize_job_promotes_a_staged_flag_flip(
     got = auth_client.get(f"/v1/share-views/{vid}").json()
     assert got["include_bio"] is True
     assert got["pending_include_bio"] is None
+    assert got["flags_activate_at"] is None
+
+
+def test_finalize_job_promotes_the_two_display_flags(
+    auth_client: httpx.Client, admin_client: httpx.Client
+):
+    """The sweep's conditional UPDATE has to name every staged flag; a new one
+    left out of it would stage forever and never arrive."""
+    vid = _shared_view(auth_client, include_members=False)
+    _arm_visibility_safety(auth_client)
+    staged = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={
+            "include_members": True,
+            "include_groups": True,
+            "password": "testpassword123",
+        },
+    )
+    assert staged.status_code == 200, staged.text
+
+    _backdate_view_flags(vid)
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["include_members"] is True
+    assert got["include_groups"] is True
+    assert got["pending_include_members"] is None
+    assert got["pending_include_groups"] is None
     assert got["flags_activate_at"] is None
 
 
@@ -994,6 +1135,55 @@ def test_audit_lists_live_grants_only(auth_client: httpx.Client):
     # Revoked grants drop off the audit.
     auth_client.delete(f"/v1/share-grants/{gid}")
     assert auth_client.get("/v1/sharing/audit").json()["entries"] == []
+
+
+def test_audit_group_count_matches_what_is_served(auth_client: httpx.Client):
+    """The audit counts groups through the projection's own choke point, so it
+    reports what a visitor gets rather than what the flag permits: only public
+    groups, and none at all while the flag is off."""
+    _attest(auth_client)
+    vid = _view(auth_client, "GroupAudit")
+    shown = _group(auth_client, "Shown")
+    _group(auth_client, "Hidden")
+    assert (
+        auth_client.patch(
+            f"/v1/groups/{shown}", json={"privacy": "public"}
+        ).status_code
+        == 200
+    )
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+
+    entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
+    # Flag off: nothing is served, whatever the groups themselves say.
+    assert entry["include_groups"] is False
+    assert entry["group_count"] == 0
+
+    auth_client.patch(f"/v1/share-views/{vid}", json={"include_groups": True})
+    entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
+    assert entry["include_groups"] is True
+    assert entry["group_count"] == 1
+
+
+def test_audit_reports_the_member_list_and_permalink_settings(
+    auth_client: httpx.Client,
+):
+    """With the roster off, `member_count` still reports the curation (nothing
+    was destroyed) and `include_members` is what says it is not being served."""
+    _attest(auth_client)
+    vid = _view(auth_client, "RosterAudit", include_members=False)
+    m = _member(auth_client, "Curated", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+    auth_client.patch(f"/v1/share-views/{vid}", json={"member_permalinks": True})
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+
+    entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
+    assert entry["include_members"] is False
+    assert entry["member_count"] == 1
+    assert entry["member_permalinks"] is True
 
 
 # ---------------------------------------------------------------------------

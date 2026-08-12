@@ -100,6 +100,12 @@ def _view_by_name(client: httpx.Client, name: str) -> dict:
     return match[0]
 
 
+def _group_by_name(dump: dict, name: str) -> dict:
+    match = [g for g in dump["groups"] if g["name"] == name]
+    assert len(match) == 1, dump["groups"]
+    return match[0]
+
+
 # --- payloads ----------------------------------------------------------------
 
 
@@ -119,7 +125,14 @@ def _native_with_views(view_name: str = "Portable View") -> dict:
             },
         ],
         "fronts": [],
-        "groups": [{"id": "g1", "name": "ShareGroup", "member_ids": ["m1"]}],
+        "groups": [
+            {
+                "id": "g1",
+                "name": "ShareGroup",
+                "privacy": "friends",
+                "member_ids": ["m1"],
+            }
+        ],
         "tags": [],
         "custom_fields": [
             {
@@ -135,10 +148,13 @@ def _native_with_views(view_name: str = "Portable View") -> dict:
         "share_views": [
             {
                 "name": view_name,
+                "include_members": False,
                 "include_bio": True,
                 "include_fronting": True,
                 "fronting_show_count": False,
                 "include_relationships": True,
+                "include_groups": True,
+                "member_permalinks": True,
                 "member_ids": ["m1", "m2"],
                 "field_ids": ["f1"],
                 "group_ids": ["g1"],
@@ -151,7 +167,7 @@ def _native_with_views(view_name: str = "Portable View") -> dict:
 
 
 def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
-    """A published system exports its view (name + all four flags + the
+    """A published system exports its view (name + every display flag + the
     member/field/group picks) and nothing at all about the grant that
     publishes it - not the row, not the token, not the token's hash."""
     member = auth_client.post(
@@ -166,10 +182,13 @@ def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
         "/v1/share-views",
         json={
             "name": "Exported View",
+            "include_members": False,
             "include_bio": True,
             "include_fronting": True,
             "fronting_show_count": False,
             "include_relationships": True,
+            "include_groups": True,
+            "member_permalinks": True,
         },
     )
     assert view.status_code == 201, view.text
@@ -211,10 +230,14 @@ def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
     assert len(views) == 1, views
     exported = views[0]
     assert exported["name"] == "Exported View"
+    assert exported["include_members"] is False
     assert exported["include_bio"] is True
     assert exported["include_fronting"] is True
     assert exported["fronting_show_count"] is False
     assert exported["include_relationships"] is True
+    assert exported["include_groups"] is True
+    # Not a staged flag, but still the owner's setting, so it round-trips.
+    assert exported["member_permalinks"] is True
     assert exported["member_ids"] == [member]
     assert exported["field_ids"] == [field]
     assert exported["group_ids"] == [group]
@@ -240,10 +263,18 @@ def test_native_import_restores_views_remapped(auth_client: httpx.Client):
     group_id = {g["name"]: g["id"] for g in dump["groups"]}
     field_id = {f["name"]: f["id"] for f in dump["custom_fields"]}
 
+    # The group's own exposure ceiling travels with it. `friends` on purpose:
+    # it is below public, so the importer's publish hold never comes into it
+    # and this really is testing the round-trip rather than the guard.
+    assert _group_by_name(dump, "ShareGroup")["privacy"] == "friends"
+
     view = _view_by_name(auth_client, "Portable View")
+    assert view["include_members"] is False
     assert view["include_bio"] is True
     assert view["include_fronting"] is True
     assert view["fronting_show_count"] is False
+    assert view["include_groups"] is True
+    assert view["member_permalinks"] is True
     # The relationships flag travels too - and lands inert like the rest of the
     # view, since no grant comes with it.
     assert view["include_relationships"] is True
@@ -418,10 +449,18 @@ def test_openplural_roundtrip_restores_views_and_relationships(
     field_id = {f["name"]: f["id"] for f in dump["custom_fields"]}
     group_id = {g["name"]: g["id"] for g in dump["groups"]}
 
+    # Group privacy has no OpenPlural v0.1 core field, so it rides
+    # extensions.sheaf on the group record; this proves that passthrough works
+    # in both directions.
+    assert _group_by_name(dump, "ShareGroup")["privacy"] == "friends"
+
     view = _view_by_name(auth_client, "OpenPlural View")
+    assert view["include_members"] is False
     assert view["include_bio"] is True
     assert view["fronting_show_count"] is False
     assert view["include_relationships"] is True
+    assert view["include_groups"] is True
+    assert view["member_permalinks"] is True
     # The never-shareable member is stripped on this path too.
     assert [vm["member_id"] for vm in view["members"]] == [member_id["ShareAda"]]
     assert [vf["field_id"] for vf in view["fields"]] == [field_id["ShareField"]]
