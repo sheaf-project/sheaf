@@ -12,11 +12,14 @@ test_public_profiles_api.py.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
+from sheaf.api.v1.relationships import _apply_orientation
 from sheaf.models.relationship import (
     GroupRelationship,
     MemberRelationship,
@@ -192,6 +195,129 @@ def test_edge_update_carries_step_up_credentials():
     assert body.password == "hunter2"
     assert body.totp_code is None
     assert RelationshipEdgeUpdate().model_dump(exclude_unset=True) == {}
+
+
+def test_edge_update_carries_flip_and_mutual_only_when_asked():
+    """Both are tri-state on the wire: absent means "leave it alone", which is
+    what lets one PATCH body change privacy without silently restating the
+    direction (or the other way round)."""
+    assert RelationshipEdgeUpdate().flip is None
+    assert RelationshipEdgeUpdate().mutual is None
+    body = RelationshipEdgeUpdate(flip=True, mutual=False)
+    assert body.model_dump(exclude_unset=True) == {"flip": True, "mutual": False}
+
+
+# --- Orientation (flip / mutual) --------------------------------------------
+
+
+class _TypeLookup:
+    """Stands in for the session: `_get_type_in_system` is the only query
+    `_apply_orientation` makes, and it wants one scalar back."""
+
+    def __init__(self, rtype):
+        self.rtype = rtype
+
+    async def execute(self, *_args, **_kwargs):
+        return SimpleNamespace(scalar_one_or_none=lambda: self.rtype)
+
+
+class _NoQueries:
+    """A session that fails the test if it is touched at all."""
+
+    async def execute(self, *_args, **_kwargs):  # pragma: no cover - guard
+        raise AssertionError("orientation asked the DB for something")
+
+
+_STAGED_AT = datetime(2030, 1, 1, tzinfo=UTC)
+
+
+def _orientable_edge(symmetry: RelationshipSymmetry, *, mutual: bool = False):
+    """An edge row with a raise already staged on it, so every orientation test
+    also pins that the staging is left alone."""
+    rtype = SimpleNamespace(id=uuid.uuid4(), symmetry=symmetry)
+    edge = SimpleNamespace(
+        source_id=uuid.uuid4(),
+        target_id=uuid.uuid4(),
+        relationship_type_id=rtype.id,
+        mutual=mutual,
+        visibility=PrivacyLevel.PRIVATE,
+        pending_visibility=PrivacyLevel.PUBLIC,
+        visibility_activates_at=_STAGED_AT,
+    )
+    return edge, _TypeLookup(rtype)
+
+
+async def _orient(edge, db, **kw) -> bool:
+    return await _apply_orientation(
+        edge, system=SimpleNamespace(id=uuid.uuid4()), db=db, **kw
+    )
+
+
+async def test_flip_swaps_the_endpoints_of_a_directional_edge():
+    edge, db = _orientable_edge(RelationshipSymmetry.DIRECTIONAL)
+    was = (edge.source_id, edge.target_id)
+
+    assert await _orient(edge, db, flip=True, mutual=None) is True
+    assert (edge.source_id, edge.target_id) == (was[1], was[0])
+
+
+async def test_flip_is_refused_on_a_symmetric_type():
+    """Nothing to reverse, and the stored order is the canonical one the
+    uniqueness index leans on - so this is a 400, not a quiet no-op."""
+    edge, db = _orientable_edge(RelationshipSymmetry.SYMMETRIC)
+    was = (edge.source_id, edge.target_id)
+
+    with pytest.raises(HTTPException) as err:
+        await _orient(edge, db, flip=True, mutual=None)
+    assert err.value.status_code == 400
+    assert (edge.source_id, edge.target_id) == was
+
+
+async def test_flip_leaves_a_staged_raise_alone():
+    """Reorienting an edge is not a way to cancel a pending publication, or to
+    hurry one along."""
+    edge, db = _orientable_edge(RelationshipSymmetry.EITHER)
+
+    await _orient(edge, db, flip=True, mutual=None)
+
+    assert edge.visibility == PrivacyLevel.PRIVATE
+    assert edge.pending_visibility == PrivacyLevel.PUBLIC
+    assert edge.visibility_activates_at == _STAGED_AT
+
+
+@pytest.mark.parametrize(
+    "symmetry",
+    [RelationshipSymmetry.SYMMETRIC, RelationshipSymmetry.DIRECTIONAL],
+)
+async def test_mutual_is_normalised_off_for_non_either_types(
+    symmetry: RelationshipSymmetry,
+):
+    """Same normalisation create does: `mutual` only means anything on an
+    `either` type, and false is what the row would have meant anyway."""
+    edge, db = _orientable_edge(symmetry)
+
+    assert await _orient(edge, db, flip=None, mutual=True) is False
+    assert edge.mutual is False
+
+
+async def test_mutual_toggles_both_ways_on_an_either_type():
+    edge, db = _orientable_edge(RelationshipSymmetry.EITHER)
+
+    assert await _orient(edge, db, flip=None, mutual=True) is True
+    assert edge.mutual is True
+    assert await _orient(edge, db, flip=None, mutual=False) is True
+    assert edge.mutual is False
+    # Asking for what is already stored is not a change.
+    assert await _orient(edge, db, flip=None, mutual=False) is False
+
+
+async def test_a_privacy_only_update_never_looks_up_the_type():
+    """A PATCH that says nothing about orientation must not pay for a type
+    fetch, and must report that it changed nothing."""
+    edge, _ = _orientable_edge(RelationshipSymmetry.DIRECTIONAL)
+
+    assert await _orient(edge, _NoQueries(), flip=None, mutual=None) is False
+    assert await _orient(edge, _NoQueries(), flip=False, mutual=None) is False
 
 
 def test_public_relationship_key_sets():
