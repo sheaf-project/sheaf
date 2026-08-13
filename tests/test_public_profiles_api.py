@@ -387,12 +387,17 @@ def test_only_exposed_custom_fields_appear():
     assert r.status_code == 200, r.text
 
     _, view = _published_system(owner, members=[m])
-    # Expose only the Role field through the view.
+    # Expose only the Role field: selected into the view AND raised to public.
+    # Both gates are needed since the definition ceiling became enforced; the
+    # raise is instant here because test systems do not arm System Safety.
     owner.post(f"/v1/share-views/{view}/fields", json={"field_id": shown_field["id"]})
+    r = owner.patch(f"/v1/fields/{shown_field['id']}", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
     system_id = owner.get("/v1/systems/me").json()["id"]
 
     mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
     assert mem["fields"] == {"Role": "Protector"}
+    # Secret is doubly held: never selected, and still at the private default.
     assert "Secret" not in mem["fields"]
     owner.close()
 
