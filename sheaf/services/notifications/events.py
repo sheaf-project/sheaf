@@ -1,17 +1,31 @@
 """Front-change event emission.
 
 Called from `sheaf/api/v1/fronts.py` inside the same DB transaction as the
-mutation. Aggregates the entire fronting-state transition into one outbox
-row per matching channel — even when many members move at once. Per-member
-visibility resolution + payload rendering happen at dispatch time, not
-here, so owner config changes between enqueue and dispatch take effect.
+mutation. Per-member visibility resolution + payload rendering happen at
+dispatch time, not here, so owner config changes between enqueue and
+dispatch take effect.
+
+Two distinct kinds of "aggregation" live here, don't confuse them:
+
+  * Per-transition collapse (always on): one state change moving N members
+    at once produces ONE outbox row per matching channel, carrying the full
+    before/after fronting sets. This is intrinsic to the payload shape.
+
+  * Time-window aggregation (opt-in, `aggregation_window_seconds > 0`):
+    several *separate* front changes within a rolling window collapse into
+    a single outbox row whose payload holds the NET transition (the fronting
+    state at window open -> the latest fronting state). The dispatcher then
+    delivers that one row when the window closes, so debounce, quiet hours,
+    retry, and rendering all apply to it unchanged. This is what turns a
+    "C stopped" + "B started" cofront swap into one notification. See
+    `_fold_or_open_window`.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,13 +97,19 @@ async def emit_front_change(
     event_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> int:
-    """Aggregate the state transition and write outbox rows.
+    """Enqueue this state transition to matching channels.
 
-    A switch with N members moving produces ONE row per channel — the row's
+    A switch with N members moving produces ONE row per channel - the row's
     payload carries the full before/after fronting sets, and the dispatcher
     renders a single aggregated message at delivery time.
 
-    Returns the number of outbox rows enqueued. Caller commits the session.
+    Channels with a time-window aggregation set (`aggregation_window_seconds
+    > 0`) instead fold this transition into their currently-open window row
+    (or open a fresh one); see `_fold_or_open_window`.
+
+    Returns the number of channels enqueued to (a fold into an open window
+    counts, since it's the delivery this transition contributes to). Caller
+    commits the session.
     """
     started_ids = after.fronting_member_ids - before.fronting_member_ids
     stopped_ids = before.fronting_member_ids - after.fronting_member_ids
@@ -141,27 +161,48 @@ async def emit_front_change(
     if not channels:
         return 0
 
-    payload = {
-        "fronting_before": sorted(str(m) for m in before.fronting_member_ids),
-        "fronting_after": sorted(str(m) for m in after.fronting_member_ids),
-    }
+    before_ids = sorted(str(m) for m in before.fronting_member_ids)
+    after_ids = sorted(str(m) for m in after.fronting_member_ids)
 
     enqueued = 0
-    for channel in channels:
-        # Skip channels whose enabled triggers don't match this transition.
+    # Sort by id so two concurrent front changes touching the same channels
+    # take the per-channel locks (below) in the same order -> no deadlock.
+    for channel in sorted(channels, key=lambda c: str(c.id)):
+        # Does this transition match any of the channel's enabled triggers?
         # Triggering on start matches if any member started, etc. Channels
         # with no enabled triggers are effectively muted.
-        if not (
+        matches_trigger = (
             (channel.trigger_on_start and started)
             or (channel.trigger_on_stop and stopped)
             or (channel.trigger_on_cofront_change and cofront_changed)
-        ):
+        )
+
+        window = channel.aggregation_window_seconds
+        if window and window > 0:
+            if await _fold_or_open_window(
+                db,
+                channel,
+                now=now,
+                window_seconds=window,
+                event_id=event_id,
+                before_ids=before_ids,
+                after_ids=after_ids,
+                matches_trigger=matches_trigger,
+            ):
+                enqueued += 1
+            continue
+
+        # No time-window aggregation: one row per matching transition.
+        if not matches_trigger:
             continue
         row = NotificationOutboxRow(
             event_id=event_id,
             channel_id=channel.id,
             event_type="front_change",
-            event_payload=payload,
+            event_payload={
+                "fronting_before": before_ids,
+                "fronting_after": after_ids,
+            },
             enqueued_at=now,
             deliver_after=now,
         )
@@ -169,6 +210,96 @@ async def emit_front_change(
         enqueued += 1
 
     return enqueued
+
+
+async def _fold_or_open_window(
+    db: AsyncSession,
+    channel: NotificationChannel,
+    *,
+    now: datetime,
+    window_seconds: int,
+    event_id: uuid.UUID,
+    before_ids: list[str],
+    after_ids: list[str],
+    matches_trigger: bool,
+) -> bool:
+    """Coalesce this front change into the channel's open aggregation window.
+
+    Returns True if a row was created or an open window row was updated.
+
+    Semantics: the window opens at the first triggering change and closes
+    `window_seconds` later (deliver_after). Every front change inside it
+    (matching a trigger or not) advances the window's `fronting_after` to
+    the current state while its `fronting_before` stays pinned at the state
+    when the window opened. The stored payload is therefore the NET
+    transition over the window; the dispatcher renders it once and applies
+    the channel's triggers to that net (so a member who flapped on and off
+    within the window nets to nothing, and a "C out, B in" swap nets to one
+    "B started / C stopped" message). Non-matching changes must still fold,
+    or the net `after` would be stale and name someone who has since left.
+
+    Concurrency: the channel row is locked FOR UPDATE first, so two
+    concurrent front changes on the same system can't both decide "no window
+    open" and each open one (which would split the batch into two
+    deliveries). The lock is released when the caller commits the mutation
+    transaction. A row that is already claimed by the dispatcher, awaiting
+    retry (`failed_attempts > 0`), or past its window end is never folded
+    into - such a change starts a fresh window instead.
+    """
+    # Serialize find-or-create for this channel against concurrent emitters.
+    await db.execute(
+        select(NotificationChannel.id)
+        .where(NotificationChannel.id == channel.id)
+        .with_for_update()
+    )
+
+    open_row = (
+        await db.execute(
+            select(NotificationOutboxRow)
+            .where(
+                NotificationOutboxRow.channel_id == channel.id,
+                NotificationOutboxRow.event_type == "front_change",
+                NotificationOutboxRow.delivered_at.is_(None),
+                NotificationOutboxRow.claimed_at.is_(None),
+                NotificationOutboxRow.failed_attempts == 0,
+                NotificationOutboxRow.deliver_after > now,
+            )
+            .order_by(NotificationOutboxRow.deliver_after.desc())
+            .with_for_update()
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if open_row is not None:
+        # Advance the net `after`; keep the window's original `before`.
+        # Reassign (not in-place mutate) so SQLAlchemy flags the JSONB dirty.
+        open_row.event_payload = {
+            "fronting_before": open_row.event_payload.get(
+                "fronting_before", before_ids
+            ),
+            "fronting_after": after_ids,
+        }
+        return True
+
+    # No open window. Only open one for a change that actually matches a
+    # trigger; a channel that doesn't care about this class of change stays
+    # silent, exactly as the non-aggregating path does.
+    if not matches_trigger:
+        return False
+    db.add(
+        NotificationOutboxRow(
+            event_id=event_id,
+            channel_id=channel.id,
+            event_type="front_change",
+            event_payload={
+                "fronting_before": before_ids,
+                "fronting_after": after_ids,
+            },
+            enqueued_at=now,
+            deliver_after=now + timedelta(seconds=window_seconds),
+        )
+    )
+    return True
 
 
 async def snapshot_front_state(

@@ -68,11 +68,6 @@ _EXT_PASSTHROUGH_SECTIONS = (
     "relationship_types",
     "member_relationships",
     "group_relationships",
-    # OpenPlural v0.1 has no sharing/visibility module, so the curated share
-    # views ride the passthrough. Share GRANTS are absent from the native
-    # export by design (a grant is a live capability), so nothing here can
-    # republish a system on re-import.
-    "share_views",
 )
 
 

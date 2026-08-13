@@ -212,11 +212,15 @@ def test_registry_matches_golden_binding_map():
         fn_name: (table, column)
         for fn_name, table, column in _registry_bindings()
     }
+    mis_bound = {
+        k: (actual[k], _GOLDEN_BINDINGS[k])
+        for k in actual.keys() & _GOLDEN_BINDINGS.keys()
+        if actual[k] != _GOLDEN_BINDINGS[k]
+    }
     assert actual == _GOLDEN_BINDINGS, (
         f"helpers not in golden map: {sorted(actual.keys() - _GOLDEN_BINDINGS.keys())}; "
         f"golden entries without a helper: {sorted(_GOLDEN_BINDINGS.keys() - actual.keys())}; "
-        f"mis-bound: "
-        f"{ {k: (actual[k], _GOLDEN_BINDINGS[k]) for k in actual.keys() & _GOLDEN_BINDINGS.keys() if actual[k] != _GOLDEN_BINDINGS[k]} }. "
+        f"mis-bound: {mis_bound}. "
         f"A binding change rewrites the AAD baked into stored rows - only "
         f"edit the golden map as a conscious, reviewed decision."
     )

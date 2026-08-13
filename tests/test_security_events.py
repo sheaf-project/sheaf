@@ -20,8 +20,10 @@ from __future__ import annotations
 import uuid
 
 import httpx
+import pytest
 
 from .conftest import BASE_URL
+from .test_api_keys import _create_key, _key_client
 
 PASSWORD = "correct-horse-battery"
 
@@ -149,6 +151,82 @@ def test_email_change_step_up_recorded(admin_client: httpx.Client):
     outcomes = [e["outcome"] for e in events if e["event_type"] == "email_change"]
     assert "password_incorrect" in outcomes
     assert "success" in outcomes
+
+
+def test_api_key_export_recorded(admin_client: httpx.Client):
+    """Exporting with an API key stays allowed - scripted backups are a
+    sanctioned use case - but each one leaves a row, which is what makes a
+    leaked key auditable after the fact. The session path is not recorded:
+    the event exists to mark the programmatic reads."""
+    email = f"sec-keyexport-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        reg = c.post(
+            "/v1/auth/register", json={"email": email, "password": PASSWORD}
+        )
+        assert reg.status_code == 201, reg.text
+        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        key = _create_key(c, "export-bot", scopes=["export:read"])["key"]
+        assert c.get("/v1/export").status_code == 200
+        with _key_client(key) as kc:
+            assert kc.get("/v1/export").status_code == 200
+
+    uid = _find_user_id(admin_client, email)
+    events = _timeline(admin_client, uid)
+    exports = [e for e in events if e["event_type"] == "data_export"]
+    assert len(exports) == 1, exports
+    assert exports[0]["outcome"] == "api_key"
+    assert exports[0]["ip"]
+
+
+def test_refresh_reuse_kill_recorded(
+    admin_client: httpx.Client, monkeypatch: pytest.MonkeyPatch
+):
+    """Reuse of a consumed refresh token outside the rotation grace window is
+    read as probable token theft: the session is killed and the caller gets a
+    generic 401. Nobody is told anything, so the security-event row is the
+    only signal a responder has that it happened."""
+    import asyncio
+
+    import jwt
+
+    from tests.test_shield_mode import (
+        _patch_redis_url_for_host,
+        _reset_redis_singleton,
+    )
+
+    email = f"sec-reuse-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        reg = c.post(
+            "/v1/auth/register", json={"email": email, "password": PASSWORD}
+        )
+        assert reg.status_code == 201, reg.text
+        refresh_jwt = reg.json()["refresh_token"]
+        access = reg.json()["access_token"]
+        jti = jwt.decode(refresh_jwt, options={"verify_signature": False})["jti"]
+
+        # Burn the jti without ever caching a rotation, which is what a
+        # genuinely stolen-and-replayed token looks like: the grace-window
+        # poll finds nothing and the endpoint falls through to the kill.
+        _patch_redis_url_for_host(monkeypatch)
+        _reset_redis_singleton()
+        from sheaf.auth.sessions import consume_refresh_jti
+
+        assert asyncio.run(consume_refresh_jti(jti)) is not None
+
+        resp = c.post("/v1/auth/refresh", json={"refresh_token": refresh_jwt})
+        assert resp.status_code == 401, resp.text
+        # The session really is gone: its access token no longer authenticates.
+        me = c.get("/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+        assert me.status_code == 401, me.text
+
+    uid = _find_user_id(admin_client, email)
+    events = _timeline(admin_client, uid)
+    kills = [e for e in events if e["event_type"] == "refresh_reuse"]
+    assert kills, events
+    assert kills[0]["outcome"] == "session_killed"
+    assert kills[0]["ip"]
+    # No token material anywhere on the row.
+    assert kills[0]["detail"] is None
 
 
 # ---------------------------------------------------------------------------

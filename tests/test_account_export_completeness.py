@@ -114,6 +114,8 @@ def test_account_data_succeeds_with_correct_password(auth_client: httpx.Client):
         "receiving_notification_channels",
     ):
         assert k in body
+    # The age attestation is held about the account, so Article 15 covers it.
+    assert "adult_attested_at" in body["account"]
     # Account block should NOT include the password hash, totp secret, or
     # recovery codes.
     serialised = str(body["account"])

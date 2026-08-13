@@ -133,6 +133,65 @@ def test_refresh_concurrent_replay_does_not_kill_session(client: httpx.Client):
     assert me.status_code == 200, me.text
 
 
+def test_refresh_loser_in_flight_waits_for_winner_rotation(
+    client: httpx.Client, monkeypatch: pytest.MonkeyPatch
+):
+    """A loser can land in the gap after the winner's GETDEL but before
+    its rotation-cache write. The endpoint must poll the cache briefly
+    instead of reading that instant as reuse and deleting the session,
+    which took the winner's fresh token down with it (observed as
+    sporadic logouts on iOS when a background refresh raced the app)."""
+    import asyncio
+    import threading
+    import time
+
+    import jwt
+
+    from tests.test_shield_mode import _patch_redis_url_for_host, _reset_redis_singleton
+
+    email = f"refresh-inflight-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post("/v1/auth/register", json={"email": email, "password": "securepassword"})
+    assert resp.status_code == 201
+    original_refresh_jwt = resp.json()["refresh_token"]
+    access = resp.json()["access_token"]
+    jti = jwt.decode(original_refresh_jwt, options={"verify_signature": False})["jti"]
+
+    _patch_redis_url_for_host(monkeypatch)
+
+    from sheaf.auth.sessions import cache_refresh_rotation, consume_refresh_jti
+
+    # Simulate the winner mid-flight: jti consumed, rotation not yet cached.
+    _reset_redis_singleton()
+    assert asyncio.run(consume_refresh_jti(jti)) is not None
+
+    result = {}
+
+    def fire():
+        result["resp"] = client.post(
+            "/v1/auth/refresh", json={"refresh_token": original_refresh_jwt}
+        )
+
+    t = threading.Thread(target=fire)
+    t.start()
+
+    # Let the loser start polling, then complete the winner's rotation.
+    time.sleep(0.6)
+    _reset_redis_singleton()
+    asyncio.run(cache_refresh_rotation(jti, "winner-rotated-refresh"))
+    t.join(timeout=10)
+
+    r = result["resp"]
+    assert r.status_code == 200, (
+        f"In-flight loser should pick up the winner's rotation, "
+        f"got {r.status_code}: {r.text}"
+    )
+    assert r.json()["refresh_token"] == "winner-rotated-refresh"
+
+    # The session survived the race.
+    me = client.get("/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+    assert me.status_code == 200, me.text
+
+
 def test_secondary_session_mints_independent_session(client: httpx.Client):
     """A primary device (phone) can mint a child session for a paired
     companion (watch). Both sessions exist concurrently in /sessions and

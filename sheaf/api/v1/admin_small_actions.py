@@ -1150,6 +1150,11 @@ async def export_user_dossier(
             "suspended_reason": target.suspended_reason,
             "email_delivery_status": str(target.email_delivery_status),
             "email_revalidation_required": target.email_revalidation_required,
+            "adult_attested_at": (
+                target.adult_attested_at.isoformat()
+                if target.adult_attested_at
+                else None
+            ),
         },
         "system": system_block,
         "counts": counts,

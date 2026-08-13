@@ -118,7 +118,8 @@ export function DeliveryCard({
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Minimum gap between deliveries on this channel.
+                Minimum gap between deliveries on this channel. Changes that
+                arrive inside the gap are held and sent afterward, not dropped.
                 {debounceFloor > 0 && (
                   <>
                     {" "}
@@ -145,7 +146,11 @@ export function DeliveryCard({
               }
             />
             <p className="text-xs text-muted-foreground">
-              0 = realtime. Higher batches multiple events into one.
+              0 = off (each change is delivered on its own). Above 0, front
+              changes in this many seconds are batched and sent as one
+              notification when the window closes, so a quick series (like a
+              co-front swap) arrives as a single message. Adds up to this much
+              delay.
             </p>
           </div>
         </div>

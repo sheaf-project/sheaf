@@ -30,6 +30,39 @@ class FrontUpdate(BaseModel):
         return v
 
 
+class FrontReplace(BaseModel):
+    """Body for POST /fronts/{id}/replace: end one open front and start a
+    replacement in its place, atomically, without touching other open fronts.
+
+    `custom_status` uses presence-in-body: omit the key to carry the replaced
+    front's status over onto the new one, send `null` (or an empty string) to
+    clear it, send a value to set it. `started_at` overrides the boundary
+    timestamp (defaults to now); the old front's `ended_at` and the new
+    front's `started_at` share it so per-member history chains cleanly.
+    """
+
+    member_ids: list[uuid.UUID]
+    started_at: datetime | None = None
+    custom_status: str | None = None
+
+    @field_validator("member_ids")
+    @classmethod
+    def _non_empty(cls, v):
+        if not v:
+            raise ValueError(
+                "member_ids must not be empty; to end a front entirely, "
+                "end it instead of replacing it"
+            )
+        return v
+
+    @field_validator("started_at")
+    @classmethod
+    def _reject_explicit_null(cls, v):
+        if v is None:
+            raise ValueError("cannot be null")
+        return v
+
+
 class FrontSnapshot(BaseModel):
     """Pre- or post-edit state captured in a FrontAuditEvent row."""
 

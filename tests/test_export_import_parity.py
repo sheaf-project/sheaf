@@ -66,6 +66,7 @@ from sheaf.models.share import (
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
+from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 
 # Reusable exclusion reasons for the structural columns every model carries.
@@ -73,15 +74,29 @@ _SURROGATE_PK = "surrogate UUID PK, re-minted on import (old->new id maps handle
 _TENANT_FK = "tenant scope FK, set from the importing system, not from file data"
 _ROW_CREATED = "row-creation timestamp, server state not portable content"
 _ROW_UPDATED = "row-mutation timestamp, server state not portable content"
-# Share rows land active on import because no grant is ever imported, so an
-# imported view is exposed to nobody until the user deliberately publishes it.
-_SHARE_LIFECYCLE = (
-    "grace-window lifecycle state; imported rows land active because grants "
-    "are never imported, so an imported view exposes nothing"
+# The share tables are dormant: they carry no rows because nothing writes
+# them, and the portable export has no share section at all.
+_SHARE_DORMANT = (
+    "dormant table; nothing writes it and the portable export carries no "
+    "share section, so no column round-trips"
 )
-_NO_GRANT_IMPORT = (
-    "grants are deliberately never exported or imported: a grant is a live "
-    "capability, so restoring one would republish a system from a backup"
+# The Article 20 export is system content restored INTO an already-existing
+# account, so no column of the account row itself round-trips.
+_ACCOUNT_CREDENTIAL = (
+    "credential material; exporting it would turn a portable file into an "
+    "account-takeover kit"
+)
+_ACCOUNT_ENTITLEMENT = (
+    "server-granted entitlement, set by the operator on this instance; "
+    "importing one would be privilege escalation by file"
+)
+_ACCOUNT_AUTH_STATE = (
+    "auth-flow bookkeeping for this instance's account row, not portable "
+    "content"
+)
+_ACCOUNT_SERVER_STATE = (
+    "server-derived account state, held on the instance that derived it; "
+    "the Article 15 bundle covers it, the portable export does not"
 )
 
 
@@ -92,6 +107,77 @@ _NO_GRANT_IMPORT = (
 # ---------------------------------------------------------------------------
 
 CLASSIFICATION: dict[type, dict] = {
+    # The account row. Nothing on it round-trips: an export is restored into an
+    # account that already exists, so every column here is either credential
+    # material, an operator-granted entitlement, or state the receiving
+    # instance derives for itself. Listed in full anyway, so a new User column
+    # fails this guard until someone states which of those it is - the whole
+    # point of the classification.
+    User: {
+        "exported": set(),
+        "excluded": {
+            "id": (
+                "the importing account's own id; an export never creates an "
+                "account"
+            ),
+            "email": "account identity, set at signup on the receiving instance",
+            "email_hash": "derived blind index of email, recomputed at signup",
+            "password_hash": _ACCOUNT_CREDENTIAL,
+            "totp_secret": _ACCOUNT_CREDENTIAL,
+            "totp_enabled": _ACCOUNT_CREDENTIAL,
+            "recovery_codes": _ACCOUNT_CREDENTIAL,
+            "is_admin": _ACCOUNT_ENTITLEMENT,
+            "can_upload_images": _ACCOUNT_ENTITLEMENT,
+            "can_upload_animated_images": _ACCOUNT_ENTITLEMENT,
+            "member_limit": _ACCOUNT_ENTITLEMENT,
+            "tier": _ACCOUNT_ENTITLEMENT,
+            "account_status": "moderation state, local to the instance that set it",
+            "suspended_until": "moderation state, local to the instance that set it",
+            "suspended_reason": "moderation state, local to the instance that set it",
+            "email_verified": _ACCOUNT_AUTH_STATE,
+            "email_verification_token": _ACCOUNT_AUTH_STATE,
+            "email_verification_sent_at": _ACCOUNT_AUTH_STATE,
+            "password_reset_token": _ACCOUNT_AUTH_STATE,
+            "password_reset_sent_at": _ACCOUNT_AUTH_STATE,
+            "invite_code_id": "signup provenance FK, meaningless elsewhere",
+            "signup_ip": (
+                "IP telemetry; the portable export excludes IPs by contract "
+                "because it is shareable"
+            ),
+            "last_login_at": _ACCOUNT_SERVER_STATE,
+            "failed_login_count": _ACCOUNT_SERVER_STATE,
+            "locked_until": _ACCOUNT_SERVER_STATE,
+            "deletion_requested_at": (
+                "pending-deletion clock; a restore must never re-arm a "
+                "deletion the user is trying to escape"
+            ),
+            "deletion_reminders_sent": (
+                "reminder bookkeeping for the pending-deletion clock"
+            ),
+            "newsletter_opt_in": (
+                "marketing consent is given to the instance that will send the "
+                "mail; it is not transferable, so it is re-asked, never imported"
+            ),
+            "newsletter_opted_in_at": (
+                "timestamp of a consent that is deliberately not transferable"
+            ),
+            "email_delivery_status": _ACCOUNT_SERVER_STATE,
+            "email_delivery_status_changed_at": _ACCOUNT_SERVER_STATE,
+            "email_soft_bounce_count": _ACCOUNT_SERVER_STATE,
+            "email_revalidation_required": _ACCOUNT_SERVER_STATE,
+            "adult_attested_at": (
+                "a legal self-declaration made to one instance by one account; "
+                "importing it would carry that declaration across accounts and "
+                "instances on a file's say-so"
+            ),
+            "disable_cdn_during_ddos": (
+                "shield-mode opt-out, meaningful only on an instance with a "
+                "CDN break-glass setup"
+            ),
+            "created_at": _ROW_CREATED,
+            "updated_at": _ROW_UPDATED,
+        },
+    },
     System: {
         "exported": {
             "name", "description", "note", "tag", "avatar_url", "color",
@@ -170,76 +256,72 @@ CLASSIFICATION: dict[type, dict] = {
             "updated_at": _ROW_UPDATED,
         },
     },
-    # Share views round-trip (they are real curation work the user did).
-    # Share GRANTS deliberately do not - see the ShareGrant entry below.
+    # Nothing on the share tables round-trips: they are dormant, so there is
+    # no curation to carry and no capability to restore.
     ShareView: {
-        "exported": {
-            "name", "include_bio", "include_fronting", "fronting_show_count",
-        },
+        "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
+            "name": _SHARE_DORMANT,
+            "include_bio": _SHARE_DORMANT,
+            "include_fronting": _SHARE_DORMANT,
+            "fronting_show_count": _SHARE_DORMANT,
+            "pending_include_bio": _SHARE_DORMANT,
+            "pending_include_fronting": _SHARE_DORMANT,
+            "pending_fronting_show_count": _SHARE_DORMANT,
+            "flags_activate_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
         },
     },
     ShareViewMember: {
-        "exported": {"member_id"},
+        "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
-            "view_id": "parent view FK, re-pointed via the old->new view map",
-            "status": _SHARE_LIFECYCLE,
-            "activates_at": _SHARE_LIFECYCLE,
+            "view_id": _SHARE_DORMANT,
+            "member_id": _SHARE_DORMANT,
+            "status": _SHARE_DORMANT,
+            "activates_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
         },
     },
     ShareViewField: {
-        "exported": {"field_id"},
+        "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
-            "view_id": "parent view FK, re-pointed via the old->new view map",
-            "status": _SHARE_LIFECYCLE,
-            "activates_at": _SHARE_LIFECYCLE,
+            "view_id": _SHARE_DORMANT,
+            "field_id": _SHARE_DORMANT,
+            "status": _SHARE_DORMANT,
+            "activates_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
         },
     },
     ShareViewGroup: {
-        "exported": {"group_id"},
+        "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
-            "view_id": "parent view FK, re-pointed via the old->new view map",
-            "synced_at": (
-                "provenance bookkeeping for the last group expansion, not "
-                "portable content"
-            ),
+            "view_id": _SHARE_DORMANT,
+            "group_id": _SHARE_DORMANT,
+            "synced_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
         },
     },
     ShareGrant: {
-        # Nothing here round-trips, on purpose. A grant is a LIVE CAPABILITY:
-        # re-creating one on import would republish a system straight out of a
-        # restored backup, which is the worst possible outcome for a feature
-        # whose threat model is accidental outing. Link tokens could not be
-        # restored anyway (only a keyed hash is ever stored). After a restore
-        # the user's views are intact and nothing is published until they
-        # deliberately publish it again.
         "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
-            "view_id": _NO_GRANT_IMPORT,
-            "subject_type": _NO_GRANT_IMPORT,
-            "token_hash": (
-                "keyed HMAC of a bearer capability; never exported, and the "
-                "raw token exists only at creation time"
-            ),
-            "note": _NO_GRANT_IMPORT,
-            "status": _NO_GRANT_IMPORT,
-            "activates_at": _NO_GRANT_IMPORT,
-            "expires_at": _NO_GRANT_IMPORT,
-            "revoked_at": _NO_GRANT_IMPORT,
+            "view_id": _SHARE_DORMANT,
+            "subject_type": _SHARE_DORMANT,
+            "token_hash": _SHARE_DORMANT,
+            "note": _SHARE_DORMANT,
+            "status": _SHARE_DORMANT,
+            "activates_at": _SHARE_DORMANT,
+            "expires_at": _SHARE_DORMANT,
+            "revoked_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
-            "created_by_user_id": _NO_GRANT_IMPORT,
+            "created_by_user_id": _SHARE_DORMANT,
         },
     },
     CustomFieldDefinition: {

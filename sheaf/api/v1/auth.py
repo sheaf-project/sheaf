@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -82,11 +83,11 @@ from sheaf.observability.metrics import (
     auth_logins_total,
     auth_password_reset_total,
     auth_recovery_codes_used_total,
+    auth_sessions_invalidated_total,
 )
 from sheaf.redact import redact_email
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
-    AdultAttestationRead,
     SecondarySessionRequest,
     SecondarySessionResponse,
     TokenRefresh,
@@ -117,7 +118,6 @@ _VALID_SCOPES = {
     "polls:read", "polls:write", "polls:delete",
     "messages:read", "messages:write", "messages:delete",
     "relationships:read", "relationships:write", "relationships:delete",
-    "sharing:read", "sharing:write", "sharing:delete",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
@@ -1625,8 +1625,21 @@ async def revoke_all_trusted_devices_endpoint(
     return {"revoked": revoked}
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    # Legitimate clients refresh once per access-token lifetime (minutes
+    # apart), plus the occasional multi-tab burst the rotation grace window
+    # absorbs, so 60/min per IP is far above real traffic even for a large
+    # NAT'd network sharing one address. The cap exists because the reuse
+    # path holds the request for up to 2s while it polls the rotation cache,
+    # which an attacker with one consumed token could otherwise trigger for
+    # free. fail_closed matches the other auth endpoints and costs nothing:
+    # refresh needs Redis for the jti and session lookups anyway.
+    dependencies=[rate_limit(60, 60, fail_closed=True)],
+)
 async def refresh(
+    request: Request,
     response: Response,
     body: TokenRefresh | None = None,
     refresh_cookie: str | None = Cookie(default=None, alias="sheaf_refresh"),
@@ -1673,9 +1686,36 @@ async def refresh(
     consumed_sid = await consume_refresh_jti(jti)
     replay_token: str | None = None
     if consumed_sid is None:
-        replay_token = await get_cached_refresh_rotation(jti)
+        # A loser processed concurrently with the winner can land here
+        # after the winner's GETDEL but before its cache write, so poll
+        # the rotation cache briefly before treating this as theft.
+        for _ in range(8):
+            replay_token = await get_cached_refresh_rotation(jti)
+            if replay_token is not None:
+                break
+            await asyncio.sleep(0.25)
         if replay_token is None:
             await delete_session(sid)
+            # The one place a probable token-theft signal exists: a valid,
+            # already-consumed refresh token presented outside the grace
+            # window. Record it before the generic 401 goes out - neither
+            # the caller nor the victim gets told anything, so without this
+            # the session kill is invisible to an operator.
+            event_ip = client_ip(request)
+            logger.warning(
+                "refresh token reuse detected outside grace window, "
+                "session killed: user=%s ip=%s",
+                user_id,
+                event_ip,
+            )
+            auth_sessions_invalidated_total.labels(reason="refresh_reuse").inc()
+            await record_security_event(
+                event_type=SecurityEventType.REFRESH_REUSE,
+                outcome="session_killed",
+                user_id=user_id,
+                ip=event_ip,
+                user_agent=request.headers.get("user-agent"),
+            )
             response.delete_cookie("sheaf_session")
             response.delete_cookie("sheaf_refresh", path="/v1/auth")
             raise HTTPException(
@@ -1749,33 +1789,7 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         ),
         external_images_allowed=settings.allow_external_images,
         animated_uploads_allowed=animation_allowed(user, settings),
-        public_profiles_enabled=settings.public_profiles_enabled,
-        adult_attested_at=user.adult_attested_at,
     )
-
-
-@router.post("/me/attest-adult", response_model=AdultAttestationRead)
-async def attest_adult(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> AdultAttestationRead:
-    """Record the account's self-declared "I am 18 or older".
-
-    We store a bare timestamp and nothing else: no date of birth, no identity
-    document. Verifying age is itself a privacy harm for exactly the people
-    this app exists for, so self-declaration is the accepted tradeoff. It
-    gates the creation of share grants (see
-    `sheaf.services.sharing.require_adult_attestation`) and nothing else.
-
-    Idempotent: re-declaring leaves the original timestamp alone. There is no
-    un-attest endpoint - clearing it would not un-publish anything anyway
-    (revoking a grant does that, immediately and ungated).
-    """
-    if user.adult_attested_at is None:
-        user.adult_attested_at = datetime.now(UTC)
-        await db.commit()
-        await db.refresh(user)
-    return AdultAttestationRead(adult_attested_at=user.adult_attested_at)
 
 
 @router.patch("/me", response_model=UserRead)
@@ -1833,8 +1847,6 @@ async def update_me(
         ),
         external_images_allowed=settings.allow_external_images,
         animated_uploads_allowed=animation_allowed(user, settings),
-        public_profiles_enabled=settings.public_profiles_enabled,
-        adult_attested_at=user.adult_attested_at,
     )
 
 

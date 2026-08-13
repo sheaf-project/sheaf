@@ -400,10 +400,7 @@ def test_webhook_secret_relocation_fails_closed(
 
     async def run():
         from sqlalchemy import select
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession,
-            create_async_engine,
-        )
+        from sqlalchemy.ext.asyncio import AsyncSession
         from sqlalchemy.orm import sessionmaker
 
         from sheaf.models.notification_channel import NotificationChannel

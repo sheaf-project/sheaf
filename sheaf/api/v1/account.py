@@ -130,6 +130,7 @@ async def get_account_data(
     - API key plaintext or hash
     - Session tokens (only metadata)
     - Trusted device tokens (only metadata)
+    - Share link tokens (only grant metadata)
     """
     # Auth method check: refuse API-key access. The data here is too
     # sensitive to expose via a programmatic credential — must be a
@@ -338,6 +339,7 @@ async def get_account_data(
             ),
             "email_soft_bounce_count": user.email_soft_bounce_count,
             "email_revalidation_required": user.email_revalidation_required,
+            "adult_attested_at": _iso(user.adult_attested_at),
             "disable_cdn_during_ddos": user.disable_cdn_during_ddos,
         },
         "sessions": [

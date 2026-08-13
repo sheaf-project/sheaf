@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Run the full test suite against multiple server configurations.
 #
-# Usage: ./run_tests.sh [--no-build]
+# Usage: ./run_tests.sh [--no-build] [config ...]
 #
 # Spins up an isolated test stack (docker-compose.test.yml), runs pytest
 # for each configuration in sequence, then tears everything down.
 # Requires Docker and the SHEAF_TEST_DB_URL that points at the test DB.
+#
+# With no config arguments every configuration runs. Naming one or more
+# runs just those: either the full name (selfhosted/rate_limit) or the
+# short form (rate_limit). ./run_tests.sh --list prints the names.
 
 set -euo pipefail
 
@@ -21,9 +25,20 @@ TEST_REDIS_URL="redis://localhost:6380/0"
 BUILD_FLAG="--build"
 FAILED=()
 
-# Total config count (kept in sync with the configs run below). Update when
-# adding/removing a config so the "[N/TOTAL]" progress prefix stays accurate.
-TOTAL_CONFIGS=10
+# Every configuration this script knows, in run order. The run blocks below
+# guard on should_run, so adding a config means adding it here AND adding its
+# block; the count for the "[N/TOTAL]" progress prefix derives from this list.
+ALL_CONFIGS=(
+    selfhosted/none
+    selfhosted/admin_auth_password
+    selfhosted/admin_auth_totp
+    saas/none
+    selfhosted/rate_limit
+    selfhosted/uploads_disabled
+    selfhosted/bio_uploads_disabled
+    selfhosted/external_images_disabled
+    selfhosted/metrics
+)
 CONFIG_INDEX=0
 
 # Shared bearer token used by the metrics config row. Random per run so
@@ -36,8 +51,62 @@ METRICS_TOKEN="test-metrics-token-$(openssl rand -hex 8 2>/dev/null || echo dead
 export SHEAF_ENCRYPTION_KEY="0000000000000000000000000000000000000000000000000000000000000000"
 export JWT_SECRET_KEY="test-jwt-secret-not-for-production"
 
-if [[ "${1:-}" == "--no-build" ]]; then
-    BUILD_FLAG=""
+# ---------------------------------------------------------------------------
+# Argument parsing / config selection
+# ---------------------------------------------------------------------------
+# No config args = run everything (the CI path). Named configs run alone,
+# accepted as either the full name or the part after the slash.
+
+SELECTED=()
+for arg in "$@"; do
+    case "$arg" in
+        --no-build)
+            BUILD_FLAG=""
+            ;;
+        --list)
+            printf '%s\n' "${ALL_CONFIGS[@]}"
+            exit 0
+            ;;
+        *)
+            matches=()
+            for c in "${ALL_CONFIGS[@]}"; do
+                if [[ "$arg" == "$c" ]]; then
+                    matches=("$c")
+                    break
+                fi
+                [[ "$arg" == "${c#*/}" ]] && matches+=("$c")
+            done
+            if [[ ${#matches[@]} -eq 0 ]]; then
+                echo "Unknown config: $arg" >&2
+                echo "Known configs:" >&2
+                printf '  %s\n' "${ALL_CONFIGS[@]}" >&2
+                exit 2
+            fi
+            if [[ ${#matches[@]} -gt 1 ]]; then
+                # "none" is a suffix of more than one config; make the caller
+                # say which rather than silently picking one.
+                echo "Ambiguous config '$arg' matches:" >&2
+                printf '  %s\n' "${matches[@]}" >&2
+                exit 2
+            fi
+            SELECTED+=("${matches[0]}")
+            ;;
+    esac
+done
+
+should_run() {
+    [[ ${#SELECTED[@]} -eq 0 ]] && return 0
+    local s
+    for s in "${SELECTED[@]}"; do
+        [[ "$s" == "$1" ]] && return 0
+    done
+    return 1
+}
+
+if [[ ${#SELECTED[@]} -eq 0 ]]; then
+    TOTAL_CONFIGS=${#ALL_CONFIGS[@]}
+else
+    TOTAL_CONFIGS=${#SELECTED[@]}
 fi
 
 # ---------------------------------------------------------------------------
@@ -94,6 +163,8 @@ run_config() {
     local admin_auth_level="$2"
     local sheaf_mode="$3"
     local marks_expr="${4:-}"   # marks expression passed to -m; empty = run all
+
+    should_run "$name" || return 0
 
     CONFIG_INDEX=$((CONFIG_INDEX + 1))
     echo ""
@@ -161,156 +232,139 @@ run_config "selfhosted/admin_auth_totp" "totp" "selfhosted" \
 # 4. SaaS mode — run all tests; conftest skips password/totp marks, runs saas marks
 run_config "saas/none" "none" "saas"
 
-# 5. Rate limiting — low limits so tests can trigger 429s
-CONFIG_INDEX=$((CONFIG_INDEX + 1))
-echo ""
-echo "================================================================"
-echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/rate_limit"
-echo "================================================================"
+# 5. Rate limiting - low limits so tests can trigger 429s
+if should_run "selfhosted/rate_limit"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/rate_limit"
+    echo "================================================================"
 
-ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
-    RATE_LIMIT_ENABLED=true RATE_LIMIT_GLOBAL_PER_IP=600 RATE_LIMIT_GLOBAL_WINDOW=60 \
-    $COMPOSE up -d app
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
+        RATE_LIMIT_ENABLED=true RATE_LIMIT_GLOBAL_PER_IP=600 RATE_LIMIT_GLOBAL_WINDOW=60 \
+        $COMPOSE up -d app
 
-wait_for_app
+    wait_for_app
 
-if SHEAF_TEST_URL="$TEST_URL" \
-   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
-   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
-   SHEAF_TEST_MODE=selfhosted \
-   SHEAF_TEST_RATE_LIMIT=true \
-   uv run --extra dev pytest -q -m "rate_limit"; then
-    echo "PASSED: selfhosted/rate_limit"
-else
-    echo "FAILED: selfhosted/rate_limit"
-    FAILED+=("selfhosted/rate_limit")
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_RATE_LIMIT=true \
+       uv run --extra dev pytest -q -m "rate_limit"; then
+        echo "PASSED: selfhosted/rate_limit"
+    else
+        echo "FAILED: selfhosted/rate_limit"
+        FAILED+=("selfhosted/rate_limit")
+    fi
 fi
 
 # 6. Image uploads globally disabled
-CONFIG_INDEX=$((CONFIG_INDEX + 1))
-echo ""
-echo "================================================================"
-echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/uploads_disabled"
-echo "================================================================"
+if should_run "selfhosted/uploads_disabled"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/uploads_disabled"
+    echo "================================================================"
 
-ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_IMAGE_UPLOADS=false \
-    $COMPOSE up -d app
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_IMAGE_UPLOADS=false \
+        $COMPOSE up -d app
 
-wait_for_app
+    wait_for_app
 
-if SHEAF_TEST_URL="$TEST_URL" \
-   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
-   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
-   SHEAF_TEST_MODE=selfhosted \
-   SHEAF_TEST_UPLOADS_DISABLED=true \
-   uv run --extra dev pytest -q -m "uploads_disabled"; then
-    echo "PASSED: selfhosted/uploads_disabled"
-else
-    echo "FAILED: selfhosted/uploads_disabled"
-    FAILED+=("selfhosted/uploads_disabled")
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_UPLOADS_DISABLED=true \
+       uv run --extra dev pytest -q -m "uploads_disabled"; then
+        echo "PASSED: selfhosted/uploads_disabled"
+    else
+        echo "FAILED: selfhosted/uploads_disabled"
+        FAILED+=("selfhosted/uploads_disabled")
+    fi
 fi
 
 # 7. Bio images disabled (avatars still allowed)
-CONFIG_INDEX=$((CONFIG_INDEX + 1))
-echo ""
-echo "================================================================"
-echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/bio_uploads_disabled"
-echo "================================================================"
+if should_run "selfhosted/bio_uploads_disabled"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/bio_uploads_disabled"
+    echo "================================================================"
 
-ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_BIO_IMAGES=false \
-    $COMPOSE up -d app
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_BIO_IMAGES=false \
+        $COMPOSE up -d app
 
-wait_for_app
+    wait_for_app
 
-if SHEAF_TEST_URL="$TEST_URL" \
-   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
-   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
-   SHEAF_TEST_MODE=selfhosted \
-   SHEAF_TEST_BIO_UPLOADS_DISABLED=true \
-   uv run --extra dev pytest -q -m "bio_uploads_disabled"; then
-    echo "PASSED: selfhosted/bio_uploads_disabled"
-else
-    echo "FAILED: selfhosted/bio_uploads_disabled"
-    FAILED+=("selfhosted/bio_uploads_disabled")
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_BIO_UPLOADS_DISABLED=true \
+       uv run --extra dev pytest -q -m "bio_uploads_disabled"; then
+        echo "PASSED: selfhosted/bio_uploads_disabled"
+    else
+        echo "FAILED: selfhosted/bio_uploads_disabled"
+        FAILED+=("selfhosted/bio_uploads_disabled")
+    fi
 fi
 
 # 8. External images disabled (hosted uploads still allowed)
-CONFIG_INDEX=$((CONFIG_INDEX + 1))
-echo ""
-echo "================================================================"
-echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/external_images_disabled"
-echo "================================================================"
+if should_run "selfhosted/external_images_disabled"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/external_images_disabled"
+    echo "================================================================"
 
-ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_EXTERNAL_IMAGES=false \
-    $COMPOSE up -d app
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted ALLOW_EXTERNAL_IMAGES=false \
+        $COMPOSE up -d app
 
-wait_for_app
+    wait_for_app
 
-if SHEAF_TEST_URL="$TEST_URL" \
-   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
-   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
-   SHEAF_TEST_MODE=selfhosted \
-   SHEAF_TEST_EXTERNAL_IMAGES_DISABLED=true \
-   uv run --extra dev pytest -q -m "external_images_disabled"; then
-    echo "PASSED: selfhosted/external_images_disabled"
-else
-    echo "FAILED: selfhosted/external_images_disabled"
-    FAILED+=("selfhosted/external_images_disabled")
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_EXTERNAL_IMAGES_DISABLED=true \
+       uv run --extra dev pytest -q -m "external_images_disabled"; then
+        echo "PASSED: selfhosted/external_images_disabled"
+    else
+        echo "FAILED: selfhosted/external_images_disabled"
+        FAILED+=("selfhosted/external_images_disabled")
+    fi
 fi
 
 # 9. Metrics endpoint — METRICS_BIND=main + a bearer token. Runs only
 # the metrics test file so the rest of the suite (which assumes /metrics
 # isn't on port 8001) doesn't get confused.
-CONFIG_INDEX=$((CONFIG_INDEX + 1))
-echo ""
-echo "================================================================"
-echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/metrics"
-echo "================================================================"
+if should_run "selfhosted/metrics"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/metrics"
+    echo "================================================================"
 
-ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
-    METRICS_ENABLED=true METRICS_BIND=main METRICS_TOKEN="$METRICS_TOKEN" \
-    $COMPOSE up -d app
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
+        METRICS_ENABLED=true METRICS_BIND=main METRICS_TOKEN="$METRICS_TOKEN" \
+        $COMPOSE up -d app
 
-wait_for_app
+    wait_for_app
 
-if SHEAF_TEST_URL="$TEST_URL" \
-   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
-   SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
-   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
-   SHEAF_TEST_MODE=selfhosted \
-   SHEAF_TEST_METRICS_TOKEN="$METRICS_TOKEN" \
-   uv run --extra dev pytest -q tests/test_metrics.py; then
-    echo "PASSED: selfhosted/metrics"
-else
-    echo "FAILED: selfhosted/metrics"
-    FAILED+=("selfhosted/metrics")
-fi
-
-# 10. Public profiles enabled - the anonymous share surface is off by default,
-# so its tests need a config with PUBLIC_PROFILES_ENABLED=true. Runs only the
-# public_profiles-marked tests.
-CONFIG_INDEX=$((CONFIG_INDEX + 1))
-echo ""
-echo "================================================================"
-echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/public_profiles"
-echo "================================================================"
-
-ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted PUBLIC_PROFILES_ENABLED=true \
-    $COMPOSE up -d app
-
-wait_for_app
-
-if SHEAF_TEST_URL="$TEST_URL" \
-   SHEAF_TEST_DB_URL="$TEST_DB_URL" \
-   SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
-   SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
-   SHEAF_TEST_MODE=selfhosted \
-   SHEAF_TEST_PUBLIC_PROFILES=true \
-   uv run --extra dev pytest -q -m "public_profiles"; then
-    echo "PASSED: selfhosted/public_profiles"
-else
-    echo "FAILED: selfhosted/public_profiles"
-    FAILED+=("selfhosted/public_profiles")
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_METRICS_TOKEN="$METRICS_TOKEN" \
+       uv run --extra dev pytest -q tests/test_metrics.py; then
+        echo "PASSED: selfhosted/metrics"
+    else
+        echo "FAILED: selfhosted/metrics"
+        FAILED+=("selfhosted/metrics")
+    fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -436,6 +436,9 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
     native["uploaded_files"] = file_ext.get("uploaded_files") or []
     native["reminders"] = file_ext.get("reminders") or []
     native["polls"] = file_ext.get("polls") or []
+    native["relationship_types"] = file_ext.get("relationship_types") or []
+    native["member_relationships"] = file_ext.get("member_relationships") or []
+    native["group_relationships"] = file_ext.get("group_relationships") or []
 
     return native
 

@@ -22,6 +22,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
     op.add_column(
         "systems",
         sa.Column(
@@ -34,4 +35,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
     op.drop_column("systems", "show_member_created_date")

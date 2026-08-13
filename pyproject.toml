@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sheaf"
-version = "1.3.4"
+version = "1.3.5"
 description = "Open-source plural system tracking"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
@@ -35,6 +35,7 @@ dependencies = [
     # the container base image (python:3.12-slim does not reliably ship
     # /usr/share/zoneinfo). Backs System.timezone validation + rendering.
     "tzdata>=2024.1",
+    "markdown-it-py==4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -73,5 +74,4 @@ markers = [
     "uploads_disabled: requires server running with ALLOW_IMAGE_UPLOADS=false",
     "bio_uploads_disabled: requires server running with ALLOW_BIO_IMAGES=false",
     "external_images_disabled: requires server running with ALLOW_EXTERNAL_IMAGES=false",
-    "public_profiles: requires server running with PUBLIC_PROFILES_ENABLED=true",
 ]

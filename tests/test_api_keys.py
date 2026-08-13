@@ -370,3 +370,4 @@ def test_api_key_can_use_polls_and_messages_scopes(auth_client: httpx.Client):
                                                  "author_member_id": str(uuid.uuid4()),
                                                  "body": "hi"})
         assert r.status_code == 403
+

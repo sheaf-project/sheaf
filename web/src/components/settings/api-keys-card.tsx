@@ -8,6 +8,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import type { ApiKey, ApiKeyCreated } from "@/types/api";
 import { toast } from "sonner";
 
@@ -161,14 +169,21 @@ export function ApiKeysCard() {
   const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
   const [copied, setCopied] = useState(false);
   const [revokeConfirmId, setRevokeConfirmId] = useState<string | null>(null);
+  const [confirmExport, setConfirmExport] = useState<string[] | null>(null);
 
   const setLevel = useCallback((key: string, v: ScopeLevel) => {
     setLevels((prev) => ({ ...prev, [key]: v }));
   }, []);
 
-  function handleCreate(e: FormEvent) {
-    e.preventDefault();
-    const scopes = scopesFromLevels(levels, !!user?.is_admin, adminLevel);
+  const exportSelected = (levels.export ?? "none") !== "none";
+  // The export endpoint hands back the whole account, so export:read is a read
+  // of everything no matter how narrow the rest of the picks are. It is only
+  // unsurprising when every other readable resource is already granted.
+  const grantsEveryRead = ALL_RESOURCES.filter((r) => !r.writeOnly).every(
+    (r) => (levels[r.key] ?? "none") !== "none",
+  );
+
+  function doCreate(scopes: string[]) {
     create.mutate(
       { name, scopes },
       {
@@ -178,16 +193,37 @@ export function ApiKeysCard() {
           setName("");
           setLevels({});
           setAdminLevel("none");
+          setConfirmExport(null);
         },
       },
     );
   }
 
+  function handleCreate(e: FormEvent) {
+    e.preventDefault();
+    const scopes = scopesFromLevels(levels, !!user?.is_admin, adminLevel);
+    if (scopes.includes("export:read") && !grantsEveryRead) {
+      setConfirmExport(scopes);
+      return;
+    }
+    doCreate(scopes);
+  }
+
   function handleCopy() {
     if (!createdKey) return;
-    navigator.clipboard.writeText(createdKey.key);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    // No clipboard API outside a secure context (a plain-http selfhost), so
+    // don't claim a copy that didn't happen.
+    if (!navigator.clipboard) {
+      toast.error("Couldn't copy - select the key and copy it manually");
+      return;
+    }
+    navigator.clipboard.writeText(createdKey.key).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => toast.error("Couldn't copy - select the key and copy it manually"),
+    );
   }
 
   return (
@@ -274,6 +310,12 @@ export function ApiKeysCard() {
                 )}
               </div>
             </div>
+            {exportSelected && (
+              <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-yellow-700 dark:text-yellow-400">
+                Data export read lets this key download a full account export -
+                everything in your account, not just the scopes selected above.
+              </div>
+            )}
             <div className="flex gap-2">
               <Button type="submit" size="sm" disabled={create.isPending || !name}>
                 {create.isPending ? "Creating..." : "Create key"}
@@ -348,6 +390,33 @@ export function ApiKeysCard() {
           !showForm && !createdKey && (
             <p className="text-sm text-muted-foreground">No API keys yet.</p>
           )
+        )}
+
+        {confirmExport && (
+          <Dialog open onOpenChange={(o) => !o && setConfirmExport(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>This key can read everything</DialogTitle>
+                <DialogDescription>
+                  Data export read lets this key download a full account export
+                  - every member, journal, board message, poll, and setting in
+                  your account, not just the scopes you selected. Only hand it
+                  to something you would trust with all of it.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setConfirmExport(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={create.isPending}
+                  onClick={() => doCreate(confirmExport)}
+                >
+                  {create.isPending ? "Creating..." : "Create key anyway"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         )}
       </CardContent>
     </Card>

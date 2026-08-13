@@ -58,18 +58,20 @@ from sheaf.models.relationship import (
     MemberRelationship,
     RelationshipType,
 )
-from sheaf.models.share import ShareView
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.request import client_ip
 from sheaf.services import export_storage
 from sheaf.services.activity_log import log_activity
 from sheaf.services.custom_fields import field_value_plaintext
 from sheaf.services.journals import entry_plaintext, revision_plaintext
 from sheaf.services.members import member_plaintext
 from sheaf.services.openplural_archive import unpack_residual
+from sheaf.services.security_events import record_security_event
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -202,7 +204,44 @@ async def _enforce_sync_export_size(
             )
 
 
-@router.get("", dependencies=[rate_limit(6, 3600, "user"), Depends(_enforce_sync_export_size)])
+async def _note_api_key_export(
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> None:
+    """Leave a trail when the sync export is served to a programmatic
+    credential, so a key leak can be audited after the fact.
+
+    Key-based export is a sanctioned use case (scripted backups), so this
+    records rather than refuses. A route dependency rather than an inline
+    check because export_all() is also called directly (not over HTTP) by
+    the async build worker, which has no request and is already covered by
+    the job's own activity-log entry.
+    """
+    if getattr(request.state, "auth_method", None) != "api_key":
+        return
+    event_ip = client_ip(request)
+    logger.info(
+        "sync export served to API-key auth: user=%s ip=%s", user.id, event_ip
+    )
+    await record_security_event(
+        event_type=SecurityEventType.DATA_EXPORT,
+        outcome="api_key",
+        user_id=user.id,
+        ip=event_ip,
+        user_agent=request.headers.get("user-agent"),
+    )
+
+
+@router.get(
+    "",
+    dependencies=[
+        rate_limit(6, 3600, "user"),
+        Depends(_enforce_sync_export_size),
+        # Last, so a request the size guard turns away is not recorded as an
+        # export that happened.
+        Depends(_note_api_key_export),
+    ],
+)
 async def export_all(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -412,19 +451,6 @@ async def export_all(
     )
     member_relationships = list(member_rels_result.scalars().all())
 
-    # Share views. The curated projections round-trip; share GRANTS never do
-    # (see _share_view_dict), so a restored backup publishes nothing.
-    share_views_result = await db.execute(
-        select(ShareView)
-        .where(ShareView.system_id == system.id)
-        .options(
-            selectinload(ShareView.members),
-            selectinload(ShareView.fields),
-            selectinload(ShareView.groups),
-        )
-    )
-    share_views = list(share_views_result.scalars().all())
-
     group_rels_result = await db.execute(
         select(GroupRelationship).where(
             GroupRelationship.system_id == system.id
@@ -547,7 +573,6 @@ async def export_all(
         "group_relationships": [
             _relationship_dict(r) for r in group_relationships
         ],
-        "share_views": [_share_view_dict(v) for v in share_views],
     }
     return _maybe_openplural(native, format)
 
@@ -586,32 +611,6 @@ def _empty_export() -> dict:
         "relationship_types": [],
         "member_relationships": [],
         "group_relationships": [],
-        "share_views": [],
-    }
-
-
-def _share_view_dict(view: ShareView) -> dict:
-    """One curated share view. Member/field/group references carry the OLD
-    uuids so the importer can remap them.
-
-    Note what is NOT here: the grants pointing at this view. A grant is a live
-    capability, so re-creating one on import would republish a system straight
-    out of a restored backup - the worst outcome for a feature whose threat
-    model is accidental outing. Link tokens could not be restored anyway (only
-    a keyed hash is ever stored). A restore therefore returns the user's
-    curation intact, exposed to nobody, until they deliberately publish again.
-
-    Pending (not-yet-live) rows are exported as ordinary members: since no
-    grant comes with them, an imported view exposes nothing regardless.
-    """
-    return {
-        "name": view.name,
-        "include_bio": view.include_bio,
-        "include_fronting": view.include_fronting,
-        "fronting_show_count": view.fronting_show_count,
-        "member_ids": [str(m.member_id) for m in view.members],
-        "field_ids": [str(f.field_id) for f in view.fields],
-        "group_ids": [str(g.group_id) for g in view.groups],
     }
 
 

@@ -15,6 +15,11 @@ class SheafMode(StrEnum):
     SAAS = "saas"
 
 
+class ImageServing(StrEnum):
+    SIGNED = "signed"
+    UNSIGNED = "unsigned"
+
+
 class Settings(BaseSettings):
     # Database. DATABASE_URL is optional: leave it unset and it is assembled
     # from the POSTGRES_* parts below - the same env vars the db container
@@ -250,12 +255,6 @@ class Settings(BaseSettings):
     pinned_revision_max_per_target_plus: int = 5
     pinned_revision_max_per_target_selfhosted: int = 10
 
-    # Master switch for the public-profile / share-link surface. Default OFF:
-    # an instance that never wants an anonymous read surface never has one
-    # (the public router 404s wholesale). Also lets the backend ship dark and
-    # be flipped on once the web UI lands.
-    public_profiles_enabled: bool = False
-
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True
@@ -314,7 +313,7 @@ class Settings(BaseSettings):
     #   Easier to set up, but effectively provides free image hosting.
     #   For S3: set S3_PUBLIC_URL to a Cloudflare-proxied domain and use
     #   Cloudflare hotlink protection rules as the alternative mechanism.
-    image_serving: str = "signed"
+    image_serving: ImageServing = ImageServing.SIGNED
 
     # Signed URL expiry window in seconds. Window-based: all requests within
     # the same window get the same URL, enabling browser image caching.
@@ -1079,6 +1078,26 @@ def _validate_settings() -> None:
             "accessible via direct S3 URLs. Set S3_PUBLIC_URL to a Cloudflare-proxied "
             "domain with hotlink protection, or switch to IMAGE_SERVING=signed."
         )
+
+    if (
+        settings.image_serving == ImageServing.SIGNED
+        and settings.storage_backend == "s3"
+        and settings.s3_public_url
+        and not settings.file_signing_key
+    ):
+        # Without an explicit key the backend derives one from JWT_SECRET_KEY,
+        # which the CDN worker cannot know, so every image URL it validates
+        # 403s - and the tempting "fix" is handing the worker material derived
+        # from the JWT secret. Broken serving plus a secret-handling trap is a
+        # misconfiguration, not a mode.
+        logger.critical(
+            "REFUSING TO START: IMAGE_SERVING=signed with S3_PUBLIC_URL set "
+            "but no FILE_SIGNING_KEY. The signed CDN paradigm needs a "
+            "dedicated key shared with the edge worker; generate one "
+            "(openssl rand -hex 32) and set FILE_SIGNING_KEY here and in the "
+            "worker, or unset S3_PUBLIC_URL to serve signed URLs from the app."
+        )
+        sys.exit(1)
 
     if settings.email_verification == "required" and settings.email_backend == "none":
         logger.critical(

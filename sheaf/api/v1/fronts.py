@@ -23,6 +23,7 @@ from sheaf.schemas.front import (
     FrontAuditEventRead,
     FrontCreate,
     FrontRead,
+    FrontReplace,
     FrontSnapshot,
     FrontUpdate,
 )
@@ -576,6 +577,178 @@ async def create_front(
     )
     await db.refresh(front, ["members"])
     return _front_to_read(front)
+
+
+@router.post(
+    "/{front_id}/replace",
+    response_model=FrontRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_scope("fronts:write")), write_rate_limit()],
+)
+async def replace_front(
+    front_id: uuid.UUID,
+    body: FrontReplace,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """End one specific open front and start a replacement in its place, in a
+    single transaction, without touching any other open front.
+
+    This is the history-correct, single-notification way to swap who is in a
+    co-front. Ending the old entry and opening a new one (rather than editing
+    the existing row's member list in place) keeps each member's stint as its
+    own history entry, and doing both in one transaction means the whole
+    change emits ONE aggregated front-change notification (e.g. "B started
+    fronting. C stopped fronting.") instead of a separate stop then start.
+    Every other open front is left exactly as it was, unlike create_front
+    with replace_fronts=true, which ends them all.
+    """
+    system = await _get_user_system(user, db)
+
+    # Same per-system switch guard as create_front (see there for why).
+    if not await check_front_switch_rate(system.id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Fronts are being created faster than we accept them for "
+                "your system; check for a looping client or integration."
+            ),
+        )
+
+    # Validate member IDs belong to this system (also rejects duplicates in
+    # the request, matching create_front).
+    result = await db.execute(
+        select(Member).where(
+            Member.id.in_(body.member_ids),
+            Member.system_id == system.id,
+        )
+    )
+    members = list(result.scalars().all())
+    if len(members) != len(body.member_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more member IDs are invalid",
+        )
+
+    # Serialise against concurrent switches for this system (same advisory
+    # lock as create_front), so the end-old + create-new pair is atomic
+    # against another switch reading the open-fronts state.
+    await db.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "CAST(:ns AS integer), CAST(:key AS integer))"
+        ),
+        {
+            "ns": _FRONT_SWITCH_LOCK_NS,
+            "key": _system_front_lock_key(system.id),
+        },
+    )
+
+    # Load the target front under the lock; it must be this system's and open.
+    target = (
+        await db.execute(
+            select(Front)
+            .options(selectinload(Front.members))
+            .where(Front.id == front_id, Front.system_id == system.id)
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Front not found"
+        )
+    if target.ended_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Front is already ended; nothing to replace.",
+        )
+
+    before_state = await snapshot_front_state(db, system.id)
+    new_started_at = body.started_at or datetime.now(UTC)
+
+    # Exact-duplicate guard against OTHER open fronts (not the one being
+    # replaced), mirroring create_front: two open fronts with the same member
+    # set have no useful semantics.
+    new_set = set(body.member_ids)
+    others = (
+        await db.execute(
+            select(Front)
+            .options(selectinload(Front.members))
+            .where(
+                Front.system_id == system.id,
+                Front.ended_at.is_(None),
+                Front.id != front_id,
+            )
+        )
+    ).scalars().all()
+    for f in others:
+        if {m.id for m in f.members} == new_set:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "A front with these exact members is already active. "
+                    "Either end the existing front first, or pick a "
+                    "different combination."
+                ),
+            )
+
+    # New front id up-front so the custom_status ciphertext binds to it.
+    new_front_id = uuid.uuid4()
+    # custom_status: omit -> carry over (re-encrypt under the new front's
+    # AAD, since it's bound to the front id); null/empty -> clear; value ->
+    # set.
+    if "custom_status" not in body.model_fields_set:
+        carried = (
+            decrypt(
+                target.custom_status,
+                aad=front_custom_status_aad(target.id),
+            )
+            if target.custom_status
+            else None
+        )
+        new_status_ct = (
+            encrypt(carried, aad=front_custom_status_aad(new_front_id))
+            if carried
+            else None
+        )
+    else:
+        new_status_ct = (
+            encrypt(
+                body.custom_status,
+                aad=front_custom_status_aad(new_front_id),
+            )
+            if body.custom_status
+            else None
+        )
+
+    # End only the target front; all other open fronts are untouched.
+    target.ended_at = new_started_at
+
+    new_front = Front(
+        id=new_front_id,
+        system_id=system.id,
+        started_at=new_started_at,
+        custom_status=new_status_ct,
+        members=members,
+    )
+    db.add(new_front)
+    await db.flush()
+
+    after_state = await snapshot_front_state(db, system.id)
+    await emit_front_change(
+        db, system_id=system.id, before=before_state, after=after_state
+    )
+
+    await db.commit()
+    fronts_created_total.inc()
+    # Realtime stream fast path: publish AFTER commit (see create_front).
+    await publish_front_change(
+        system.id,
+        before_state,
+        after_state,
+        fronts=await serialize_open_fronts_for_stream(db, system.id),
+    )
+    await db.refresh(new_front, ["members"])
+    return _front_to_read(new_front)
 
 
 def _front_snapshot_for_audit(front: Front) -> dict:

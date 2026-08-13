@@ -69,11 +69,6 @@ const categoryLabels: {
     label: "Archive members",
     desc: "Re-auth to archive a member. No grace period - speed-bump only.",
   },
-  {
-    key: "applies_to_profile_visibility",
-    label: "Profile visibility",
-    desc: "Publishing a share view or adding someone to an already-shared one. This one gates making things MORE visible, not deleting them.",
-  },
 ];
 
 function changeSummary(changes: Record<string, unknown>): string {
@@ -430,7 +425,6 @@ const CATEGORY_KEYS = [
   "applies_to_polls",
   "applies_to_messages",
   "applies_to_archive",
-  "applies_to_profile_visibility",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {

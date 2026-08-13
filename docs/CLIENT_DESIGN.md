@@ -302,6 +302,7 @@ All resource endpoints require authentication. With API keys, the appropriate sc
 | POST | `/fronts` | `fronts:write` |
 | GET | `/fronts/current` | `fronts:read` |
 | PATCH | `/fronts/{id}` | `fronts:write` |
+| POST | `/fronts/{id}/replace` | `fronts:write` |
 | DELETE | `/fronts/{id}` | `fronts:delete` |
 | GET | `/fronts/{id}/audit` | `fronts:read` |
 | GET | `/fronts/stream` | `fronts:read` (SSE; see below) |
@@ -363,6 +364,8 @@ A `webhook` or `ntfy` channel whose URL resolves to a private/LAN address (a sel
 `PATCH /v1/fronts/{id}` accepts partial updates to `started_at`, `ended_at`, `member_ids`, and `custom_status`. Presence-in-body determines effect: an omitted field is unchanged, `null` is an explicit clear (which only `ended_at` and `custom_status` accept — `ended_at: null` reopens a closed front, `custom_status: null` clears the status), and a value replaces. `started_at: null` is rejected.
 
 Validation is intentionally permissive (SP parity): overlap with adjacent entries is allowed. The only timeline impossibility rejected is `ended_at` strictly before `started_at`.
+
+To **swap who is in a co-front**, prefer `POST /v1/fronts/{id}/replace` (body: `member_ids`, optional `started_at`, optional `custom_status`) over PATCHing `member_ids`. It ends the target front and opens a new one with the given members in a single transaction, at a shared boundary timestamp so each member's stint chains cleanly in history. PATCHing `member_ids` in place would instead rewrite the existing entry, making a swapped-in member look like they had been there since the entry began and erasing the swapped-out member's stint from that entry. Because replace is one transaction it also emits a single front-change notification for the whole swap ("B started fronting. C stopped fronting.") rather than the separate stop and start you get from ending one front and creating another as two calls, so it is the right call for the common "remove one member, add another" gesture. `custom_status` uses the same presence-in-body rule as PATCH: omit it to carry the replaced front's status onto the new one, send `null` (or empty) to clear it, send a value to set it. Other open fronts are left untouched, unlike `POST /v1/fronts` with `replace_fronts=true`, which ends every open front. Responses: `404` if the front is not the caller's, `409` if it is already ended or the resulting member set would duplicate another open front, `422` for an empty `member_ids`.
 
 Every explicit edit that produces a different snapshot appends a row to `front_audit_events`, captured in the same transaction as the edit. System-driven mutations (auto-end on `replace_fronts=true`, retention purges, etc.) do not write audit rows.
 

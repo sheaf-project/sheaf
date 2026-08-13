@@ -12,7 +12,6 @@ import {
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
-import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
@@ -106,13 +105,10 @@ function MemberForm({
   const [frontingPrivate, setFrontingPrivate] = useState(
     initial?.fronting_private ?? false,
   );
-  // The share guards only mean anything when the instance serves a public
-  // surface; hide them otherwise so the form doesn't imply a feature that
-  // isn't there. A member already marked guarded still shows the control so
-  // it can be turned back off.
-  const { user } = useAuth();
-  const shareGuardsVisible =
-    !!user?.public_profiles_enabled || neverShareable || frontingPrivate;
+  // A member already marked guarded still shows the control so it can be
+  // turned back off; otherwise the form doesn't imply a feature that isn't
+  // there.
+  const shareGuardsVisible = neverShareable || frontingPrivate;
   // Preserve an existing numeric pin priority when toggling stays on; a
   // freshly-pinned member gets priority 0.
   const initialPin = initial?.quick_switch_pin ?? null;
