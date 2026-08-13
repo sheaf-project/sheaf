@@ -34,6 +34,7 @@ from sqlalchemy.orm import aliased
 
 from sheaf.config import settings
 from sheaf.crypto import hash_share_token
+from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.group import Group
 from sheaf.models.member import Member, group_members
 from sheaf.models.relationship import MemberRelationship
@@ -429,6 +430,72 @@ async def group_raise_exposes(
     return result.scalar_one_or_none() is not None
 
 
+async def field_privacy_raise_exposes(
+    db: AsyncSession, system: System, field_id: uuid.UUID | None = None
+) -> bool:
+    """Whether publishing this field definition would put it in front of anybody.
+
+    The fourth sibling of `fronting_guard_release_exposes`,
+    `relationship_raise_exposes` and `group_raise_exposes`. True when some view
+    has this definition selected (an ACTIVE or PENDING `ShareViewField` row),
+    that view has `include_members` on or staged on, and a grant on it passes
+    `grant_live_clause()`. Pending counts on all three axes for the reason it
+    counts everywhere in this module: a pending thing goes live on its own, so
+    a raise requested near the end of someone else's window must serve its own
+    full one rather than inheriting the remainder.
+
+    `include_members` is in there because a field is not its own surface: field
+    values render inside member cards and nowhere else, so with the roster off
+    a public definition is served to no one. That is the field equivalent of
+    the edge test's "both endpoints projected" clause - the composition rule
+    that stops this gate from claiming to protect something it does not.
+
+    Deliberately coarse in the same direction `group_raise_exposes` is: it does
+    not ask whether any member the view actually projects HAS a value for this
+    field. A field selected into a live view with nobody filling it in still
+    counts. Asking would mean joining values, members and the member ceiling to
+    tell an owner "this raise is free, honest" - and the answer would go stale
+    the moment somebody typed a value. Being wrong here keeps a field private
+    that might have been safe to publish, which is the only direction worth
+    being wrong in.
+
+    `field_id` is optional so the CREATE path (a definition that does not exist
+    yet) can ask the same question, exactly as `group_raise_exposes` allows -
+    but unlike a group, the answer really does depend on the field, because
+    selection is per-definition. Called without one it asks the weaker question
+    "is any field being served at all", which is the right question for a
+    definition that is in no view yet: the answer is False unless some OTHER
+    field is selected, and a brand-new definition nothing points at is not an
+    exposure regardless. The create path therefore passes None and gets the
+    conservative answer.
+
+    A False means the raise is instant, which is correct AND safe: with nothing
+    selecting the field there is nothing to delay, and if a view selects it or
+    a grant appears later, that action carries its own gate and its own window.
+    """
+    eligible = [ShareItemStatus.ACTIVE.value, ShareItemStatus.PENDING.value]
+    selection = ShareViewField.view_id == ShareView.id
+    if field_id is not None:
+        selection = selection & (ShareViewField.field_id == field_id)
+
+    result = await db.execute(
+        select(ShareView.id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .join(ShareViewField, selection)
+        .where(
+            ShareView.system_id == system.id,
+            ShareViewField.status.in_(eligible),
+            or_(
+                ShareView.include_members.is_(True),
+                ShareView.pending_include_members.is_(True),
+            ),
+            grant_live_clause(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 # ---------------------------------------------------------------------------
 # View membership
 # ---------------------------------------------------------------------------
@@ -569,7 +636,17 @@ async def add_field_to_view(
     view: ShareView,
     field_id: uuid.UUID,
 ) -> ShareViewField | None:
-    """Expose one custom-field definition through a view."""
+    """Select one custom-field definition into a view.
+
+    Deliberately no check on the definition's own privacy level, exactly as
+    adding a member to a view does not check the member's: selection and the
+    ceiling are two independent gates and BOTH have to be open before anything
+    is served (see `share_projection._exposed_fields`). Adding a private
+    definition therefore cannot leak - it stages the owner's curation and
+    nothing else - and refusing it here would only mean the obvious order of
+    operations (build the view, then decide what to publish) failed with an
+    error for no gain.
+    """
     existing = await db.execute(
         select(ShareViewField).where(
             ShareViewField.view_id == view.id,
@@ -919,5 +996,31 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         .execution_options(synchronize_session=False)
     )
     promoted += group_raises.rowcount or 0
+
+    # Staged custom-field definition raises. Same atomic shape and the same
+    # reasoning once more: a lowering that lands mid-sweep clears
+    # `privacy_activates_at` and so either falls outside the predicate or
+    # writes last, and the `case()` covers the ordering where the timestamp
+    # survived but the staged level did not.
+    field_raises = await db.execute(
+        update(CustomFieldDefinition)
+        .where(
+            CustomFieldDefinition.privacy_activates_at.is_not(None),
+            CustomFieldDefinition.privacy_activates_at <= now,
+        )
+        .values(
+            privacy=case(
+                (
+                    CustomFieldDefinition.pending_privacy.is_not(None),
+                    CustomFieldDefinition.pending_privacy,
+                ),
+                else_=CustomFieldDefinition.privacy,
+            ),
+            pending_privacy=None,
+            privacy_activates_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    promoted += field_raises.rowcount or 0
 
     return promoted

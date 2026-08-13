@@ -87,7 +87,19 @@ class CustomFieldCreate(BaseModel):
     field_type: FieldType
     options: dict | None = None
     order: int = 0
+    # Born private unless asked otherwise, and asking otherwise runs the same
+    # gate the PATCH raise does (see api/v1/custom_fields.create_field):
+    # creating a field already public and raising an existing one are the same
+    # exposure, so "delete it and add it back as public" must not be a way
+    # round the slower door.
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
+    # Step-up credentials, carried for the same reason `GroupCreate` carries
+    # them: a create that skips straight to public goes through the same door
+    # as a raise. Popped before persistence.
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
 
     @model_validator(mode="after")
     def _validate_options(self) -> "CustomFieldCreate":
@@ -100,6 +112,15 @@ class CustomFieldUpdate(BaseModel):
     options: dict | None = None
     order: int | None = None
     privacy: PrivacyLevel | None = None
+
+    # Step-up credentials for a raise that is actually deferred. NOT field
+    # columns: the handler pops them before anything iterates the update, the
+    # same way the group and relationship-edge handlers do, so they can never
+    # be persisted.
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
 
     @field_validator("name", "order", "privacy")
     @classmethod
@@ -117,6 +138,11 @@ class CustomFieldRead(BaseModel):
     options: dict | None
     order: int
     privacy: PrivacyLevel
+    # A raise waiting out the grace window: `privacy` above is still the truth,
+    # and this says what it will become when `privacy_activates_at` passes.
+    # Null = nothing staged.
+    pending_privacy: PrivacyLevel | None = None
+    privacy_activates_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     # finalize_after timestamp if queued for delete; null otherwise.

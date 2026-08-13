@@ -909,13 +909,21 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
   const [pendingAdd, setPendingAdd] = useState<string | null>(null);
 
   const fieldById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const f of fields ?? []) m.set(f.id, f.name);
+    const m = new Map<string, { label: string; isPublic: boolean }>();
+    for (const f of fields ?? [])
+      m.set(f.id, { label: f.name, isPublic: f.privacy === "public" });
     return m;
   }, [fields]);
 
   const inView = new Set(view.fields.map((f) => f.field_id));
   const addable = (fields ?? []).filter((f) => !inView.has(f.id));
+  // Fields that are in the view but won't actually appear, because the
+  // definition's own privacy keeps it off the public tier. Surfaced for the
+  // same reason the member version above is: "why isn't X showing?" must never
+  // become a mystery.
+  const hiddenInView = view.fields.filter(
+    (row) => fieldById.get(row.field_id)?.isPublic === false,
+  ).length;
 
   function doAdd(fieldId: string, reauth?: DestructiveConfirm) {
     addField.mutate({ viewId: view.id, fieldId, reauth });
@@ -938,20 +946,45 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
       </Label>
       {view.fields.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {view.fields.map((row) => (
-            <Badge key={row.id} variant="secondary" className="gap-1">
-              {fieldById.get(row.field_id) ?? "field"}
-              <button
-                type="button"
-                className="ml-0.5 hover:text-destructive"
-                onClick={() => removeField.mutate({ viewId: view.id, fieldId: row.field_id })}
-                aria-label="Remove"
+          {view.fields.map((row) => {
+            const info = fieldById.get(row.field_id);
+            const hidden = info?.isPublic === false;
+            return (
+              <Badge
+                key={row.id}
+                variant={hidden ? "outline" : "secondary"}
+                className={`gap-1 ${hidden ? "text-muted-foreground" : ""}`}
+                title={
+                  hidden
+                    ? "This field's privacy isn't Public, so it won't appear. Set its privacy to Public in Settings to show it."
+                    : undefined
+                }
               >
-                ×
-              </button>
-            </Badge>
-          ))}
+                {info?.label ?? "field"}
+                {hidden && <span className="text-[9px]">won't show</span>}
+                {row.status === "pending" && (
+                  <span className="text-[9px] opacity-70">pending</span>
+                )}
+                <button
+                  type="button"
+                  className="ml-0.5 hover:text-destructive"
+                  onClick={() => removeField.mutate({ viewId: view.id, fieldId: row.field_id })}
+                  aria-label="Remove"
+                >
+                  ×
+                </button>
+              </Badge>
+            );
+          })}
         </div>
+      )}
+      {hiddenInView > 0 && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-500">
+          {hiddenInView} field{hiddenInView === 1 ? "" : "s"} here won't appear:
+          only fields whose privacy is Public show on a public profile or link.
+          Change it under Settings - custom fields. The level applies to that
+          field on every member.
+        </p>
       )}
       <Select value="" onValueChange={onPick}>
         <SelectTrigger className="h-8 text-xs w-full">

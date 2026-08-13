@@ -102,6 +102,13 @@ _GROUP_RAISE_STAGING = (
     "staged privacy raise waiting out the grace window; the export carries the "
     "group's live privacy, so an import never restores a half-applied raise"
 )
+# And once more for a custom-field definition, for the same reason: the export
+# carries the definition's LIVE privacy, so an import never restores a
+# half-applied raise.
+_FIELD_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "definition's live privacy, so an import never restores a half-applied raise"
+)
 _NO_GRANT_IMPORT = (
     "grants are deliberately never exported or imported: a grant is a live "
     "capability, so restoring one would republish a system from a backup"
@@ -380,6 +387,8 @@ CLASSIFICATION: dict[type, dict] = {
             "system_id": _TENANT_FK,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "pending_privacy": _FIELD_RAISE_STAGING,
+            "privacy_activates_at": _FIELD_RAISE_STAGING,
         },
     },
     CustomFieldValue: {
