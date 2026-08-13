@@ -411,7 +411,16 @@ export interface CustomField {
   field_type: FieldType;
   options: Record<string, unknown> | null;
   order: number;
+  /** The same `PrivacyLevel` vocabulary a member or a group carries, and the
+   *  same meaning: a ceiling, not a promise. The field still only appears on a
+   *  view that was told to show it. It applies to this field on EVERY member -
+   *  there is no per-member-per-field setting. Private unless said otherwise. */
   privacy: PrivacyLevel;
+  /** A raise still waiting out the safety grace window. `privacy` above is
+   *  the truth right now; these say what it becomes and when. Both null when
+   *  nothing is staged. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
@@ -431,6 +440,11 @@ export interface CustomFieldUpdate {
   options?: Record<string, unknown> | null;
   order?: number;
   privacy?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them: a raise that would actually put this field in front of someone is
+   *  refused until it is confirmed. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface CustomFieldValue {

@@ -56,6 +56,7 @@ from sheaf.schemas.share import (
     ShareViewUpdate,
 )
 from sheaf.services.share_projection import (
+    projectable_fields,
     projectable_groups,
     projectable_relationships,
 )
@@ -833,10 +834,10 @@ async def sharing_audit(
                 [ShareGrantStatus.ACTIVE.value, ShareGrantStatus.PENDING.value]
             ),
         )
-        .options(
-            selectinload(ShareView.members),
-            selectinload(ShareView.fields),
-        )
+        # Only the members are eager-loaded now: the field count comes from
+        # `projectable_fields`, which queries the definitions with the ceiling
+        # applied rather than counting selection rows off the view.
+        .options(selectinload(ShareView.members))
         .order_by(ShareGrant.created_at.desc())
     )
     entries = []
@@ -846,6 +847,7 @@ async def sharing_audit(
         # be worse than no audit at all.
         edges = await projectable_relationships(db, view)
         groups = await projectable_groups(db, view)
+        fields = await projectable_fields(db, view)
         entries.append(
             ShareAuditEntry(
                 grant=_grant_to_read(grant),
@@ -857,7 +859,19 @@ async def sharing_audit(
                 # are being shown. Zeroing it would read as "your curation is
                 # gone" for a flag that destroyed nothing.
                 member_count=len(view.members),
-                field_count=len(view.fields),
+                # The SERVED count, not the curated one, and the deliberate
+                # difference from `member_count` above. A member held back by
+                # their own privacy is visible as such right beside this
+                # number - the roster flag is reported here and the sharing
+                # screen badges every member the ceiling is holding - so the
+                # curated count reads as curation rather than as a claim about
+                # what visitors get. A field has no such companion: the audit
+                # entry says nothing about which definitions are public, so a
+                # count of selection rows would be the only number on the
+                # screen and it would over-report the exposure. Counting
+                # through the projection's own filter is also what stops the
+                # two from drifting.
+                field_count=len(fields),
                 include_members=view.include_members,
                 include_bio=view.include_bio,
                 include_fronting=view.include_fronting,

@@ -115,7 +115,36 @@ async def _exposed_fields(
 ) -> dict[uuid.UUID, str]:
     """{field_definition_id: name} for the custom fields this view exposes.
 
-    Tenant-pinned for the same reason as `_active_member_filter`.
+    THE choke point for custom-field exposure, in the same spirit as
+    `_active_member_filter`: one place decides "is this field in the view AND
+    allowed at this audience", so the projected payloads and the owner-side
+    audit can never disagree about what a visitor reads. Two independent
+    guards, both in SQL:
+
+    - an ACTIVE `ShareViewField` row - selection is the owner's curation, and a
+      pending row (still inside its grace window) is not visible yet;
+    - `privacy == public` on the DEFINITION - `CustomFieldDefinition.privacy`
+      is the field's exposure CEILING. Every grant that exists today is
+      PUBLIC-tier, so a definition left at the default `private`, or set to
+      `friends`, is served to nobody even though the owner deliberately
+      selected it into this view.
+
+    Both are necessary, and neither is redundant with the other. Selection
+    without the ceiling is what shipped before this filter existed: a field
+    appeared because somebody had picked it, whatever the level next to it
+    said. The ceiling without selection would publish a field into every view
+    at once. Requiring both is what makes a definition added to a view "on the
+    way to publishing it" rather than "published", which is the same shape as
+    a member sitting in a view at `private`.
+
+    The level is per-DEFINITION and therefore applies to that field on every
+    member; there is no per-member-per-field setting, on purpose. Withholding
+    one member's value for one field is what the member's own privacy level and
+    simply not filling the field in are for.
+
+    Tenant-pinned for the same reason as `_active_member_filter`: this query
+    feeds anonymous readers, so it does not get to rely on every writer having
+    been correct.
     """
     result = await db.execute(
         select(CustomFieldDefinition.id, CustomFieldDefinition.name)
@@ -124,9 +153,32 @@ async def _exposed_fields(
             ShareViewField.view_id == view.id,
             ShareViewField.status == ShareItemStatus.ACTIVE.value,
             CustomFieldDefinition.system_id == view.system_id,
+            CustomFieldDefinition.privacy == PrivacyLevel.PUBLIC,
         )
     )
     return {row[0]: row[1] for row in result}
+
+
+async def projectable_fields(
+    db: AsyncSession, view: ShareView
+) -> dict[uuid.UUID, str]:
+    """The custom fields this view would serve right now, {id: name}.
+
+    A public name for `_exposed_fields` so the owner-side audit counts through
+    exactly the filter the member cards are built from, the way
+    `projectable_relationships` and `projectable_groups` are shared. A count
+    the owner reads off the sharing screen has to be the count a visitor could
+    reconstruct; two queries with the same intent drift, and the drift here
+    would be an audit quietly over-reporting what is published.
+
+    Deliberately NOT gated on `include_members`, unlike the projection that
+    consumes it. With the roster off nothing renders these anywhere, and
+    `project_members` returns early long before it asks - but the audit says
+    "no member list" beside this number, and zeroing the fields as well would
+    read as "your curation is gone" for a flag that destroyed nothing. Same
+    reasoning as the member count it sits next to.
+    """
+    return await _exposed_fields(db, view)
 
 
 async def _field_values_by_member(

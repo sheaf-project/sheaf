@@ -1281,6 +1281,18 @@ async def run_import(
         # duplicating them just litters the field list with a second
         # "Pronouns" etc. The system's own config (privacy/order/options)
         # on a reused field is left untouched.
+        #
+        # That last sentence is now load-bearing rather than incidental, since
+        # `privacy` became this field's exposure ceiling. There is no UPDATE
+        # path here for a file's level to ride in on: a match is skipped
+        # wholesale, so an import can neither publish an existing definition
+        # nor un-publish one, and there is nothing to hold back or warn about.
+        # A definition this run CREATES takes the file's level as-is, which is
+        # safe for the reason a new group is not: a brand-new definition is in
+        # no view, so no grant can be serving it, and selecting it into one
+        # later is its own deliberate act with its own gate. Compare the group
+        # and member paths, which DO hold a public level back, because there
+        # the imported row can be served the moment the import commits.
         field_index = await load_field_def_index(db, system.id)
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")

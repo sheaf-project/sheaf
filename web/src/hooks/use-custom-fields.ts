@@ -37,11 +37,25 @@ export function useCreateField() {
 export function useUpdateField() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: CustomFieldUpdate }) =>
-      api.updateField(id, data),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      data,
+      skipErrorToast = false,
+    }: {
+      id: string;
+      data: CustomFieldUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateField(id, data, skipErrorToast),
+    onSuccess: (field, { data }) => {
       qc.invalidateQueries({ queryKey: fieldKeys.all });
-      toast.success("Field updated");
+      // A raise that would actually expose the field is staged, not applied,
+      // so the toast must not claim the new level is live yet. Only a request
+      // that touched privacy can be the one that staged it.
+      toast.success(
+        data.privacy && field.privacy_activates_at
+          ? "Change confirmed - it goes live after your grace period."
+          : "Field updated",
+      );
     },
   });
 }
