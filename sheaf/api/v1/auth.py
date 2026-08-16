@@ -177,6 +177,10 @@ async def get_auth_config():
         "file_cdn_base": settings.s3_public_url.rstrip("/") or None,
         "terms_url": settings.terms_url or None,
         "privacy_url": settings.privacy_url or None,
+        # Operator-authored markdown, rendered only on the public profile
+        # footer. Public information by definition, so it rides the same
+        # unauthenticated payload as the rest of this.
+        "abuse_contact": settings.public_abuse_contact or None,
         "support_email": settings.support_email or None,
         "support_url": settings.support_url or None,
         "support_note": settings.support_note or None,
