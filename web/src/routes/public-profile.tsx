@@ -653,18 +653,24 @@ function RelationshipsSection({ view }: { view: PublicRelationshipsView }) {
 
   // The nodes come out of the relationships themselves: every published
   // relationship names both of its ends, so the graph stands up on its own
-  // even when the view serves no member list at all. Colour is the one thing
-  // the relationship payload can't say, so it is joined from the roster when
-  // there is one, and left neutral when there isn't.
+  // even when the view serves no member list at all. Colour and avatar are
+  // the two things the relationship payload can't say, so they are joined
+  // from the roster when there is one, and left neutral when there isn't.
+  // Avatars pass isPublicImageAllowed like every other image on this page,
+  // even though the roster payload only ever carries same-origin URLs.
   const nodes = useMemo<GraphNode[]>(() => {
     const seen = new Map<string, GraphNode>();
     for (const r of relationships) {
       for (const end of [r.source, r.target]) {
         if (!seen.has(end.id)) {
+          const card = nav?.card(end.id);
+          const avatar = card?.avatar_url;
           seen.set(end.id, {
             id: end.id,
             name: end.name,
-            color: nav?.card(end.id)?.color ?? null,
+            color: card?.color ?? null,
+            avatar_url:
+              avatar && isPublicImageAllowed(avatar) ? avatar : null,
           });
         }
       }
