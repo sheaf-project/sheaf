@@ -10,6 +10,8 @@ export interface AuthConfig {
   file_cdn_base: string | null;
   terms_url: string | null;
   privacy_url: string | null;
+  /** Operator-authored markdown, shown from the public profile footer. */
+  abuse_contact: string | null;
   support_email: string | null;
   support_url: string | null;
   support_note: string | null;

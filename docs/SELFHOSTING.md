@@ -1186,6 +1186,20 @@ The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_
 
 ---
 
+## Abuse and DMCA contact
+
+The Support page above is for people with an account. Public profiles and share links are the only pages someone without one can reach, so if you serve them, set `PUBLIC_ABUSE_CONTACT`: it is the only route a visitor has to tell you something is wrong with a page you host.
+
+```env
+PUBLIC_ABUSE_CONTACT="Report abuse: abuse@example.net"
+```
+
+The value is markdown you write, shown to anonymous visitors behind an "Abuse / DMCA" item in the public profile footer, next to "Powered by Sheaf". Nothing is submitted or stored: it renders your text and gets out of the way, so what to put in it is up to you. At minimum, some way to reach a person - an email address, a chat contact, a link to a form you run elsewhere. Operators subject to the DMCA (broadly, anyone hosting in the US or serving US users who wants the safe harbour) should include their designated agent's details here as well: name, address, phone, email. Registering that agent with the Copyright Office is a separate step this setting does not do for you; check what your jurisdiction actually requires rather than taking a config comment's word for it.
+
+Multi-line values work if your compose manager supports them; the usual way is a quoted string with `\n` escapes, or setting it from a file in your own entrypoint. It renders through the same pipeline as a public bio: markdown, no HTML, no external images, and `mailto:` and `https:` links stay clickable. Empty (the default) means no footer item at all and nothing rendered. It is read at startup, so changes need a restart, and it is served in the public `GET /v1/auth/config` payload - treat it as information you are publishing, and put a role address in it rather than someone's personal one.
+
+---
+
 ## Frontend
 
 The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only - you build and serve the frontend separately, either from a local build (below) or from the prebuilt image.

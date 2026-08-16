@@ -36,6 +36,7 @@ import { ColorDot } from "@/components/color-dot";
 import { Logo } from "@/components/logo";
 import { RelationshipGraphCanvas } from "@/components/relationship-graph";
 import { ApiError } from "@/lib/api-error";
+import { getAuthConfig } from "@/lib/auth";
 import { isPublicImageAllowed } from "@/lib/image-sources";
 import {
   isDirectedEdge,
@@ -868,11 +869,51 @@ function formatFieldValue(v: unknown): string {
   return String(v);
 }
 
+/**
+ * The public footer: attribution, plus the operator's abuse/DMCA contact when
+ * they wrote one. Lives here rather than in the shared app footer because
+ * these are the only pages someone with no account can reach, so they are the
+ * only ones where "who do I tell about this?" has nowhere else to go.
+ */
 function PoweredBy() {
+  const { data: config } = useQuery({
+    queryKey: ["auth-config"],
+    queryFn: getAuthConfig,
+  });
+  const [abuseOpen, setAbuseOpen] = useState(false);
+  const abuse = config?.abuse_contact;
+
   return (
     <div className="flex items-center justify-center gap-1.5 pt-4 text-xs text-muted-foreground">
       <Logo className="h-4 w-4 rounded" />
       <span>Powered by Sheaf</span>
+      {abuse && (
+        <>
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            onClick={() => setAbuseOpen(true)}
+            className="transition-colors hover:text-foreground hover:underline"
+          >
+            Abuse / DMCA
+          </button>
+          <Dialog open={abuseOpen} onOpenChange={setAbuseOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Abuse and DMCA contact</DialogTitle>
+              </DialogHeader>
+              {/* Same rendering pipeline as a public bio: no external images,
+                  and mailto:/https: links stay clickable, which is the entire
+                  point of the thing. */}
+              <Suspense
+                fallback={<p className="text-sm whitespace-pre-wrap">{abuse}</p>}
+              >
+                <MarkdownPreview content={abuse} publicSurface />
+              </Suspense>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
     </div>
   );
 }
