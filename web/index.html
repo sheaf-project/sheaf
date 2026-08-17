@@ -36,8 +36,21 @@
       // this script only resolves localStorage so the very first paint
       // never flashes the wrong colours on browsers that have a local
       // pick.
+      //
+      // One exception to the dark default: the pages a visitor with no
+      // account can reach (public profiles /p/..., share links /s/...,
+      // and their /member/... subroutes). Somebody landing there never
+      // chose how Sheaf looks, so with nothing stored we follow their
+      // browser instead of imposing dark. A stored pick still wins
+      // everywhere. Kept as a dumb prefix check, and mirrored by
+      // defaultMode() in src/hooks/use-theme.ts - if the two disagree
+      // the page paints one mode and then settles on the other.
       (function() {
-        var mode = localStorage.getItem("sheaf_theme") || "dark";
+        var path = window.location.pathname;
+        var isPublicPage =
+          path.indexOf("/p/") === 0 || path.indexOf("/s/") === 0;
+        var stored = localStorage.getItem("sheaf_theme");
+        var mode = stored || (isPublicPage ? "system" : "dark");
         var palette = localStorage.getItem("sheaf_palette") || "classic";
         var dark;
         if (mode === "system") {

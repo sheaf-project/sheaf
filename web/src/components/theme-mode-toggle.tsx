@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
- * Tri-state mode toggle used in the sidebar header and the
- * pre-login pages. Cycles dark -> system -> light -> dark.
+ * Tri-state mode toggle used in the sidebar header, the pre-login
+ * pages and the public profile pages. Cycles dark -> system -> light
+ * -> dark, the same three options the Appearance settings offer.
  *
  * Distinct from the Appearance settings card, which is the canonical
  * place to set both mode and palette. This is the inline quick-access
@@ -40,8 +41,17 @@ const LABEL: Record<ThemeMode, string> = {
   light: "Theme: light (click for dark)",
 };
 
-export function ThemeModeToggle({ className }: { className?: string }) {
-  const { mode, setMode } = useTheme();
+export function ThemeModeToggle({
+  className,
+  localOnly = false,
+}: {
+  className?: string;
+  /** Keep the pick on this browser and never write it to the account.
+   *  Set on the public profile pages, which anyone can open without a
+   *  session; see `UseThemeOptions.localOnly`. */
+  localOnly?: boolean;
+}) {
+  const { mode, setMode } = useTheme({ localOnly });
   const Icon = ICON[mode];
   return (
     <Button

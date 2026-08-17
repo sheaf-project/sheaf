@@ -546,10 +546,20 @@ export function RelationshipGraphCanvas({
                     preserveAspectRatio="xMidYMid slice"
                   />
                 ) : (
+                  /* On a member's own colour the initial is the page
+                     background, which reads as white in a light theme and
+                     near-black in a dark one - either way, contrast against
+                     whatever colour they picked. A member with no colour gets
+                     a `--muted` circle, which is a shade of the background, so
+                     the same rule would paint the initial nearly invisible;
+                     those use the muted foreground instead. */
                   <text
                     textAnchor="middle"
                     dy="0.35em"
-                    className="fill-background text-sm font-medium"
+                    className={cn(
+                      "text-sm font-medium",
+                      n.color ? "fill-background" : "fill-muted-foreground",
+                    )}
                   >
                     {n.name.slice(0, 1).toUpperCase()}
                   </text>
