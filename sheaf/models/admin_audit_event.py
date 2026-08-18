@@ -63,6 +63,8 @@ class AdminAuditAction(enum.StrEnum):
     JOB_TRIGGER = "job_trigger"                    # manual job / maintenance runs
     SECURITY_IP_LOOKUP = "security_ip_lookup"      # searched security log by IP/subnet
     SECURITY_HISTORY_VIEW = "security_history_view"  # viewed one account's security events
+    # Abuse-report response: revoke every share grant on one system at once.
+    SYSTEM_SHARE_GRANTS_REVOKE_ALL = "system_share_grants_revoke_all"
 
 
 class AdminAuditTargetType(enum.StrEnum):

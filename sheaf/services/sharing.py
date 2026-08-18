@@ -49,7 +49,7 @@ from sheaf.models.share import (
     ShareViewMember,
 )
 from sheaf.models.system import PrivacyLevel, System
-from sheaf.models.user import User
+from sheaf.models.user import AccountStatus, User
 
 # Length of the raw link token. 32 bytes of urlsafe base64 is ~43 chars and
 # comfortably beyond guessing, which matters because the token IS the
@@ -693,6 +693,27 @@ async def create_grant(
     """
     require_adult_attestation(user)
 
+    # Refused rather than minted-and-suppressed. `profile_serving_clause()`
+    # would make such a grant serve nobody, so allowing it would be safe - and
+    # it would still be wrong. The owner would walk the whole publish flow,
+    # step through re-auth, watch a grace window elapse, hand a link to
+    # somebody, and get a 404, with nothing anywhere saying why. Worse, a
+    # dormant grant is a loaded one: the day that system privacy is flipped to
+    # public for some unrelated reason, every grant minted in the meantime goes
+    # live at once, with no deliberate act behind any of them and no grace
+    # window in front. Nothing gets published by accident here, so nothing gets
+    # STAGED by accident either.
+    if system.privacy != PrivacyLevel.PUBLIC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Your system privacy is set to "
+                f"{system.privacy.value}. Set it to public in system settings "
+                "before creating a share link or public profile - it is the "
+                "master switch over everything you share."
+            ),
+        )
+
     live = (
         await db.execute(
             select(func.count(ShareGrant.id)).where(
@@ -792,6 +813,108 @@ def rotate_grant_token(grant: ShareGrant) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Suppression (the state gate in front of resolution)
+# ---------------------------------------------------------------------------
+
+
+# Account states that take the whole public surface down while they last.
+# Every one of them means the same thing to a visitor - nothing - because the
+# anonymous 404 is uniform and must never become a state oracle. PENDING_APPROVAL
+# is absent on purpose: an account that never got past the door has no grant to
+# suppress, and the ones that could have been created before an operator turned
+# approvals on are covered by the same owner deciding to publish.
+_SUPPRESSING_ACCOUNT_STATES: tuple[str, ...] = (
+    AccountStatus.SUSPENDED.value,
+    AccountStatus.BANNED.value,
+    AccountStatus.PENDING_DELETION.value,
+)
+
+
+def profile_serving_clause():
+    """SQL predicate for "the account and system behind this grant may serve".
+
+    The companion to `grant_live_clause`, and separate from it on purpose: that
+    one asks whether the GRANT is alive, this one asks whether anything is
+    allowed to come out of the account at all. One definition, used by both
+    resolvers and by the owner-side audit, so the reason a page 404s and the
+    reason the owner is shown can never disagree. Requires a join to `System`
+    and `User`.
+
+    Two gates:
+
+    - `System.privacy == public`. The system-level privacy selector is now a
+      real master ceiling over the entire public surface, not a label on a
+      settings screen. It reads to an owner as "is my system public?", so it had
+      better be the answer to that question: with it anywhere else, every grant
+      and every view flag keeps serving and the control means nothing. Every
+      grant that exists today is PUBLIC-tier, so `friends` suppresses exactly
+      like `private` until the parked friends tier lands and this becomes
+      audience-aware alongside `share_projection._active_member_filter`.
+
+    - the owning account is in good standing. Suspended, banned, and
+      pending-deletion accounts all serve nobody.
+
+    Suppression, NOT revocation, and that is the decided semantic rather than an
+    implementation convenience. Suspension is temporary by nature; a suspension
+    that quietly destroyed the owner's grants would turn an operator's
+    time-boxed action into a permanent loss of something the owner built, and
+    would do it silently, to the person least able to argue. So the grants sit
+    untouched and the page comes back when the account does. Un-publishing for
+    real remains the owner's own button, and `revoke_grant` remains the
+    operator's (see the admin revoke-all lever) when a page has to die rather
+    than pause.
+
+    The suspension test mirrors `sheaf.auth.dependencies.get_current_user`
+    exactly - a suspension past its `suspended_until` is treated as already
+    lifted - because the unsuspend sweep is periodic and the alternative is an
+    owner who can log in perfectly well staring at their own 404 with no way to
+    tell whether it is the suspension or something they broke.
+    """
+    now = datetime.now(UTC)
+    suspension_lapsed = User.suspended_until.is_not(None) & (
+        User.suspended_until <= now
+    )
+    return (
+        (System.privacy == PrivacyLevel.PUBLIC)
+        & (
+            User.account_status.not_in(_SUPPRESSING_ACCOUNT_STATES)
+            | (
+                (User.account_status == AccountStatus.SUSPENDED.value)
+                & suspension_lapsed
+            )
+        )
+    )
+
+
+def suppression_reason(system: System, user: User) -> str | None:
+    """Why this account's public surface is dark right now, or None.
+
+    The Python twin of `profile_serving_clause`, for the OWNER-side audit only.
+    It returns a coarse category, never the specific account state: an owner
+    already knows they are suspended (they were told at login, with the reason
+    and the expiry), so naming it again buys nothing, while a value that could
+    ever reach a client is a value that could ever reach the wrong one. What the
+    owner actually needs is the difference between "you turned your system
+    private" - which they can fix in one click and would otherwise spend an
+    afternoon debugging - and "this is about your account", which they cannot.
+
+    System privacy is reported first when both apply, because it is the one the
+    owner can act on.
+    """
+    if system.privacy != PrivacyLevel.PUBLIC:
+        return "system_private"
+    if user.account_status == AccountStatus.SUSPENDED:
+        if user.suspended_until is not None and user.suspended_until <= datetime.now(
+            UTC
+        ):
+            return None  # lapsed; the sweep just has not run yet
+        return "account_state"
+    if user.account_status.value in _SUPPRESSING_ACCOUNT_STATES:
+        return "account_state"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Resolution (used by the anonymous public surface)
 # ---------------------------------------------------------------------------
 
@@ -804,15 +927,21 @@ async def resolve_public_grant(
     Returning a bare None for every failure mode is deliberate: the caller
     turns all of them into an identical 404 so there is no oracle telling an
     anonymous visitor whether a system exists, was never public, or just went
-    dark.
+    dark - and now also whether the owner is suspended, banned, on their way
+    out, or simply has their system set to private. All the same 404, with the
+    same body and the same timing-insensitive shape, because the alternative is
+    a public endpoint that reports moderation state about a stranger.
     """
     result = await db.execute(
         select(ShareGrant, ShareView)
         .join(ShareView, ShareView.id == ShareGrant.view_id)
+        .join(System, System.id == ShareGrant.system_id)
+        .join(User, User.id == System.user_id)
         .where(
             ShareGrant.system_id == system_id,
             ShareGrant.subject_type == ShareSubjectType.PUBLIC.value,
             grant_live_clause(include_pending=False),
+            profile_serving_clause(),
         )
     )
     row = result.first()
@@ -826,16 +955,26 @@ async def resolve_link_grant(
 
     Lookup is by keyed hash, so the raw token is never compared against
     anything stored and never needs to exist in the database.
+
+    Carries `profile_serving_clause()` for the same reason the public resolver
+    does, and it is worth being explicit that an unlisted link is NOT a lesser
+    tier that survives suppression: a link grant publishes the same payloads to
+    the same anonymous readers, the only difference being how the reader found
+    it. A holder of an old link is not more entitled to a suspended account's
+    profile than a stranger typing a system id.
     """
     if not raw_token:
         return None
     result = await db.execute(
         select(ShareGrant, ShareView)
         .join(ShareView, ShareView.id == ShareGrant.view_id)
+        .join(System, System.id == ShareGrant.system_id)
+        .join(User, User.id == System.user_id)
         .where(
             ShareGrant.token_hash == hash_share_token(raw_token),
             ShareGrant.subject_type == ShareSubjectType.LINK.value,
             grant_live_clause(include_pending=False),
+            profile_serving_clause(),
         )
     )
     row = result.first()

@@ -112,6 +112,10 @@ def _view(c: httpx.Client, *, members: list[str], **kw) -> str:
 def _publish(c: httpx.Client, view_id: str) -> str:
     """Point a live public grant at a view. Called before safety is armed, so
     the grant itself is active rather than pending."""
+    # System privacy is the master ceiling over the public surface, so a system
+    # has to be public before it can publish anything at all.
+    flipped = c.patch("/v1/systems/me", json={"privacy": "public"})
+    assert flipped.status_code == 200, flipped.text
     r = c.post("/v1/auth/me/attest-adult")
     assert r.status_code == 200, r.text
     granted = c.post(

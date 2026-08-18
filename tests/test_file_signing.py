@@ -341,14 +341,18 @@ def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
 
 
 def test_resolve_description_urls_public_signs_hosted():
-    result = resolve_description_urls_public("![pic](/v1/files/members/m/a.png)")
-    assert "/v1/public/files/members/m/a.png" in result
+    result = resolve_description_urls_public(
+        f"![pic](/v1/files/bios/{_OWNER}/a.png)", _OWNER
+    )
+    assert f"/v1/public/files/bios/{_OWNER}/a.png" in result
     assert "token=" in result
     assert "expires=" in result
 
 
 def test_resolve_description_urls_public_hides_external():
-    result = resolve_description_urls_public("![evil](https://tracker.example/p.png)")
+    result = resolve_description_urls_public(
+        "![evil](https://tracker.example/p.png)", _OWNER
+    )
     assert result == f"![evil]({EXTERNAL_IMAGE_HIDDEN})"
     assert "tracker.example" not in result
 
@@ -363,7 +367,7 @@ def test_resolve_description_urls_public_hides_external():
 def test_resolve_description_urls_public_uses_commonmark_image_grammar(
     text, expected_alt
 ):
-    result = resolve_description_urls_public(text)
+    result = resolve_description_urls_public(text, _OWNER)
 
     assert "tracker.example" not in result
     assert EXTERNAL_IMAGE_HIDDEN in result
@@ -376,18 +380,18 @@ def test_resolve_description_urls_public_uses_commonmark_image_grammar(
 def test_resolve_description_urls_public_keeps_data_uri():
     for scheme in ("data", "DATA"):
         text = f"![dot]({scheme}:image/png;base64,iVBORw0KGgo=)"
-        assert resolve_description_urls_public(text) == text
+        assert resolve_description_urls_public(text, _OWNER) == text
 
 
 def test_resolve_description_urls_public_mixed_content():
     text = (
-        "Intro ![mine](/v1/files/bios/u/a.png) middle "
+        f"Intro ![mine](/v1/files/bios/{_OWNER}/a.png) middle "
         "![theirs](https://tracker.example/p.png) end [a link](https://ok.example)"
     )
-    result = resolve_description_urls_public(text)
+    result = resolve_description_urls_public(text, _OWNER)
     assert "tracker.example" not in result
     assert result.count(EXTERNAL_IMAGE_HIDDEN) == 1
-    assert "/v1/public/files/bios/u/a.png?token=" in result
+    assert f"/v1/public/files/bios/{_OWNER}/a.png?token=" in result
     # Prose and ordinary links are not image fetches; they stay.
     assert "Intro " in result and "[a link](https://ok.example)" in result
 
@@ -400,40 +404,41 @@ def test_resolve_description_urls_public_hides_reference_images():
         "[collapsed]: https://tracker.example/2.png\n"
         "[shortcut]: https://tracker.example/3.png\n"
     )
-    result = resolve_description_urls_public(text)
+    result = resolve_description_urls_public(text, _OWNER)
     assert result.count(f"]({EXTERNAL_IMAGE_HIDDEN})") == 3
 
 
 def test_resolve_description_urls_public_serves_hosted_reference_same_origin():
-    text = "![portrait][photo]\n\n[photo]: /v1/files/bios/u/photo.png"
+    text = f"![portrait][photo]\n\n[photo]: /v1/files/bios/{_OWNER}/photo.png"
 
-    result = resolve_description_urls_public(text)
+    result = resolve_description_urls_public(text, _OWNER)
 
-    assert "/v1/public/files/bios/u/photo.png?token=" in result
+    assert f"/v1/public/files/bios/{_OWNER}/photo.png?token=" in result
 
 
 def test_resolve_description_urls_public_leaves_undefined_shortcut_alone():
     """Without a definition, ![like this] is prose, not an image."""
     text = "Filed under ![not an image] in the notes."
-    assert resolve_description_urls_public(text) == text
+    assert resolve_description_urls_public(text, _OWNER) == text
 
 
 def test_resolve_description_urls_public_none():
-    assert resolve_description_urls_public(None) is None
+    assert resolve_description_urls_public(None, _OWNER) is None
 
 
 def test_resolve_avatar_url_public_signs_internal():
-    result = resolve_avatar_url_public("avatars/user/abc.png")
-    assert result.startswith("/v1/public/files/avatars/user/abc.png?token=")
+    result = resolve_avatar_url_public(f"avatars/{_OWNER}/abc.png", _OWNER)
+    assert result.startswith(f"/v1/public/files/avatars/{_OWNER}/abc.png?token=")
 
 
 def test_resolve_avatar_url_public_signs_legacy_cdn_row(monkeypatch):
     monkeypatch.setattr(settings, "storage_backend", "s3")
     monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
     result = resolve_avatar_url_public(
-        "https://cdn.example.com/avatars/user/abc.png?token=STALE&expires=1"
+        f"https://cdn.example.com/avatars/{_OWNER}/abc.png?token=STALE&expires=1",
+        _OWNER,
     )
-    assert result.startswith("/v1/public/files/avatars/user/abc.png?token=")
+    assert result.startswith(f"/v1/public/files/avatars/{_OWNER}/abc.png?token=")
     assert "STALE" not in result
 
 
@@ -576,15 +581,18 @@ async def test_public_file_route_rejects_percent_encoded_path_alias(monkeypatch)
 
 
 def test_resolve_avatar_url_public_drops_external():
-    assert resolve_avatar_url_public("https://gravatar.com/x.png") is None
+    assert resolve_avatar_url_public("https://gravatar.com/x.png", _OWNER) is None
 
 
 def test_resolve_avatar_url_public_drops_data_uri():
-    assert resolve_avatar_url_public("data:image/png;base64,iVBORw0KGgo=") is None
+    assert (
+        resolve_avatar_url_public("data:image/png;base64,iVBORw0KGgo=", _OWNER)
+        is None
+    )
 
 
 def test_resolve_avatar_url_public_none():
-    assert resolve_avatar_url_public(None) is None
+    assert resolve_avatar_url_public(None, _OWNER) is None
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +673,70 @@ def test_owned_description_urls_mixed_keeps_own_drops_foreign():
 
 
 # ---------------------------------------------------------------------------
+# The signer is the last line: the PUBLIC resolvers re-check ownership rather
+# than trusting that a write handler ran `owned_*` on the way in. Write-path
+# guards get added one endpoint at a time, importers are written by other
+# people, and rows already in the database predate all of it - so a stale
+# foreign key in stored text has to render as hidden without anyone sweeping
+# the data first.
+
+
+def test_public_description_resolver_refuses_to_sign_foreign_key():
+    text = f"![theirs](/v1/files/bios/{_OTHER}/a.png)"
+    result = resolve_description_urls_public(text, _OWNER)
+    # Treated exactly like an external ref: hidden, never signed.
+    assert result == f"![theirs]({EXTERNAL_IMAGE_HIDDEN})"
+    assert _OTHER not in result
+    assert "token=" not in result
+
+
+def test_public_description_resolver_signs_own_key_beside_foreign_one():
+    text = (
+        f"![mine](/v1/files/bios/{_OWNER}/m.png) "
+        f"![theirs](/v1/files/bios/{_OTHER}/t.png)"
+    )
+    result = resolve_description_urls_public(text, _OWNER)
+    assert f"/v1/public/files/bios/{_OWNER}/m.png?token=" in result
+    assert _OTHER not in result
+    assert result.count(EXTERNAL_IMAGE_HIDDEN) == 1
+
+
+def test_public_description_resolver_hides_non_media_prefix_key():
+    """A key outside the upload prefixes has no owner segment to match, and the
+    serve route would refuse it anyway - so it is hidden, not signed."""
+    text = f"![dump](/v1/files/exports/{_OWNER}/dump.png)"
+    result = resolve_description_urls_public(text, _OWNER)
+    assert result == f"![dump]({EXTERNAL_IMAGE_HIDDEN})"
+
+
+def test_public_avatar_resolver_refuses_to_sign_foreign_key():
+    assert resolve_avatar_url_public(f"avatars/{_OTHER}/abc.png", _OWNER) is None
+
+
+def test_public_avatar_resolver_refuses_foreign_legacy_cdn_row(monkeypatch):
+    """The CDN form of a foreign key is the same capability, one hostname on."""
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
+    assert (
+        resolve_avatar_url_public(
+            f"https://cdn.example.com/avatars/{_OTHER}/abc.png", _OWNER
+        )
+        is None
+    )
+
+
+def test_public_resolvers_accept_uuid_owner_object():
+    """Call sites pass `System.user_id`, which is a UUID, not a string."""
+    import uuid
+
+    owner = uuid.UUID(_OWNER)
+    assert resolve_avatar_url_public(
+        f"avatars/{_OWNER}/abc.png", owner
+    ).startswith("/v1/public/files/")
+    assert resolve_avatar_url_public(f"avatars/{_OTHER}/abc.png", owner) is None
+
+
+# ---------------------------------------------------------------------------
 # Reference-style images face the same write-path policy as inline ones
 # ---------------------------------------------------------------------------
 
@@ -734,7 +806,7 @@ def test_image_like_examples_in_code_are_not_normalized(monkeypatch):
     )
 
     assert normalize_description_urls(text) == text
-    assert resolve_description_urls_public(text) == text
+    assert resolve_description_urls_public(text, _OWNER) == text
 
 
 def test_unmatched_backticks_cannot_hide_image_in_later_paragraph(monkeypatch):
@@ -747,7 +819,7 @@ def test_unmatched_backticks_cannot_hide_image_in_later_paragraph(monkeypatch):
     )
 
     normalized = normalize_description_urls(text)
-    public = resolve_description_urls_public(text)
+    public = resolve_description_urls_public(text, _OWNER)
 
     assert normalized == "`open\n\n\n\n`close"
     assert "tracker.example" not in public

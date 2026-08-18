@@ -213,7 +213,12 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account pending approval",
         )
-    # pending_deletion: allow login but block via separate check on mutations
+    # pending_deletion: allowed through here on purpose. The account is inside
+    # its deletion grace window and the user must be able to sign in, look at
+    # what they are about to lose, export it, and change their mind - so the
+    # state cannot be a blanket 403 the way SUSPENDED and BANNED are. Mutations
+    # are the part that has to be refused, and that is `block_pending_deletion`
+    # below, applied per-router.
 
     # Check email verification (skip if explicitly allowed, e.g. resend-verification)
     if not user.email_verified and not getattr(request.state, "_skip_email_verification", False):
@@ -249,6 +254,37 @@ async def get_current_user_allow_unverified(
     request.state._skip_email_verification = True
     request.state._allow_pending_approval = True
     return await get_current_user(request, db, credentials, session_id)
+
+
+def block_pending_deletion(user: User) -> None:
+    """Refuse a mutation from an account that has asked to be deleted.
+
+    The mutation half of the PENDING_DELETION state. `get_current_user` lets
+    these accounts authenticate, because the deletion grace window is there for
+    the user to reconsider and they cannot reconsider from behind a 403 - they
+    need to read their data, export it, and cancel. What they must not do is
+    keep BUILDING, and on the sharing surface that is not a tidiness argument:
+    a grant minted during the window is an exposure whose owner has already
+    announced they will not be around to manage it, pointing at data the
+    deletion sweep is going to remove underneath it.
+
+    409, not 403: nothing is wrong with the caller's credentials or their
+    permissions. The account is in a state that conflicts with the request, and
+    the fix is an action the user can take themselves, which the detail names.
+
+    Deliberately a plain function rather than a dependency: the callers here
+    already have the resolved `User` in hand, and a second dependency would
+    re-run the whole auth chain. Cancelling the deletion (auth.py) must never
+    call this - that is the way out.
+    """
+    if user.account_status == AccountStatus.PENDING_DELETION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This account is scheduled for deletion. Cancel the deletion "
+                "in account settings before making changes."
+            ),
+        )
 
 
 def require_scope(scope: str) -> Callable:

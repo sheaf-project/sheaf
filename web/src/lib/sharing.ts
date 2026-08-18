@@ -100,6 +100,12 @@ export function createShareGrant(data: ShareGrantCreate) {
   return apiFetch<ShareGrantCreated>("/v1/share-grants", {
     method: "POST",
     body: JSON.stringify(data),
+    // Every way this fails is something the owner has to read and act on -
+    // system privacy still private, the 18+ confirmation, the grant cap, an
+    // existing public profile, a wrong re-auth password. The publish dialog
+    // stays open on failure and shows the reason in place, so a toast on top
+    // of it would be a second copy of the same message, in the wrong spot.
+    skipErrorToast: true,
   });
 }
 

@@ -54,6 +54,7 @@ from sheaf.services.import_content_dedup import (
     normalize_front_interval,
 )
 from sheaf.services.import_dedup import ImportConflictStrategy
+from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 
@@ -211,7 +212,18 @@ def build_member(
     if not plaintext_name:
         return None
     plaintext_name = clamp_str(plaintext_name, il.M_NAME, report=report)
-    plaintext_description = _clean_str(pk_m.get("description"))
+    # Description markdown arrives from another app, so strip any embed that
+    # points at this instance's storage. Those refs are re-signed into live
+    # capability URLs when the profile is read back (resolve_description_urls),
+    # so a hand-edited export carrying an embed under another user's avatar
+    # prefix would become a cross-tenant read of their uploads, and one
+    # that keeps working after the owner un-shares or deletes the file. A
+    # PluralKit export has no legitimate reason to reference Sheaf storage at
+    # all, so every internal ref goes; external images and the surrounding
+    # prose are left exactly as they were.
+    plaintext_description = strip_internal_image_refs_md_to_none(
+        _clean_str(pk_m.get("description"))
+    )
 
     pk_hid = _clean_str(pk_m.get("id"))
 
@@ -284,7 +296,10 @@ async def import_groups(
             id=uuid.uuid4(),
             system_id=system_id,
             name=name,
-            description=_clean_str(pk_g.get("description")),
+            # Same reason as the member description above.
+            description=strip_internal_image_refs_md_to_none(
+                _clean_str(pk_g.get("description"))
+            ),
             color=_normalize_color(pk_g.get("color")),
         )
         db.add(group)

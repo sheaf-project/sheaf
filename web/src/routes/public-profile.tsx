@@ -418,7 +418,7 @@ export function PublicProfileView({ source }: { source: Source }) {
           {openMember && (
             <>
               <DialogHeader className="sr-only">
-                <DialogTitle>{openMember.display_name || openMember.name}</DialogTitle>
+                <DialogTitle>{openMember.name}</DialogTitle>
               </DialogHeader>
               <MemberCardBody member={openMember} linkName={false} />
             </>
@@ -479,7 +479,7 @@ function LargeMemberList({
   const needle = query.trim().toLowerCase();
   const filtered = needle
     ? rest.filter((m) =>
-        [m.name, m.display_name, m.pronouns].some((v) =>
+        [m.name, m.pronouns].some((v) =>
           v ? v.toLowerCase().includes(needle) : false,
         ),
       )
@@ -566,7 +566,7 @@ function FrontingSection({ fronting }: { fronting: PublicFrontingView }) {
             <MemberChip
               key={m.id}
               id={m.id}
-              name={m.display_name || m.name}
+              name={m.name}
               avatarUrl={m.avatar_url}
               color={m.color}
             />
@@ -838,12 +838,12 @@ function MemberCardBody({
         <AvatarFallback
           style={member.color ? { backgroundColor: member.color, color: "#fff" } : undefined}
         >
-          {(member.display_name || member.name).charAt(0).toUpperCase()}
+          {member.name.charAt(0).toUpperCase()}
         </AvatarFallback>
       </Avatar>
       <span className="min-w-0">
         <span className="block truncate font-medium">
-          {member.display_name || member.name}
+          {member.name}
         </span>
         {member.pronouns && (
           <span className="block text-xs text-muted-foreground">{member.pronouns}</span>

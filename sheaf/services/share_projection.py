@@ -15,6 +15,12 @@ is never handed to `model_validate`, so nothing leaks by omission.
 Every image URL leaves here through the `*_public` resolvers in `sheaf.files`:
 an external image on this surface would make an anonymous visitor's browser
 fetch from an owner-chosen host, handing it their address for every page view.
+Those resolvers take the owning account's id and sign only keys from that
+account's namespace, so every function here threads an `owner_id` down to them.
+
+Payload identity is deliberately ONE name field. `_shown_name` decides what a
+visitor reads and nothing else reaches a schema, so a canonical name behind a
+display name never leaves the account.
 """
 
 from __future__ import annotations
@@ -24,12 +30,18 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
 
 from sheaf.files import resolve_avatar_url_public, resolve_description_urls_public
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
+from sheaf.models.pending_action import (
+    PendingAction,
+    PendingActionStatus,
+    PendingActionType,
+)
 from sheaf.models.relationship import MemberRelationship, RelationshipType
 from sheaf.models.share import (
     ShareItemStatus,
@@ -58,6 +70,39 @@ from sheaf.services.members import (
 from sheaf.services.relationships import endpoint_labels
 
 
+def _not_deletion_queued(
+    action_type: PendingActionType,
+    target_column: ColumnElement,
+    system_id: uuid.UUID,
+) -> ColumnElement[bool]:
+    """SQL predicate: no still-pending safeguarded delete is queued for this row.
+
+    Safeguarded deletion is a two-step act. The owner presses delete, a
+    `PendingAction` is written, and the row itself survives until the finalize
+    sweep runs at the end of the grace window - the window exists so the owner
+    can change their mind, not so the world gets a last look. Without this
+    predicate the public surface kept serving a member (or group, or field) for
+    the entire window after its owner asked for it to be gone, which is the
+    opposite of what "exposing waits, un-exposing is instant" promises: this is
+    an un-exposing act, so it lands NOW and the grace window applies only to
+    the destruction of the data.
+
+    Correlated rather than pre-fetched into an id set, for the reason every
+    other rule on this surface lives in the query: an id set computed by one
+    caller is an id set a second caller can forget to compute.
+    """
+    return ~(
+        select(PendingAction.id)
+        .where(
+            PendingAction.system_id == system_id,
+            PendingAction.action_type == action_type.value,
+            PendingAction.target_id == target_column,
+            PendingAction.status == PendingActionStatus.PENDING.value,
+        )
+        .exists()
+    )
+
+
 def _active_member_filter(stmt: Select, view: ShareView) -> Select:
     """Restrict a select to members this view actively exposes to the PUBLIC tier.
 
@@ -76,10 +121,28 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
       lands, this filter becomes audience-parameterised: a friends grant would
       admit `friends` as well as `public`.
 
+    - `archived_at IS NULL` - archiving is a reversible soft-hide, and it hides
+      the member from the owner's own roster, switcher and pickers. A member the
+      owner has put away is not one they are still publishing to strangers, so
+      the public surface honours it at the same instant the private one does.
+      Nothing is re-staged on the way back: archiving does not touch the
+      `ShareViewMember` row, so unarchiving returns the member to the profile
+      immediately rather than sending them back through the grace window. That
+      asymmetry is deliberate and is the same one that governs every flag here -
+      going dark is instant, and coming back is not a new exposure decision
+      because the owner never revoked the curation.
+    - no queued deletion - see `_not_deletion_queued`.
+
     The tenant predicate is redundant with the write paths, which refuse a
     member from another system at the point of adding. It is here anyway: this
     is the query that feeds anonymous readers, so it does not get to rely on
     every writer having been correct.
+
+    Because `_active_member_ids` composes out of this same filter, and both
+    `projectable_relationships` and `project_groups` gate on that id set, edges
+    and group rosters inherit every rule above without restating any of them.
+    An archived member therefore cannot survive as the endpoint of a published
+    edge or as a name in a group's roster.
     """
     return stmt.join(ShareViewMember, ShareViewMember.member_id == Member.id).where(
         ShareViewMember.view_id == view.id,
@@ -87,6 +150,10 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
         Member.system_id == view.system_id,
         Member.never_shareable.is_(False),
         Member.privacy == PrivacyLevel.PUBLIC,
+        Member.archived_at.is_(None),
+        _not_deletion_queued(
+            PendingActionType.MEMBER_DELETE, Member.id, view.system_id
+        ),
     )
 
 
@@ -142,6 +209,12 @@ async def _exposed_fields(
     one member's value for one field is what the member's own privacy level and
     simply not filling the field in are for.
 
+    A third guard joins them, on the same footing: a definition with a queued
+    safeguarded delete stops being served at once. Field deletion IS
+    safeguarded (`PendingActionType.FIELD_DELETE`, category `fields`), so the
+    row outlives the request that deleted it, and `_not_deletion_queued`
+    explains why the public surface must not.
+
     Tenant-pinned for the same reason as `_active_member_filter`: this query
     feeds anonymous readers, so it does not get to rely on every writer having
     been correct.
@@ -154,6 +227,11 @@ async def _exposed_fields(
             ShareViewField.status == ShareItemStatus.ACTIVE.value,
             CustomFieldDefinition.system_id == view.system_id,
             CustomFieldDefinition.privacy == PrivacyLevel.PUBLIC,
+            _not_deletion_queued(
+                PendingActionType.FIELD_DELETE,
+                CustomFieldDefinition.id,
+                view.system_id,
+            ),
         )
     )
     return {row[0]: row[1] for row in result}
@@ -216,7 +294,18 @@ def _member_view(
     include_bio: bool,
     field_names: dict[uuid.UUID, str],
     values: list[CustomFieldValue],
+    owner_id: uuid.UUID,
 ) -> PublicMemberView:
+    """One member card, carrying exactly one name.
+
+    `name` is `_shown_name` - the display name when there is one, the decrypted
+    name only as a fallback. The payload used to carry both, which meant a
+    member who had set a display name specifically so strangers would not read
+    their canonical name had that canonical name sitting in the JSON anyway,
+    one field along, for any scraper that asked. A display name is a request
+    not to be called something else; publishing the something else next to it
+    makes the request decorative.
+    """
     fields: dict[str, object] = {}
     for v in values:
         name = field_names.get(v.field_id)
@@ -227,14 +316,15 @@ def _member_view(
             fields[name] = field_value_plaintext(v)
     return PublicMemberView(
         id=str(m.id),
-        name=member_name_plaintext(m),
-        display_name=m.display_name,
+        name=_shown_name(m),
         pronouns=m.pronouns,
-        avatar_url=resolve_avatar_url_public(m.avatar_url),
-        banner_url=resolve_avatar_url_public(m.banner_url),
+        avatar_url=resolve_avatar_url_public(m.avatar_url, owner_id),
+        banner_url=resolve_avatar_url_public(m.banner_url, owner_id),
         color=m.color,
         bio=(
-            resolve_description_urls_public(member_description_plaintext(m))
+            resolve_description_urls_public(
+                member_description_plaintext(m), owner_id
+            )
             if include_bio
             else None
         ),
@@ -243,7 +333,11 @@ def _member_view(
 
 
 async def project_members(
-    db: AsyncSession, view: ShareView, *, only_id: uuid.UUID | None = None
+    db: AsyncSession,
+    view: ShareView,
+    *,
+    owner_id: uuid.UUID,
+    only_id: uuid.UUID | None = None,
 ) -> list[PublicMemberView]:
     """The member cards this view serves, in display order.
 
@@ -275,6 +369,7 @@ async def project_members(
             include_bio=view.include_bio,
             field_names=field_names,
             values=values_by_member.get(m.id, []),
+            owner_id=owner_id,
         )
         for m in members
     ]
@@ -412,7 +507,11 @@ async def projectable_groups(
       layer 404s the endpoint outright rather than serving an empty list, so
       "does this profile show groups?" is not separately probeable);
     - `privacy == public` on the GROUP itself - private (the default) and
-      friends-level groups never leave the owner's account.
+      friends-level groups never leave the owner's account;
+    - no queued safeguarded delete. Group deletion IS safeguarded
+      (`PendingActionType.GROUP_DELETE`, category `groups`), so the row
+      outlives the request that deleted it; `_not_deletion_queued` explains why
+      the public surface must not keep serving it in the meantime.
 
     There is deliberately no per-view group allowlist and no third gate on who
     is IN the group. A group's published payload is what the owner wrote about
@@ -430,12 +529,17 @@ async def projectable_groups(
         select(Group).where(
             Group.system_id == view.system_id,
             Group.privacy == PrivacyLevel.PUBLIC,
+            _not_deletion_queued(
+                PendingActionType.GROUP_DELETE, Group.id, view.system_id
+            ),
         )
     )
     return list(result.scalars().unique().all())
 
 
-async def project_groups(db: AsyncSession, view: ShareView) -> PublicGroupsView:
+async def project_groups(
+    db: AsyncSession, view: ShareView, *, owner_id: uuid.UUID
+) -> PublicGroupsView:
     """Published groups, each with the part of its roster this view shows."""
     groups = await projectable_groups(db, view)
     if not groups:
@@ -469,13 +573,20 @@ async def project_groups(db: AsyncSession, view: ShareView) -> PublicGroupsView:
             PublicGroupView(
                 id=str(group.id),
                 name=group.name,
-                # Group descriptions are markdown and can carry image refs (the
-                # importer rewrites internal ones in them), so they take the
-                # same public resolve pass as a system description or a member
-                # bio: internal refs get signed same-origin URLs and external
-                # ones are hidden, because an anonymous visitor's browser must
-                # never be sent to an owner-chosen host.
-                description=resolve_description_urls_public(group.description),
+                # Group descriptions are markdown and can carry image refs, so
+                # they take the same public resolve pass as a system
+                # description or a member bio: internal refs get signed
+                # same-origin URLs and external ones are hidden, because an
+                # anonymous visitor's browser must never be sent to an
+                # owner-chosen host. The `owner_id` matters most here of
+                # anywhere - a group description is the one markdown field the
+                # group write API never ran an ownership pass over, so this is
+                # the guard that stops a foreign storage key stored by an old
+                # write or a foreign importer from being signed into a live
+                # cross-tenant capability.
+                description=resolve_description_urls_public(
+                    group.description, owner_id
+                ),
                 color=group.color,
                 members=[
                     PublicGroupMember(id=str(m.id), name=_shown_name(m))
@@ -505,9 +616,12 @@ async def project_system(
         name=system.name,
         # Rendered as markdown on the public page, same as a member bio - and
         # the resolve pass is also what signs an internal image ref here, which
-        # the raw column value never was.
-        description=resolve_description_urls_public(system.description),
-        avatar_url=resolve_avatar_url_public(system.avatar_url),
+        # the raw column value never was. `system.user_id` IS the owning
+        # account, so it is what the signer checks the keys against.
+        description=resolve_description_urls_public(
+            system.description, system.user_id
+        ),
+        avatar_url=resolve_avatar_url_public(system.avatar_url, system.user_id),
         color=system.color,
         tag=system.tag,
         member_count=member_count,
@@ -526,6 +640,16 @@ async def project_fronting(
     excluded from the count too: their front state must not propagate at all,
     so even "someone is fronting" would be a leak.
 
+    Archived and deletion-queued members are excluded IN THE QUERY below rather
+    than left to the in-view check, and that is load-bearing. This is the one
+    surface that walks open fronts on its own instead of composing out of
+    `_active_member_filter`, so the rule has to be restated here or a member
+    the owner archived (or asked to delete) would keep announcing their
+    presence - and if they happened to fall outside the view, they would do it
+    as an anonymous `hidden_count` increment, which is exactly the "someone is
+    fronting" leak the never-shareable exclusion exists to prevent. Excluded
+    from the naming AND the count, for that reason.
+
     Deliberately NOT gated on `include_members`, unlike the roster, the group
     rosters and the relationship edges. Fronting is its own surface with its
     own flag, its own deliberately-reduced card, and its own reason to be on -
@@ -542,7 +666,14 @@ async def project_fronting(
         select(Member, Front.started_at)
         .join(front_members, front_members.c.member_id == Member.id)
         .join(Front, Front.id == front_members.c.front_id)
-        .where(Front.system_id == system.id, Front.ended_at.is_(None))
+        .where(
+            Front.system_id == system.id,
+            Front.ended_at.is_(None),
+            Member.archived_at.is_(None),
+            _not_deletion_queued(
+                PendingActionType.MEMBER_DELETE, Member.id, system.id
+            ),
+        )
     )
     # A member could be in more than one open front (co-front chains); keep the
     # earliest start as "fronting since".
@@ -568,10 +699,15 @@ async def project_fronting(
             named.append(
                 PublicFrontingMember(
                     id=str(member.id),
-                    name=member_name_plaintext(member),
-                    display_name=member.display_name,
+                    # One name, the shown one - same rule and same reasoning as
+                    # `_member_view`. This surface is polled repeatedly, so a
+                    # canonical name here is the one a scraper would collect
+                    # most cheaply of all.
+                    name=_shown_name(member),
                     pronouns=member.pronouns,
-                    avatar_url=resolve_avatar_url_public(member.avatar_url),
+                    avatar_url=resolve_avatar_url_public(
+                        member.avatar_url, system.user_id
+                    ),
                     color=member.color,
                     since=started.isoformat() if started is not None else None,
                 )
@@ -579,7 +715,7 @@ async def project_fronting(
         else:
             hidden += 1
 
-    named.sort(key=lambda pm: (pm.display_name or pm.name or "").casefold())
+    named.sort(key=lambda pm: pm.name.casefold())
     return PublicFrontingView(
         members=named,
         hidden_count=hidden if view.fronting_show_count else 0,

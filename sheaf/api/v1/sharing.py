@@ -25,7 +25,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.auth.dependencies import (
+    block_pending_deletion,
+    get_current_user,
+    require_scope,
+)
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition
@@ -70,6 +74,7 @@ from sheaf.services.sharing import (
     is_exposure_safeguarded,
     revoke_grant,
     rotate_grant_token,
+    suppression_reason,
     view_is_shared,
 )
 from sheaf.services.system_safety import verify_destructive_auth
@@ -247,6 +252,7 @@ async def create_share_view(
     Creating a view exposes nothing on its own (no grant points at it yet), so
     this is deliberately ungated. The gate is on publishing.
     """
+    block_pending_deletion(user)
     system = await _get_user_system(user, db)
 
     existing = (
@@ -340,6 +346,12 @@ async def update_share_view(
         for flag, value in requested.items()
         if value is True and not getattr(view, flag)
     }
+    # Only the loosening direction is refused for an account on its way out.
+    # Turning a flag OFF has to stay available to the very last minute: it is
+    # the un-exposing direction, and nothing - not the safety system, not this
+    # check - is allowed to stand between somebody and going dark.
+    if loosening:
+        block_pending_deletion(user)
     deferred = bool(loosening) and shared and is_exposure_safeguarded(system)
     await _reauth_if_deferred(
         db=db,
@@ -425,6 +437,7 @@ async def add_view_member(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
+    block_pending_deletion(user)
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db)
 
@@ -503,6 +516,7 @@ async def add_view_group(
     are NOT pulled in automatically, because that would publish someone with
     no deliberate step and no grace window. Re-post to re-sync.
     """
+    block_pending_deletion(user)
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db)
 
@@ -607,6 +621,7 @@ async def add_view_field(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
+    block_pending_deletion(user)
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db)
 
@@ -701,7 +716,13 @@ async def create_share_grant(
     system has armed the profile_visibility safety category, on re-auth plus
     the grace window - the grant lands pending and the finalize job makes it
     live. For a link grant the raw token is in the response and nowhere else.
+
+    Refused outright while the account is scheduled for deletion. A grant
+    minted in that window points at data the deletion sweep is going to remove
+    under it, and its owner has already said they will not be here to manage
+    it. Revoking and rotating stay open - going dark is never blocked.
     """
+    block_pending_deletion(user)
     system = await _get_user_system(user, db)
     view = await _get_view(body.view_id, system, db)
 
@@ -822,6 +843,13 @@ async def sharing_audit(
     though it now exposes nothing - the owner set that expiry and should see
     that it lapsed rather than watch the entry vanish; `expires_at` is on every
     entry and the client labels it.
+
+    `profile_suppressed` sits above the entries and answers the question they
+    cannot: whether anything below is actually reaching anybody. A suppressed
+    account keeps every grant and every count exactly as it was - suppression
+    does not revoke - so without this field the audit would confidently describe
+    an exposure that is currently 404ing, which is the one way an audit can be
+    worse than none at all.
     """
     system = await _get_user_system(user, db)
     result = await db.execute(
@@ -882,4 +910,7 @@ async def sharing_audit(
                 group_count=len(groups),
             )
         )
-    return ShareAudit(entries=entries)
+    return ShareAudit(
+        entries=entries,
+        profile_suppressed=suppression_reason(system, user),
+    )

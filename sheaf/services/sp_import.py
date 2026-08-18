@@ -64,6 +64,7 @@ from sheaf.services.import_dedup import (
     privacy_hold_warning,
     resolve_member,
 )
+from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
@@ -414,8 +415,18 @@ async def run_import(
         )
         if sp_name and not system.name:
             system.name = clamp_str(sp_name, il.SYS_NAME, report=report)
-        sp_desc = _coerce_str(sp_user.get("desc")) or _coerce_str(
-            sp_settings.get("desc")
+        # Every description in a SimplyPlural export is markdown written in
+        # another app, so it goes through the internal-image strip before it
+        # is stored. Refs to this instance's storage (/v1/files/..., the CDN
+        # host, or a bare key) are re-signed into live capability URLs when
+        # the profile is read back, so a crafted export could embed another
+        # account's upload key and read that file through the importer's own
+        # profile, long after the owner deleted or un-shared it. Nothing in a
+        # SimplyPlural file can legitimately point at Sheaf storage, so all
+        # internal refs are dropped and external images plus the surrounding
+        # prose survive unchanged.
+        sp_desc = strip_internal_image_refs_md_to_none(
+            _coerce_str(sp_user.get("desc")) or _coerce_str(sp_settings.get("desc"))
         )
         if sp_desc:
             system.description = sp_desc
@@ -445,7 +456,10 @@ async def run_import(
         )
         if sp_id:
             sp_id_to_name[sp_id] = plaintext_name
-        plaintext_description = _coerce_str(sp_m.get("desc"))
+        # Same reason as the system description above.
+        plaintext_description = strip_internal_image_refs_md_to_none(
+            _coerce_str(sp_m.get("desc"))
+        )
         member_id = uuid.uuid4()
         member = Member(
             id=member_id,
@@ -487,7 +501,10 @@ async def run_import(
             )
             if sp_id:
                 sp_id_to_name[sp_id] = plaintext_cf_name
-            plaintext_cf_description = _coerce_str(sp_cf.get("desc"))
+            # Same reason as the system description above.
+            plaintext_cf_description = strip_internal_image_refs_md_to_none(
+                _coerce_str(sp_cf.get("desc"))
+            )
             member_id = uuid.uuid4()
             member = Member(
                 id=member_id,
@@ -700,7 +717,12 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
-                description=sp_g.get("desc"),
+                # Same reason as the system description above. The _coerce_str
+                # matches `name` just above it: without it a non-string `desc`
+                # (a dict, a number, a list) would reach a Text column as-is.
+                description=strip_internal_image_refs_md_to_none(
+                    _coerce_str(sp_g.get("desc"))
+                ),
                 color=_normalize_color(sp_g.get("color")),
             )
             db.add(group)
