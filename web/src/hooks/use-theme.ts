@@ -38,6 +38,10 @@ import {
  * the backend has a different value, a one-time visual switch happens
  * after the initial paint. Acceptable for the rare case (fresh browser
  * on an already-synced account).
+ *
+ * The "app defaults" tier is not one value: it is dark in the app and
+ * "system" on the public profile / share-link pages. See `defaultMode`
+ * below, and keep it in step with the pre-paint script.
  */
 
 // ---------------------------------------------------------------------------
@@ -57,6 +61,29 @@ function prefersDarkMQ(): MediaQueryList | null {
     _prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
   }
   return _prefersDark;
+}
+
+/** True on the pages a visitor with no account can reach: public
+ *  profiles (`/p/...`), share links (`/s/...`), and their per-member
+ *  subroutes. Deliberately a dumb prefix check - it is mirrored
+ *  verbatim by the pre-paint script in index.html, which has no build
+ *  step and no imports, and the two must not be able to disagree. */
+function onPublicPage(): boolean {
+  if (typeof location === "undefined") return false;
+  const path = location.pathname;
+  return path.startsWith("/p/") || path.startsWith("/s/");
+}
+
+/** The mode to use when nobody has expressed a preference: nothing in
+ *  localStorage and nothing on the account.
+ *
+ *  Dark in the app, which is what Sheaf has always looked like on first
+ *  run and on the login page. "system" on the public pages, because a
+ *  visitor there never picked how Sheaf looks and may not know what
+ *  Sheaf is - their browser's light/dark preference is the better
+ *  guess than ours. A stored pick still wins in both places. */
+function defaultMode(): ThemeMode {
+  return onPublicPage() ? "system" : "dark";
 }
 
 function resolveEffective(mode: ThemeMode): "light" | "dark" {
@@ -202,7 +229,28 @@ export interface UseThemeResult {
   toggleEffective: () => void;
 }
 
-export function useTheme(): UseThemeResult {
+export interface UseThemeOptions {
+  /**
+   * Never write the theme to the account: every change goes to
+   * localStorage on this browser, and the account's synced value is
+   * left exactly as it is.
+   *
+   * Set by the theme control on the public profile pages, which are
+   * reachable with no account at all. A pick made there is a pick about
+   * this browser, so it must not fire a request - and for a visitor
+   * with no session there is nothing to fire it at.
+   *
+   * This governs writes only. The read is unchanged and already gated
+   * on there being a session at all, so an anonymous visitor makes no
+   * request either way; a signed-in one is fetching the same shared
+   * query for the rest of the page regardless, and turning it off here
+   * would only make this hook disagree with the copy of it rendering
+   * the logo beside it.
+   */
+  localOnly?: boolean;
+}
+
+export function useTheme({ localOnly = false }: UseThemeOptions = {}): UseThemeResult {
   const queryClient = useQueryClient();
   const storedMode = useSyncExternalStore(
     subscribeMode,
@@ -232,16 +280,19 @@ export function useTheme(): UseThemeResult {
     : null;
 
   // Resolution: localStorage > backend > defaults. Default mode is
-  // "dark" (matches what the app shipped with before this feature);
-  // default palette is "classic" (also matches the existing look).
-  const mode: ThemeMode = storedMode ?? backendMode ?? "dark";
+  // "dark" in the app and "system" on the public pages (see
+  // `defaultMode`); default palette is "classic" (matches the look the
+  // app shipped with before this feature).
+  const mode: ThemeMode = storedMode ?? backendMode ?? defaultMode();
   const palette: PaletteId =
     storedPalette ?? backendPalette ?? DEFAULT_PALETTE;
   // synced reflects which tier the active values came from. If the
   // user has any localStorage override, we report not-synced even
-  // when the backend happens to hold the same value — so the
-  // toggle's displayed state matches actual storage.
-  const synced = storedMode === null && storedPalette === null;
+  // when the backend happens to hold the same value, so the toggle's
+  // displayed state matches actual storage. localOnly is not-synced by
+  // definition: it is the mode that never writes to the account.
+  const synced =
+    !localOnly && storedMode === null && storedPalette === null;
 
   const effectiveMode = resolveEffective(mode);
 
@@ -296,6 +347,9 @@ export function useTheme(): UseThemeResult {
 
   const setSynced = useCallback(
     (next: boolean) => {
+      // Nothing on a localOnly surface offers this, and honouring it
+      // there would be the one thing localOnly exists to prevent.
+      if (localOnly) return;
       if (next === synced) return;
       if (next) {
         // Going synced: promote current effective values to the
@@ -314,7 +368,7 @@ export function useTheme(): UseThemeResult {
         writeLocalPalette(palette);
       }
     },
-    [synced, mode, palette, queryClient],
+    [localOnly, synced, mode, palette, queryClient],
   );
 
   const toggleEffective = useCallback(() => {

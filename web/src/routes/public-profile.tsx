@@ -35,6 +35,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ColorDot } from "@/components/color-dot";
 import { Logo } from "@/components/logo";
 import { RelationshipGraphCanvas } from "@/components/relationship-graph";
+import { ThemeModeToggle } from "@/components/theme-mode-toggle";
 import { ApiError } from "@/lib/api-error";
 import { getAuthConfig } from "@/lib/auth";
 import { isPublicImageAllowed } from "@/lib/image-sources";
@@ -153,6 +154,36 @@ function MemberOpen({
     <button type="button" onClick={() => nav.open(id)} className={cn(className, interactive)}>
       {children}
     </button>
+  );
+}
+
+/**
+ * The thin strip at the top of a public page: whatever that page has to say on
+ * the left or in the middle, and the light/dark control on the right.
+ *
+ * The control is the same one the sidebar and the login page carry, so a
+ * visitor gets exactly the three options the Appearance settings offer (light,
+ * dark, follow my browser) and a returning user of this instance arrives with
+ * the pick they already made. The one difference is `localOnly`: these pages
+ * are reachable with no account at all, so a pick made here is saved on this
+ * browser and never sent anywhere.
+ */
+function PublicPageHeader({
+  centered = false,
+  children,
+}: {
+  /** Add a spacer the width of the toggle on the left, so centred content
+   *  stays centred on the page rather than being shoved off by the button
+   *  sitting beside it. */
+  centered?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      {centered && <span className="h-8 w-8 shrink-0" aria-hidden="true" />}
+      {children}
+      <ThemeModeToggle localOnly className="shrink-0 text-muted-foreground" />
+    </div>
   );
 }
 
@@ -289,11 +320,13 @@ export function PublicProfileView({ source }: { source: Source }) {
         {/* Accent strip in the system's colour, for identity. */}
         <div className="h-2 w-full" style={accent ? { backgroundColor: accent } : undefined} />
         <div className="mx-auto w-full max-w-2xl px-4 py-8 space-y-6">
-          <div className="text-center text-xs text-muted-foreground">
-            {source.kind === "link"
-              ? "You're viewing a shared profile."
-              : "You're viewing a public profile."}
-          </div>
+          <PublicPageHeader centered>
+            <p className="min-w-0 flex-1 text-center text-xs text-muted-foreground">
+              {source.kind === "link"
+                ? "You're viewing a shared profile."
+                : "You're viewing a public profile."}
+            </p>
+          </PublicPageHeader>
 
           <div className="flex flex-col items-center gap-3 text-center">
             <Avatar className="size-20">
@@ -995,13 +1028,15 @@ function PublicMemberPageView({
     <div className="min-h-screen bg-muted/20">
       <div className="h-2 w-full" style={accent ? { backgroundColor: accent } : undefined} />
       <div className="mx-auto w-full max-w-2xl px-4 py-8 space-y-6">
-        <Link
-          to={profilePath(source)}
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          {sys ? `Back to ${sys.name}` : "Back to the profile"}
-        </Link>
+        <PublicPageHeader>
+          <Link
+            to={profilePath(source)}
+            className="inline-flex min-w-0 items-center gap-1.5 truncate text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="h-4 w-4 shrink-0" />
+            {sys ? `Back to ${sys.name}` : "Back to the profile"}
+          </Link>
+        </PublicPageHeader>
 
         <Card className="overflow-hidden">
           <MemberCardBody member={member.data} linkName={false} />
