@@ -101,10 +101,10 @@ class FrontRead(BaseModel):
     # back for open fronts on /v1/fronts/current; closed fronts (history)
     # always carry the literal value.
     member_since: dict[str, datetime] = {}
-    # Members whose walk-back hit the safety depth cap. The corresponding
-    # `member_since` entry is a lower bound, not the true chain start.
-    # UIs should render these with a "> X ago" prefix. Empty in the
-    # overwhelming majority of cases — chains are typically 1-3 entries.
+    # Retained for API compatibility; always empty since the coalesce
+    # walk-back became a set-based query with no depth cap. Historically
+    # listed members whose recursive walk-back hit the safety depth cap
+    # (their `member_since` was a lower bound, rendered as "> X ago").
     member_since_capped: list[str] = []
     # True iff at least one FrontAuditEvent row exists for this front.
     # Lets the UI grey out the history button on entries that have never

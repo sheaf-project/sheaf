@@ -87,10 +87,11 @@ def _front_to_read(
     member — the literal-entry view used by history endpoints and any
     caller that doesn't want to pay for the walk-back.
 
-    `member_since_capped` lists member ids whose chain hit the
-    walk-back depth limit; the returned timestamp is a lower bound,
-    not the true chain start. Frontends should render those with a
-    "> X ago" prefix to be honest about precision.
+    `member_since_capped` is retained for API compatibility: the old
+    recursive walk-back could hit a depth limit and flag members whose
+    timestamp was only a lower bound. The set-based coalesce query has
+    no such cap, so this is now always empty; frontends that render a
+    "> X ago" prefix for flagged members simply never see one.
 
     `has_audit_history` reflects whether at least one FrontAuditEvent
     exists for this entry. Computed once per list call via a batch
@@ -141,49 +142,78 @@ async def _front_has_audit(db: AsyncSession, front_id: uuid.UUID) -> bool:
     return result.scalar_one_or_none() is not None
 
 
-# Walk-back depth cap: pathological cycles aside, real chains are
-# typically 1-3 entries. 500 is a generous bound that prevents a
-# corrupted-data edge case from running unbounded queries while still
-# covering anyone who switches every few minutes for many hours.
-# When the cap *is* hit, the response flags the affected member so the
-# UI can render "> X ago" instead of silently under-reporting. Easy to
-# raise later if the flag actually starts surfacing in real usage.
-_COALESCE_MAX_DEPTH = 500
-
-
-# Recursive CTE that walks every (seed_front, member) chain in
-# parallel. Replaces what was previously a per-(front, member) loop of
-# awaited single-row queries — fine for one open front with two
-# members on a brand-new system, ruinous for /current on a busy
-# system with coalesce_contiguous_fronts on. The CTE is bounded by
-# `_COALESCE_MAX_DEPTH` so a corrupted-data cycle can't run forever,
-# and we surface the cap-hit per member the same way the old code did.
+# Set-based gaps-and-islands "coalesce contiguous fronting" query.
+#
+# This replaced a recursive CTE that walked prev.ended_at == started_at
+# chains with UNION ALL. That formulation enumerates PATHS, not states:
+# on an imported history whose switch boundaries share timestamps
+# (PluralKit exports are second-rounded, so thousands collide), every
+# recursive step matches multiple predecessors and the intermediate set
+# grows multiplicatively per level. A depth cap bounds depth, not width.
+# On 2026-08-13 a genuine ~14k-front imported history detonated it into
+# ~19 GB of Postgres query temp, filling the data volume (see the
+# front-coalesce-query-scaling design doc). Path count is combinatorial;
+# table size is irrelevant.
+#
+# The rewrite computes each member's contiguous runs ("islands") in one
+# sorted window pass: a run breaks only where every earlier front's
+# reach (running MAX of ended_at, with an open front reaching infinity)
+# ends strictly before the next started_at. Cost is one sort of the
+# member's own fronts - O(n log n), no recursion, no width explosion.
+#
+# Contiguity is interval-merge: exact touches (ended_at == started_at)
+# chain exactly as before, and OVERLAPPING fronts for the same member -
+# the very shape that made the recursion branch - merge into one run.
+# Chain-reachability is a strict subset of interval-merge, so results
+# are identical wherever fronts don't overlap (all live-written data);
+# where they do, the merged run extends "since" through the overlap,
+# which is the correct reading of an unbroken fronting stretch.
 _COALESCED_SINCE_SQL = text(
     """
-    WITH RECURSIVE chain(seed_front_id, member_id, started_at, depth) AS (
-        SELECT f.id, fm.member_id, f.started_at, 0
+    WITH member_fronts AS (
+        SELECT fm.member_id,
+               f.id AS front_id,
+               f.started_at,
+               COALESCE(f.ended_at, 'infinity'::timestamptz) AS reach
         FROM fronts f
         JOIN front_members fm ON fm.front_id = f.id
-        WHERE f.id IN :seed_ids
-
-        UNION ALL
-
-        SELECT chain.seed_front_id, chain.member_id, prev.started_at,
-               chain.depth + 1
-        FROM chain
-        JOIN fronts prev
-            ON prev.system_id = :system_id
-            AND prev.ended_at = chain.started_at
-        JOIN front_members fm
-            ON fm.front_id = prev.id
-            AND fm.member_id = chain.member_id
-        WHERE chain.depth < :max_depth
+        WHERE f.system_id = :system_id
+          AND fm.member_id IN (
+              SELECT seed_fm.member_id
+              FROM front_members seed_fm
+              WHERE seed_fm.front_id IN :seed_ids
+          )
+    ),
+    runs AS (
+        SELECT member_id, front_id, started_at, reach,
+               MAX(reach) OVER (
+                   PARTITION BY member_id
+                   ORDER BY started_at, reach, front_id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+               ) AS prev_reach
+        FROM member_fronts
+    ),
+    islands AS (
+        SELECT member_id, front_id, started_at,
+               SUM(CASE WHEN prev_reach IS NULL OR prev_reach < started_at
+                        THEN 1 ELSE 0 END)
+                   OVER (PARTITION BY member_id
+                         ORDER BY started_at, reach, front_id) AS island
+        FROM runs
+    ),
+    island_starts AS (
+        SELECT member_id, island, MIN(started_at) AS run_start
+        FROM islands
+        GROUP BY member_id, island
     )
-    SELECT seed_front_id, member_id,
-           MIN(started_at) AS earliest_started,
-           MAX(depth) AS deepest
-    FROM chain
-    GROUP BY seed_front_id, member_id
+    SELECT i.front_id AS seed_front_id,
+           i.member_id,
+           s.run_start AS earliest_started
+    FROM islands i
+    JOIN island_starts s
+        ON s.member_id = i.member_id
+        AND s.island = i.island
+    WHERE i.front_id IN :seed_ids
     """
 ).bindparams(bindparam("seed_ids", expanding=True))
 
@@ -194,8 +224,14 @@ async def _build_coalesced_member_since(
     """For each given front, build (since_map, capped_member_ids).
 
     When `system.coalesce_contiguous_fronts` is False, returns the
-    literal-entry view for each member with no capped members.
-    Otherwise walks back per member to find the earliest chain start.
+    literal-entry view for each member with no capped members. Otherwise
+    resolves each member's contiguous-run start via the gaps-and-islands
+    query above.
+
+    `capped_member_ids` is always empty now: the set-based query has no
+    depth cap to hit (the old recursive walk-back did). The tuple shape
+    is kept so the schema field `member_since_capped` stays present for
+    API compatibility; it simply never flags anyone.
     """
     out: dict[uuid.UUID, tuple[dict[str, datetime], list[str]]] = {}
     if not fronts:
@@ -220,18 +256,12 @@ async def _build_coalesced_member_since(
         {
             "seed_ids": [f.id for f in fronts],
             "system_id": system.id,
-            "max_depth": _COALESCE_MAX_DEPTH,
         },
     )
 
-    for seed_id, member_id, earliest, deepest in rows:
-        per_member, capped = out[seed_id]
+    for seed_id, member_id, earliest in rows:
+        per_member, _capped = out[seed_id]
         per_member[str(member_id)] = earliest
-        # depth==max_depth means the recursive step ran the last
-        # allowed iteration and may not have found the true chain
-        # start. Same semantics as the prior per-walk cap flag.
-        if deepest is not None and deepest >= _COALESCE_MAX_DEPTH:
-            capped.append(str(member_id))
 
     return out
 
