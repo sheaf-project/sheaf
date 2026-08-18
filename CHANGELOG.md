@@ -6,6 +6,11 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Fronting since" no longer melts the database on a large imported history.** With coalesce-contiguous-fronts enabled, the walk that computes how far back a member's unbroken fronting run extends used a recursive query that, on an imported history whose switch boundaries share timestamps (PluralKit exports round to the second, so thousands do), could enumerate hundreds of millions of intermediate rows and spill tens of gigabytes into database temporary storage - one system's genuine imported history briefly took the whole database down this way. The walk is now a single sorted pass over the member's own front entries, with cost proportional to their history size, and returns the same answers. One deliberate refinement: fronts that *overlap* for the same member now count as one continuous run (previously the run only chained when one entry ended at the exact instant the next began), so a member fronting continuously across overlapping entries gets the earlier, correct "since". As a consequence the walk-back depth cap is gone; `member_since_capped` remains in the API for compatibility but is now always empty.
+- **The realtime front-change stream's database queries are now time-capped like every other request.** The stream endpoint builds its snapshots in self-managed database sessions, which silently missed the per-request statement timeout - so a pathological query from the stream path could run unboundedly (this is how the incident above kept filling the disk for 13 minutes after the same query on the normal endpoint had been cancelled at 30 seconds). Those sessions now carry the same timeout, and the cap is re-applied on every transaction, closing a second quiet gap where a mid-request commit dropped the timeout for the remainder of that request.
+
 ## [1.3.5] - 2026-08-09
 
 ### Security
