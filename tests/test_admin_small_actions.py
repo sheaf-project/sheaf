@@ -442,3 +442,119 @@ def test_rate_limit_history_does_not_log(
         f"/v1/admin/audit-events?target_user_id={me['id']}"
     ).json()
     assert len(after) == len(before)
+
+
+# ---------------------------------------------------------------------------
+# Revoke every share grant on a system (abuse-report takedown)
+# ---------------------------------------------------------------------------
+
+
+def _publish(client: httpx.Client) -> tuple[str, str]:
+    """Publish a public profile and a share link. Returns (system_id, view_id).
+
+    System privacy has to go public first: it is the master ceiling over the
+    whole public surface, and creating a grant under it is refused otherwise.
+    """
+    client.patch("/v1/systems/me", json={"privacy": "public"})
+    client.post("/v1/auth/me/attest-adult")
+    view = client.post(
+        "/v1/share-views", json={"name": f"TD-{uuid.uuid4().hex[:6]}"}
+    ).json()["id"]
+    for subject in ("public", "link"):
+        r = client.post(
+            "/v1/share-grants", json={"view_id": view, "subject_type": subject}
+        )
+        assert r.status_code == 201, r.text
+    return client.get("/v1/systems/me").json()["id"], view
+
+
+def test_revoke_all_share_grants_kills_every_grant(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+
+    resp = admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "abuse report 1234"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["revoked_count"] == 2
+
+    # The owner sees them as revoked rather than vanished: a takedown they can
+    # read is the whole point, and it is what tells them not to keep debugging
+    # a page that will never come back on its own.
+    grants = auth_client.get("/v1/share-grants").json()
+    assert grants, "grants must survive as revoked rows"
+    assert all(g["revoked_at"] is not None for g in grants)
+    assert all(g["status"] == "revoked" for g in grants)
+
+
+def test_revoke_all_share_grants_is_audited(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    me = auth_client.get("/v1/auth/me").json()
+    system_id, _ = _publish(auth_client)
+
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "abuse report 5678"},
+    )
+
+    events = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={me['id']}"
+    ).json()
+    row = next(
+        e for e in events if e["action"] == "system_share_grants_revoke_all"
+    )
+    assert row["target_type"] == "system"
+    assert row["target_id"] == system_id
+    assert row["reason"] == "abuse report 5678"
+
+
+def test_revoke_all_share_grants_is_idempotent_and_still_audited(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    """A second run reports zero, and an operator's attempt is recorded even
+    when there was nothing left to take down - an admin action nobody can see
+    happening is an admin action nobody can review."""
+    me = auth_client.get("/v1/auth/me").json()
+    system_id, _ = _publish(auth_client)
+
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "first pass"},
+    )
+    second = admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "second pass"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["revoked_count"] == 0
+
+    events = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={me['id']}"
+    ).json()
+    reasons = [
+        e["reason"]
+        for e in events
+        if e["action"] == "system_share_grants_revoke_all"
+    ]
+    assert "first pass" in reasons and "second pass" in reasons
+
+
+def test_revoke_all_share_grants_unknown_system_404s(admin_client: httpx.Client):
+    resp = admin_client.post(
+        f"/v1/admin/systems/{uuid.uuid4()}/share-grants/revoke-all",
+        json={"reason": "typo"},
+    )
+    assert resp.status_code == 404
+
+
+def test_revoke_all_share_grants_requires_a_reason(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    resp = admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all", json={}
+    )
+    assert resp.status_code == 422

@@ -1168,6 +1168,13 @@ def _arm_visibility_safety(client: httpx.Client) -> None:
     assert resp.status_code == 200, resp.text
 
 
+def _go_public(client: httpx.Client) -> None:
+    """System privacy is the master ceiling over the public surface, so a system
+    has to be public before it can publish anything at all."""
+    resp = client.patch("/v1/systems/me", json={"privacy": "public"})
+    assert resp.status_code == 200, resp.text
+
+
 def _raise_to_public(member_id: str) -> bytes:
     """The base export with ReAlice flipped to public and re-pronouned."""
     export = json.loads(json.dumps(_SHEAF_EXPORT))
@@ -1189,6 +1196,7 @@ def test_sheaf_runner_update_will_not_publish_a_shared_member(
 
     # Put her in a view a live grant points at, THEN arm the safety net, so
     # the exposure is already in place when the import runs.
+    _go_public(auth_client)
     assert auth_client.post("/v1/auth/me/attest-adult").status_code == 200
     view = auth_client.post("/v1/share-views", json={"name": "Shared"})
     assert view.status_code == 201, view.text
@@ -1263,6 +1271,7 @@ def test_sheaf_runner_update_never_gates_lowering_privacy(
         ).status_code
         == 200
     )
+    _go_public(auth_client)
     assert auth_client.post("/v1/auth/me/attest-adult").status_code == 200
     vid = auth_client.post("/v1/share-views", json={"name": "Shared"}).json()["id"]
     assert (

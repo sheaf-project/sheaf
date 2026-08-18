@@ -68,6 +68,13 @@ def _anon() -> httpx.Client:
     return httpx.Client(base_url=BASE_URL)
 
 
+def _go_public(c: httpx.Client) -> None:
+    """System privacy is the master ceiling over the public surface, so a system
+    has to be public before it can publish anything at all."""
+    r = c.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+
+
 def _published_system(
     c: httpx.Client,
     *,
@@ -82,6 +89,7 @@ def _published_system(
 ) -> tuple[str, str]:
     """Create a view with the given members, publish it publicly, and return
     (system_id, view_id)."""
+    _go_public(c)
     c.post("/v1/auth/me/attest-adult")
     view = c.post(
         "/v1/share-views",
@@ -189,6 +197,7 @@ def _set_never_shareable(member_id: str) -> None:
 
 
 def _link_token(c: httpx.Client, view_id: str) -> str:
+    _go_public(c)
     r = c.post("/v1/share-grants", json={"view_id": view_id, "subject_type": "link"})
     assert r.status_code == 201, r.text
     return r.json()["token"]
@@ -277,12 +286,17 @@ def test_public_member_view_key_set():
     members = _anon().get(f"/v1/public/systems/{system_id}/members").json()
     assert len(members) == 1
     assert set(members[0]) == {
-        "id", "name", "display_name", "pronouns", "avatar_url", "banner_url",
+        "id", "name", "pronouns", "avatar_url", "banner_url",
         "color", "bio", "fields",
     }
     # note / privacy / birthday / created_at etc. must never appear.
     assert "note" not in members[0]
     assert "privacy" not in members[0]
+    # One name field, and it is the shown one. `display_name` is gone rather
+    # than renamed: carrying both meant a member who set a display name so
+    # strangers would not read their own name had it in the payload anyway,
+    # one key along, for anything reading the JSON instead of the page.
+    assert "display_name" not in members[0]
     owner.close()
 
 
@@ -730,8 +744,11 @@ def test_fronting_names_public_member_and_counts_others():
     # Lite card: identity + since only. No bio/fields on the fronting surface,
     # even when the view exposes them elsewhere.
     assert set(pm) == {
-        "id", "name", "display_name", "pronouns", "avatar_url", "color", "since",
+        "id", "name", "pronouns", "avatar_url", "color", "since",
     }
+    # Same single-name rule as the member card, and it matters most here: this
+    # is the surface a watcher polls every minute.
+    assert "display_name" not in pm
     assert pm["name"] == "Fronter"
     assert pm["since"] is not None
     # `other` is public-but-not-in-view -> counted, not named.
@@ -1272,4 +1289,543 @@ def test_member_permalink_obeys_the_bio_flag():
     )
     body = _anon().get(f"/v1/public/systems/{system_id}/members/{m}").json()
     assert body["bio"] == "a bio"
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# One name per member, everywhere
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.public_profiles
+def test_shown_name_is_the_display_name_when_there_is_one():
+    """The whole point of the single field: a member with a display name is
+    published under it, and their own name never leaves the account."""
+    owner = _register()
+    m = _member(owner, "CanonicalName", display_name="What They Go By")
+    system_id, _ = _published_system(owner, members=[m])
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert body[0]["name"] == "What They Go By"
+    assert "CanonicalName" not in str(body)
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_shown_name_falls_back_to_the_members_name():
+    owner = _register()
+    m = _member(owner, "JustAName")
+    system_id, _ = _published_system(owner, members=[m])
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert body[0]["name"] == "JustAName"
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_no_public_payload_leaks_a_canonical_name():
+    """Every surface that names a member, checked at once: the roster, the
+    permalink, the fronting card, both ends of an edge, and a group roster.
+    A leak on any one of them is a leak."""
+    owner = _register()
+    a = _member(owner, "SecretA", display_name="Ay")
+    b = _member(owner, "SecretB", display_name="Bee")
+
+    rtype = _rel_type(owner, f"Partner-{uuid.uuid4().hex[:6]}")
+    _edge(owner, a, b, rtype)
+
+    group = owner.post(
+        "/v1/groups", json={"name": "Both", "privacy": "public"}
+    ).json()["id"]
+    owner.put(f"/v1/groups/{group}/members", json={"member_ids": [a, b]})
+
+    system_id, _ = _published_system(
+        owner,
+        members=[a, b],
+        include_fronting=True,
+        include_relationships=True,
+        include_groups=True,
+        member_permalinks=True,
+    )
+    owner.post("/v1/fronts", json={"member_ids": [a]})
+
+    anon = _anon()
+    surfaces = [
+        anon.get(f"/v1/public/systems/{system_id}/members").text,
+        anon.get(f"/v1/public/systems/{system_id}/members/{a}").text,
+        anon.get(f"/v1/public/systems/{system_id}/fronting").text,
+        anon.get(f"/v1/public/systems/{system_id}/relationships").text,
+        anon.get(f"/v1/public/systems/{system_id}/groups").text,
+    ]
+    for raw in surfaces:
+        assert "SecretA" not in raw and "SecretB" not in raw
+        assert "display_name" not in raw
+    # And the display names really are being served, so the assertion above is
+    # not passing on an empty page.
+    assert "Ay" in surfaces[0] and "Bee" in surfaces[0]
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# The signer refuses another account's storage keys
+# ---------------------------------------------------------------------------
+
+
+def _seed_group_description(group_id: str, text: str) -> None:
+    """Write a group description straight into the database.
+
+    Deliberately around the API: the write handler now strips a foreign key, so
+    the only way to reach the projection-side guard is to put a row in the state
+    an old write (or a foreign importer) could have left it in. This is exactly
+    the "legacy row" case, and it is why the check exists at the signer at all.
+    """
+
+    async def _work(db) -> None:
+        from sheaf.models.group import Group
+
+        group = await db.get(Group, uuid.UUID(group_id))
+        assert group is not None
+        group.description = text
+
+    _in_db(_work)
+
+
+@pytest.mark.public_profiles
+def test_group_description_write_strips_another_accounts_key():
+    """The write side. Groups used to be the one description with no ownership
+    pass at all, so a key from somebody else's namespace was stored verbatim."""
+    victim = _register()
+    victim_key = _upload(victim, purpose="bio")
+
+    attacker = _register()
+    r = attacker.post(
+        "/v1/groups",
+        json={
+            "name": "Grabby",
+            "description": f"before ![x](/v1/files/{victim_key}) after",
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert victim_key not in r.json()["description"]
+    assert "before" in r.json()["description"]
+
+    # And on update, which is the other half of the same door.
+    gid = r.json()["id"]
+    patched = attacker.patch(
+        f"/v1/groups/{gid}",
+        json={"description": f"![x](/v1/files/{victim_key})"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert victim_key not in (patched.json()["description"] or "")
+    victim.close()
+    attacker.close()
+
+
+@pytest.mark.public_profiles
+def test_projection_hides_a_foreign_key_already_in_the_database():
+    """The signer side, which is the one that matters for rows that predate the
+    write guard: a stale foreign key renders as hidden and is never signed, so
+    there is no data to go and scrub."""
+    victim = _register()
+    victim_key = _upload(victim, purpose="bio")
+
+    attacker = _register()
+    gid = attacker.post(
+        "/v1/groups", json={"name": "Stale", "privacy": "public"}
+    ).json()["id"]
+    system_id, _ = _published_system(attacker, include_groups=True)
+    _seed_group_description(gid, f"![x](/v1/files/{victim_key})")
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/groups").json()
+    served = next(g for g in body["groups"] if g["id"] == gid)
+    assert victim_key not in served["description"]
+    assert "token=" not in served["description"]
+    assert "#external-image-hidden" in served["description"]
+    victim.close()
+    attacker.close()
+
+
+@pytest.mark.public_profiles
+def test_projection_still_signs_the_owners_own_key():
+    """The guard has to be an ownership check, not a blanket refusal."""
+    owner = _register()
+    own_key = _upload(owner, purpose="bio")
+    gid = owner.post(
+        "/v1/groups", json={"name": "Mine", "privacy": "public"}
+    ).json()["id"]
+    system_id, _ = _published_system(owner, include_groups=True)
+    _seed_group_description(gid, f"![x](/v1/files/{own_key})")
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/groups").json()
+    served = next(g for g in body["groups"] if g["id"] == gid)
+    assert f"/v1/public/files/{own_key}" in served["description"]
+    assert "token=" in served["description"]
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# System privacy and account state suppress the whole surface
+# ---------------------------------------------------------------------------
+
+
+def _set_account_status(email: str, status: str) -> None:
+    """Put an account into a moderation state directly.
+
+    There is no self-service route to suspended or banned, and the deletion
+    request has its own flow with its own side effects; the point here is the
+    resolver's behaviour in each state, not how the state was reached.
+    """
+
+    async def _work(db) -> None:
+        from sqlalchemy import select
+
+        from sheaf.crypto import blind_index
+        from sheaf.models.user import User
+
+        row = await db.execute(
+            select(User).where(User.email_hash == blind_index(email))
+        )
+        user = row.scalar_one()
+        user.account_status = status
+
+    _in_db(_work)
+
+
+def _registered() -> tuple[httpx.Client, str]:
+    """_register, but hand back the email so the account state can be set."""
+    c = httpx.Client(base_url=BASE_URL)
+    email = f"sup-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    r = c.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert r.status_code == 201, r.text
+    c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return c, email
+
+
+def _both_grant_urls(owner: httpx.Client) -> tuple[str, str, str]:
+    """Publish a public profile AND a share link off one view.
+
+    Both are returned so every suppression case can be asserted against both
+    grant kinds: an unlisted link is not a lesser tier that survives a
+    suppression, it publishes the same payloads to the same anonymous readers.
+    """
+    m = _member(owner, "Suppressed")
+    system_id, view = _published_system(owner, members=[m])
+    return system_id, _link_token(owner, view), view
+
+
+@pytest.mark.public_profiles
+def test_setting_the_system_private_takes_the_whole_surface_down():
+    owner = _register()
+    system_id, token, _ = _both_grant_urls(owner)
+
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+
+    assert owner.patch(
+        "/v1/systems/me", json={"privacy": "private"}
+    ).status_code == 200
+
+    for path in (f"/v1/public/systems/{system_id}", f"/v1/public/shared/{token}"):
+        r = anon.get(path)
+        assert r.status_code == 404
+        # The uniform 404 - no hint that this is a privacy setting rather than
+        # a profile that never existed.
+        assert r.json()["detail"] == "Not found"
+
+    # Every sub-route too, not just the entry point.
+    for suffix in ("/members", "/fronting", "/relationships", "/groups"):
+        assert (
+            anon.get(f"/v1/public/systems/{system_id}{suffix}").status_code == 404
+        )
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_friends_privacy_suppresses_exactly_like_private():
+    """Every grant that exists today is public-tier, so the parked friends
+    level serves nobody either."""
+    owner = _register()
+    system_id, token, _ = _both_grant_urls(owner)
+    owner.patch("/v1/systems/me", json={"privacy": "friends"})
+
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 404
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 404
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_going_public_again_brings_the_profile_straight_back():
+    """Suppression is not revocation: the grants were never touched, so there
+    is nothing to republish and no grace window to serve twice."""
+    owner = _register()
+    system_id, token, _ = _both_grant_urls(owner)
+    owner.patch("/v1/systems/me", json={"privacy": "private"})
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    owner.patch("/v1/systems/me", json={"privacy": "public"})
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+@pytest.mark.parametrize("state", ["suspended", "banned", "pending_deletion"])
+def test_account_state_suppresses_both_grant_kinds(state):
+    owner, email = _registered()
+    system_id, token, _ = _both_grant_urls(owner)
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+
+    _set_account_status(email, state)
+
+    for path in (f"/v1/public/systems/{system_id}", f"/v1/public/shared/{token}"):
+        r = anon.get(path)
+        assert r.status_code == 404
+        # Identical to every other reason a page is not there. A public
+        # endpoint must never report moderation state about a stranger.
+        assert r.json()["detail"] == "Not found"
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_the_page_returns_when_the_account_does():
+    """The chosen semantic, stated as a test: suspension is temporary, the
+    grants survive it, and lifting it restores the page with no further act
+    from the owner."""
+    owner, email = _registered()
+    system_id, token, _ = _both_grant_urls(owner)
+
+    _set_account_status(email, "suspended")
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    _set_account_status(email, "active")
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# Archived and deletion-queued members leave the surface immediately
+# ---------------------------------------------------------------------------
+
+
+def _arm_member_delete_safety(c: httpx.Client) -> None:
+    """Grace window on member deletion, with no re-auth tier, so a delete
+    queues instead of executing and the test does not need a password."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 7,
+            "applies_to_members": True,
+            "auth_tier": "none",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def _full_surface(owner: httpx.Client) -> tuple[str, str, str, str]:
+    """A profile serving every surface a member can appear on at once.
+
+    Returns (system_id, member_a, member_b, group_id). Two members joined by a
+    published edge and both in a public group, so one call sets up the roster,
+    the count, the fronting card, the edge endpoints and the group roster - the
+    five places a member's name can reach a visitor.
+    """
+    a = _member(owner, "StaysA")
+    b = _member(owner, "GoesB")
+    rtype = _rel_type(owner, f"Pal-{uuid.uuid4().hex[:6]}")
+    _edge(owner, a, b, rtype)
+    group = owner.post(
+        "/v1/groups", json={"name": f"G-{uuid.uuid4().hex[:6]}", "privacy": "public"}
+    ).json()["id"]
+    owner.put(f"/v1/groups/{group}/members", json={"member_ids": [a, b]})
+    system_id, _ = _published_system(
+        owner,
+        members=[a, b],
+        include_fronting=True,
+        include_relationships=True,
+        include_groups=True,
+        member_permalinks=True,
+    )
+    owner.post("/v1/fronts", json={"member_ids": [a, b]})
+    return system_id, a, b, group
+
+
+def _surface_snapshot(system_id: str, group_id: str) -> dict:
+    anon = _anon()
+    base = f"/v1/public/systems/{system_id}"
+    groups = anon.get(f"{base}/groups").json()["groups"]
+    roster = next(g["members"] for g in groups if g["id"] == group_id)
+    fronting = anon.get(f"{base}/fronting").json()
+    return {
+        "members": [m["id"] for m in anon.get(f"{base}/members").json()],
+        "count": anon.get(base).json()["member_count"],
+        "fronting": [m["id"] for m in fronting["members"]],
+        "hidden_count": fronting["hidden_count"],
+        "edges": anon.get(f"{base}/relationships").json()["relationships"],
+        "group_roster": [m["id"] for m in roster],
+    }
+
+
+@pytest.mark.public_profiles
+def test_archiving_a_member_removes_them_from_every_public_surface():
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+
+    before = _surface_snapshot(system_id, group)
+    assert set(before["members"]) == {a, b}
+    assert before["count"] == 2
+    assert set(before["fronting"]) == {a, b}
+    assert len(before["edges"]) == 1
+    assert set(before["group_roster"]) == {a, b}
+
+    assert owner.post(f"/v1/members/{b}/archive").status_code == 200
+
+    after = _surface_snapshot(system_id, group)
+    assert after["members"] == [a]
+    assert after["count"] == 1
+    assert after["fronting"] == [a]
+    # The edge composes out of the member id set, so it goes with its endpoint
+    # rather than being separately filtered.
+    assert after["edges"] == []
+    assert after["group_roster"] == [a]
+    # And not as an anonymous presence bit either: an archived member must not
+    # register as "somebody else is fronting".
+    assert after["hidden_count"] == 0
+    # Their permalink goes too, with the same 404 as a member who was never in
+    # the view at all.
+    assert (
+        _anon().get(f"/v1/public/systems/{system_id}/members/{b}").status_code == 404
+    )
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_unarchiving_restores_a_member_without_re_staging_them():
+    """Coming back is not a new exposure decision: archiving never touched the
+    view membership, so there is no grace window to serve a second time."""
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    _arm_visibility_safety(owner)
+
+    owner.post(f"/v1/members/{b}/archive")
+    assert _surface_snapshot(system_id, group)["members"] == [a]
+
+    assert owner.post(f"/v1/members/{b}/unarchive").status_code == 200
+
+    restored = _surface_snapshot(system_id, group)
+    assert set(restored["members"]) == {a, b}
+    assert restored["count"] == 2
+    assert set(restored["fronting"]) == {a, b}
+    assert len(restored["edges"]) == 1
+    assert set(restored["group_roster"]) == {a, b}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_a_member_queued_for_deletion_stops_being_published_at_once():
+    """The grace window exists so the owner can undo, not so the world gets a
+    last look at somebody they have asked to remove."""
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    _arm_member_delete_safety(owner)
+
+    queued = owner.delete(f"/v1/members/{b}")
+    assert queued.status_code == 202, queued.text
+    # The row itself is still there - this is the whole point of the window.
+    assert owner.get(f"/v1/members/{b}").status_code == 200
+
+    after = _surface_snapshot(system_id, group)
+    assert after["members"] == [a]
+    assert after["count"] == 1
+    assert after["fronting"] == [a]
+    assert after["hidden_count"] == 0
+    assert after["edges"] == []
+    assert after["group_roster"] == [a]
+    assert (
+        _anon().get(f"/v1/public/systems/{system_id}/members/{b}").status_code == 404
+    )
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_cancelling_a_queued_member_deletion_brings_them_back():
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    _arm_member_delete_safety(owner)
+
+    pending_id = owner.delete(f"/v1/members/{b}").json()["pending_action_id"]
+    assert _surface_snapshot(system_id, group)["members"] == [a]
+
+    cancelled = owner.delete(f"/v1/system/safety/pending-actions/{pending_id}")
+    assert cancelled.status_code == 204, cancelled.text
+    assert set(_surface_snapshot(system_id, group)["members"]) == {a, b}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_a_group_queued_for_deletion_stops_being_published_at_once():
+    owner = _register()
+    m = _member(owner, "InGroup")
+    group = owner.post(
+        "/v1/groups", json={"name": "Doomed", "privacy": "public"}
+    ).json()["id"]
+    owner.put(f"/v1/groups/{group}/members", json={"member_ids": [m]})
+    system_id, _ = _published_system(owner, members=[m], include_groups=True)
+    r = owner.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 7,
+            "applies_to_groups": True,
+            "auth_tier": "none",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    base = f"/v1/public/systems/{system_id}"
+    assert len(_anon().get(f"{base}/groups").json()["groups"]) == 1
+
+    queued = owner.delete(f"/v1/groups/{group}")
+    assert queued.status_code == 202, queued.text
+    assert _anon().get(f"{base}/groups").json()["groups"] == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_a_field_queued_for_deletion_stops_being_served_at_once():
+    owner = _register()
+    m = _member(owner, "HasField")
+    field = owner.post(
+        "/v1/fields",
+        json={"name": "Doomed", "field_type": "text", "privacy": "public"},
+    ).json()["id"]
+    assert owner.put(
+        f"/v1/members/{m}/fields", json=[{"field_id": field, "value": "x"}]
+    ).status_code == 200
+    system_id, view = _published_system(owner, members=[m])
+    assert owner.post(
+        f"/v1/share-views/{view}/fields", json={"field_id": field}
+    ).status_code == 200
+    r = owner.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 7,
+            "applies_to_fields": True,
+            "auth_tier": "none",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    base = f"/v1/public/systems/{system_id}"
+    assert _anon().get(f"{base}/members").json()[0]["fields"] == {"Doomed": "x"}
+
+    queued = owner.delete(f"/v1/fields/{field}")
+    assert queued.status_code == 202, queued.text
+    assert _anon().get(f"{base}/members").json()[0]["fields"] == {}
     owner.close()

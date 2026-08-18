@@ -288,7 +288,7 @@ def resolve_description_urls(text: str | None) -> str | None:
 EXTERNAL_IMAGE_HIDDEN = "#external-image-hidden"
 
 
-def resolve_description_urls_public(text: str | None) -> str | None:
+def resolve_description_urls_public(text: str | None, owner_id: object) -> str | None:
     """resolve_description_urls for the anonymous public surface.
 
     Internal refs resolve to a dedicated same-origin signed route regardless
@@ -300,6 +300,17 @@ def resolve_description_urls_public(text: str | None) -> str | None:
     still renders externals - that leak is the owner's own, and theirs to
     accept.
 
+    `owner_id` is the account this text belongs to, and it is REQUIRED rather
+    than optional so a new call site cannot quietly opt out of the check. An
+    internal key is signed only when it sits in that account's namespace; a key
+    belonging to somebody else is treated exactly like an external ref and
+    hidden. The signer is the last line, and it does not get to trust every
+    writer: `owned_description_urls` is enforced at the write handlers, but
+    handlers get added, importers get written, and rows already in the database
+    were stored before any of those guards existed. Signing here without asking
+    who owns the key would turn any one of those gaps into a live cross-tenant
+    capability URL, handed to anonymous visitors, refreshed on every page load.
+
     data: URIs carry their own bytes and never touch the network, so they are
     passed through untouched.
     """
@@ -310,20 +321,24 @@ def resolve_description_urls_public(text: str | None) -> str | None:
         if _is_data_url(image.url):
             return None
         key = _to_internal_key(image.url)
-        if key is None:
+        if key is None or internal_key_owner(key) != str(owner_id):
             return render_markdown_image(image, EXTERNAL_IMAGE_HIDDEN)
         return render_markdown_image(image, sign_public_file_url(key))
 
     return rewrite_markdown_images(text, _replace)
 
 
-def resolve_avatar_url_public(url: str | None) -> str | None:
+def resolve_avatar_url_public(url: str | None, owner_id: object) -> str | None:
     """resolve_avatar_url for the anonymous public surface.
 
     Internal keys resolve to the same-origin public media route; anything
     external returns None so the client falls back to initials. Same reasoning as
     resolve_description_urls_public: an avatar pointed at a third-party host
     makes every anonymous visitor's browser announce itself to that host.
+
+    `owner_id` carries the same required ownership check, for the same reason:
+    a key from another account's namespace is not this profile's to publish, so
+    it is treated as external and the visitor gets initials.
 
     data: URIs are dropped rather than passed through. They cannot leak an
     address, but normalize_avatar_url has never been able to store one - it
@@ -334,7 +349,7 @@ def resolve_avatar_url_public(url: str | None) -> str | None:
     if url is None or _is_data_url(url):
         return None
     key = _to_internal_key(url)
-    if key is None:
+    if key is None or internal_key_owner(key) != str(owner_id):
         return None
     return sign_public_file_url(key)
 

@@ -11,6 +11,13 @@ deliberately publish: their bio (only when the view includes it) and their
 custom-field values (only for fields the view exposes). Notes, journals, front
 history, settings, account/tier data, and everything else stay off this surface
 by simply not being listed.
+
+Every payload that names a member carries exactly ONE name field, `name`,
+holding what a visitor actually reads (the display name, falling back to the
+decrypted name). There is deliberately no `display_name` beside it anywhere:
+setting a display name is a request not to be called the other thing, and
+publishing the other thing one key along would have made that request
+cosmetic - a scraper reads JSON, not the rendered page.
 """
 
 from pydantic import BaseModel
@@ -19,8 +26,8 @@ from pydantic import BaseModel
 class PublicMemberView(BaseModel):
     # Identity always shown for a member the owner put in a view.
     id: str
+    # The shown name. See the module docstring: one name field, never two.
     name: str
-    display_name: str | None = None
     pronouns: str | None = None
     avatar_url: str | None = None
     banner_url: str | None = None
@@ -68,8 +75,8 @@ class PublicFrontingMember(BaseModel):
     """
 
     id: str
+    # The shown name, exactly as on `PublicMemberView`.
     name: str
-    display_name: str | None = None
     pronouns: str | None = None
     avatar_url: str | None = None
     color: str | None = None

@@ -86,9 +86,17 @@ def _view(
     return vid
 
 
+def _go_public(c: httpx.Client) -> None:
+    """System privacy is the master ceiling over the public surface, so a system
+    has to be public before it can publish anything at all."""
+    r = c.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+
+
 def _publish(c: httpx.Client, view_id: str) -> str:
     """Point a live public grant at a view. Called before safety is armed, so
     the grant itself is active rather than pending."""
+    _go_public(c)
     r = c.post("/v1/auth/me/attest-adult")
     assert r.status_code == 200, r.text
     granted = c.post(
@@ -283,6 +291,7 @@ def test_a_pending_grant_still_counts(auth_client: httpx.Client):
     m = _member(auth_client, "PendingGrantMember")
     fid = _field(auth_client)
     vid = _view(auth_client, members=[m], fields=[fid])
+    _go_public(auth_client)
     _arm_visibility_safety(auth_client)
     auth_client.post("/v1/auth/me/attest-adult")
     granted = auth_client.post(

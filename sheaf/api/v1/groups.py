@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.files import owned_description_urls
 from sheaf.models.group import Group
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
@@ -137,6 +138,19 @@ async def create_group(
     password = fields.pop("password", None)
     totp_code = fields.pop("totp_code", None)
 
+    # Drop embedded refs to another account's storage keys, exactly as the
+    # member and system write handlers do. Groups were the gap: nothing here
+    # ran an ownership pass, so a foreign /v1/files/{key} pasted into a group
+    # description was stored verbatim and re-signed into a live serve URL on
+    # every read - a cross-tenant read of somebody else's upload, and one that
+    # keeps working after they have deleted or un-shared the original. Enforced
+    # at the handler because this is where the authenticated user exists; the
+    # schema validator that runs `normalize_description_urls` has no request
+    # context and cannot know whose keys these are.
+    fields["description"] = owned_description_urls(
+        fields.get("description"), user.id
+    )
+
     # Creating a group straight to `public` exposes exactly what raising an
     # existing one does, so it runs the SAME check and gets the same treatment:
     # step-up now, and the group is born private with the raise staged behind
@@ -215,6 +229,12 @@ async def update_group(
     # iterates the update so they can never be persisted.
     password = update_data.pop("password", None)
     totp_code = update_data.pop("totp_code", None)
+
+    # Same ownership pass as create_group; see the note there.
+    if "description" in update_data:
+        update_data["description"] = owned_description_urls(
+            update_data["description"], user.id
+        )
 
     requested_privacy = update_data.pop("privacy", None)
     deferred = False

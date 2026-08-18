@@ -213,7 +213,13 @@ def test_export_carries_views_and_no_grant_material(auth_client: httpx.Client):
         == 200
     )
 
-    # Publish it behind a link, so a live grant and a real token exist.
+    # Publish it behind a link, so a live grant and a real token exist. System
+    # privacy is the master ceiling over the public surface, so the system has
+    # to be public before it can publish anything at all.
+    assert (
+        auth_client.patch("/v1/systems/me", json={"privacy": "public"}).status_code
+        == 200
+    )
     assert auth_client.post("/v1/auth/me/attest-adult").status_code == 200
     granted = auth_client.post(
         "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}

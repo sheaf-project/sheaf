@@ -40,12 +40,23 @@ const STATUSES_CLIENT_SKIPS: ReadonlySet<number> = new Set([409]);
  * (red text under a form, etc.) where a toast would be the wrong UI
  * shape. Same toggle, same fallback semantics.
  */
-export function apiErrorMessage(err: unknown, fallback?: string): string {
+export function apiErrorMessage(
+  err: unknown,
+  fallback?: string,
+  opts: { preferDetail?: boolean } = {},
+): string {
   const showTechnical = getShowTechnicalErrors();
   if (err instanceof ApiError) {
-    return showTechnical
-      ? `[${err.status}] ${err.detail}`
-      : friendlySummary(err.status, fallback);
+    if (showTechnical) return `[${err.status}] ${err.detail}`;
+    // `preferDetail` is for the handful of endpoints whose 4xx detail IS the
+    // actionable content, written for the account holder about their own
+    // settings ("set your system to public first"). The friendly summaries
+    // exist because most backend details are noise to somebody who did not
+    // cause them; replacing one of these with "Invalid request." throws away
+    // the only thing that tells the user what to do next. Use it where the
+    // detail names a step the reader can take, not as a general escape hatch.
+    if (opts.preferDetail && err.detail) return err.detail;
+    return friendlySummary(err.status, fallback);
   }
   if (err instanceof Error) {
     return showTechnical ? err.message : (fallback ?? err.message);

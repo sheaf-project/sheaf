@@ -50,6 +50,13 @@ def _attest(c: httpx.Client) -> None:
     assert r.status_code == 200, r.text
 
 
+def _go_public(c: httpx.Client) -> None:
+    """System privacy is the master ceiling over the public surface, so a system
+    has to be public before it can publish anything at all."""
+    r = c.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+
+
 def _second_client() -> httpx.Client:
     """A second registered+authed user (own system), for isolation tests."""
     c = httpx.Client(base_url=BASE_URL)
@@ -291,6 +298,8 @@ def test_group_is_not_a_live_rule(auth_client: httpx.Client):
 
 
 def test_grant_requires_adult_attestation(auth_client: httpx.Client):
+    # Public system, so the refusal below can only be about the attestation.
+    _go_public(auth_client)
     vid = _view(auth_client)
     r = auth_client.post(
         "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
@@ -319,6 +328,7 @@ def test_attest_is_idempotent(auth_client: httpx.Client):
 
 
 def test_only_one_public_grant_per_system(auth_client: httpx.Client):
+    _go_public(auth_client)
     _attest(auth_client)
     v1 = _view(auth_client, "V1")
     v2 = _view(auth_client, "V2")
@@ -345,6 +355,7 @@ def test_only_one_public_grant_per_system(auth_client: httpx.Client):
 
 
 def test_link_token_returned_once_and_rotates(auth_client: httpx.Client):
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client)
     created = auth_client.post(
@@ -370,6 +381,7 @@ def test_account_data_bundle_carries_grants_but_no_token(
 ):
     """Article 15 has to describe the exposure the account created, and must
     not leak any part of the link token doing it."""
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client, "Bundled", include_bio=True)
     token = auth_client.post(
@@ -395,6 +407,7 @@ def test_account_data_bundle_carries_grants_but_no_token(
 
 
 def test_public_grant_carries_no_token(auth_client: httpx.Client):
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client)
     created = auth_client.post(
@@ -411,6 +424,7 @@ def test_public_grant_carries_no_token(auth_client: httpx.Client):
 def test_grant_deferred_and_requires_reauth_when_safety_armed(
     auth_client: httpx.Client,
 ):
+    _go_public(auth_client)
     _attest(auth_client)
     _arm_visibility_safety(auth_client)
     vid = _view(auth_client)
@@ -432,6 +446,7 @@ def test_grant_deferred_and_requires_reauth_when_safety_armed(
 
 def test_revoke_is_immediate_even_with_safety_armed(auth_client: httpx.Client):
     """Going dark never waits on the grace window."""
+    _go_public(auth_client)
     _attest(auth_client)
     _arm_visibility_safety(auth_client)
     vid = _view(auth_client)
@@ -452,6 +467,7 @@ def test_revoke_is_immediate_even_with_safety_armed(auth_client: httpx.Client):
 def test_finalize_job_promotes_pending_grant(
     auth_client: httpx.Client, admin_client: httpx.Client
 ):
+    _go_public(auth_client)
     _attest(auth_client)
     _arm_visibility_safety(auth_client)
     vid = _view(auth_client)
@@ -473,6 +489,7 @@ def test_finalize_job_promotes_pending_grant(
 
 def _shared_view(c: httpx.Client, **kw) -> str:
     """A view with a live public grant, created before safety is armed."""
+    _go_public(c)
     _attest(c)
     vid = _view(c, f"Shared-{uuid.uuid4().hex[:6]}", **kw)
     r = c.post("/v1/share-grants", json={"view_id": vid, "subject_type": "public"})
@@ -807,6 +824,7 @@ def test_fronting_guard_release_without_exposure_is_immediate(
 def test_fronting_guard_release_gets_full_window_with_older_pending_grant(
     auth_client: httpx.Client,
 ):
+    _go_public(auth_client)
     _attest(auth_client)
     member = _member(auth_client, "PendingPath", privacy="public")
     auth_client.patch(
@@ -937,6 +955,7 @@ def test_privacy_tightening_is_always_immediate(auth_client: httpx.Client):
 
 def _lapsed_grant_view(c: httpx.Client) -> tuple[str, str]:
     """A view whose only grant expired a minute ago. Returns (view, grant)."""
+    _go_public(c)
     _attest(c)
     vid = _view(c, f"Lapsed-{uuid.uuid4().hex[:6]}")
     r = c.post(
@@ -1068,6 +1087,8 @@ def test_share_view_cap_is_enforced(auth_client: httpx.Client):
 
 
 def test_share_grant_cap_counts_only_live_grants(auth_client: httpx.Client):
+    # Public, so the 403 below is the cap talking and not the privacy ceiling.
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client)
     system_id = _system_id(auth_client)
@@ -1092,6 +1113,8 @@ def test_share_grant_cap_counts_only_live_grants(auth_client: httpx.Client):
 def test_expired_grant_frees_its_cap_slot(auth_client: httpx.Client):
     """A lapsed link serves nobody, so holding a slot hostage would mean the
     only way back under the cap is noticing and revoking a dead grant."""
+    # Public, so the 403 below is the cap talking and not the privacy ceiling.
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client)
     system_id = _system_id(auth_client)
@@ -1117,6 +1140,7 @@ def test_expired_grant_frees_its_cap_slot(auth_client: httpx.Client):
 
 
 def test_audit_lists_live_grants_only(auth_client: httpx.Client):
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client, "Audited", include_fronting=True)
     m = _member(auth_client, "AuditMember")
@@ -1141,6 +1165,7 @@ def test_audit_group_count_matches_what_is_served(auth_client: httpx.Client):
     """The audit counts groups through the projection's own choke point, so it
     reports what a visitor gets rather than what the flag permits: only public
     groups, and none at all while the flag is off."""
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client, "GroupAudit")
     shown = _group(auth_client, "Shown")
@@ -1171,6 +1196,7 @@ def test_audit_reports_the_member_list_and_permalink_settings(
 ):
     """With the roster off, `member_count` still reports the curation (nothing
     was destroyed) and `include_members` is what says it is not being served."""
+    _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client, "RosterAudit", include_members=False)
     m = _member(auth_client, "Curated", privacy="public")
@@ -1232,6 +1258,8 @@ def test_cannot_add_foreign_member_to_own_view(auth_client: httpx.Client):
 
 def test_cannot_revoke_another_systems_grant(auth_client: httpx.Client):
     other = _second_client()
+    # The other system publishes, so it needs its own privacy flip.
+    _go_public(other)
     _attest(other)
     their_view = _view(other, "TheirShared")
     their_grant = other.post(
@@ -1245,3 +1273,205 @@ def test_cannot_revoke_another_systems_grant(auth_client: httpx.Client):
         for g in other.get("/v1/share-grants").json()
     )
     other.close()
+
+
+# ---------------------------------------------------------------------------
+# System privacy is the ceiling: nothing is minted under a private system
+# ---------------------------------------------------------------------------
+
+
+def test_publishing_is_refused_while_the_system_is_private(
+    auth_client: httpx.Client,
+):
+    """Refused rather than minted-and-suppressed. A grant that serves nobody
+    is not safer for being useless: the owner walks the whole flow, hands out
+    a link, and gets a 404 with nothing telling them why."""
+    _attest(auth_client)
+    vid = _view(auth_client)
+    r = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    assert r.status_code == 400, r.text
+    # The message has to name the fix; it is the owner's own setting.
+    detail = r.json()["detail"]
+    assert "public" in detail and "system" in detail.lower()
+    assert auth_client.get("/v1/share-grants").json() == []
+
+
+def test_publishing_a_link_is_refused_too(auth_client: httpx.Client):
+    """An unlisted link is not a lesser tier that slips under the ceiling."""
+    _attest(auth_client)
+    vid = _view(auth_client)
+    r = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_publishing_is_refused_at_friends_privacy(auth_client: httpx.Client):
+    _attest(auth_client)
+    auth_client.patch("/v1/systems/me", json={"privacy": "friends"})
+    vid = _view(auth_client)
+    r = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_going_private_later_does_not_revoke_anything(auth_client: httpx.Client):
+    """The decided semantic: system privacy suppresses, it never revokes. The
+    owner's curation survives a switch they may be flipping for an afternoon."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client)
+    gid = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    ).json()["grant"]["id"]
+
+    auth_client.patch("/v1/systems/me", json={"privacy": "private"})
+
+    grant = next(
+        g for g in auth_client.get("/v1/share-grants").json() if g["id"] == gid
+    )
+    assert grant["revoked_at"] is None
+    assert grant["status"] != "revoked"
+
+
+# ---------------------------------------------------------------------------
+# The audit says WHY the page is dark
+# ---------------------------------------------------------------------------
+
+
+def test_audit_reports_nothing_suppressed_while_serving(auth_client: httpx.Client):
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client)
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+
+    audit = auth_client.get("/v1/sharing/audit").json()
+    assert audit["profile_suppressed"] is None
+    assert len(audit["entries"]) == 1
+
+
+def test_audit_reports_a_private_system(auth_client: httpx.Client):
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client)
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    auth_client.patch("/v1/systems/me", json={"privacy": "private"})
+
+    audit = auth_client.get("/v1/sharing/audit").json()
+    assert audit["profile_suppressed"] == "system_private"
+    # The entries stay, and stay accurate: they describe curation that is
+    # intact, which is exactly why the reason has to be reported beside them.
+    assert len(audit["entries"]) == 1
+
+
+def _set_account_status(email: str, status: str) -> None:
+    async def _work(db) -> None:
+        from sqlalchemy import select
+
+        from sheaf.crypto import blind_index
+        from sheaf.models.user import User
+
+        row = await db.execute(
+            select(User).where(User.email_hash == blind_index(email))
+        )
+        row.scalar_one().account_status = status
+
+    _in_db(_work)
+
+
+def test_audit_reports_an_account_state_without_naming_it():
+    """Coarse on purpose. The owner was already told at login which state they
+    are in and why; a finer value here would only be one more thing that could
+    end up somewhere it should not."""
+    c = httpx.Client(base_url=BASE_URL)
+    email = f"aud-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    r = c.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert r.status_code == 201, r.text
+    c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+
+    _go_public(c)
+    _attest(c)
+    vid = _view(c)
+    c.post("/v1/share-grants", json={"view_id": vid, "subject_type": "public"})
+
+    _set_account_status(email, "pending_deletion")
+    audit = c.get("/v1/sharing/audit").json()
+    assert audit["profile_suppressed"] == "account_state"
+    assert "deletion" not in str(audit).lower()
+    c.close()
+
+
+# ---------------------------------------------------------------------------
+# An account on its way out can still go dark, but cannot build
+# ---------------------------------------------------------------------------
+
+
+def _pending_deletion_client() -> tuple[httpx.Client, str]:
+    c = httpx.Client(base_url=BASE_URL)
+    email = f"pd-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    r = c.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert r.status_code == 201, r.text
+    c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    _go_public(c)
+    _attest(c)
+    return c, email
+
+
+def test_pending_deletion_blocks_publishing_and_widening():
+    c, email = _pending_deletion_client()
+    m = _member(c, "Late", privacy="public")
+    vid = _view(c)
+    gid = c.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    ).json()["grant"]["id"]
+
+    _set_account_status(email, "pending_deletion")
+
+    # Every exposing mutation on the sharing router: a second grant, a new
+    # view, a member/group/field added to one, and turning an exposure flag on.
+    assert c.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    ).status_code == 409
+    assert c.post("/v1/share-views", json={"name": "New"}).status_code == 409
+    assert c.post(
+        f"/v1/share-views/{vid}/members", json={"member_id": m}
+    ).status_code == 409
+    assert c.patch(
+        f"/v1/share-views/{vid}", json={"include_bio": True}
+    ).status_code == 409
+
+    # And the ways out stay open to the last minute. Nothing, including this
+    # check, may stand between somebody and going dark.
+    assert c.patch(
+        f"/v1/share-views/{vid}", json={"include_members": False}
+    ).status_code == 200
+    assert c.delete(f"/v1/share-grants/{gid}").status_code == 204
+    c.close()
+
+
+def test_pending_deletion_still_allows_rotating_a_link():
+    """Rotation is how somebody cuts off a link that has spread further than
+    they meant it to. It publishes nothing new, so it is not blocked."""
+    c, email = _pending_deletion_client()
+    vid = _view(c)
+    gid = c.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "link"}
+    ).json()["grant"]["id"]
+
+    _set_account_status(email, "pending_deletion")
+
+    rotated = c.post(f"/v1/share-grants/{gid}/rotate")
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["token"]
+    c.close()

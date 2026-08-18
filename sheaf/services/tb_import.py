@@ -59,6 +59,7 @@ from sheaf.services.import_dedup import (
     privacy_hold_warning,
     resolve_member,
 )
+from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
 from sheaf.services.member_limits import enforce_import_member_cap
@@ -252,7 +253,17 @@ def _build_member(
     if not plaintext_name:
         return None
     plaintext_name = clamp_str(plaintext_name, il.M_NAME, report=report)
-    plaintext_description = _clean_str(tupper.get("description"))
+    # Description markdown from a foreign export gets the internal-image strip
+    # before it is stored. Refs to this instance's storage (/v1/files/..., the
+    # CDN host, or a bare key) are re-signed into live capability URLs on read,
+    # so an attacker-authored Tupperbox file could embed another account's
+    # upload key and read that file through their own profile, indefinitely.
+    # Nothing in a Tupperbox export can legitimately point at Sheaf storage,
+    # so all internal refs are dropped; external images and the prose around
+    # them are untouched.
+    plaintext_description = strip_internal_image_refs_md_to_none(
+        _clean_str(tupper.get("description"))
+    )
 
     member_id = uuid.uuid4()
     return Member(
@@ -329,7 +340,10 @@ async def _import_groups(
             id=uuid.uuid4(),
             system_id=system_id,
             name=name,
-            description=_clean_str(tb_g.get("description")),
+            # Same reason as the member description above.
+            description=strip_internal_image_refs_md_to_none(
+                _clean_str(tb_g.get("description"))
+            ),
         )
         db.add(group)
         group_index.register(name, group)

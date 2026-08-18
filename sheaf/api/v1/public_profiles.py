@@ -113,7 +113,7 @@ def _require_roster(view: ShareView) -> None:
 
 
 async def _member_permalink(
-    db: AsyncSession, view: ShareView, member_id: uuid.UUID
+    db: AsyncSession, view: ShareView, system: System, member_id: uuid.UUID
 ) -> PublicMemberView:
     """The single-member payload, built once for both grant types.
 
@@ -128,7 +128,9 @@ async def _member_permalink(
     if not view.member_permalinks:
         raise _not_found()
     _require_roster(view)
-    cards = await project_members(db, view, only_id=member_id)
+    cards = await project_members(
+        db, view, owner_id=system.user_id, only_id=member_id
+    )
     if not cards:
         raise _not_found()
     return cards[0]
@@ -178,9 +180,9 @@ async def public_system_members(
     db: AsyncSession = Depends(get_db),
 ) -> list[PublicMemberView]:
     _public_headers(response, token_keyed=False)
-    view, _ = await _resolve_system(system_id, db)
+    view, system = await _resolve_system(system_id, db)
     _require_roster(view)
-    return await project_members(db, view)
+    return await project_members(db, view, owner_id=system.user_id)
 
 
 @router.get(
@@ -203,8 +205,8 @@ async def public_system_member(
     this system, or was quietly removed.
     """
     _public_headers(response, token_keyed=False)
-    view, _ = await _resolve_system(system_id, db)
-    return await _member_permalink(db, view, member_id)
+    view, system = await _resolve_system(system_id, db)
+    return await _member_permalink(db, view, system, member_id)
 
 
 @router.get(
@@ -258,13 +260,13 @@ async def public_system_groups(
     db: AsyncSession = Depends(get_db),
 ) -> PublicGroupsView:
     _public_headers(response, token_keyed=False)
-    view, _ = await _resolve_system(system_id, db)
+    view, system = await _resolve_system(system_id, db)
     # Same no-oracle rule as fronting and relationships: a view without groups
     # 404s rather than returning an empty list, so "does this profile show
     # groups?" cannot be answered separately from "is this profile public?".
     if not view.include_groups:
         raise _not_found()
-    return await project_groups(db, view)
+    return await project_groups(db, view, owner_id=system.user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -298,9 +300,9 @@ async def public_shared_members(
     db: AsyncSession = Depends(get_db),
 ) -> list[PublicMemberView]:
     _public_headers(response, token_keyed=True)
-    view, _ = await _resolve_link(token, db)
+    view, system = await _resolve_link(token, db)
     _require_roster(view)
-    return await project_members(db, view)
+    return await project_members(db, view, owner_id=system.user_id)
 
 
 @router.get(
@@ -315,8 +317,8 @@ async def public_shared_member(
     db: AsyncSession = Depends(get_db),
 ) -> PublicMemberView:
     _public_headers(response, token_keyed=True)
-    view, _ = await _resolve_link(token, db)
-    return await _member_permalink(db, view, member_id)
+    view, system = await _resolve_link(token, db)
+    return await _member_permalink(db, view, system, member_id)
 
 
 @router.get(
@@ -364,7 +366,7 @@ async def public_shared_groups(
     db: AsyncSession = Depends(get_db),
 ) -> PublicGroupsView:
     _public_headers(response, token_keyed=True)
-    view, _ = await _resolve_link(token, db)
+    view, system = await _resolve_link(token, db)
     if not view.include_groups:
         raise _not_found()
-    return await project_groups(db, view)
+    return await project_groups(db, view, owner_id=system.user_id)

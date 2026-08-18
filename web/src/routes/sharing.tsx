@@ -26,6 +26,7 @@ import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { useGroups } from "@/hooks/use-groups";
 import { useCustomFields } from "@/hooks/use-custom-fields";
 import { useAuth } from "@/hooks/use-auth";
+import { apiErrorMessage } from "@/lib/api-errors";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 import type {
@@ -127,6 +128,27 @@ const EXPOSURE_FLAGS = [
 
 type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
 
+/** The audit lists what each grant WOULD serve. When the account-level
+ *  suppression is set, none of it is reachable right now, so the list needs a
+ *  line above it saying so - otherwise it reads as a page that is live. */
+function suppressionNotice(reason: string | null): string | null {
+  if (reason === "system_private") {
+    return (
+      "None of this is reachable right now: your system's privacy is not set " +
+      "to Public, and that is the master switch over everything you share. " +
+      "Change it under Settings - system profile to serve these again."
+    );
+  }
+  if (reason === "account_state") {
+    return (
+      "None of this is being served right now because of the state of your " +
+      "account. Nothing has been deleted and everything below is still set up " +
+      "exactly as you left it; it comes back when your account does."
+    );
+  }
+  return null;
+}
+
 function SharingManager() {
   const { data: views } = useShareViews();
   const { data: grants } = useShareGrants();
@@ -155,6 +177,8 @@ function SharingManager() {
     }
     return m;
   }, [grants]);
+
+  const suppressedNotice = suppressionNotice(audit?.profile_suppressed ?? null);
 
   return (
     <>
@@ -210,6 +234,11 @@ function SharingManager() {
             <CardTitle className="text-base">Who can currently see what</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
+            {suppressedNotice && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                {suppressedNotice}
+              </p>
+            )}
             {audit.entries.map((e) => (
               <div
                 key={e.grant.id}
@@ -1042,6 +1071,10 @@ function PublishSection({
   const revoke = useRevokeShareGrant();
 
   const [publishing, setPublishing] = useState<null | "public" | "link">(null);
+  // Publishing can fail for a reason only the server knows and only the owner
+  // can fix (system privacy still private), and the auto-toast flattens a 400
+  // to "Invalid request." Keep the server's own wording in the dialog.
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [tokenShown, setTokenShown] = useState<ShareGrantCreated | null>(null);
   const [confirmRotate, setConfirmRotate] = useState<ShareGrant | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<ShareGrant | null>(null);
@@ -1050,6 +1083,7 @@ function PublishSection({
   const origin = typeof window !== "undefined" ? window.location.origin : "";
 
   function beginPublish(kind: "public" | "link") {
+    setPublishError(null);
     setPublishing(kind);
   }
 
@@ -1148,9 +1182,14 @@ function PublishSection({
           kind={publishing}
           needsAttestation={!!user && user.adult_attested_at === null}
           safety={safety}
-          onCancel={() => setPublishing(null)}
+          onCancel={() => {
+            setPublishError(null);
+            setPublishing(null);
+          }}
           busy={attest.isPending || createGrant.isPending}
+          error={publishError}
           onConfirm={async (creds) => {
+            setPublishError(null);
             if (user && user.adult_attested_at === null) {
               await attest.mutateAsync();
             }
@@ -1165,6 +1204,19 @@ function PublishSection({
                   setPublishing(null);
                   if (res.token) setTokenShown(res);
                   else toast.success("Published");
+                },
+                // The dialog stays open so the owner can act on this without
+                // rebuilding their input - the re-auth failure path too.
+                onError: (err) => {
+                  // preferDetail: publishing fails for reasons written for the
+                  // owner about their own settings, and the generic summary for
+                  // a 400 ("Invalid request.") throws away the one sentence
+                  // that says what to change.
+                  setPublishError(
+                    apiErrorMessage(err, "Couldn't publish.", {
+                      preferDetail: true,
+                    }),
+                  );
                 },
               },
             );
@@ -1261,6 +1313,7 @@ function PublishDialog({
   onConfirm,
   onCancel,
   busy,
+  error,
 }: {
   kind: "public" | "link";
   needsAttestation: boolean;
@@ -1268,6 +1321,7 @@ function PublishDialog({
   onConfirm: (creds: { password?: string; totp_code?: string }) => void;
   onCancel: () => void;
   busy: boolean;
+  error?: string | null;
 }) {
   const { user } = useAuth();
   const [attested, setAttested] = useState(false);
@@ -1340,6 +1394,11 @@ function PublishDialog({
             </div>
           )}
         </div>
+        {error && (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={onCancel}>
             Cancel

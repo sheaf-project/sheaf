@@ -1359,6 +1359,12 @@ export interface ShareAuditEntry {
 
 export interface ShareAudit {
   entries: ShareAuditEntry[];
+  /** Null while the profile is actually served. Otherwise the reason nothing
+   *  below is reachable right now - `"system_private"` (the system's own
+   *  privacy gates every grant at once) or `"account_state"`. Account-level
+   *  rather than per-entry because it suppresses the lot: the grants and the
+   *  counts above stay accurate as curation, but every public URL 404s. */
+  profile_suppressed: string | null;
 }
 
 export interface AdultAttestation {
@@ -1369,8 +1375,11 @@ export interface AdultAttestation {
 
 export interface PublicMemberView {
   id: string;
+  /** The one name this surface has, and it is already the shown one: the
+   *  display name where there is one, the member's own name otherwise.
+   *  Publishing a canonical name alongside a display name would make the
+   *  display name cosmetic, since anyone reading the JSON gets both. */
   name: string;
-  display_name: string | null;
   pronouns: string | null;
   avatar_url: string | null;
   banner_url: string | null;
@@ -1422,8 +1431,9 @@ export interface PublicGroupsView {
 
 export interface PublicFrontingMember {
   id: string;
+  /** Already the shown name, on the same single-name basis as
+   *  `PublicMemberView.name`. */
   name: string;
-  display_name: string | null;
   pronouns: string | null;
   avatar_url: string | null;
   color: string | null;
