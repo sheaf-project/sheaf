@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -95,6 +95,44 @@ function useNoIndex() {
 
 function sourceKey(src: Source): string {
   return src.kind === "system" ? `system:${src.systemId}` : `link:${src.token}`;
+}
+
+/** How often every public query re-reads its endpoint, matched to the 60s
+ *  Cache-Control the public surface sends: polling faster would only re-read
+ *  the same cached response. It is what makes revocation reach a tab that is
+ *  already open - an owner who unpublishes is promised the page goes within
+ *  about a minute, and a page that never asked again would sit there for as
+ *  long as the visitor left it open. Deliberately paired with an unset
+ *  refetchIntervalInBackground everywhere, so the polling stops while the tab
+ *  is not being looked at. */
+const PUBLIC_POLL_MS = 60_000;
+
+/**
+ * Empty the source's other queries the moment its system query starts failing.
+ *
+ * Revocation mid-view is the case this exists for. React Query keeps the last
+ * good data on a failed refetch (these are all `retry: false`), so without
+ * this the members, groups and relationships sections would keep rendering a
+ * payload the owner has just taken back, for as long as the tab stayed open.
+ *
+ * The system query is authoritative because every other query on the page is
+ * `enabled: system.isSuccess`: once it errors they stop refetching by
+ * themselves, so removing their cached data empties the DOM and nothing pulls
+ * it back. The system query itself is deliberately NOT removed - removing an
+ * active query refetches it at once, which would be a hot loop against a
+ * 404ing endpoint - so it keeps to its own minute-long poll and the page
+ * recovers on its own if this was a blip rather than a revocation.
+ */
+function useClearOnRevocation(source: Source, failed: boolean) {
+  const queryClient = useQueryClient();
+  const key = sourceKey(source);
+  useEffect(() => {
+    if (!failed) return;
+    queryClient.removeQueries({
+      queryKey: ["public", key],
+      predicate: (q) => q.queryKey[2] !== "system",
+    });
+  }, [failed, key, queryClient]);
 }
 
 function profilePath(src: Source): string {
@@ -195,10 +233,14 @@ export function PublicProfileView({ source }: { source: Source }) {
   const [openMemberId, setOpenMemberId] = useState<string | null>(null);
   const [tab, setTab] = useState<string | null>(null);
 
+  // The whole page's liveness gate. It polls like everything else here, and
+  // when it starts 404ing the profile is gone: the render below flips to the
+  // not-available state and `useClearOnRevocation` empties the rest.
   const system = useQuery<PublicSystemView>({
     queryKey: ["public", sourceKey(source), "system"],
     queryFn: () => getPublicSystem(source),
     retry: false,
+    refetchInterval: PUBLIC_POLL_MS,
   });
 
   // The roster is opt-in per view like every other section: a 404 means the
@@ -216,6 +258,10 @@ export function PublicProfileView({ source }: { source: Source }) {
     },
     retry: false,
     enabled: system.isSuccess,
+    // Polled like the rest of the page: a member removed from the view, or a
+    // whole roster switched off, has to reach a tab that is already open on
+    // the same timer everything else does.
+    refetchInterval: PUBLIC_POLL_MS,
   });
 
   // Fronting is opt-in per view: a 404 means the view doesn't share it, so we
@@ -233,16 +279,14 @@ export function PublicProfileView({ source }: { source: Source }) {
     retry: false,
     enabled: system.isSuccess,
     // Who is fronting changes on its own, so the page would otherwise show
-    // whatever was true when it was opened. Matched to the 60s Cache-Control
-    // on the public surface: polling faster would only re-read the cache.
-    // Left to stop while the tab is hidden (no refetchIntervalInBackground).
-    refetchInterval: 60_000,
+    // whatever was true when it was opened.
+    refetchInterval: PUBLIC_POLL_MS,
   });
 
   // Opt-in per view like fronting, and a 404 means the same thing: not shared,
-  // so the tab is absent rather than empty. No refetchInterval on purpose -
-  // who a member is related to changes about never, so polling it would only
-  // re-read the same cached response.
+  // so the tab is absent rather than empty. Polled as well: who a member is
+  // related to changes about never, but whether the owner is still publishing
+  // it changes the moment they say so.
   const relationships = useQuery<PublicRelationshipsView | null>({
     queryKey: ["public", sourceKey(source), "relationships"],
     queryFn: async () => {
@@ -255,6 +299,7 @@ export function PublicProfileView({ source }: { source: Source }) {
     },
     retry: false,
     enabled: system.isSuccess,
+    refetchInterval: PUBLIC_POLL_MS,
   });
 
   // Same again for groups: absent when the view doesn't publish them.
@@ -270,7 +315,10 @@ export function PublicProfileView({ source }: { source: Source }) {
     },
     retry: false,
     enabled: system.isSuccess,
+    refetchInterval: PUBLIC_POLL_MS,
   });
+
+  useClearOnRevocation(source, system.isError);
 
   const memberList = members.data ?? null;
   const permalinks = system.data?.member_permalinks ?? false;
@@ -915,6 +963,11 @@ function formatFieldValue(v: unknown): string {
  * only ones where "who do I tell about this?" has nowhere else to go.
  */
 function PoweredBy() {
+  // The only query on these pages with no refetchInterval, on purpose: this is
+  // the operator's instance config, not anything the profile's owner exposed,
+  // so revoking a profile has nothing to take back here and polling it would
+  // just be a request a minute for a string that changes when the server is
+  // redeployed.
   const { data: config } = useQuery({
     queryKey: ["auth-config"],
     queryFn: getAuthConfig,
@@ -1001,13 +1054,17 @@ function PublicMemberPageView({
     queryKey: ["public", sourceKey(source), "system"],
     queryFn: () => getPublicSystem(source),
     retry: false,
+    refetchInterval: PUBLIC_POLL_MS,
   });
 
   const member = useQuery<PublicMemberView>({
     queryKey: ["public", sourceKey(source), "member", memberId],
     queryFn: () => getPublicMember(source, memberId),
     retry: false,
+    refetchInterval: PUBLIC_POLL_MS,
   });
+
+  useClearOnRevocation(source, system.isError);
 
   if (system.isLoading || member.isLoading) {
     return (
@@ -1017,12 +1074,19 @@ function PublicMemberPageView({
     );
   }
 
-  if (member.isError || !member.data) {
+  // BOTH have to be serving for this page to render, not just the member. The
+  // two queries race, and they can disagree: revoke a profile while somebody
+  // is on a member page and the member endpoint can still answer from cache
+  // for a moment after the system endpoint has gone. Either 404 means the same
+  // thing here - this page is not being served - so either one takes the page
+  // down. It is also what makes the header safe to render unconditionally
+  // rather than tiptoeing around a possibly-missing system.
+  if (!system.isSuccess || !member.isSuccess) {
     return <NotAvailable />;
   }
 
   const sys = system.data;
-  const accent = sys?.color ?? undefined;
+  const accent = sys.color ?? undefined;
 
   return (
     <div className="min-h-screen bg-muted/20">
@@ -1034,7 +1098,7 @@ function PublicMemberPageView({
             className="inline-flex min-w-0 items-center gap-1.5 truncate text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4 shrink-0" />
-            {sys ? `Back to ${sys.name}` : "Back to the profile"}
+            Back to {sys.name}
           </Link>
         </PublicPageHeader>
 

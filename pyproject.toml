@@ -75,4 +75,5 @@ markers = [
     "bio_uploads_disabled: requires server running with ALLOW_BIO_IMAGES=false",
     "external_images_disabled: requires server running with ALLOW_EXTERNAL_IMAGES=false",
     "public_profiles: requires server running with PUBLIC_PROFILES_ENABLED=true",
+    "public_profiles_off: requires server running with PUBLIC_PROFILES_ENABLED=false",
 ]

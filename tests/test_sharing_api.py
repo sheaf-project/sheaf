@@ -12,6 +12,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8001")
 
@@ -1475,3 +1476,184 @@ def test_pending_deletion_still_allows_rotating_a_link():
     assert rotated.status_code == 200, rotated.text
     assert rotated.json()["token"]
     c.close()
+
+
+# ---------------------------------------------------------------------------
+# The instance's public surface switched off
+#
+# All marked `public_profiles_off` and therefore run on the one config that
+# serves no public surface. The scenario they describe is the ordinary one: an
+# operator turned the setting off (or never had it on) while grants already
+# existed. The setting stops the serving; it does not revoke anything, so the
+# owner-side API has to keep every way OUT open while refusing every way in.
+# ---------------------------------------------------------------------------
+
+
+def _grant_row_in_db(system_id: str, view_id: str, subject_type: str) -> str:
+    """Write a live grant straight into the database.
+
+    The one thing these tests cannot ask the API for, which is the entire
+    point: with the public surface off, publishing is refused, so a grant made
+    while it was ON has to be simulated. Same shape `create_grant` writes for
+    an unsafeguarded system - ACTIVE, no expiry, no token needed for a public
+    grant.
+    """
+    grant_id = str(uuid.uuid4())
+
+    async def _work(db) -> None:
+        from sheaf.crypto import hash_share_token
+        from sheaf.models.share import ShareGrant, ShareGrantStatus
+
+        db.add(
+            ShareGrant(
+                id=uuid.UUID(grant_id),
+                system_id=uuid.UUID(system_id),
+                view_id=uuid.UUID(view_id),
+                subject_type=subject_type,
+                token_hash=(
+                    hash_share_token(f"tok-{grant_id}")
+                    if subject_type == "link"
+                    else None
+                ),
+                status=ShareGrantStatus.ACTIVE.value,
+                created_at=datetime.now(UTC),
+            )
+        )
+
+    _in_db(_work)
+    return grant_id
+
+
+def _dormant_setup(c: httpx.Client, subject_type: str = "public") -> tuple[str, str]:
+    """A view with a dormant grant pointing at it. Returns (view_id, grant_id)."""
+    _go_public(c)
+    _attest(c)
+    vid = _view(c, name=f"Dormant-{uuid.uuid4().hex[:6]}", include_bio=False)
+    system_id = c.get("/v1/systems/me").json()["id"]
+    return vid, _grant_row_in_db(system_id, vid, subject_type)
+
+
+@pytest.mark.public_profiles_off
+def test_publishing_is_refused_while_the_instance_surface_is_off(
+    auth_client: httpx.Client,
+):
+    """The trap this closes: a grant minted now serves nobody today and would
+    start serving the day an operator flips the setting back, with nobody left
+    who remembers agreeing to it."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client)
+
+    for subject in ("public", "link"):
+        r = auth_client.post(
+            "/v1/share-grants", json={"view_id": vid, "subject_type": subject}
+        )
+        assert r.status_code == 403, r.text
+        # The detail has to say both halves: nothing new, and nothing lost.
+        assert "turned off" in r.json()["detail"]
+        assert "unpublishing" in r.json()["detail"].lower()
+
+    assert auth_client.get("/v1/share-grants").json() == []
+
+
+@pytest.mark.public_profiles_off
+def test_curating_a_view_still_works_with_the_surface_off(
+    auth_client: httpx.Client,
+):
+    """Selection is not publication. Building a view exposes nothing while no
+    grant can be created at all, so none of this is refused."""
+    m = _member(auth_client, "Prep", privacy="public")
+    g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
+    f = _field(auth_client, f"F-{uuid.uuid4().hex[:6]}")
+
+    vid = _view(auth_client, name=f"Prepared-{uuid.uuid4().hex[:6]}")
+    assert auth_client.post(
+        f"/v1/share-views/{vid}/members", json={"member_id": m}
+    ).status_code == 200
+    assert auth_client.post(
+        f"/v1/share-views/{vid}/groups", json={"group_id": g}
+    ).status_code == 200
+    assert auth_client.post(
+        f"/v1/share-views/{vid}/fields", json={"field_id": f}
+    ).status_code == 200
+    # Renaming exposes nothing either.
+    assert auth_client.patch(
+        f"/v1/share-views/{vid}", json={"name": "Renamed"}
+    ).status_code == 200
+
+
+@pytest.mark.public_profiles_off
+def test_loosening_is_refused_but_tightening_is_not(auth_client: httpx.Client):
+    """The same asymmetry the rest of the feature runs on, applied to the
+    operator's switch: a flag turned on now would come into force under
+    whoever is around when the surface comes back."""
+    vid, _ = _dormant_setup(auth_client)
+
+    loosen = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_bio": True}
+    )
+    assert loosen.status_code == 403, loosen.text
+    assert auth_client.get(f"/v1/share-views/{vid}").json()["include_bio"] is False
+
+    tighten = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"include_members": False}
+    )
+    assert tighten.status_code == 200, tighten.text
+    assert (
+        auth_client.get(f"/v1/share-views/{vid}").json()["include_members"] is False
+    )
+
+
+@pytest.mark.public_profiles_off
+def test_revoking_a_dormant_grant_still_works(auth_client: httpx.Client):
+    """The whole reason the audit and this endpoint stay ungated: a dormant
+    grant is exactly the one somebody needs to be able to kill before an
+    operator turns the surface back on."""
+    _, gid = _dormant_setup(auth_client)
+
+    assert auth_client.delete(f"/v1/share-grants/{gid}").status_code == 204
+    row = next(
+        g for g in auth_client.get("/v1/share-grants").json() if g["id"] == gid
+    )
+    assert row["status"] == "revoked"
+    assert row["revoked_at"] is not None
+
+
+@pytest.mark.public_profiles_off
+def test_rotating_a_dormant_link_still_works(auth_client: httpx.Client):
+    """Rotation kills the old token outright, so it is an un-exposing act even
+    while nothing is being served - and the old token is the one that would
+    still be in somebody's chat history when the surface returns."""
+    _, gid = _dormant_setup(auth_client, subject_type="link")
+
+    rotated = auth_client.post(f"/v1/share-grants/{gid}/rotate")
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["token"]
+
+
+@pytest.mark.public_profiles_off
+def test_the_audit_still_lists_dormant_grants(auth_client: httpx.Client):
+    """An audit that vanished with the setting would leave the owner unable to
+    see - and therefore unable to revoke - what is waiting to resume."""
+    vid, gid = _dormant_setup(auth_client)
+
+    audit = auth_client.get("/v1/sharing/audit")
+    assert audit.status_code == 200, audit.text
+    entry = next(
+        e for e in audit.json()["entries"] if e["grant"]["id"] == gid
+    )
+    assert entry["view_id"] == vid
+
+
+@pytest.mark.public_profiles_off
+def test_deleting_a_view_with_the_surface_off_still_works(
+    auth_client: httpx.Client,
+):
+    """Deleting a view cascades its grants away, which is the bluntest way out
+    and must not be gated on a setting the owner does not control."""
+    vid, gid = _dormant_setup(auth_client)
+
+    assert auth_client.delete(f"/v1/share-views/{vid}").status_code == 204
+    assert not [
+        g for g in auth_client.get("/v1/share-grants").json() if g["id"] == gid
+    ]

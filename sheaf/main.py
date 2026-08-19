@@ -90,6 +90,36 @@ async def _promote_admin_emails() -> None:
         await db.commit()
 
 
+async def _log_public_surface_state() -> None:
+    """Say at startup what the anonymous share surface is actually doing.
+
+    The setting and the grants it serves have independent lifetimes: turning
+    PUBLIC_PROFILES_ENABLED off stops the router without touching a single
+    grant, so an instance can sit for months with dormant grants that resume
+    the moment somebody turns it back on. That is worth one line in the log an
+    operator already reads, on both sides of the switch.
+
+    One count, and never fatal: this is an informational line, so a database
+    that is not ready yet must not be the reason a replica fails to start.
+    """
+    try:
+        from sheaf.database import async_session_factory
+        from sheaf.services.sharing import (
+            count_live_grants,
+            public_surface_startup_message,
+        )
+
+        async with async_session_factory() as db:
+            live = await count_live_grants(db)
+        message = public_surface_startup_message(
+            enabled=settings.public_profiles_enabled, live_grants=live
+        )
+        if message:
+            logger.info("%s", message)
+    except Exception:
+        logger.warning("Could not count share grants at startup", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_settings()
@@ -108,6 +138,7 @@ async def lifespan(app: FastAPI):
     setup_metrics_endpoint(app, settings)
 
     await _promote_admin_emails()
+    await _log_public_surface_state()
 
     # Dev-only startup tasks (sheaf_dev not installed in production)
     try:

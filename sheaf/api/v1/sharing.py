@@ -12,6 +12,13 @@ Deferred does not mean "refused until later": the change is accepted and parked
 as pending state, and `finalize_share_activations` makes it live once the grace
 window has elapsed.
 
+The same asymmetry decides what an instance with its public surface switched off
+still allows: everything that un-exposes or exposes nothing keeps working
+(revoke, rotate, tighten, delete, and curating a view's contents), while the two
+acts that would EXPOSE MORE are refused outright (`_block_new_exposure`). The
+audit is never gated - dormant grants are precisely the ones an owner needs to
+be able to see and revoke.
+
 The anonymous read surface lives in a separate router; nothing here serves
 public content.
 """
@@ -123,6 +130,49 @@ async def _get_view(
             status_code=status.HTTP_404_NOT_FOUND, detail="Share view not found"
         )
     return view
+
+
+def _block_new_exposure(user: User) -> None:
+    """Refuse an act that would EXPOSE MORE, for either reason it can be refused.
+
+    Two conditions behind one gate, because they are the same rule seen from two
+    sides: nothing new gets published while whatever would serve it is not going
+    to be there.
+
+    - The account is on its way out (`block_pending_deletion`): the owner has
+      said they will not be around to manage the exposure, and the deletion
+      sweep is going to remove the data underneath it.
+    - The instance's public surface is switched off. The anonymous router 404s
+      wholesale on that setting, so a grant minted now serves nobody today - and
+      would quietly START serving the moment an operator flips the setting back,
+      months later, with nobody left who remembers agreeing to it. A dormant
+      grant that wakes up on somebody else's config change is exactly the
+      exposure the rest of this feature is built to make impossible.
+
+    Deliberately NOT applied to creating a view, or to adding a member, a field
+    or a group to one: those expose nothing by themselves - a view nothing
+    points at is a private list - so the gate belongs on publishing, which is
+    the same place the safety category puts it. The pending-deletion half is
+    stricter and stays where it already is on those endpoints, for its own
+    reason: an account being deleted should not be building anything.
+
+    403 rather than the 409 `block_pending_deletion` answers with, and the
+    difference is the point. A pending deletion is a state the caller can change
+    themselves, which is why that detail tells them how. An instance setting is
+    not - only the operator can move it - so this is a refusal rather than a
+    conflict to go and resolve, and it matches the 403 the per-system view cap
+    already uses for "this instance will not let you have more of these".
+    """
+    block_pending_deletion(user)
+    if not settings.public_profiles_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Public profiles and share links are turned off on this "
+                "instance, so nothing new can be published. Anything already "
+                "published is kept, and unpublishing still works."
+            ),
+        )
 
 
 async def _reauth_if_deferred(
@@ -251,6 +301,11 @@ async def create_share_view(
 
     Creating a view exposes nothing on its own (no grant points at it yet), so
     this is deliberately ungated. The gate is on publishing.
+
+    That holds for the instance-level switch too: with the public surface off,
+    building a view is note-taking, and refusing it would only stop somebody
+    preparing for the day the operator turns the surface on. `create_share_grant`
+    is where the switch bites.
     """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
@@ -326,6 +381,10 @@ async def update_share_view(
     cancels any staged flip of that flag. Renaming exposes nothing and is
     always immediate.
 
+    Loosening is also where the instance-level switch applies: with the public
+    surface off, a flag turned on now would come into force under whoever is
+    around when it is turned back on. Tightening is never refused.
+
     `member_permalinks` is handled outside that machinery on purpose. It is not
     in `EXPOSURE_FLAGS`, has no pending twin, and is applied in both directions
     the moment it is asked for, because it publishes nothing new: every member
@@ -346,12 +405,14 @@ async def update_share_view(
         for flag, value in requested.items()
         if value is True and not getattr(view, flag)
     }
-    # Only the loosening direction is refused for an account on its way out.
-    # Turning a flag OFF has to stay available to the very last minute: it is
-    # the un-exposing direction, and nothing - not the safety system, not this
-    # check - is allowed to stand between somebody and going dark.
+    # Only the loosening direction is refused, and it is refused for both of
+    # the reasons in `_block_new_exposure` - an account on its way out, and an
+    # instance whose public surface is switched off. Turning a flag OFF has to
+    # stay available to the very last minute: it is the un-exposing direction,
+    # and nothing - not the safety system, not this check, not the operator's
+    # setting - is allowed to stand between somebody and going dark.
     if loosening:
-        block_pending_deletion(user)
+        _block_new_exposure(user)
     deferred = bool(loosening) and shared and is_exposure_safeguarded(system)
     await _reauth_if_deferred(
         db=db,
@@ -437,6 +498,14 @@ async def add_view_member(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
+    """Add one member to a view's selection.
+
+    Not gated on the instance's public switch, same as the rest of the view
+    contents: putting somebody in a view publishes nothing until a grant serves
+    it, and with the surface off no grant can be created at all. The grace
+    window still applies when the view is already shared, because "already
+    shared" is about this view, not about the instance.
+    """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db)
@@ -515,6 +584,9 @@ async def add_view_group(
     A one-time expansion, not a live rule: members added to the group later
     are NOT pulled in automatically, because that would publish someone with
     no deliberate step and no grace window. Re-post to re-sync.
+
+    Ungated on the instance switch for the same reason as `add_view_member`:
+    selection is not publication.
     """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
@@ -621,6 +693,11 @@ async def add_view_field(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
+    """Select a custom field into a view.
+
+    Ungated on the instance switch, same as the member and group selections:
+    nothing here reaches a reader until a grant serves the view.
+    """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db)
@@ -717,12 +794,12 @@ async def create_share_grant(
     the grace window - the grant lands pending and the finalize job makes it
     live. For a link grant the raw token is in the response and nowhere else.
 
-    Refused outright while the account is scheduled for deletion. A grant
-    minted in that window points at data the deletion sweep is going to remove
-    under it, and its owner has already said they will not be here to manage
-    it. Revoking and rotating stay open - going dark is never blocked.
+    Refused outright while the account is scheduled for deletion, and while the
+    instance's public surface is switched off - see `_block_new_exposure` for
+    both. Revoking and rotating stay open under either condition: going dark is
+    never blocked.
     """
-    block_pending_deletion(user)
+    _block_new_exposure(user)
     system = await _get_user_system(user, db)
     view = await _get_view(body.view_id, system, db)
 
@@ -802,7 +879,11 @@ async def revoke_share_grant(
     """Go dark. Immediate, ungated, idempotent - the panic button.
 
     Deliberately requires no re-auth and honours no grace period: nothing,
-    including the safety system itself, may slow down un-publishing.
+    including the safety system itself, may slow down un-publishing. That
+    includes the instance's public switch - with the surface off this grant
+    serves nobody today, but it is exactly the grant that would start serving
+    again if the setting came back, so revoking it has to stay possible while
+    the surface is off. Same for rotation, which kills the old link outright.
     """
     system = await _get_user_system(user, db)
     grant = (
@@ -843,6 +924,12 @@ async def sharing_audit(
     though it now exposes nothing - the owner set that expiry and should see
     that it lapsed rather than watch the entry vanish; `expires_at` is on every
     entry and the client labels it.
+
+    Never gated on the instance's public switch, and that is load-bearing
+    rather than an oversight: with the surface off these grants are dormant,
+    not gone, and an owner who cannot see them cannot revoke the ones they do
+    not want waking up if an operator turns it back on. The one thing worse
+    than an audit that over-reports is an audit that disappears.
 
     `profile_suppressed` sits above the entries and answers the question they
     cannot: whether anything below is actually reaching anybody. A suppressed
