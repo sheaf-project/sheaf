@@ -62,42 +62,71 @@ import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialo
 import { PageHeader } from "@/components/page-header";
 import type { DeleteConfirmation, DestructiveConfirm } from "@/types/api";
 
-/** The instance-level gate: hide the whole surface when the operator hasn't
- *  enabled public profiles. Also serves as an honest "off" explainer.
+/**
+ * Sharing lives at the top level rather than under Settings: it is somewhere
+ * you go to do a thing (publish, revoke, check who can see what), not a
+ * preference you set once. The page supplies its own header and column, which
+ * the settings layout used to provide.
  *
- *  Sharing lives at the top level rather than under Settings: it is somewhere
- *  you go to do a thing (publish, revoke, check who can see what), not a
- *  preference you set once. The page supplies its own header and column, which
- *  the settings layout used to provide. */
+ * With the instance's public surface off, this page used to be nothing but the
+ * "off" card - which hid the audit and every revoke button behind a setting
+ * only the operator controls, while grants made earlier sat on disk waiting for
+ * it to come back. So the off state now adds a banner rather than replacing the
+ * page: everything that takes exposure BACK stays here and stays working, and
+ * only the controls that would publish something new are held shut.
+ */
 export function SharingPage() {
-  const { user } = useAuth();
-  const off = Boolean(user && !user.public_profiles_enabled);
+  const off = useSharingOff();
   return (
     <>
       <PageHeader title="Sharing" />
       <div className="grid gap-6 max-w-2xl">
-        {off ? (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Sharing is off here</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                Public profiles and share links are turned off on this instance.
-                The server operator can enable them by setting
-                {" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                  PUBLIC_PROFILES_ENABLED=true
-                </code>
-                .
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <SharingManager />
-        )}
+        {off && <SharingOffCard />}
+        <SharingManager />
       </div>
     </>
+  );
+}
+
+/** Is this instance's public surface switched off?
+ *
+ *  Read from the session wherever it is needed rather than threaded down as a
+ *  prop: it is instance state, not a decision this page makes, and the controls
+ *  that have to react to it sit several components deep. */
+function useSharingOff(): boolean {
+  const { user } = useAuth();
+  return Boolean(user && !user.public_profiles_enabled);
+}
+
+/** What the operator's switch means for the things you already published. The
+ *  second paragraph is the load-bearing one: the setting stops the serving, it
+ *  does not revoke anything, so "off" is not the same as "gone". */
+function SharingOffCard() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Sharing is off here</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          Public profiles and share links are turned off on this instance, so
+          nothing below is reaching anyone right now. The server operator can
+          turn them on by setting{" "}
+          <code className="rounded bg-muted px-1 py-0.5 text-xs">
+            PUBLIC_PROFILES_ENABLED=true
+          </code>
+          .
+        </p>
+        <p className="text-[11px] text-amber-600 dark:text-amber-500">
+          Anything published before it was turned off is kept exactly as it was,
+          and it starts serving again if the setting ever comes back. Nothing new
+          can be published while it is off, but unpublishing, rotating a link and
+          narrowing a view all still work - so if there is something you would
+          not want to reappear, unpublish it now rather than relying on the
+          setting.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -150,6 +179,7 @@ function suppressionNotice(reason: string | null): string | null {
 }
 
 function SharingManager() {
+  const off = useSharingOff();
   const { data: views } = useShareViews();
   const { data: grants } = useShareGrants();
   const { data: audit } = useShareAudit();
@@ -178,7 +208,15 @@ function SharingManager() {
     return m;
   }, [grants]);
 
-  const suppressedNotice = suppressionNotice(audit?.profile_suppressed ?? null);
+  // The instance switch is the outermost reason nothing below is reachable, so
+  // it wins the one notice slot: an owner reading a list of live-looking grants
+  // on an instance with sharing off needs to know both that they are serving
+  // nobody and that they have not been revoked.
+  const suppressedNotice = off
+    ? "None of this is reachable right now: public profiles and share links " +
+      "are turned off on this instance. Every grant below is retained as it " +
+      "was and starts serving again if that setting is turned back on."
+    : suppressionNotice(audit?.profile_suppressed ?? null);
 
   return (
     <>
@@ -191,8 +229,17 @@ function SharingManager() {
             A <strong>view</strong> is a curated selection of exactly which
             members and custom fields are shown. A view is visible to no one
             until you publish it, either as a public profile or behind a
-            revocable link. Nothing is ever shown that you did not add to a
-            view.
+            revocable link. No member and no custom field is ever shown that you
+            did not add to a view.
+          </p>
+          <p>
+            Your system's own details are the exception, and publishing anything
+            at all shows them: the page is headed by your system's{" "}
+            <strong>name, avatar, colour, tag and description</strong>, whatever
+            the view contains. A public profile also carries your system's id in
+            its address; a share link uses an opaque token instead, so the id
+            stays out of it. The number of members is shown only when the view
+            serves its member list.
           </p>
           <p>
             Images you uploaded show up on a shared page as normal. Images
@@ -203,9 +250,12 @@ function SharingManager() {
           <p>
             Making something visible is deliberate; taking it back
             (unpublishing, removing a member, rotating a link) applies
-            immediately, and a visitor loses access within a minute - public
-            pages are cached briefly, so one already loaded can linger that
-            long.
+            immediately. A visitor loses access within about a minute: public
+            pages are cached briefly, and a page someone already had open
+            re-checks on the same timer and empties itself when the answer comes
+            back that it is gone. What anyone copied, screenshotted or saved
+            before then is already theirs, and no amount of unpublishing reaches
+            that.
           </p>
           <p>
             On a self-hosted instance, changing the server's signing secret
@@ -380,12 +430,13 @@ function NewViewCard() {
               checked={includeMembers}
               onChange={setIncludeMembers}
               label="Member list"
-              desc="The members you add to it afterwards. With this off, nobody is named and nothing member-shaped is served."
+              desc="The members you add to it afterwards. Turning it off hides the roster, the bios, the relationships and the member pages. Fronting is on its own switch and is not affected: with fronting on, it still names the members it shows."
             />
             {!includeMembers && (
               <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
                 The member list is off, so bios, relationships and permalinks
-                are not shown to anyone, whatever they are set to here.
+                are not shown to anyone, whatever they are set to here. Fronting
+                is separate: leave it on and it still names whoever it shows.
               </p>
             )}
             <CheckboxRow
@@ -534,9 +585,23 @@ function ViewCard({
   );
 }
 
+/** Why a checkbox that would show MORE is inert while the instance's public
+ *  surface is off. Same split the API makes: a loosening is refused, a
+ *  tightening never is. */
+const LOOSEN_OFF_REASON =
+  "Sharing is off on this instance, so a view can't be set to show more " +
+  "while it stays off. Turning things off still works.";
+
 function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext }) {
+  const off = useSharingOff();
   const update = useUpdateShareView();
   const [reauth, setReauth] = useState<null | { field: ExposureFlag; value: boolean }>(null);
+
+  /** A box that is currently OFF would be a loosening to tick, which the API
+   *  refuses while the instance's public surface is off; a box that is ON can
+   *  always be unticked. Mirrored here rather than left to a bounced request,
+   *  so the page never invites a click it knows will fail. */
+  const lockedOn = (checked: boolean) => off && !checked;
 
   // Turning an option ON while the view is shared is a loosening; when safety
   // is armed it needs re-auth. Turning off is always immediate.
@@ -572,19 +637,23 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           checked={view.include_members}
           onChange={(v) => change("include_members", v)}
           label="Member list"
-          desc="The members listed below. With this off, nobody is named and nothing member-shaped is served."
+          desc="The members listed below. Turning it off hides the roster, the bios, the relationships and the member pages. Fronting is on its own switch and is not affected: with fronting on, it still names the members it shows."
+          disabled={lockedOn(view.include_members)}
+          title={lockedOn(view.include_members) ? LOOSEN_OFF_REASON : undefined}
         />
         {membersOff && (
           <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
             The member list is off, so bios, relationships and permalinks are
-            not shown to anyone, whatever they are set to here.
+            not shown to anyone, whatever they are set to here. Fronting is
+            separate: leave it on and it still names whoever it shows.
           </p>
         )}
         <CheckboxRow
           checked={view.include_bio}
           onChange={(v) => change("include_bio", v)}
           label="Member bios"
-          disabled={membersOff}
+          disabled={membersOff || lockedOn(view.include_bio)}
+          title={lockedOn(view.include_bio) ? LOOSEN_OFF_REASON : undefined}
           indent
         />
         <CheckboxRow
@@ -592,7 +661,10 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           onChange={(v) => change("include_relationships", v)}
           label="Relationships between members"
           desc="Only relationships you marked public show, and only where both members are shown in this view."
-          disabled={membersOff}
+          disabled={membersOff || lockedOn(view.include_relationships)}
+          title={
+            lockedOn(view.include_relationships) ? LOOSEN_OFF_REASON : undefined
+          }
           indent
         />
         <CheckboxRow
@@ -600,6 +672,8 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           onChange={(v) => change("include_fronting", v)}
           label="Who's currently fronting"
           desc="A live 'who is fronting now'. Front history is never shown."
+          disabled={lockedOn(view.include_fronting)}
+          title={lockedOn(view.include_fronting) ? LOOSEN_OFF_REASON : undefined}
         />
         {view.include_fronting && (
           <CheckboxRow
@@ -607,6 +681,10 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
             onChange={(v) => change("fronting_show_count", v)}
             label="Count fronting members not in this view"
             desc="Show them as an anonymous number rather than hiding them entirely."
+            disabled={lockedOn(view.fronting_show_count)}
+            title={
+              lockedOn(view.fronting_show_count) ? LOOSEN_OFF_REASON : undefined
+            }
             indent
           />
         )}
@@ -615,6 +693,8 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           onChange={(v) => change("include_groups", v)}
           label="Groups"
           desc="Show the groups themselves, and only those you set to Public in the group editor. Using a group below to pick members does not show that group."
+          disabled={lockedOn(view.include_groups)}
+          title={lockedOn(view.include_groups) ? LOOSEN_OFF_REASON : undefined}
         />
       </div>
 
@@ -1053,6 +1133,44 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
   );
 }
 
+/** One publish control, which explains itself when the instance's public
+ *  surface is off. The title sits on a wrapper rather than on the button
+ *  because a disabled button receives no mouse events in several browsers, so
+ *  a tooltip on the button itself would simply never appear. */
+function PublishButton({
+  off,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  off: boolean;
+  icon: typeof Globe;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <span
+      className="inline-flex"
+      title={
+        off
+          ? "Sharing is off on this instance, so nothing new can be published " +
+            "until the operator turns it back on."
+          : undefined
+      }
+    >
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 text-xs"
+        disabled={off}
+        onClick={onClick}
+      >
+        <Icon className="mr-1 h-3.5 w-3.5" /> {label}
+      </Button>
+    </span>
+  );
+}
+
 function PublishSection({
   view,
   grants,
@@ -1064,6 +1182,7 @@ function PublishSection({
   safety: SafetyContext;
   systemId: string | null;
 }) {
+  const off = useSharingOff();
   const { user } = useAuth();
   const attest = useAttestAdult();
   const createGrant = useCreateShareGrant();
@@ -1158,24 +1277,27 @@ function PublishSection({
 
       <div className="flex flex-wrap gap-2">
         {!hasPublic && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
+          <PublishButton
+            off={off}
+            icon={Globe}
+            label="Make public"
             onClick={() => beginPublish("public")}
-          >
-            <Globe className="mr-1 h-3.5 w-3.5" /> Make public
-          </Button>
+          />
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 text-xs"
+        <PublishButton
+          off={off}
+          icon={Link2}
+          label="Create share link"
           onClick={() => beginPublish("link")}
-        >
-          <Link2 className="mr-1 h-3.5 w-3.5" /> Create share link
-        </Button>
+        />
       </div>
+      {off && (
+        <p className="text-[11px] text-muted-foreground">
+          Publishing is off on this instance. Anything already published above is
+          kept and is serving nobody for now; unpublishing and rotating still
+          work, and are the only way to make sure it stays that way.
+        </p>
+      )}
 
       {publishing && (
         <PublishDialog
@@ -1504,6 +1626,7 @@ function CheckboxRow({
   desc,
   indent,
   disabled,
+  title,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
@@ -1514,9 +1637,14 @@ function CheckboxRow({
    *  still shows, so nothing is forgotten, but the row reads as inert rather
    *  than as a promise the view can't keep. */
   disabled?: boolean;
+  /** Why this row is inert, when that isn't obvious from the row above it.
+   *  On the label rather than the checkbox, because a disabled input doesn't
+   *  receive the mouse events a tooltip needs in every browser. */
+  title?: string;
 }) {
   return (
     <label
+      title={title}
       className={`flex items-start gap-3 ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${indent ? "ml-6" : ""}`}
     >
       <Checkbox

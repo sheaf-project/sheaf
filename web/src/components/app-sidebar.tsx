@@ -2,7 +2,9 @@ import { NavLink } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useCurrentFronts } from "@/hooks/use-fronts";
+import { sharingKeys } from "@/hooks/use-sharing";
 import { getUnread } from "@/lib/messages";
+import { listShareGrants } from "@/lib/sharing";
 import { listPolls } from "@/lib/polls";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/logo";
@@ -33,10 +35,13 @@ import type { ComponentType } from "react";
 
 /** Sharing is a screen you go to in order to do something (publish, revoke,
  *  check who can see what), so it sits with the rest of the system rather than
- *  in Settings - but only when the operator serves a public surface at all,
- *  the same condition the settings entry used to carry. Globe keeps the icon
- *  it has always had there. */
-function navItemsFor(publicProfiles: boolean) {
+ *  in Settings. It shows when the operator serves a public surface at all - and
+ *  also when they don't but this account still has grants on file, because
+ *  grants outlive the setting and the Sharing screen is the only place to
+ *  revoke one. Hiding the entry there would leave somebody with a published
+ *  profile, no way to reach the button that unpublishes it, and no say in
+ *  whether it comes back. Globe keeps the icon it has always had. */
+function navItemsFor(sharing: boolean) {
   return [
     { to: "/", label: "Dashboard", icon: LayoutDashboard },
     { to: "/members", label: "Members", icon: Users },
@@ -49,9 +54,7 @@ function navItemsFor(publicProfiles: boolean) {
     { to: "/reminders", label: "Reminders", icon: BellRing },
     { to: "/polls", label: "Polls", icon: Vote },
     { to: "/messages", label: "Messages", icon: MessageSquare },
-    ...(publicProfiles
-      ? [{ to: "/sharing", label: "Sharing", icon: Globe }]
-      : []),
+    ...(sharing ? [{ to: "/sharing", label: "Sharing", icon: Globe }] : []),
     { to: "/support", label: "Support", icon: LifeBuoy },
     { to: "/settings", label: "Settings", icon: Settings },
   ];
@@ -80,7 +83,20 @@ export function AppSidebar({
   onMobileClose?: () => void;
 }) {
   const { user, logout } = useAuth();
-  const navItems = navItemsFor(Boolean(user?.public_profiles_enabled));
+  const publicProfiles = Boolean(user?.public_profiles_enabled);
+  // Only asked when the instance's public surface is off, and only to answer
+  // "is anything of mine still published?" - an instance that never had sharing
+  // on gets no extra request and no nav entry for a feature it doesn't have.
+  // Shares the sharing page's cache key, so opening that page is free after it.
+  const { data: dormantGrants } = useQuery({
+    queryKey: sharingKeys.grants,
+    queryFn: listShareGrants,
+    enabled: Boolean(user) && !publicProfiles,
+  });
+  const hasDormantGrants = (dormantGrants ?? []).some(
+    (g) => g.status !== "revoked",
+  );
+  const navItems = navItemsFor(publicProfiles || hasDormantGrants);
 
   // Pick the first fronting member as the perspective for unread counts.
   // If no one is fronting, skip the query - badge stays hidden.

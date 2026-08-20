@@ -173,6 +173,50 @@ def grant_live_clause(*, include_pending: bool = True):
     )
 
 
+async def count_live_grants(db: AsyncSession) -> int:
+    """How many grants across the whole instance are live or waiting to be.
+
+    Instance-wide and therefore operator-facing only: it is a single number
+    with no tenant in it, for the startup line below. `grant_live_clause`
+    rather than a hand-rolled filter so this counts the same grants the
+    resolver would serve.
+    """
+    result = await db.execute(
+        select(func.count(ShareGrant.id)).where(grant_live_clause())
+    )
+    return int(result.scalar_one())
+
+
+def public_surface_startup_message(*, enabled: bool, live_grants: int) -> str | None:
+    """The one line an operator gets at startup about the public surface.
+
+    Split out from the logging call so the branch that matters is testable
+    without a database or an app lifespan. Three cases:
+
+    - surface on: say how many grants are being served, zero included. An
+      operator turning this on wants to know immediately whether anything
+      started serving, and "0" is as much of an answer as "7".
+    - surface off with grants on disk: say they are retained and dormant. This
+      is the case the whole finding was about - the grants outlive the setting,
+      so an instance that flips it back on resumes serving them, and that fact
+      should not first surface as somebody's profile reappearing.
+    - surface off with nothing stored: nothing to say, so no line. A quiet log
+      is worth more than a line every operator learns to skip.
+    """
+    if enabled:
+        return (
+            f"Public profiles enabled: {live_grants} share grant(s) live or "
+            "pending, and will be served"
+        )
+    if live_grants:
+        return (
+            f"Public profiles disabled: {live_grants} share grant(s) retained "
+            "and dormant. Nothing is being served; they resume if "
+            "PUBLIC_PROFILES_ENABLED is turned back on"
+        )
+    return None
+
+
 async def view_is_shared(db: AsyncSession, view_id: uuid.UUID) -> bool:
     """True if a live (or not-yet-live) grant points at this view."""
     result = await db.execute(

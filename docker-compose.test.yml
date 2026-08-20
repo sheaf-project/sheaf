@@ -37,9 +37,15 @@ services:
       ALLOW_IMAGE_UPLOADS: "${ALLOW_IMAGE_UPLOADS:-true}"
       ALLOW_BIO_IMAGES: "${ALLOW_BIO_IMAGES:-true}"
       ALLOW_EXTERNAL_IMAGES: "${ALLOW_EXTERNAL_IMAGES:-true}"
-      # Public-profile surface. Off by default (matches prod); the dedicated
-      # public_profiles config row in run_tests.sh flips it on.
-      PUBLIC_PROFILES_ENABLED: "${PUBLIC_PROFILES_ENABLED:-false}"
+      # Public-profile surface. ON by default here, which is deliberately NOT
+      # the production default (off). Publishing a grant is refused outright
+      # while this is off, so with it off the whole owner-side sharing suite -
+      # the grace-window staging, the privacy ceilings, the audit, the admin
+      # takedown - could not set up its fixtures and would test nothing. The
+      # off state has a config row of its own instead
+      # (selfhosted/public_profiles_off), which is where the "this instance
+      # serves no public surface" contract is pinned.
+      PUBLIC_PROFILES_ENABLED: "${PUBLIC_PROFILES_ENABLED:-true}"
       # Mobile push: dummy creds in the test stack so channel creation
       # for FCM / APNS_DEV / APNS_PROD passes the feature-flag gate.
       # Real dispatch is mocked in tests.

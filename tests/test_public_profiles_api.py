@@ -1,9 +1,10 @@
 """HTTP-level tests for the anonymous public-profile surface.
 
 The `public_profiles` mark routes these to the run_tests.sh config that runs the
-app with PUBLIC_PROFILES_ENABLED=true (the surface is off by default). The
-`test_disabled_*` cases are deliberately UNMARKED so they run against the normal
-configs, where the feature is off, and prove the router 404s wholesale.
+anonymous-surface tests. The `test_disabled_*` cases carry the opposite mark,
+`public_profiles_off`, and prove the router 404s wholesale on the config that
+runs with PUBLIC_PROFILES_ENABLED=false - they used to be simply unmarked, back
+when every other config had the surface off.
 
 The point of this file is the fail-closed contract: the exact key set of each
 public payload is pinned, so a model field can never drift into the anonymous
@@ -236,15 +237,17 @@ def _edge(
 
 
 # ---------------------------------------------------------------------------
-# Feature disabled (UNMARKED: runs where PUBLIC_PROFILES_ENABLED is off)
+# Feature disabled - the public_profiles_off config row
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.public_profiles_off
 def test_disabled_public_system_404s(client: httpx.Client):
     r = client.get(f"/v1/public/systems/{uuid.uuid4()}")
     assert r.status_code == 404
 
 
+@pytest.mark.public_profiles_off
 def test_disabled_public_shared_404s(client: httpx.Client):
     r = client.get(f"/v1/public/shared/{uuid.uuid4().hex}")
     assert r.status_code == 404

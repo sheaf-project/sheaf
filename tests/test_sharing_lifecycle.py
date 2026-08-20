@@ -30,6 +30,7 @@ from sheaf.services.sharing import (
     grant_live_clause,
     is_exposure_safeguarded,
     promote_view_flags,
+    public_surface_startup_message,
     require_adult_attestation,
     revoke_grant,
     rotate_grant_token,
@@ -293,3 +294,38 @@ def test_attested_user_may_publish():
     user.adult_attested_at = datetime.now(UTC)
 
     require_adult_attestation(user)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# The startup line about the instance's public surface
+# ---------------------------------------------------------------------------
+
+
+def test_startup_line_reports_what_is_being_served():
+    msg = public_surface_startup_message(enabled=True, live_grants=7)
+    assert msg is not None
+    assert "7" in msg
+    assert "enabled" in msg
+
+
+def test_startup_line_is_still_printed_when_nothing_is_published():
+    """Zero is as much of an answer as seven for an operator who has just
+    turned the surface on and wants to know whether anything started."""
+    msg = public_surface_startup_message(enabled=True, live_grants=0)
+    assert msg is not None
+    assert "0" in msg
+
+
+def test_startup_line_warns_about_dormant_grants():
+    """The whole point of the line: the setting stops the serving, it does not
+    revoke anything, so an instance can be one config change away from
+    republishing profiles nobody has looked at in months."""
+    msg = public_surface_startup_message(enabled=False, live_grants=3)
+    assert msg is not None
+    assert "3" in msg
+    assert "dormant" in msg
+    assert "PUBLIC_PROFILES_ENABLED" in msg
+
+
+def test_startup_line_is_silent_when_there_is_nothing_to_say():
+    assert public_surface_startup_message(enabled=False, live_grants=0) is None
