@@ -826,6 +826,22 @@ async def create_grant(
     """
     require_adult_attestation(user)
 
+    # Operator takedown latch. A blocked system can still take things DOWN, but
+    # it cannot publish anything new - otherwise the admin revoke-all lever is
+    # a speed bump the owner clears by POSTing a fresh grant a second later.
+    # Distinct message so the owner is not sent chasing their own settings: this
+    # is not something they can fix, and the block is deliberately visible
+    # rather than a silent refusal.
+    if system.publishing_blocked:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Publishing has been disabled on your system by an operator. "
+                "You can still revoke or narrow what is already shared, but you "
+                "cannot publish anything new. Contact the instance operator."
+            ),
+        )
+
     # Refused rather than minted-and-suppressed. `profile_serving_clause()`
     # would make such a grant serve nobody, so allowing it would be safe - and
     # it would still be wrong. The owner would walk the whole publish flow,
@@ -1113,6 +1129,65 @@ async def resolve_link_grant(
     )
     row = result.first()
     return (row[0], row[1]) if row else None
+
+
+async def account_serving_public_media(
+    db: AsyncSession, owner_user_id: str
+) -> bool:
+    """Whether this account is currently serving anything on the public surface.
+
+    The gate the anonymous MEDIA route re-checks on every fetch. A signed
+    media capability (avatar / banner / bio image) is minted with a one-to-two
+    hour window, so without this the bytes keep flowing from the origin for up
+    to that long after the profile behind them goes dark - the JSON surface
+    404s within a sweep of a revoke / rotate / system-private / suspend / ban,
+    but the images outlived it. This closes that gap by re-asking, per fetch,
+    whether the account is still serving.
+
+    Coarse BY DESIGN, and the residual is named at the call site: it asks "is
+    the ACCOUNT behind this key serving SOMETHING publicly right now", not "is
+    this EXACT image still on an entity that is projected". It composes the two
+    predicates the JSON resolvers already gate on, so it can never be looser
+    than they are:
+
+    - `grant_live_clause(include_pending=False)` - at least one grant is
+      serving content right now. A pending grant inside its grace window shows
+      nobody anything, so it must not keep media alive either.
+    - `profile_serving_clause()` - System.privacy is public AND the owning
+      account is in good standing (not suspended/banned/pending-deletion).
+
+    What it therefore closes: revoke-all, the owner's own unpublish, link
+    rotation/expiry that leaves no live grant, system set private, and account
+    suspend/ban/delete - every case where the whole surface, or the last grant,
+    goes dark. What it does NOT catch: a single member archived, dropped to
+    private, marked never-shareable, or queued for deletion WHILE the system
+    stays public with something else still served - that member's own avatar
+    keeps serving until its capability window lapses. A per-entity check would
+    close that too, but a bio image is embedded in an ENCRYPTED description, so
+    "which served entity references this exact key" is not answerable in SQL
+    without decrypting every description on every fetch. The account-level gate
+    is the sound, cheap subset; the lowered max-age on the route bounds the
+    residual window to the JSON surface's own.
+
+    The key's owner segment is a user id (see `internal_key_owner`); System has
+    a unique `user_id`, so this is one indexed lookup, cacheable per key.
+    """
+    try:
+        owner_uuid = uuid.UUID(owner_user_id)
+    except (ValueError, TypeError):
+        return False
+    result = await db.execute(
+        select(ShareGrant.id)
+        .join(System, System.id == ShareGrant.system_id)
+        .join(User, User.id == System.user_id)
+        .where(
+            System.user_id == owner_uuid,
+            grant_live_clause(include_pending=False),
+            profile_serving_clause(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 # ---------------------------------------------------------------------------

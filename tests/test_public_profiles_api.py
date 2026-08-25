@@ -2182,3 +2182,82 @@ def test_preview_is_not_anonymous():
     assert stranger.get(f"/v1/share-views/{view}/preview").status_code == 404
     stranger.close()
     owner.close()
+
+
+# ---------------------------------------------------------------------------
+# Public media is bound to live grant/system state (re-checked per fetch)
+# ---------------------------------------------------------------------------
+
+
+def _published_member_with_avatar(owner: httpx.Client) -> tuple[str, str, str]:
+    """Publish a member carrying a hosted avatar. Returns
+    (system_id, view_id, media_path) where media_path is the anonymous
+    ``/v1/public/files/...`` URL the public payload hands out for it."""
+    key = _upload(owner, "avatar")
+    m = _member(owner, "Pictured", avatar_url=key)
+    system_id, view = _published_system(owner, members=[m], include_members=True)
+    mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
+    media_path = mem["avatar_url"]
+    assert media_path and media_path.startswith("/v1/public/files/"), media_path
+    return system_id, view, media_path
+
+
+@pytest.mark.public_profiles
+def test_public_media_serves_while_live():
+    owner = _register()
+    _, _, media_path = _published_member_with_avatar(owner)
+    r = _anon().get(media_path)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    # No longer immutable, and the tail is bounded to the JSON surface's own:
+    # the bytes can stop being authorized before the capability's HMAC expires.
+    assert r.headers["cache-control"] == "public, max-age=60"
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_media_404s_after_grant_revoked():
+    owner = _register()
+    _, _, media_path = _published_member_with_avatar(owner)
+    assert _anon().get(media_path).status_code == 200
+
+    gid = next(g["id"] for g in owner.get("/v1/share-grants").json())
+    assert owner.delete(f"/v1/share-grants/{gid}").status_code in (200, 204)
+
+    # Same capability URL, still-valid HMAC: only the per-fetch re-check turns
+    # it dark, in step with the JSON surface rather than up to two hours later.
+    assert _anon().get(media_path).status_code == 404
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_media_404s_after_system_set_private():
+    owner = _register()
+    _, _, media_path = _published_member_with_avatar(owner)
+    assert _anon().get(media_path).status_code == 200
+
+    assert owner.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
+    assert _anon().get(media_path).status_code == 404
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_media_404s_after_account_suspended():
+    owner = _register()
+    _, _, media_path = _published_member_with_avatar(owner)
+    assert _anon().get(media_path).status_code == 200
+
+    uid = owner.get("/v1/auth/me").json()["id"]
+
+    async def _suspend(db) -> None:
+        from sheaf.models.user import AccountStatus, User
+
+        user = await db.get(User, uuid.UUID(uid))
+        assert user is not None
+        user.account_status = AccountStatus.SUSPENDED
+        user.suspended_until = datetime.now(UTC) + timedelta(days=1)
+
+    _in_db(_suspend)
+
+    assert _anon().get(media_path).status_code == 404
+    owner.close()

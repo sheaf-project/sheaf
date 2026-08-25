@@ -82,6 +82,27 @@ async def update_own_system(
     # stays instant and ungated; anything staged is cancelled by it. Handled
     # here, out of the generic setattr loop below.
     requested_privacy = update_data.pop("privacy", None)
+
+    # Operator takedown latch. The master switch is the broadest publish there
+    # is, so raising it to public is refused for the same reason `create_grant`
+    # is: a blocked system may take things down but may not put anything new up.
+    # Lowering (to friends/private) is the un-exposing direction and stays open,
+    # so a blocked owner can still go fully dark. Same distinct message as the
+    # grant path.
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and system.privacy != PrivacyLevel.PUBLIC
+        and system.publishing_blocked
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Publishing has been disabled on your system by an operator, so "
+                "your system cannot be set to public. You can still keep it "
+                "private or friends. Contact the instance operator."
+            ),
+        )
+
     exposes = False
     if (
         requested_privacy == PrivacyLevel.PUBLIC

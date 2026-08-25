@@ -120,6 +120,11 @@ class SystemRead(BaseModel):
     # `privacy_activates_at` passes. Null = nothing staged.
     pending_privacy: PrivacyLevel | None = None
     privacy_activates_at: datetime | None = None
+    # Operator takedown latch. Read-only to the owner (there is no
+    # SystemUpdate field for it): the owner sees WHY publishing is refused and
+    # that they cannot lift it themselves, but only an admin can clear it. The
+    # sharing screen turns this into a prominent banner.
+    publishing_blocked: bool = False
     delete_confirmation: DeleteConfirmation
     date_format: DateFormat
     timezone: str | None

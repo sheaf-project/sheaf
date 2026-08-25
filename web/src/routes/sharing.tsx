@@ -162,6 +162,35 @@ function SystemPrivateCard() {
   );
 }
 
+/** An operator has disabled publishing on this system (the admin revoke-all
+ *  takedown latches it). Distinct from the system-private card: that one is a
+ *  switch the owner can flip back themselves, this one they cannot - only an
+ *  admin lifts it. It is the strongest "nothing serves and you cannot change
+ *  that" state on the page, so it rides above every other banner. While it is
+ *  set the owner can still revoke, rotate and narrow (taking MORE down is
+ *  always allowed); only publishing something new is held shut. */
+function PublishingBlockedCard() {
+  return (
+    <Card className="border-destructive/50">
+      <CardHeader>
+        <CardTitle className="text-base">Publishing is disabled by an operator</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          An operator on this instance has disabled publishing on your system.
+          Nothing new can be published and your system cannot be set to Public
+          until they lift it. This is not something you can change from here.
+        </p>
+        <p className="text-[11px] text-amber-600 dark:text-amber-500">
+          You can still revoke grants, rotate links and narrow views - taking
+          things down always works. If you think this is a mistake, contact the
+          instance operator.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 // Re-auth context shared by every exposing action on the page.
 interface SafetyContext {
   safeguarded: boolean;
@@ -258,8 +287,14 @@ function SharingManager() {
   const systemPrivate =
     !off && audit?.profile_suppressed === "system_private";
 
+  // The operator takedown latch. Read straight off the system read, and shown
+  // above every other banner: it is the one state on this page the owner cannot
+  // resolve themselves, so it must not sit under a card offering a fix.
+  const publishingBlocked = Boolean(system?.publishing_blocked);
+
   return (
     <>
+      {publishingBlocked && <PublishingBlockedCard />}
       {systemPrivate && <SystemPrivateCard />}
       <Card>
         <CardHeader>

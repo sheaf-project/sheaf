@@ -15,6 +15,7 @@ from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.files import (
+    internal_key_owner,
     resolve_avatar_url,
     verify_file_token,
     verify_public_file_token,
@@ -34,6 +35,7 @@ from sheaf.services.file_cleanup import (
     cleanup_orphaned_files,
     find_file_references,
 )
+from sheaf.services.sharing import account_serving_public_media
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -540,6 +542,7 @@ async def serve_public_file(
     request: Request,
     token: str | None = Query(default=None),
     expires: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
 ):
     """Serve uploaded public-profile media without leaving the app origin.
 
@@ -569,6 +572,22 @@ async def serve_public_file(
             detail="Invalid or expired public file URL",
         )
 
+    # The HMAC only proves the URL was minted by us; it says nothing about
+    # whether the media is STILL exposed. Capabilities carry a one-to-two hour
+    # window, so a revoke / rotate / system-private / suspend / ban would leave
+    # the avatar/banner/bio image serving from the origin long after the JSON
+    # surface went dark. Re-check, per fetch, that the account behind the key is
+    # still serving something publicly. `internal_key_owner` reads the owner id
+    # out of the `{prefix}/{user_id}/{uuid}.{ext}` key layout the prefix check
+    # above already constrained; a key that does not carry one is not ours to
+    # serve. A dark account 404s exactly like every other refusal here, so
+    # flipping is not observable from outside. See
+    # `account_serving_public_media` for the (deliberately coarse) gate and its
+    # named residual.
+    owner_id = internal_key_owner(path)
+    if owner_id is None or not await account_serving_public_media(db, owner_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
     storage = get_storage()
     try:
         data = await storage.get(path)
@@ -577,12 +596,18 @@ async def serve_public_file(
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    ttl = max(1, int(expires) - int(time.time()))
+    # 60s, not the capability's full remaining window, and NOT immutable: the
+    # bytes can stop being authorized (revoke, rotate, going dark) before the
+    # URL's HMAC expires, so a long-lived or immutable cache entry would keep a
+    # CDN or browser serving media the origin has already cut off. Matches the
+    # public JSON surface's own max-age, so the served-media tail is no longer
+    # than the profile-data tail. The origin now gates every fetch, so a short
+    # cache is a performance smoothing, not a correctness dependency.
     return _media_response(
         path,
         data,
         extra_headers={
-            "Cache-Control": f"public, max-age={ttl}, immutable",
+            "Cache-Control": "public, max-age=60",
             "X-Content-Type-Options": "nosniff",
         },
     )

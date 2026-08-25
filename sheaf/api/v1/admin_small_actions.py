@@ -72,7 +72,14 @@ Public-profile takedown:
         Revoke every live share grant on one system: the operator's
         response to an abuse report about a published profile.
         Immediate and idempotent, through the same `revoke_grant` the
-        owner's own panic button uses. Reason required; logged.
+        owner's own panic button uses. Also latches publishing_blocked
+        so the owner cannot immediately republish. Reason required; logged.
+
+  - POST /admin/systems/{id}/publishing/unblock
+        Clear the publishing_blocked latch the takedown set, letting the
+        owner publish again from scratch. Admin-only (an owner can never
+        clear it themselves); does not republish anything. Reason
+        required; logged.
 """
 
 from __future__ import annotations
@@ -904,6 +911,12 @@ async def revoke_all_share_grants(
     records the operator's attempt - an admin action nobody can see happening is
     an admin action nobody can review.
 
+    Revocation alone is not a takedown: the owner can POST a fresh grant a
+    second later and be back up, with nothing tying the republish to the report.
+    So this ALSO latches `publishing_blocked`, which refuses every new grant and
+    the master-switch raise-to-public until an admin clears it (the sibling
+    /unblock action). The owner can still take MORE down while blocked.
+
     Does NOT touch the views, the curation, or the member privacy levels. The
     lever is aimed at what is being served, not at the owner's data.
     """
@@ -933,6 +946,9 @@ async def revoke_all_share_grants(
     for grant in grants:
         revoke_grant(grant)
 
+    publishing_blocked_before = system.publishing_blocked
+    system.publishing_blocked = True
+
     await log_admin_action(
         db,
         admin=admin,
@@ -941,11 +957,66 @@ async def revoke_all_share_grants(
         target_id=system_id,
         target_user_id=system.user_id,
         reason=body.reason,
-        before={"grants": snapshot} if snapshot else None,
-        after={"revoked_count": len(grants)},
+        before={
+            "publishing_blocked": publishing_blocked_before,
+            **({"grants": snapshot} if snapshot else {}),
+        },
+        after={"revoked_count": len(grants), "publishing_blocked": True},
     )
     await db.commit()
     return RevokeAllGrantsResponse(revoked_count=len(grants))
+
+
+class UnblockPublishingResponse(BaseModel):
+    publishing_blocked: bool
+
+
+@router.post(
+    "/systems/{system_id}/publishing/unblock",
+    response_model=UnblockPublishingResponse,
+)
+async def unblock_system_publishing(
+    system_id: uuid.UUID,
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lift the publishing_blocked latch a takedown set.
+
+    The only way back from a revoke-all takedown, and admin-only on purpose:
+    the whole point of the latch is that the OWNER cannot clear it by
+    republishing, so it does not appear anywhere in their own API. Clearing it
+    does NOT republish anything - every grant the takedown revoked stays
+    revoked - it only lets the owner publish again from scratch, which is the
+    honest shape of "the report was resolved, you may use the surface again".
+
+    Reason required and audited like its sibling. Idempotent: a system that was
+    not blocked records the operator's attempt and reports the unchanged state,
+    the same posture revoke-all takes on a system with nothing to revoke.
+    """
+    system = await db.get(System, system_id)
+    if system is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="System not found",
+        )
+
+    before = system.publishing_blocked
+    system.publishing_blocked = False
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.SYSTEM_PUBLISHING_UNBLOCK,
+        target_type=AdminAuditTargetType.SYSTEM,
+        target_id=system_id,
+        target_user_id=system.user_id,
+        reason=body.reason,
+        before={"publishing_blocked": before},
+        after={"publishing_blocked": False},
+    )
+    await db.commit()
+    return UnblockPublishingResponse(publishing_blocked=False)
 
 
 # ---------------------------------------------------------------------------
