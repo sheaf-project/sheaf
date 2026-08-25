@@ -28,7 +28,11 @@ from sheaf.services.custom_fields import (
     decrypt_field_value,
     encrypt_field_value,
 )
-from sheaf.services.sharing import field_privacy_raise_exposes, is_exposure_safeguarded
+from sheaf.services.sharing import (
+    field_privacy_raise_exposes,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -112,15 +116,17 @@ async def create_field(
     # custom fields right now".
     if (
         fields.get("privacy") == PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
         and await field_privacy_raise_exposes(db, system)
     ):
         await verify_destructive_auth(user, system, password, totp_code, db)
-        fields["privacy"] = PrivacyLevel.PRIVATE
-        fields["pending_privacy"] = PrivacyLevel.PUBLIC
-        fields["privacy_activates_at"] = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            fields["privacy"] = PrivacyLevel.PRIVATE
+            fields["pending_privacy"] = PrivacyLevel.PUBLIC
+            fields["privacy_activates_at"] = datetime.now(UTC) + timedelta(
+                days=grace
+            )
 
     field = CustomFieldDefinition(system_id=system.id, **fields)
     db.add(field)
@@ -210,20 +216,24 @@ async def update_field(
     totp_code = update_data.pop("totp_code", None)
 
     requested_privacy = update_data.pop("privacy", None)
-    deferred = False
+    exposes = False
     if (
         requested_privacy == PrivacyLevel.PUBLIC
         and field.privacy != PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
     ):
-        deferred = await field_privacy_raise_exposes(db, system, field.id)
+        exposes = await field_privacy_raise_exposes(db, system, field.id)
 
-    if deferred:
+    if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
-        field.pending_privacy = PrivacyLevel.PUBLIC
-        field.privacy_activates_at = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            field.pending_privacy = PrivacyLevel.PUBLIC
+            field.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+        else:
+            field.privacy = PrivacyLevel.PUBLIC
+            field.pending_privacy = None
+            field.privacy_activates_at = None
     elif requested_privacy is not None:
         field.privacy = requested_privacy
         field.pending_privacy = None

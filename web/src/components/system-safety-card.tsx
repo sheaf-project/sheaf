@@ -72,7 +72,7 @@ const categoryLabels: {
   {
     key: "applies_to_profile_visibility",
     label: "Profile visibility",
-    desc: "Publishing a share view or adding someone to an already-shared one. This one gates making things MORE visible, not deleting them.",
+    desc: "Publishing a share view, adding someone to an already-shared one, or raising anything to public. This one gates making things MORE visible, not deleting them, and is on by default. With no grace period it just asks for re-auth first; set one to also stage the change behind a window.",
   },
 ];
 
@@ -131,9 +131,9 @@ export function SystemSafetyCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Optional grace periods and re-auth for destructive actions. Tightening
-          applies immediately; loosening waits the current grace period before
-          taking effect.
+          Grace periods and re-auth for destructive or public-facing actions.
+          Tightening applies immediately; loosening waits the current grace
+          period before taking effect.
         </p>
         <SafetyForm settings={data.settings} />
         {data.pending_actions.length > 0 && (

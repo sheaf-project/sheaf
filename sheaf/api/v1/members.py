@@ -55,8 +55,9 @@ from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.sharing import (
     fronting_guard_release_exposes,
-    is_exposure_safeguarded,
     shared_view_memberships,
+    visibility_grace_days,
+    visibility_step_up_required,
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
@@ -373,8 +374,10 @@ async def update_member(
 
     # Raising a member to `public` EXPOSES them: if they are already sitting in
     # a view something points at, the projection would start serving them the
-    # moment this lands. Same rule as the sharing endpoints - re-auth now, and
-    # the exposure itself waits out the grace window (applied below).
+    # moment this lands. Same rule as the sharing endpoints - when the category
+    # is armed, re-auth first; then, with a grace window set, the exposure
+    # itself waits it out (staged below), and with no window it applies at once
+    # because the re-auth already happened.
     #
     # Lowering privacy is the un-exposing direction and stays instant and
     # ungated. private -> friends is ungated too because the friends tier is
@@ -387,34 +390,43 @@ async def update_member(
     if (
         update_data.get("privacy") == PrivacyLevel.PUBLIC
         and member.privacy != PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
     ):
         exposing_rows = await shared_view_memberships(db, system, member.id)
 
     # Releasing the dedicated fronting guard is another exposing direction.
     # Active and pending paths both count: this request receives a fresh full
     # grace window instead of piggybacking on an older pending action.
-    defer_fronting_release = False
+    fronting_release_exposes = False
     if (
         update_data.get("fronting_private") is False
         and member.fronting_private
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
     ):
-        defer_fronting_release = await fronting_guard_release_exposes(
+        fronting_release_exposes = await fronting_guard_release_exposes(
             db,
             system.id,
             member.id,
             member_is_public=member.privacy == PrivacyLevel.PUBLIC,
         )
 
-    if exposing_rows or defer_fronting_release:
+    # Step-up fires whenever either raise would actually expose. Staging is the
+    # separate question of whether a grace window is configured: with grace at 0
+    # the raise applies immediately (no pending row, guard released now), the
+    # re-auth having already run above.
+    if exposing_rows or fronting_release_exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
 
+    grace = visibility_grace_days(system)
+    stage = grace > 0
     visibility_activates_at = (
-        datetime.now(UTC) + timedelta(days=system.safety_grace_period_days)
-        if exposing_rows or defer_fronting_release
+        datetime.now(UTC) + timedelta(days=grace)
+        if (exposing_rows or fronting_release_exposes) and stage
         else None
     )
+    # Only keep the guard live pending the finalizer when there is a window to
+    # wait out; otherwise it is released now (re-auth already happened).
+    defer_fronting_release = fronting_release_exposes and stage
 
     # Same ownership guard as create: a key from another account must not be
     # stored (and later re-signed) here. Filter before the revision-capture
@@ -479,11 +491,13 @@ async def update_member(
         # Nothing left to demote - the rows are gone, which is stricter still.
         exposing_rows = []
 
-    # The privacy change itself is immediate; the exposure it would cause is
-    # not. Demote the membership rows so the projection keeps hiding this
-    # member until the finalize sweep promotes them, exactly as if they had
-    # just been added to the view.
-    if exposing_rows:
+    # With a grace window, the privacy change itself is immediate but the
+    # exposure it would cause is not: demote the membership rows so the
+    # projection keeps hiding this member until the finalize sweep promotes
+    # them, exactly as if they had just been added to the view. With no window
+    # (grace 0) the rows stay live and the member is exposed now - the re-auth
+    # above was the whole gate.
+    if exposing_rows and stage:
         for row in exposing_rows:
             row.status = ShareItemStatus.PENDING.value
             row.activates_at = visibility_activates_at

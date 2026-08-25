@@ -132,6 +132,36 @@ function SharingOffCard() {
   );
 }
 
+/** The master switch is off: system privacy is not Public, so the WHOLE public
+ *  surface is dark regardless of any grant or view flag below. This used to be
+ *  a single line buried in the audit card at the bottom, which is not loud
+ *  enough - it caught people out, who published a view and could not see why a
+ *  visitor got nothing. So it gets the same top-of-page treatment as the
+ *  instance-off card. Shown only for `system_private` (the owner can fix it in
+ *  one click); the `account_state` case is operator-side and is never surfaced
+ *  as something the owner should go and change. Independent of the safety
+ *  category - this is about the switch being off, not about staging. */
+function SystemPrivateCard() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Your system is not public</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          Your system's privacy is not set to Public, so nothing here reaches
+          anyone. Views and links only serve while your system is Public.
+        </p>
+        <p className="text-[11px] text-amber-600 dark:text-amber-500">
+          It is the master switch over everything you share. Change it under
+          Settings, system profile to serve these again. Nothing below has been
+          revoked - it all comes back the moment you set your system to Public.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 // Re-auth context shared by every exposing action on the page.
 interface SafetyContext {
   safeguarded: boolean;
@@ -220,8 +250,17 @@ function SharingManager() {
       "was and starts serving again if that setting is turned back on."
     : suppressionNotice(audit?.profile_suppressed ?? null);
 
+  // The master-switch banner rides at the very top, above "How sharing works",
+  // so an owner sees WHY nothing serves before they read how any of it works.
+  // Suppressed when the instance switch is off: that card already sits above
+  // this manager and is the outermost reason, so showing both would just be two
+  // "nothing serves" cards competing for the same point.
+  const systemPrivate =
+    !off && audit?.profile_suppressed === "system_private";
+
   return (
     <>
+      {systemPrivate && <SystemPrivateCard />}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">How sharing works</CardTitle>

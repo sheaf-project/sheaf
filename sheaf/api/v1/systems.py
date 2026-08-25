@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +12,15 @@ from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.encrypted_fields import system_note_aad, user_totp_secret_aad
 from sheaf.files import owned_avatar_url, owned_description_urls
-from sheaf.models.system import DeleteConfirmation, System
+from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
+from sheaf.services.sharing import (
+    system_privacy_raise_exposes,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
+from sheaf.services.system_safety import verify_destructive_auth
 
 router = APIRouter(prefix="/systems", tags=["systems"])
 
@@ -60,6 +68,43 @@ async def update_own_system(
 ):
     system = await _get_user_system(user, db)
     update_data = body.model_dump(exclude_unset=True)
+    # Step-up credentials are not system columns; drop them before anything
+    # iterates the update so they can never be persisted.
+    password = update_data.pop("password", None)
+    totp_code = update_data.pop("totp_code", None)
+
+    # Raising system privacy to `public` is the broadest exposure an owner can
+    # make - it is the master switch over the whole surface - so it takes the
+    # same shape as every other raise: step-up when the profile_visibility
+    # category is armed AND a grant would actually serve, then stage behind the
+    # grace window if one is set, else apply immediately (the re-auth already
+    # happened). Lowering (to friends/private) is the un-exposing direction and
+    # stays instant and ungated; anything staged is cancelled by it. Handled
+    # here, out of the generic setattr loop below.
+    requested_privacy = update_data.pop("privacy", None)
+    exposes = False
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and system.privacy != PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+    ):
+        exposes = await system_privacy_raise_exposes(db, system)
+
+    if exposes:
+        await verify_destructive_auth(user, system, password, totp_code, db)
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            system.pending_privacy = PrivacyLevel.PUBLIC
+            system.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+        else:
+            system.privacy = PrivacyLevel.PUBLIC
+            system.pending_privacy = None
+            system.privacy_activates_at = None
+    elif requested_privacy is not None:
+        system.privacy = requested_privacy
+        system.pending_privacy = None
+        system.privacy_activates_at = None
+
     # Drop avatar/bio media referencing another account's storage keys before
     # it is stored (and later re-signed on read) - cross-tenant read oracle.
     if "avatar_url" in update_data:

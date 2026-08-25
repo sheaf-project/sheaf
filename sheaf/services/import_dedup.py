@@ -62,7 +62,10 @@ from sheaf.encrypted_fields import (
 )
 from sheaf.models.member import Member
 from sheaf.models.system import PrivacyLevel, System
-from sheaf.services.sharing import is_exposure_safeguarded, shared_view_memberships
+from sheaf.services.sharing import (
+    shared_view_memberships,
+    visibility_step_up_required,
+)
 
 
 class ImportConflictStrategy(enum.StrEnum):
@@ -196,11 +199,20 @@ async def _privacy_raise_exposes(
     pending grant can reach, exposes nobody and stays ungated - the same
     conditions PATCH /v1/members uses before it demands step-up re-auth, and
     the same place the parked friends tier will need an audience-aware test.
+
+    Keyed on `visibility_step_up_required` (the category being armed), NOT on a
+    grace window: an import is non-interactive, so it can neither perform the
+    step-up the API would demand nor stage a pending raise. When the category is
+    armed it therefore HOLDS the raise outright - keeps the existing lower level
+    and reports it - rather than silently publishing somebody from a file. That
+    is the conservative reading, and it is the reason the category defaulting on
+    is safe here: the worst an import can do to visibility is leave it where it
+    was.
     """
     if (
         candidate.privacy != PrivacyLevel.PUBLIC
         or existing.privacy == PrivacyLevel.PUBLIC
-        or not is_exposure_safeguarded(system)
+        or not visibility_step_up_required(system)
     ):
         return False
     return bool(await shared_view_memberships(db, system, existing.id))

@@ -109,6 +109,12 @@ _FIELD_RAISE_STAGING = (
     "staged privacy raise waiting out the grace window; the export carries the "
     "definition's live privacy, so an import never restores a half-applied raise"
 )
+# And for the system-level master switch, same reason: the export carries the
+# system's LIVE privacy, so an import never restores a half-applied raise.
+_SYSTEM_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "system's live privacy, so an import never restores a half-applied raise"
+)
 _NO_GRANT_IMPORT = (
     "grants are deliberately never exported or imported: a grant is a live "
     "capability, so restoring one would republish a system from a backup"
@@ -240,6 +246,8 @@ CLASSIFICATION: dict[type, dict] = {
                 "round-tripped so a restore never silently arms a deletion "
                 "policy - the user re-enables it through the guarded flow"
             ),
+            "pending_privacy": _SYSTEM_RAISE_STAGING,
+            "privacy_activates_at": _SYSTEM_RAISE_STAGING,
         },
     },
     Member: {
