@@ -294,6 +294,153 @@ def test_group_is_not_a_live_rule(auth_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Group-expansion provenance (which rows a detach may remove)
+# ---------------------------------------------------------------------------
+
+
+def _sources(c: httpx.Client, view_id: str) -> dict[str, str | None]:
+    """member_id -> the group expansion that created its row (None = manual)."""
+    got = c.get(f"/v1/share-views/{view_id}").json()
+    return {vm["member_id"]: vm["added_via_group_id"] for vm in got["members"]}
+
+
+def test_expansion_stamps_its_rows_and_a_manual_add_is_unstamped(
+    auth_client: httpx.Client,
+):
+    vid = _view(auth_client)
+    from_group = _member(auth_client, "SrcGrouped", privacy="public")
+    by_hand = _member(auth_client, "SrcManual", privacy="public")
+    g = _group(auth_client, "SrcGroup")
+    auth_client.put(f"/v1/groups/{g}/members", json={"member_ids": [from_group]})
+
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": g})
+    r = auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": by_hand})
+    assert r.status_code == 200, r.text
+
+    assert _sources(auth_client, vid) == {from_group: g, by_hand: None}
+
+
+def test_expansion_leaves_an_existing_row_alone(auth_client: httpx.Client):
+    """A member already in the view keeps their original source, whichever way
+    round it happened: hand-picked stays hand-picked, and the first group to
+    bring someone in stays the reason they are here."""
+    vid = _view(auth_client)
+    m = _member(auth_client, "AlreadyHere", privacy="public")
+    first = _group(auth_client, "FirstGroup")
+    second = _group(auth_client, "SecondGroup")
+    auth_client.put(f"/v1/groups/{first}/members", json={"member_ids": [m]})
+    auth_client.put(f"/v1/groups/{second}/members", json={"member_ids": [m]})
+
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": first})
+    res = auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": second})
+    # Nothing new to add: the member was already there.
+    assert res.json()["added"] == 0
+    assert _sources(auth_client, vid) == {m: first}
+
+    hand = _member(auth_client, "HandFirst", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": hand})
+    third = _group(auth_client, "ThirdGroup")
+    auth_client.put(f"/v1/groups/{third}/members", json={"member_ids": [hand]})
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": third})
+    assert _sources(auth_client, vid)[hand] is None
+
+
+def test_detaching_a_group_removes_only_the_rows_it_added(
+    auth_client: httpx.Client,
+):
+    """The finding this column exists for: a detach used to re-read the group's
+    roster and pull out everybody in it, including people it never added."""
+    vid = _view(auth_client)
+    only_group = _member(auth_client, "OnlyGroup", privacy="public")
+    also_manual = _member(auth_client, "AlsoManual", privacy="public")
+    overlapping = _member(auth_client, "Overlapping", privacy="public")
+
+    doomed = _group(auth_client, "Doomed")
+    other = _group(auth_client, "Other")
+    auth_client.put(
+        f"/v1/groups/{doomed}/members",
+        json={"member_ids": [only_group, also_manual, overlapping]},
+    )
+    auth_client.put(f"/v1/groups/{other}/members", json={"member_ids": [overlapping]})
+
+    # `also_manual` is picked by hand FIRST, so their row is unstamped even
+    # though the doomed group also contains them. `overlapping` arrives via the
+    # other group first, so their row belongs to that one.
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": also_manual})
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": other})
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": doomed})
+    assert set(_sources(auth_client, vid)) == {only_group, also_manual, overlapping}
+
+    r = auth_client.delete(f"/v1/share-views/{vid}/groups/{doomed}")
+    assert r.status_code == 204, r.text
+
+    # Only the member this group actually added is gone.
+    assert _sources(auth_client, vid) == {also_manual: None, overlapping: other}
+
+
+def test_detach_still_removes_someone_who_has_left_the_group(
+    auth_client: httpx.Client,
+):
+    """Reads backwards until you look at the row: leaving the group never moved
+    them out of the view (group membership does not drive exposure), so this
+    group IS still the reason they are in it, and detaching it takes them."""
+    vid = _view(auth_client)
+    leaver = _member(auth_client, "Leaver", privacy="public")
+    stayer = _member(auth_client, "Stayer", privacy="public")
+    g = _group(auth_client, "LeftGroup")
+    auth_client.put(f"/v1/groups/{g}/members", json={"member_ids": [leaver, stayer]})
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": g})
+
+    # Out of the group, still in the view - that is the snapshot semantic.
+    auth_client.put(f"/v1/groups/{g}/members", json={"member_ids": [stayer]})
+    assert set(_sources(auth_client, vid)) == {leaver, stayer}
+
+    auth_client.delete(f"/v1/share-views/{vid}/groups/{g}")
+    assert _sources(auth_client, vid) == {}
+
+
+def test_detach_keeps_members_when_asked(auth_client: httpx.Client):
+    vid = _view(auth_client)
+    m = _member(auth_client, "Kept", privacy="public")
+    g = _group(auth_client, "KeepGroup")
+    auth_client.put(f"/v1/groups/{g}/members", json={"member_ids": [m]})
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": g})
+
+    r = auth_client.delete(
+        f"/v1/share-views/{vid}/groups/{g}", params={"remove_members": "false"}
+    )
+    assert r.status_code == 204, r.text
+    # Still in the view, and still stamped - the stamp is attribution, not a
+    # live rule, and the association row is what went away.
+    assert _sources(auth_client, vid) == {m: g}
+    assert auth_client.get(f"/v1/share-views/{vid}").json()["groups"] == []
+
+
+def test_deleting_a_group_leaves_the_view_alone_and_clears_the_stamp(
+    auth_client: httpx.Client,
+):
+    """The FK is ON DELETE SET NULL, deliberately: deleting a group must never
+    silently un-publish the people it once added. They degrade to manual."""
+    vid = _view(auth_client)
+    m = _member(auth_client, "Orphaned", privacy="public")
+    g = _group(auth_client, "DeletedGroup")
+    auth_client.put(f"/v1/groups/{g}/members", json={"member_ids": [m]})
+    auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": g})
+    assert _sources(auth_client, vid) == {m: g}
+
+    r = auth_client.delete(f"/v1/groups/{g}")
+    assert r.status_code in (200, 204), r.text
+
+    # Member still in the view, now unattributed; the association row went with
+    # the group, so there is nothing left to detach and nothing gets removed.
+    assert _sources(auth_client, vid) == {m: None}
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["groups"] == []
+    assert auth_client.delete(f"/v1/share-views/{vid}/groups/{g}").status_code == 204
+    assert _sources(auth_client, vid) == {m: None}
+
+
+# ---------------------------------------------------------------------------
 # Attestation gate
 # ---------------------------------------------------------------------------
 

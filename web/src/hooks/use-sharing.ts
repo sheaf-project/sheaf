@@ -8,6 +8,7 @@ import type { ShareGrantCreate, ShareViewCreate, ShareViewUpdate } from "@/types
 export const sharingKeys = {
   views: ["share-views"] as const,
   view: (id: string) => ["share-views", id] as const,
+  preview: (id: string) => ["share-views", id, "preview"] as const,
   grants: ["share-grants"] as const,
   audit: ["sharing-audit"] as const,
 };
@@ -159,6 +160,28 @@ export function useRevokeShareGrant() {
 
 export function useShareAudit() {
   return useQuery({ queryKey: sharingKeys.audit, queryFn: api.getShareAudit });
+}
+
+// --- Preview ---
+
+/**
+ * The view as a visitor would receive it. Only fetched while the preview is
+ * actually open (`enabled`), and re-fetched every time it is: an owner opens
+ * this straight after changing something, so a cached answer from before the
+ * change is the one thing it must not show.
+ *
+ * Deliberately NOT polled. The real public page polls so that a revocation
+ * reaches a visitor's open tab; a preview is a thing the owner opened, looked
+ * at, and will close, and there is no revocation for it to notice.
+ */
+export function useSharePreview(viewId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: sharingKeys.preview(viewId),
+    queryFn: () => api.getSharePreview(viewId),
+    enabled,
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
 }
 
 // --- Attestation ---

@@ -1644,6 +1644,15 @@ async def run_import(
         )
         db.add(view)
 
+        # Group-expansion provenance, old member uuid -> old group uuid. Remapped
+        # through the same old->new group map the `group_ids` loop below uses, so
+        # a restored view detaches groups correctly instead of behaving as though
+        # every member had been picked by hand. Absent (or malformed, or naming a
+        # group that did not import) means exactly what it means everywhere else:
+        # manual, which never over-removes.
+        raw_sources = v_data.get("member_sources")
+        member_sources = raw_sources if isinstance(raw_sources, dict) else {}
+
         seen_members: set[uuid.UUID] = set()
         for old_mid in _as_list(v_data.get("member_ids"))[:_MAX_SHARE_VIEW_ROWS]:
             member = old_id_to_member.get(str(old_mid))
@@ -1652,11 +1661,20 @@ async def run_import(
             if member is None or member.never_shareable or member.id in seen_members:
                 continue
             seen_members.add(member.id)
+            old_source = member_sources.get(str(old_mid))
+            source_group = (
+                old_gid_to_group.get(str(old_source))
+                if isinstance(old_source, str)
+                else None
+            )
             db.add(
                 ShareViewMember(
                     id=uuid.uuid4(),
                     view_id=view.id,
                     member_id=member.id,
+                    added_via_group_id=(
+                        source_group.id if source_group is not None else None
+                    ),
                     status=ShareItemStatus.ACTIVE.value,
                     activates_at=None,
                     created_at=now,

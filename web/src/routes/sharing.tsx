@@ -1,7 +1,7 @@
 import { type FormEvent, type MouseEvent, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Copy, ExternalLink, Globe, Link2, Trash2 } from "lucide-react";
+import { Copy, ExternalLink, Eye, Globe, Link2, Trash2 } from "lucide-react";
 
 import {
   useShareViews,
@@ -20,7 +20,9 @@ import {
   useRotateShareGrant,
   useRevokeShareGrant,
   useAttestAdult,
+  useSharePreview,
 } from "@/hooks/use-sharing";
+import { PublicProfileBody } from "@/routes/public-profile";
 import { useMembers } from "@/hooks/use-members";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { useGroups } from "@/hooks/use-groups";
@@ -509,6 +511,7 @@ function ViewCard({
   const del = useDeleteShareView();
   const { formatDate } = useDateFormatters();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
 
   // A flag turned on while the view was shared waits out the grace period, so
   // the card has to say so - the checkbox below still shows the live value.
@@ -537,14 +540,31 @@ function ViewCard({
               </Badge>
             )}
           </CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs text-destructive hover:text-destructive"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            {/* Sits beside the view's own controls rather than down in the
+                publish section on purpose: the question it answers ("what does
+                this actually look like?") is one you ask while curating, not
+                only at the moment of publishing - and it is the one control
+                here that works exactly the same whether the view is published
+                or not. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-muted-foreground"
+              onClick={() => setPreviewing(true)}
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Preview as visitor
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-destructive hover:text-destructive"
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -553,6 +573,10 @@ function ViewCard({
         <ViewFields view={view} safety={safety} />
         <PublishSection view={view} grants={grants} safety={safety} systemId={systemId} />
       </CardContent>
+
+      {previewing && (
+        <PreviewDialog view={view} onClose={() => setPreviewing(false)} />
+      )}
 
       {confirmDelete && (
         <Dialog open onOpenChange={(o) => !o && setConfirmDelete(false)}>
@@ -582,6 +606,122 @@ function ViewCard({
         </Dialog>
       )}
     </Card>
+  );
+}
+
+/**
+ * The view, rendered as a visitor would receive it.
+ *
+ * Two things make this a preview rather than a mock-up, and both are load-
+ * bearing enough to be worth stating where someone changing it will read them:
+ *
+ * - The payload comes from `/share-views/{id}/preview`, which the server builds
+ *   with the SAME projection functions the anonymous endpoints use. Nothing here
+ *   decides what a visitor can see; it only draws what the server said.
+ * - It draws it with `PublicProfileBody` - the actual public page, minus its
+ *   fetching - so a change to how the page looks changes the preview in the same
+ *   commit, and the two cannot quietly diverge.
+ *
+ * Full-screen rather than a route under the app layout, for a reason that is the
+ * whole point of the feature: inside `AppLayout` the page would render beside
+ * the sidebar and inside the app's content column, so its width - and therefore
+ * its responsive layout, its member cards, its tab strip - would be a
+ * different page from the one a visitor gets. A preview that reflows differently
+ * from the real thing is exactly the kind of quiet lie this is meant to prevent.
+ * Covering the viewport gives the page the geometry it will actually have, and
+ * costs only a route nobody needs to link to.
+ */
+function PreviewDialog({ view, onClose }: { view: ShareView; onClose: () => void }) {
+  const { data, isLoading, isError } = useSharePreview(view.id, true);
+  const suppressed = data?.suppressed
+    ? suppressionNotice(data.suppressed)
+    : null;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        // The app's default dialog is a centred, rounded, max-w-2xl card. This
+        // one is the viewport.
+        className="top-0 left-0 block h-dvh w-screen max-h-none max-w-none translate-x-0 translate-y-0 gap-0 overflow-y-auto rounded-none border-0 p-0 sm:max-w-none lg:max-w-none"
+        // Our own close control lives in the banner, where it cannot land on
+        // top of the page's theme toggle.
+        showCloseButton={false}
+      >
+        <DialogHeader className="sr-only">
+          <DialogTitle>Preview of {view.name}</DialogTitle>
+          <DialogDescription>
+            This view as a visitor would see it. Nothing here is published by
+            opening it.
+          </DialogDescription>
+        </DialogHeader>
+
+        {isLoading && (
+          <div className="flex h-dvh items-center justify-center">
+            <p className="text-sm text-muted-foreground">Loading preview...</p>
+          </div>
+        )}
+
+        {isError && (
+          <div className="flex h-dvh items-center justify-center px-4">
+            <div className="max-w-sm space-y-3 text-center">
+              <p className="text-sm">The preview couldn&apos;t be loaded.</p>
+              <Button variant="outline" onClick={onClose}>
+                Close
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {data && (
+          <PublicProfileBody
+            system={data.system}
+            members={data.members}
+            fronting={data.fronting}
+            relationships={data.relationships}
+            groups={data.groups}
+            // Never a link, even when the view publishes member permalinks: a
+            // permalink is a real public URL, and clicking one from inside a
+            // preview would walk the owner out of the preview and onto the live
+            // page. Members open in place instead, which is what a visitor to a
+            // permalink-less view gets - the one deliberate difference from the
+            // real page, and it is about where a click goes rather than about
+            // what is shown.
+            linkTo={null}
+            notice="This is a preview of what a visitor sees."
+            banner={
+              <div className="bg-amber-500/15 px-4 py-2 text-amber-900 dark:text-amber-200">
+                <div className="mx-auto flex w-full max-w-2xl flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-xs font-medium">
+                      Preview of &quot;{view.name}&quot; - only you can see this.
+                      {view.member_permalinks &&
+                        " Member links open here rather than going to the real page."}
+                    </p>
+                    {suppressed && (
+                      <p className="text-[11px]">{suppressed}</p>
+                    )}
+                    {!suppressed && !view.is_shared && (
+                      <p className="text-[11px]">
+                        This view isn&apos;t published, so nobody can reach it
+                        yet. This is what they would get if you did.
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 text-xs"
+                    onClick={onClose}
+                  >
+                    Close preview
+                  </Button>
+                </div>
+              </div>
+            }
+          />
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -983,11 +1123,19 @@ function RemoveGroupDialog({
             group itself is not changed.
           </DialogDescription>
         </DialogHeader>
+        {/* Says "originally added" rather than "its members" on purpose: the
+            server removes the rows this group's expansion created, not whoever
+            is in the group today. Those differ once anyone joins or leaves it,
+            and the honest sentence is the one that matches what happens. */}
         <CheckboxRow
           checked={removeMembers}
           onChange={setRemoveMembers}
-          label="Also remove the members it brought in"
-          desc="Uncheck to keep them in the view as individually picked members."
+          label="Also remove the members this group originally added"
+          desc={
+            "Only the members this group put in the view. Anyone you added by " +
+            "hand, or who another group brought in, stays. Uncheck to keep " +
+            "everyone, as individually picked members."
+          }
         />
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>

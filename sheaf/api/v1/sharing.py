@@ -19,8 +19,11 @@ acts that would EXPOSE MORE are refused outright (`_block_new_exposure`). The
 audit is never gated - dormant grants are precisely the ones an owner needs to
 be able to see and revoke.
 
-The anonymous read surface lives in a separate router; nothing here serves
-public content.
+The anonymous read surface lives in a separate router. The one endpoint here
+that produces public-shaped payloads is `preview_share_view`, and it produces
+them for the OWNER of the view and nobody else: same projection functions, same
+flags, no bypass, behind the same authentication and tenant scoping as every
+other route on this router.
 """
 
 import uuid
@@ -41,7 +44,7 @@ from sheaf.config import settings
 from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.group import Group
-from sheaf.models.member import Member, group_members
+from sheaf.models.member import Member
 from sheaf.models.share import (
     ShareGrant,
     ShareGrantStatus,
@@ -58,6 +61,7 @@ from sheaf.schemas.share import (
     ShareGrantCreate,
     ShareGrantCreated,
     ShareGrantRead,
+    SharePreview,
     ShareViewCreate,
     ShareViewFieldAdd,
     ShareViewGroupAdd,
@@ -67,6 +71,11 @@ from sheaf.schemas.share import (
     ShareViewUpdate,
 )
 from sheaf.services.share_projection import (
+    project_fronting,
+    project_groups,
+    project_members,
+    project_relationships,
+    project_system,
     projectable_fields,
     projectable_groups,
     projectable_relationships,
@@ -219,6 +228,7 @@ def _view_to_read(view: ShareView, *, is_shared: bool) -> ShareViewRead:
                 "member_id": m.member_id,
                 "status": m.status,
                 "activates_at": m.activates_at,
+                "added_via_group_id": m.added_via_group_id,
             }
             for m in view.members
         ],
@@ -487,6 +497,81 @@ async def delete_share_view(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/share-views/{view_id}/preview", response_model=SharePreview)
+async def preview_share_view(
+    view_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SharePreview:
+    """This view, exactly as a visitor would receive it.
+
+    The design doc asks owners to be able to check their own page before anyone
+    else does, and the only version of that worth shipping is one backed by the
+    real projection. Two invariants hold it to that, and both are enforced by
+    construction rather than by remembering:
+
+    1. **Same functions, same flags.** Every section comes from the
+       `share_projection` call the anonymous router makes for that section, with
+       this view passed in unmodified. There is no flag bypass and nothing extra
+       in the payload: a section the view does not serve is `null` here, which
+       is what its 404 means there. If the projection changes, the preview
+       changes with it, so the two cannot drift into disagreeing - and a preview
+       that disagreed with the page would be worse than no preview, because the
+       owner would trust it.
+
+    2. **Publication is not a precondition.** It deliberately does NOT require a
+       grant, or the instance's public switch, or anything else that decides
+       whether the page is currently reachable. Looking at what you are about to
+       publish BEFORE you publish it is the entire point; a preview you can only
+       see once it is already live is a report, not a preview.
+
+    Which leaves the honesty problem those two create together: with no grant
+    check, a preview would happily render a full page for a system whose public
+    surface is suppressed account-wide. So `suppressed` carries the same coarse
+    reason `sharing/audit` reports, from the same helper as the
+    `profile_serving_clause` gate the anonymous resolvers apply. The sections
+    stay populated - "what would visitors see" and "is anyone getting this right
+    now" are separate questions and the client says both - but the preview never
+    claims to be live when it is not.
+
+    Owner-scoped like everything else on this router (`sharing:read`, and
+    `_get_view` 404s another tenant's id), and on the ordinary authenticated
+    limits rather than the public bucket: this is one of the owner's own reads,
+    not anonymous traffic, and putting it in the public per-IP bucket would let
+    an owner previewing their page eat the quota their visitors share.
+    """
+    system = await _get_user_system(user, db)
+    view = await _get_view(view_id, system, db)
+
+    return SharePreview(
+        system=await project_system(db, view, system),
+        # Each of these mirrors one anonymous endpoint's gate, in the same
+        # order it applies there: the flag decides whether the section exists
+        # at all, and the projection decides what is in it.
+        members=(
+            await project_members(db, view, owner_id=system.user_id)
+            if view.include_members
+            else None
+        ),
+        fronting=(
+            await project_fronting(db, view, system)
+            if view.include_fronting
+            else None
+        ),
+        relationships=(
+            await project_relationships(db, view)
+            if view.include_relationships
+            else None
+        ),
+        groups=(
+            await project_groups(db, view, owner_id=system.user_id)
+            if view.include_groups
+            else None
+        ),
+        suppressed=suppression_reason(system, user),
+    )
+
+
 @router.post(
     "/share-views/{view_id}/members",
     response_model=ShareViewRead,
@@ -638,10 +723,31 @@ async def remove_view_group(
 ) -> Response:
     """Drop a group association.
 
-    `remove_members` defaults to True: the members it pulled in go too. The
-    privacy-favouring default, since the usual reason to remove a group is
+    `remove_members` defaults to True: the members THIS GROUP PUT HERE go too.
+    The privacy-favouring default, since the usual reason to remove a group is
     "these people should not be in here". Pass False to keep them as
     individually-chosen members.
+
+    Removal goes by `ShareViewMember.added_via_group_id` - the group expansion
+    that actually created each row - and not by the group's current roster.
+    Those are different sets, and using the roster over-removed in two ordinary
+    cases: a member the owner ALSO picked by hand, and a member an overlapping
+    group brought in, were both pulled out of the view although this group was
+    not the reason they were in it. Detaching a group may only undo what
+    attaching it did.
+
+    The snapshot semantic is untouched in the other direction too, and this is
+    the case that reads backwards until you look at what the row says: somebody
+    who has since LEFT the group is still removed, because their row is stamped
+    with this expansion, so this group is exactly why they are in the view.
+    Leaving the group never moved them out (that is the whole point - group
+    membership does not drive exposure), so detaching the thing that put them
+    there is the act that does.
+
+    Rows whose stamp is NULL are never touched. That covers hand-picked members,
+    rows created before the column existed, and rows whose group has since been
+    deleted (the FK nulls the stamp rather than cascading, so deleting a group
+    cannot silently rewrite anybody's view).
     """
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db)
@@ -658,24 +764,16 @@ async def remove_view_group(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     if remove_members:
-        member_ids = (
+        rows = (
             await db.execute(
-                select(Member.id)
-                .join(group_members, group_members.c.member_id == Member.id)
-                .where(group_members.c.group_id == group_id)
+                select(ShareViewMember).where(
+                    ShareViewMember.view_id == view.id,
+                    ShareViewMember.added_via_group_id == group_id,
+                )
             )
         ).scalars().all()
-        if member_ids:
-            rows = (
-                await db.execute(
-                    select(ShareViewMember).where(
-                        ShareViewMember.view_id == view.id,
-                        ShareViewMember.member_id.in_(member_ids),
-                    )
-                )
-            ).scalars().all()
-            for row in rows:
-                await db.delete(row)
+        for row in rows:
+            await db.delete(row)
 
     await db.delete(link)
     await db.commit()

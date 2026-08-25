@@ -1220,6 +1220,11 @@ export interface ShareViewMemberRow {
   member_id: string;
   status: ShareItemStatus;
   activates_at: string | null;
+  /** The group expansion that put this member in the view, or null when they
+   *  were picked by hand (also null once that group is deleted). This is the
+   *  set detaching that group removes - never the group's current roster, which
+   *  is a different set the moment anyone joins or leaves it. */
+  added_via_group_id?: string | null;
 }
 
 export interface ShareViewFieldRow {
@@ -1470,4 +1475,30 @@ export interface PublicRelationship {
 
 export interface PublicRelationshipsView {
   relationships: PublicRelationship[];
+}
+
+/**
+ * One share view rendered exactly as a visitor would receive it, from
+ * `GET /v1/share-views/{id}/preview`.
+ *
+ * Every section is the SAME payload type the anonymous surface serves, because
+ * the server builds it with the same projection functions - which is what stops
+ * the preview and the real page from drifting apart.
+ *
+ * `null` on a section is the bundle's spelling of that endpoint's 404: the view
+ * does not serve it. Deliberately not an empty list, because empty is a real
+ * state a served section can be in ("nobody is fronting") and the owner needs
+ * to tell that apart from "visitors cannot see who is fronting".
+ */
+export interface SharePreview {
+  system: PublicSystemView;
+  members: PublicMemberView[] | null;
+  fronting: PublicFrontingView | null;
+  relationships: PublicRelationshipsView | null;
+  groups: PublicGroupsView | null;
+  /** Why none of this would reach anybody right now, or null. Same coarse
+   *  values as `ShareAudit.profile_suppressed`. The sections stay populated
+   *  when it is set - the preview answers "what would visitors see", and this
+   *  answers "is anyone getting it", which are different questions. */
+  suppressed: string | null;
 }

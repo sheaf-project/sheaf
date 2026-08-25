@@ -12,6 +12,13 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from sheaf.models.share import ShareSubjectType
+from sheaf.schemas.public_profile import (
+    PublicFrontingView,
+    PublicGroupsView,
+    PublicMemberView,
+    PublicRelationshipsView,
+    PublicSystemView,
+)
 
 # Re-auth fields shared by every action that EXPOSES something. They are only
 # consulted when the action is actually deferred (grace window armed for the
@@ -53,6 +60,11 @@ class ShareViewMemberRead(BaseModel):
     member_id: uuid.UUID
     status: str
     activates_at: datetime | None = None
+    # Which group expansion put this member here, or null for a hand-picked one
+    # (and for a row whose group has since been deleted). Owner-side only, and
+    # it is what detaching that group will remove - so the client can be honest
+    # about the consequence rather than guessing from the group's roster.
+    added_via_group_id: uuid.UUID | None = None
 
 
 class ShareViewFieldRead(BaseModel):
@@ -211,3 +223,37 @@ class ShareAudit(BaseModel):
     # something the owner was already told at login, so naming it here would
     # add a leakable value to buy nothing.
     profile_suppressed: str | None = None
+
+
+class SharePreview(BaseModel):
+    """One view, as a visitor would receive it.
+
+    Every section is the SAME schema the anonymous router serves, produced by
+    the same `share_projection` function, so this cannot describe a page the
+    public surface would not actually render. Nothing is added: an owner-only
+    field here would be an owner-only field that looks like part of the page.
+
+    `null` on a section is this bundle's spelling of the anonymous surface's
+    404. There, a view that does not serve its roster (or fronting, or
+    relationships, or groups) makes that endpoint UNADDRESSABLE rather than
+    empty, so no visitor can distinguish "not published" from "published and
+    empty". Bundling them means a preview has to say which sections did not
+    answer, and null is that: it is not an empty list, because an empty list is
+    a thing a served section can legitimately be and the owner needs to see the
+    difference between the two.
+    """
+
+    system: PublicSystemView
+    members: list[PublicMemberView] | None = None
+    fronting: PublicFrontingView | None = None
+    relationships: PublicRelationshipsView | None = None
+    groups: PublicGroupsView | None = None
+    # Why this would not serve to anyone right now, or None. Same coarse values
+    # and same helper as `ShareAudit.profile_suppressed`. A preview WITHOUT this
+    # would be the most convincing lie the feature could tell: an owner whose
+    # system is set to private would be shown a complete, healthy-looking page
+    # for something the world is getting a 404 for. Deliberately does not blank
+    # the sections - the answer to "what would visitors see" and the answer to
+    # "is anyone getting it" are two different questions, and a preview that
+    # went dark would hide the very content the owner opened it to check.
+    suppressed: str | None = None

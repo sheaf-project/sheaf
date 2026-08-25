@@ -322,7 +322,13 @@ CLASSIFICATION: dict[type, dict] = {
         },
     },
     ShareViewMember: {
-        "exported": {"member_id"},
+        # `added_via_group_id` rides along as the view's `member_sources` map
+        # (old member uuid -> old group uuid), remapped on import through the
+        # same old->new group map the view's `group_ids` use. It is what makes
+        # detaching a group remove the members that group added rather than its
+        # current roster, so a restored backup that lost it would detach the
+        # wrong people - a live privacy behaviour, not bookkeeping.
+        "exported": {"member_id", "added_via_group_id"},
         "excluded": {
             "id": _SURROGATE_PK,
             "view_id": "parent view FK, re-pointed via the old->new view map",

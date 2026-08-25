@@ -648,6 +648,14 @@ def _share_view_dict(view: ShareView) -> dict:
 
     Pending (not-yet-live) rows are exported as ordinary members: since no
     grant comes with them, an imported view exposes nothing regardless.
+
+    `member_sources` carries the group-expansion provenance (old member uuid ->
+    old group uuid) for the members a group put here, so a restored backup
+    detaches groups correctly instead of quietly reverting to "this group added
+    nobody". Kept as a side map rather than folded into `member_ids` so a file
+    written by this version still reads as a plain id list to anything that only
+    knows the old shape. Hand-picked members are simply absent from it, which is
+    also what a file written before this existed looks like: everybody manual.
     """
     return {
         "name": view.name,
@@ -659,6 +667,11 @@ def _share_view_dict(view: ShareView) -> dict:
         "include_groups": view.include_groups,
         "member_permalinks": view.member_permalinks,
         "member_ids": [str(m.member_id) for m in view.members],
+        "member_sources": {
+            str(m.member_id): str(m.added_via_group_id)
+            for m in view.members
+            if m.added_via_group_id is not None
+        },
         "field_ids": [str(f.field_id) for f in view.fields],
         "group_ids": [str(g.group_id) for g in view.groups],
     }
