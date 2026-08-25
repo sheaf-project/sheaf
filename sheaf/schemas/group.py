@@ -3,12 +3,27 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from sheaf.files import normalize_description_urls
+
 
 class GroupCreate(BaseModel):
     name: str = Field(max_length=100)
     description: str | None = None
     color: str | None = Field(default=None, max_length=7)
     parent_id: uuid.UUID | None = None
+
+    # Group descriptions are markdown that renders image embeds, exactly like a
+    # system description or a member bio, so they get the same normalisation
+    # those have always had: our own refs canonicalised to /v1/files/{key} with
+    # signed query params stripped, external refs validated (HTTPS, no internal
+    # IPs) and dropped when the instance policy says so. This was missing here
+    # while every sibling schema had it, which left group descriptions as the
+    # one markdown field where an http:// or internal-IP image survived to the
+    # renderer.
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v: str | None) -> str | None:
+        return normalize_description_urls(v)
 
 
 class GroupUpdate(BaseModel):
@@ -23,6 +38,12 @@ class GroupUpdate(BaseModel):
         if v is None:
             raise ValueError("cannot be null")
         return v
+
+    # Same normalisation as GroupCreate; see the note there.
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v: str | None) -> str | None:
+        return normalize_description_urls(v)
 
 
 class GroupRead(BaseModel):

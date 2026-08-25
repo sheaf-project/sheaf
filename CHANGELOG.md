@@ -6,6 +6,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- **Imported files can no longer smuggle in references to another account's uploads.** Sheaf stores every uploaded image under a path that names the account it belongs to, and when it shows a profile it turns any such reference it finds into a working image link. The importers for other apps' formats (PluralKit, Tupperbox, SimplyPlural, PluralSpace, Prism, Ampersand) copied bios, system and group descriptions and journal entries across word for word, so a hand-edited export file could name an image belonging to a *different* account and have Sheaf serve it from the importing profile - a way to read someone else's uploaded picture, and to keep reading it after they had deleted it. Those importers now drop any reference to Sheaf's own storage on the way in; nothing written in another app can legitimately point at it. Prose and genuinely external images are untouched, and Sheaf's own backup format is unaffected (it already re-homed images to the importing account). Avatar fields get the same treatment, including the case where the reference is dressed up as an ordinary web address on the instance's image host.
+- **Sheaf no longer signs a link to a file that does not belong to the profile it is shown on.** The final step that turns a stored image reference into a working link now checks that the file belongs to the account whose profile, member, or journal entry is being shown, and refuses to sign it otherwise. Previously it signed whatever it was given and trusted that everything writing to those fields had already checked. That trust now sits in one place instead of being spread across every writer, so old rows written before those checks existed, and anything that slips past them in future, cannot produce a working link to someone else's file. Nothing changes for your own images.
+- **Group descriptions now get the same write-time checks as member bios and system descriptions.** Creating or editing a group runs the same two passes those have always had: image addresses are validated and normalised, and a reference to another account's uploaded file is dropped. Groups were the one description field with neither.
+
 ## [1.3.6] - 2026-08-18
 
 ### Fixed

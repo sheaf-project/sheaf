@@ -12,6 +12,7 @@ decrypt the whole table.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sheaf.crypto import blind_index, decrypt, encrypt
@@ -70,11 +71,19 @@ def set_member_note(member: Member, plaintext: str | None) -> None:
 
 def decrypt_member_for_read(
     member: Member,
+    owner_user_id: uuid.UUID,
     *,
     has_bio_revisions: bool = False,
     pending_delete_at: datetime | None = None,
 ) -> MemberRead:
     """Build a MemberRead with name + description decrypted to plaintext.
+
+    `owner_user_id` is the account that owns this member's system, and it is
+    positional-required: MemberRead signs avatar / banner / bio image refs on
+    serialisation, and it will only sign keys that live in this account's
+    namespace. Members are reached from several routers (members, groups,
+    tags), so the id has to be threaded from the request rather than guessed
+    here - Member itself only knows its system_id.
 
     `has_bio_revisions` is opt-in: callers that need an accurate value
     (the /v1/members endpoints, since the bio history button reads it)
@@ -111,6 +120,7 @@ def decrypt_member_for_read(
         "has_bio_revisions": has_bio_revisions,
         "pending_delete_at": pending_delete_at,
         "archived_at": member.archived_at,
+        "owner_user_id": owner_user_id,
     })
 
 

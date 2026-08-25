@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
+from sheaf.files import owned_description_urls
 from sheaf.models.group import Group
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
@@ -115,7 +116,19 @@ async def create_group(
                 detail=f"Group nesting cannot exceed {MAX_GROUP_DEPTH} levels",
             )
 
-    group = Group(system_id=system.id, **body.model_dump())
+    fields = body.model_dump()
+    # Drop embedded refs to another account's storage keys, exactly as the
+    # member and system write handlers do. Groups were the gap: nothing here
+    # ran an ownership pass, so a foreign /v1/files/{key} pasted into a group
+    # description was stored verbatim, ready for the day something renders it.
+    # Enforced at the handler because this is where the authenticated user
+    # exists; the schema validator that runs `normalize_description_urls` has
+    # no request context and cannot know whose keys these are.
+    fields["description"] = owned_description_urls(
+        fields.get("description"), user.id
+    )
+
+    group = Group(system_id=system.id, **fields)
     db.add(group)
     await db.commit()
     groups_created_total.inc()
@@ -153,6 +166,12 @@ async def update_group(
     system = await _get_user_system(user, db)
     group = await _get_own_group(group_id, system, db)
     update_data = body.model_dump(exclude_unset=True)
+
+    # Same ownership pass as create_group; see the note there.
+    if "description" in update_data:
+        update_data["description"] = owned_description_urls(
+            update_data["description"], user.id
+        )
 
     # Validate parent_id if being changed
     if "parent_id" in update_data:
@@ -256,7 +275,7 @@ async def get_group_members(
     group = result.scalar_one_or_none()
     if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return [decrypt_member_for_read(m) for m in group.members]
+    return [decrypt_member_for_read(m, user.id) for m in group.members]
 
 
 @router.put(
@@ -295,4 +314,4 @@ async def set_group_members(
 
     group.members = members
     await db.commit()
-    return [decrypt_member_for_read(m) for m in members]
+    return [decrypt_member_for_read(m, user.id) for m in members]

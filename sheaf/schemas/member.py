@@ -129,13 +129,19 @@ class MemberRead(BaseModel):
     # Set when the member is archived (soft-hidden from lists / switcher /
     # pickers; still shown in history). Null = active.
     archived_at: datetime | None = None
+    # The account that owns this row's uploads. Required, and excluded from
+    # the response: it exists purely so the serialisers below can tell "this
+    # profile's own file" from "somebody else's key sitting in this column".
+    # Required rather than defaulted so a construction site that forgets it
+    # fails loudly instead of silently signing whatever it was handed.
+    owner_user_id: uuid.UUID = Field(exclude=True)
 
     model_config = {"from_attributes": True}
 
     @field_serializer("avatar_url", "banner_url")
     def _sign_avatar_url(self, v: str | None) -> str | None:
-        return resolve_avatar_url(v)
+        return resolve_avatar_url(v, self.owner_user_id)
 
     @field_serializer("description")
     def _sign_description_urls(self, v: str | None) -> str | None:
-        return resolve_description_urls(v)
+        return resolve_description_urls(v, self.owner_user_id)

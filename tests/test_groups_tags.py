@@ -202,3 +202,56 @@ def test_member_side_tag_set_rejects_unknown_tag(auth_client: httpx.Client):
         json={"tag_ids": [str(uuid.uuid4())]},
     )
     assert resp.status_code == 400
+
+
+# --- Group descriptions get the same ownership filter as bios --------------
+
+
+_FOREIGN_EMBED = (
+    "![x](/v1/files/avatars/22222222-2222-2222-2222-222222222222/stolen.png)"
+)
+
+
+def test_create_group_strips_foreign_image_ref(auth_client: httpx.Client):
+    """A storage key from another account must not be persisted here.
+
+    Members and systems have filtered this on write for a while; groups were
+    the gap. Anything that later renders a group description would re-sign
+    whatever key it found into a working serve URL for somebody else's file.
+    """
+    resp = auth_client.post(
+        "/v1/groups",
+        json={"name": "FilterMe", "description": f"mine {_FOREIGN_EMBED}"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert "/v1/files/" not in (body["description"] or ""), body
+    assert "mine" in (body["description"] or ""), body
+
+
+def test_update_group_strips_foreign_image_ref(auth_client: httpx.Client):
+    created = auth_client.post("/v1/groups", json={"name": "FilterMeToo"})
+    group_id = created.json()["id"]
+
+    resp = auth_client.patch(
+        f"/v1/groups/{group_id}",
+        json={"description": f"mine {_FOREIGN_EMBED}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "/v1/files/" not in (body["description"] or ""), body
+    assert "mine" in (body["description"] or ""), body
+
+
+def test_update_group_keeps_external_image_ref(auth_client: httpx.Client):
+    """The filter is about ownership, not about images: an external URL is
+    still the owner's call (subject to the instance's hotlink policy)."""
+    created = auth_client.post("/v1/groups", json={"name": "KeepExternal"})
+    group_id = created.json()["id"]
+
+    resp = auth_client.patch(
+        f"/v1/groups/{group_id}",
+        json={"description": "![pic](https://gravatar.com/x.png)"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "gravatar.com/x.png" in resp.json()["description"]

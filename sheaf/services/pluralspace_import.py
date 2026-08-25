@@ -127,6 +127,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
 from sheaf.services.import_media import (
     ImportImageError,
@@ -538,7 +539,18 @@ async def run_import(
         # member `description` (the bio, encrypted Text) is intentionally
         # uncapped, matching the create API; only `note` carries M_NOTE and
         # PluralSpace exports have no note-equivalent field to map.
-        plaintext_description = _clean_str(m_data.get("description"))
+        #
+        # It is also markdown authored in another app, so it goes through the
+        # internal-image strip first. An embed pointing at this instance's
+        # storage (/v1/files/..., the CDN host, or a bare key) is re-signed
+        # into a live capability URL on every read, so a crafted export could
+        # name another account's upload key and read that file through the
+        # importing user's own profile, indefinitely and past a delete. A
+        # PluralSpace export has no legitimate internal Sheaf ref to keep, so
+        # all of them are dropped; external images and prose are untouched.
+        plaintext_description = strip_internal_image_refs_md_to_none(
+            _clean_str(m_data.get("description"))
+        )
         member_id = uuid.uuid4()
         member = Member(
             id=member_id,
@@ -791,7 +803,10 @@ def _apply_system_profile(data: dict, system: System, report: ClampReport) -> No
     name = _clean_str(sys_data.get("name"))
     if name and not system.name:
         system.name = clamp_str(name, il.SYS_NAME, report=report)
-    description = _clean_str(sys_data.get("description"))
+    # Same reason as the member description above.
+    description = strip_internal_image_refs_md_to_none(
+        _clean_str(sys_data.get("description"))
+    )
     if description and not system.description:
         # System description (the long bio) is intentionally uncapped, like the
         # create API; only `note` carries the SYS_NOTE business cap and
@@ -907,7 +922,10 @@ async def _import_groups(
                 id=uuid.uuid4(),
                 system_id=system_id,
                 name=clamp_str(name, il.GROUP_NAME, report=report),
-                description=_clean_str(g_data.get("description")),
+                # Same reason as the member description above.
+                description=strip_internal_image_refs_md_to_none(
+                    _clean_str(g_data.get("description"))
+                ),
                 color=_normalize_color(g_data.get("color")),
             )
             db.add(group)
@@ -1222,7 +1240,15 @@ async def _import_journals(
         if not isinstance(j_data, dict):
             continue
         title = _clean_str(j_data.get("title"))
-        body = _clean_str(j_data.get("content")) or ""
+        # Same cross-tenant capability risk as the descriptions above:
+        # a journal body is re-signed on read (`schemas/journal.py` runs
+        # `resolve_description_urls` over it), so an internal Sheaf storage
+        # key smuggled in through a crafted export would come back as a
+        # live serve URL for somebody else's upload. A journal written in
+        # another app has no legitimate Sheaf ref to preserve.
+        body = strip_internal_image_refs_md_to_none(
+            _clean_str(j_data.get("content"))
+        ) or ""
         # PluralSpace inlines `{id, name}` for each referenced member;
         # the name is plaintext, so we can use it directly for author
         # attribution without decrypting the Sheaf row.

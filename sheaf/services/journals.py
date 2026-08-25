@@ -377,10 +377,19 @@ def revision_plaintext(revision: ContentRevision) -> tuple[str | None, str]:
     return title, body
 
 
-def decrypt_revision_for_read(revision: ContentRevision) -> dict:
-    """Build a dict suitable for ContentRevisionRead.model_validate(...)."""
+def decrypt_revision_for_read(
+    revision: ContentRevision, owner_user_id: uuid.UUID
+) -> dict:
+    """Build a dict suitable for ContentRevisionRead.model_validate(...).
+
+    `owner_user_id` is the account that owns the revision's target, and it is
+    positional-required because ContentRevisionRead only signs image refs whose
+    storage keys sit in that account's namespace. `revision.user_id` is NOT a
+    substitute: it names the editor, and it is null on imported history.
+    """
     title, body = revision_plaintext(revision)
     return {
+        "owner_user_id": owner_user_id,
         "id": revision.id,
         "target_type": revision.target_type,
         "target_id": revision.target_id,
@@ -408,10 +417,19 @@ def entry_plaintext(entry: JournalEntry) -> tuple[str | None, str]:
     return title, body
 
 
-def decrypt_entry_for_read(entry: JournalEntry) -> dict:
-    """Build a dict suitable for JournalEntryRead.model_validate(...)."""
+def decrypt_entry_for_read(
+    entry: JournalEntry, owner_user_id: uuid.UUID
+) -> dict:
+    """Build a dict suitable for JournalEntryRead.model_validate(...).
+
+    `owner_user_id` is positional-required for the same reason it is on
+    `decrypt_revision_for_read`: the body's image refs are only signed when
+    their keys belong to that account, and `entry.author_user_id` is the
+    person who wrote it (null on imported entries), not the owner.
+    """
     title, body = entry_plaintext(entry)
     return {
+        "owner_user_id": owner_user_id,
         "id": entry.id,
         "system_id": entry.system_id,
         "member_id": entry.member_id,

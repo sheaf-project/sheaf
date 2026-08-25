@@ -293,3 +293,46 @@ def test_reimport_dedups_members(auth_client: httpx.Client):
     # Members match by name on the second pass; none re-created.
     assert final["counts"]["members_imported"] == 0
     assert final["counts"]["members_skipped"] >= 1
+
+
+# --- Foreign exports cannot smuggle in this instance's storage keys ---------
+
+
+def test_import_strips_internal_image_refs(auth_client: httpx.Client):
+    """Sheaf keys uploads as `{prefix}/{user_id}/{uuid}.{ext}` and re-signs any
+    internal key it finds in a bio, description or journal body into a working
+    serve URL. A hand-edited Ampersand file naming another account's key would
+    otherwise become a live cross-tenant read through the importing user's own
+    profile. Nothing in an Ampersand export legitimately references Sheaf
+    storage, so every internal ref is dropped on the way in - the prose and any
+    genuinely external image around it are untouched."""
+    victim_key = "avatars/22222222-2222-2222-2222-222222222222/stolen.png"
+    poison = f"mine ![x](/v1/files/{victim_key})"
+
+    data = _sample_data(with_avatar=False)
+    db = data["database"]
+    db["members"][0]["description"] = poison
+    db["systems"][0]["description"] = poison
+    db["journalPosts"][0]["body"] = poison
+    db["notes"][0]["content"] = poison
+
+    job = _post_file(auth_client, data, options={"notes": True})
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    member = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "Member0"
+    )
+    assert "/v1/files/" not in (member["description"] or ""), member
+    assert "mine" in (member["description"] or ""), member
+
+    group = next(
+        g for g in auth_client.get("/v1/groups").json() if g["name"] == "Root system"
+    )
+    assert "/v1/files/" not in (group["description"] or ""), group
+
+    bodies = [e["body"] for e in auth_client.get("/v1/journals").json()["items"]]
+    assert bodies, "expected the imported journal + note"
+    for body in bodies:
+        assert "/v1/files/" not in body, bodies
