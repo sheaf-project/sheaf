@@ -1299,11 +1299,14 @@ map $request_uri $sheaf_csp {
 }
 
 # /s/{token} and its API route both carry the unlisted share-link bearer.
-# Exclude them from nginx access logs in both the redirect and TLS servers.
+# /v1/public/files/ carries an owner id in the path and a live signed token
+# in the query. Exclude all three from nginx access logs in both the redirect
+# and TLS servers.
 map $request_uri $sheaf_access_loggable {
     default                  1;
     ~^/s/                    0;
     ~^/v1/public/shared/     0;
+    ~^/v1/public/files/      0;
 }
 
 # Redirect plain HTTP to HTTPS

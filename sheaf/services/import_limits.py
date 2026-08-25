@@ -45,6 +45,10 @@ M_NAME = Cap("member name", 100)
 M_DISPLAY_NAME = Cap("member display name", 100)
 M_PRONOUNS = Cap("member pronouns", 100)
 M_NOTE = Cap("member note", 5000)
+# Long-form markdown bio. Mirrors MemberCreate.description (20k); the cap is a
+# storage/parse backstop so an import can't land a description the write API
+# would reject and then feed an oversized body to the superlinear markdown parse.
+M_DESCRIPTION = Cap("member description", 20000)
 M_AVATAR_URL = Cap("member avatar URL", 500)
 M_BANNER_URL = Cap("member banner URL", 500)
 M_COLOR = Cap("member color", 7)
@@ -56,6 +60,8 @@ M_EMOJI = Cap("member emoji", 8)
 # Mirrors sheaf/schemas/system.py.
 SYS_NAME = Cap("system name", 100)
 SYS_NOTE = Cap("system note", 5000)
+# Mirrors SystemCreate.description (20k). See M_DESCRIPTION.
+SYS_DESCRIPTION = Cap("system description", 20000)
 SYS_TAG = Cap("system tag", 8)
 SYS_AVATAR_URL = Cap("system avatar URL", 500)
 SYS_COLOR = Cap("system color", 7)
@@ -64,6 +70,8 @@ SYS_COLOR = Cap("system color", 7)
 # Mirrors sheaf/schemas/group.py and sheaf/schemas/tag.py.
 GROUP_NAME = Cap("group name", 100)
 GROUP_COLOR = Cap("group color", 7)
+# Mirrors GroupCreate.description (20k). See M_DESCRIPTION.
+GROUP_DESCRIPTION = Cap("group description", 20000)
 TAG_NAME = Cap("tag name", 50)
 TAG_COLOR = Cap("tag color", 7)
 

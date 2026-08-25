@@ -725,28 +725,37 @@ def preview(data: dict) -> SheafPreviewSummary:
     if system:
         summary.system_name = system.get("name")
 
-    members = data.get("members", [])
+    # Every count runs through _as_list so a malformed upload that puts a
+    # non-list under one of these keys (e.g. {"members": 5}) yields a clean 0
+    # here - and a clean 400 upstream - instead of a 500 from len()/iteration
+    # over a scalar. measure_native_payload already guards the same way.
+    members = _as_list(data.get("members"))
     summary.member_count = len(members)
     summary.members = [
         {"id": m.get("id", ""), "name": m.get("name", "unnamed")}
         for m in members
+        if isinstance(m, dict)
     ]
 
-    summary.front_count = len(data.get("fronts", []))
-    summary.group_count = len(data.get("groups", []))
-    summary.tag_count = len(data.get("tags", []))
-    summary.custom_field_count = len(data.get("custom_fields", []))
-    summary.journal_count = len(data.get("journals", []))
-    summary.message_count = len(data.get("messages", []))
-    summary.poll_count = len(data.get("polls", []))
-    summary.open_poll_count = count_incoming_open_polls(data.get("polls", []))
-    summary.reminder_count = len(data.get("reminders", []))
+    summary.front_count = len(_as_list(data.get("fronts")))
+    summary.group_count = len(_as_list(data.get("groups")))
+    summary.tag_count = len(_as_list(data.get("tags")))
+    summary.custom_field_count = len(_as_list(data.get("custom_fields")))
+    summary.journal_count = len(_as_list(data.get("journals")))
+    summary.message_count = len(_as_list(data.get("messages")))
+    summary.poll_count = len(_as_list(data.get("polls")))
+    summary.open_poll_count = count_incoming_open_polls(_as_list(data.get("polls")))
+    summary.reminder_count = len(_as_list(data.get("reminders")))
     summary.channel_count = sum(
-        len(t.get("channels", [])) for t in data.get("watch_tokens", [])
+        len(_as_list(t.get("channels")))
+        for t in _as_list(data.get("watch_tokens"))
+        if isinstance(t, dict)
     )
-    summary.relationship_type_count = len(data.get("relationship_types", []))
-    summary.member_relationship_count = len(data.get("member_relationships", []))
-    summary.group_relationship_count = len(data.get("group_relationships", []))
+    summary.relationship_type_count = len(_as_list(data.get("relationship_types")))
+    summary.member_relationship_count = len(
+        _as_list(data.get("member_relationships"))
+    )
+    summary.group_relationship_count = len(_as_list(data.get("group_relationships")))
 
     report = ClampReport()
     measure_native_payload(data, report)
@@ -755,7 +764,7 @@ def preview(data: dict) -> SheafPreviewSummary:
             "fronts": summary.front_count,
             "journal_entries": summary.journal_count,
             "messages": summary.message_count,
-            "revisions": len(data.get("revisions", [])),
+            "revisions": len(_as_list(data.get("revisions"))),
             "polls": summary.poll_count,
             "groups": summary.group_count,
             "tags": summary.tag_count,
@@ -917,9 +926,13 @@ async def run_import(
                 system.name = clamp_str(sys_data["name"], il.SYS_NAME, report=report)
             if sys_data.get("description") is not None:
                 # Strip any /v1/files/... image embeds - those keys belong
-                # to the exporting account, not this one.
+                # to the exporting account, not this one. Clamp before the
+                # markdown rewrite so the length bound also caps the superlinear
+                # image parse, not just the stored bytes.
                 system.description = _resolve_md(
-                    sys_data["description"]
+                    clamp_str(
+                        sys_data["description"], il.SYS_DESCRIPTION, report=report
+                    )
                 )
             if sys_data.get("tag") is not None:
                 system.tag = (
@@ -1064,8 +1077,12 @@ async def run_import(
         # persists, so its keys must not count as used or the archive
         # importer would keep blobs nothing references.
         member_used: set[str] = set()
+        # Clamp before the markdown rewrite so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         plaintext_description = rewrite_internal_image_refs_md(
-            m_data.get("description"), _ikm, member_used
+            clamp_str(m_data.get("description"), il.M_DESCRIPTION, report=report),
+            _ikm,
+            member_used,
         )
         plaintext_note = clamp_str(
             rewrite_internal_image_refs_md_to_none(
@@ -1186,9 +1203,9 @@ async def run_import(
         resolution = await resolve_member(
             member, index=index, strategy=conflict_strategy, db=db, system=system
         )
-        if resolution.privacy_held_name:
+        if resolution.privacy_held_member_id:
             result.members_privacy_skipped += 1
-            warnings.append(privacy_hold_warning(resolution.privacy_held_name))
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1
@@ -1385,7 +1402,11 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
-                description=_resolve_md(g_data.get("description")),
+                description=_resolve_md(
+                    clamp_str(
+                        g_data.get("description"), il.GROUP_DESCRIPTION, report=report
+                    )
+                ),
                 color=clamp_str(g_data.get("color"), il.GROUP_COLOR, report=report),
                 privacy=privacy,
             )
@@ -1604,6 +1625,15 @@ async def run_import(
         .all()
     )
     now = datetime.now(UTC)
+    # _MAX_SHARE_VIEWS bounds the work one job can force; this bounds the total
+    # a system may hold, the same per-tenant ceiling create_share_view enforces.
+    # existing_view_names starts as the live view set and grows as we add, so its
+    # length is the current count. Without this, repeated imports would stack
+    # views past the product limit that the create API refuses to cross.
+    from sheaf.config import settings
+
+    views_max = settings.share_views_max
+    share_view_cap_warned = False
     malformed_views = 0
     for v_data in _as_list(data.get("share_views"))[:_MAX_SHARE_VIEWS]:
         if not isinstance(v_data, dict):
@@ -1621,6 +1651,16 @@ async def run_import(
                 "exists and merging into it could publish members that view "
                 "is already shared with"
             )
+            continue
+        if len(existing_view_names) >= views_max:
+            result.share_views_skipped += 1
+            if not share_view_cap_warned:
+                warnings.append(
+                    f"Skipped one or more share views - this system is at its "
+                    f"limit of {views_max} share views. Delete some you no "
+                    "longer need and re-import if you still want them."
+                )
+                share_view_cap_warned = True
             continue
         existing_view_names.add(name)
 

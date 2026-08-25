@@ -9,7 +9,11 @@ from sheaf.models.system import PrivacyLevel
 
 class GroupCreate(BaseModel):
     name: str = Field(max_length=100)
-    description: str | None = None
+    # Long-form markdown, capped for the same reason a member bio is: the
+    # image/footnote parse is superlinear and runs on the event loop (write path
+    # and public projection), so an unbounded description is a cheap DoS lever.
+    # 20k chars is generous for a real group description. See schemas/member.py.
+    description: str | None = Field(default=None, max_length=20000)
     color: str | None = Field(default=None, max_length=7)
     parent_id: uuid.UUID | None = None
     # Born private unless asked otherwise, and asking otherwise runs the same
@@ -42,7 +46,8 @@ class GroupCreate(BaseModel):
 
 class GroupUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # See GroupCreate.description for the cap rationale.
+    description: str | None = Field(default=None, max_length=20000)
     color: str | None = Field(default=None, max_length=7)
     parent_id: uuid.UUID | None = None
     privacy: PrivacyLevel | None = None

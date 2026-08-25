@@ -47,6 +47,18 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
+    # The anonymous public-file route puts an owner id in the path and a live
+    # signed token in the query. Keep it out of the access log too; the app
+    # redacts the same segments in its own logs.
+    location ^~ /v1/public/files/ {
+        access_log off;
+        proxy_pass http://app:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
     location / {
         proxy_pass http://app:8000;
         proxy_set_header Host $host;

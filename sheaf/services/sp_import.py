@@ -425,8 +425,15 @@ async def run_import(
         # SimplyPlural file can legitimately point at Sheaf storage, so all
         # internal refs are dropped and external images plus the surrounding
         # prose survive unchanged.
+        # Clamp before the strip/parse so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         sp_desc = strip_internal_image_refs_md_to_none(
-            _coerce_str(sp_user.get("desc")) or _coerce_str(sp_settings.get("desc"))
+            clamp_str(
+                _coerce_str(sp_user.get("desc"))
+                or _coerce_str(sp_settings.get("desc")),
+                il.SYS_DESCRIPTION,
+                report=report,
+            )
         )
         if sp_desc:
             system.description = sp_desc
@@ -456,9 +463,9 @@ async def run_import(
         )
         if sp_id:
             sp_id_to_name[sp_id] = plaintext_name
-        # Same reason as the system description above.
+        # Same reason as the system description above (strip + length cap).
         plaintext_description = strip_internal_image_refs_md_to_none(
-            _coerce_str(sp_m.get("desc"))
+            clamp_str(_coerce_str(sp_m.get("desc")), il.M_DESCRIPTION, report=report)
         )
         member_id = uuid.uuid4()
         member = Member(
@@ -576,9 +583,9 @@ async def run_import(
             db=db,
             system=system,
         )
-        if resolution.privacy_held_name:
+        if resolution.privacy_held_member_id:
             result.members_privacy_skipped += 1
-            warnings.append(privacy_hold_warning(resolution.privacy_held_name))
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1
@@ -597,9 +604,9 @@ async def run_import(
             db=db,
             system=system,
         )
-        if resolution.privacy_held_name:
+        if resolution.privacy_held_member_id:
             result.members_privacy_skipped += 1
-            warnings.append(privacy_hold_warning(resolution.privacy_held_name))
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.custom_fronts_imported += 1
@@ -717,11 +724,16 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
-                # Same reason as the system description above. The _coerce_str
-                # matches `name` just above it: without it a non-string `desc`
-                # (a dict, a number, a list) would reach a Text column as-is.
+                # Same reason as the system description above (strip + length
+                # cap). The _coerce_str matches `name` just above it: without it
+                # a non-string `desc` (a dict, a number, a list) would reach a
+                # Text column as-is.
                 description=strip_internal_image_refs_md_to_none(
-                    _coerce_str(sp_g.get("desc"))
+                    clamp_str(
+                        _coerce_str(sp_g.get("desc")),
+                        il.GROUP_DESCRIPTION,
+                        report=report,
+                    )
                 ),
                 color=_normalize_color(sp_g.get("color")),
             )
@@ -991,6 +1003,14 @@ async def _import_messages(
         author = all_sp_to_member.get(sender) if sender else None
         if sender and author is None:
             missing_authors += 1
+        # Same internal-image strip the descriptions and journal bodies get: a
+        # message body is markdown too, so an embed naming this instance's
+        # storage would otherwise re-sign into a live cross-tenant read on
+        # display. The length clamp is a silent storage backstop (the preview
+        # does not walk message bodies, so nothing to surface); the create path
+        # enforces the same MESSAGE_BODY cap.
+        body = strip_internal_image_refs_md_to_none(body) or ""
+        body = clamp_str(body, il.MESSAGE_BODY)
         message_id = uuid.uuid4()
         message = Message(
             id=message_id,

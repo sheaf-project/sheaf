@@ -15,7 +15,13 @@ from sheaf.models.system import PrivacyLevel
 class MemberCreate(BaseModel):
     name: str = Field(max_length=100)
     display_name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # Bios are long-form markdown, so this cap is generous, but it is not
+    # unbounded: the markdown image/footnote parse is superlinear and runs
+    # synchronously (both on write and in the public projection), so an
+    # unbounded description is a cheap way to pin the event loop. Every sibling
+    # field is capped; this one was the gap. 20k chars is roomy for a real bio
+    # while keeping the worst-case parse bounded.
+    description: str | None = Field(default=None, max_length=20000)
     pronouns: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = Field(default=None, max_length=500)
     banner_url: str | None = Field(default=None, max_length=500)
@@ -47,7 +53,8 @@ class MemberCreate(BaseModel):
 class MemberUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     display_name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # See MemberCreate.description for the cap rationale.
+    description: str | None = Field(default=None, max_length=20000)
     pronouns: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = Field(default=None, max_length=500)
     banner_url: str | None = Field(default=None, max_length=500)

@@ -319,8 +319,14 @@ async def run_import(
         # owner deleting or un-sharing it. An Ampersand export has no
         # legitimate internal Sheaf ref to preserve, so all of them go;
         # external images and the surrounding text are left alone.
+        # Clamp before the strip/parse so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         plaintext_desc = strip_internal_image_refs_md_to_none(
-            _coerce_str(amp_m.get("description"))
+            clamp_str(
+                _coerce_str(amp_m.get("description")),
+                il.M_DESCRIPTION,
+                report=report,
+            )
         )
         member_id = uuid.uuid4()
         member = Member(
@@ -366,9 +372,9 @@ async def run_import(
             db=db,
             system=system,
         )
-        if resolution.privacy_held_name:
+        if resolution.privacy_held_member_id:
             result.members_privacy_skipped += 1
-            warnings.append(privacy_hold_warning(resolution.privacy_held_name))
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         amp_id = _coerce_str(amp_m.get("uuid")) or ""
         if resolution.disposition == "created":
             db.add(resolution.member)
@@ -509,9 +515,13 @@ async def _import_systems_as_groups(
             id=uuid.uuid4(),
             system_id=system.id,
             name=name,
-            # Same reason as the member description above.
+            # Same reason as the member description above (strip + length cap).
             description=strip_internal_image_refs_md_to_none(
-                _coerce_str(amp_s.get("description"))
+                clamp_str(
+                    _coerce_str(amp_s.get("description")),
+                    il.GROUP_DESCRIPTION,
+                    report=report,
+                )
             ),
             color=_normalize_color(amp_s.get("color")),
         )
@@ -986,6 +996,10 @@ async def _import_board(
         title = _coerce_str(amp_b.get("title"))
         raw_body = _coerce_str(amp_b.get("body")) or ""
         body = f"**{title}**\n\n{raw_body}".strip() if title else raw_body
+        # A board-message body is markdown, so strip embeds pointing at this
+        # instance's storage (else they re-sign into a live cross-tenant read on
+        # display), same as the journal bodies above. Clamp follows below.
+        body = strip_internal_image_refs_md_to_none(body) or ""
         message_id = uuid.uuid4()
         message = Message(
             id=message_id,
@@ -1010,6 +1024,8 @@ async def _import_board(
                 continue
             c_author = amp_id_to_member.get(_coerce_str(amp_c.get("member")) or "")
             c_body = _coerce_str(amp_c.get("comment")) or ""
+            # Same internal-image strip as the parent post body.
+            c_body = strip_internal_image_refs_md_to_none(c_body) or ""
             reply_id = uuid.uuid4()
             reply = Message(
                 id=reply_id,
@@ -1147,7 +1163,11 @@ async def _import_reminders(
     made = 0
     for amp_r in reminders:
         title = _coerce_str(amp_r.get("title")) or "reminder"
-        message_body = _coerce_str(amp_r.get("message"))
+        # A reminder body is markdown; strip embeds pointing at this instance's
+        # storage (cross-tenant read guard), keeping None when there is no body.
+        message_body = strip_internal_image_refs_md_to_none(
+            _coerce_str(amp_r.get("message"))
+        )
         trigger = _coerce_str(amp_r.get("trigger"))
         trigger_event = "stop" if trigger == "fronted" else "start"
         delay = amp_r.get("delay")
