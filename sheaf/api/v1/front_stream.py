@@ -25,7 +25,7 @@ from sheaf.api.v1.fronts import serialize_open_fronts_for_stream
 from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.sessions import get_redis, get_session_user_id
 from sheaf.config import settings
-from sheaf.database import async_session_factory
+from sheaf.database import request_session
 from sheaf.models.user import User
 from sheaf.observability.metrics import (
     realtime_connection_duration_seconds,
@@ -122,7 +122,7 @@ async def _recheck_auth(ctx: dict) -> tuple[bool, str | None]:
 
         from sheaf.models.api_key import ApiKey
 
-        async with async_session_factory() as db:
+        async with request_session() as db:
             row = await db.get(ApiKey, ctx["api_key_id"])
         if row is None:
             return False, "auth_revoked"
@@ -215,7 +215,7 @@ async def _stream(
         # Snapshot in a short-lived session CLOSED before we start yielding, so
         # no DB connection is held while the stream is open. Building the whole
         # snapshot first also means a slow client cannot pin the connection.
-        async with async_session_factory() as db:
+        async with request_session() as db:
             snapshots = [
                 build_snapshot_payload(
                     sid,
@@ -356,7 +356,7 @@ async def stream_fronts(
     # after the response finishes, and a stream finishes only when it closes, so
     # the pooled Postgres connection would sit idle-in-transaction for the whole
     # connection and eventually exhaust the pool, blocking every other request.
-    async with async_session_factory() as db:
+    async with request_session() as db:
         system_ids = await authorized_front_system_ids(user, db)
     account_key = str(user.id)
     auth_ctx = _auth_context(request)

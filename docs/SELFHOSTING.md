@@ -109,6 +109,18 @@ Sheaf refuses to start in `saas` mode if this is left at the default, and logs a
 
 **If not set**, a key is auto-generated on first startup and saved to `data/encryption.key` inside the Docker volume. **Back this file up.** Prefer setting `SHEAF_ENCRYPTION_KEY` explicitly so the key isn't tied to a single volume.
 
+### Postgres safety limits (recommended)
+
+By default Postgres lets a single query spill unlimited temporary files to disk while it works. One runaway query can therefore fill the volume Postgres lives on and take the whole database down for every user - not just fail itself. Capping it turns that failure mode into "the one query errors out":
+
+```sql
+ALTER SYSTEM SET temp_file_limit = '2GB';   -- generous for a small instance
+ALTER SYSTEM SET log_temp_files = '64MB';   -- log any query spilling more than this
+SELECT pg_reload_conf();
+```
+
+Run once via `psql` against your database (for the bundled container: `docker compose exec db psql -U sheaf`). Pick a `temp_file_limit` well below the free space on the database volume. `log_temp_files` gives you a log line naming any unusually hungry query, which is the breadcrumb you want if something ever does hit the cap.
+
 ### Compose managers that don't use a `.env` file
 
 Some stack managers keep the environment in a differently-named file: OpenMediaVault's compose plugin writes `sheaf.env`, Portainer keeps stack env in its own database, and so on. Sheaf's `docker-compose.yml` loads the app's config from a file literally named `.env`, so if your manager uses another name the app receives none of its env-file settings and falls back to defaults. The classic symptom on a brand-new stack is `password authentication failed for user "sheaf"`: Postgres was created with your `POSTGRES_PASSWORD`, but the app never saw it.

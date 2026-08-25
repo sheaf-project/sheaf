@@ -726,3 +726,107 @@ def test_sp_imports_chatmessages_flat_array(auth_client: httpx.Client):
     assert final["counts"].get("messages_imported", 0) == 1, final["counts"]
     bodies = [m["body"] for m in auth_client.get("/v1/export").json()["messages"]]
     assert any("flat hello" in b for b in bodies), bodies
+
+
+# --- Foreign exports cannot smuggle in this instance's storage keys ---------
+#
+# Sheaf keys uploads as `{prefix}/{user_id}/{uuid}.{ext}` and re-signs any
+# internal key it finds in a bio or description into a working serve URL. A
+# hand-edited export naming another account's key would therefore become a
+# live cross-tenant read through the importing user's own profile. No SP or TB
+# file has a legitimate reason to reference Sheaf storage, so every internal
+# ref is dropped on the way in.
+
+_VICTIM_KEY = "avatars/22222222-2222-2222-2222-222222222222/stolen.png"
+
+
+def test_sp_strips_internal_image_refs_from_descriptions(
+    auth_client: httpx.Client,
+):
+    poison = f"mine ![x](/v1/files/{_VICTIM_KEY})"
+    payload = _sp_payload(
+        users=[{"_id": "ownerX", "uid": "ownerX", "username": "Sys", "desc": poison}],
+        members=[
+            {"_id": "spm1", "name": "RefAlice", "private": False, "desc": poison},
+        ],
+        groups=[{"_id": "spg1", "name": "RefGroup", "desc": poison}],
+    )
+    job = _post_file(
+        auth_client,
+        source="simplyplural_file",
+        payload=payload,
+        options={"system_profile": True},
+    )
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    member = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "RefAlice"
+    )
+    assert "/v1/files/" not in (member["description"] or ""), member
+    # The surrounding prose is the user's own writing and survives.
+    assert "mine" in (member["description"] or ""), member
+
+    group = next(
+        g for g in auth_client.get("/v1/groups").json() if g["name"] == "RefGroup"
+    )
+    assert "/v1/files/" not in (group["description"] or ""), group
+
+
+def test_sp_drops_avatar_url_pointing_at_our_own_storage(
+    auth_client: httpx.Client,
+):
+    """A bare storage key in `avatarUrl` is not an external URL, whatever the
+    export claims. It must not survive into avatar_url, where it would be
+    signed on every read."""
+    payload = _sp_payload(
+        members=[
+            {
+                "_id": "spm1",
+                "name": "RefBob",
+                "private": False,
+                "avatarUrl": f"/v1/files/{_VICTIM_KEY}",
+            },
+        ],
+    )
+    job = _post_file(auth_client, source="simplyplural_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    member = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "RefBob"
+    )
+    assert not member["avatar_url"], member
+
+
+def test_tb_strips_internal_image_refs_from_descriptions(
+    auth_client: httpx.Client,
+):
+    poison = f"mine ![x](/v1/files/{_VICTIM_KEY})"
+    payload = json.dumps(
+        {
+            "tuppers": [
+                {"id": 901, "name": "RefTupper", "description": poison, "group_id": 91},
+            ],
+            "groups": [{"id": 91, "name": "RefTupperGroup", "description": poison}],
+        }
+    ).encode()
+    job = _post_file(auth_client, source="tupperbox_file", payload=payload)
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    member = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "RefTupper"
+    )
+    assert "/v1/files/" not in (member["description"] or ""), member
+    assert "mine" in (member["description"] or ""), member
+
+    group = next(
+        g
+        for g in auth_client.get("/v1/groups").json()
+        if g["name"] == "RefTupperGroup"
+    )
+    assert "/v1/files/" not in (group["description"] or ""), group
