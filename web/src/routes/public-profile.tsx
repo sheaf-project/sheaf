@@ -228,11 +228,6 @@ function PublicPageHeader({
 export function PublicProfileView({ source }: { source: Source }) {
   useNoIndex();
 
-  // Which member's card is open in place. Only ever used when the view has no
-  // permalinks; with them on, opening a member is a navigation.
-  const [openMemberId, setOpenMemberId] = useState<string | null>(null);
-  const [tab, setTab] = useState<string | null>(null);
-
   // The whole page's liveness gate. It polls like everything else here, and
   // when it starts 404ing the profile is gone: the render below flips to the
   // not-available state and `useClearOnRevocation` empties the rest.
@@ -320,21 +315,6 @@ export function PublicProfileView({ source }: { source: Source }) {
 
   useClearOnRevocation(source, system.isError);
 
-  const memberList = members.data ?? null;
-  const permalinks = system.data?.member_permalinks ?? false;
-  const byId = useMemo(
-    () => new Map((memberList ?? []).map((m) => [m.id, m])),
-    [memberList],
-  );
-  const nav = useMemo<MemberNav>(
-    () => ({
-      linkTo: permalinks ? (id: string) => memberPath(source, id) : null,
-      open: (id: string) => setOpenMemberId(id),
-      card: (id: string) => byId.get(id),
-    }),
-    [permalinks, byId, source],
-  );
-
   if (system.isLoading) {
     return (
       <Centered>
@@ -347,13 +327,93 @@ export function PublicProfileView({ source }: { source: Source }) {
     return <NotAvailable />;
   }
 
-  const sys = system.data;
+  return (
+    <PublicProfileBody
+      system={system.data}
+      members={members.data ?? null}
+      fronting={fronting.data ?? null}
+      relationships={relationships.data ?? null}
+      groups={groups.data ?? null}
+      // The real page honours the view's permalink setting; the preview cannot
+      // (see `PublicProfileBody`).
+      linkTo={
+        system.data.member_permalinks
+          ? (id: string) => memberPath(source, id)
+          : null
+      }
+      notice={
+        source.kind === "link"
+          ? "You're viewing a shared profile."
+          : "You're viewing a public profile."
+      }
+    />
+  );
+}
+
+/**
+ * Everything a public profile page IS, with the fetching taken out.
+ *
+ * Split from `PublicProfileView` so the owner's "preview as visitor" can render
+ * the page itself rather than an imitation of it. That is the whole reason this
+ * boundary is where it is: the preview endpoint returns the same payloads the
+ * anonymous endpoints do, and this renders those payloads, so the two surfaces
+ * cannot look different without this component looking different for everyone.
+ * Anything specific to being a real visitor stays OUTSIDE it - the polling, the
+ * revocation handling, `useNoIndex` - because none of it is part of what the
+ * page looks like.
+ *
+ * `linkTo` is null when a member has no address of their own, which is the case
+ * for a view with permalinks off AND for every preview: a permalink is a real,
+ * public URL, and a preview must never hand the owner one to click. With it
+ * null, members open in place, which is exactly what a visitor to a
+ * permalink-less view gets.
+ */
+export function PublicProfileBody({
+  system: sys,
+  members: memberList,
+  fronting,
+  relationships,
+  groups,
+  linkTo,
+  notice,
+  banner,
+}: {
+  system: PublicSystemView;
+  members: PublicMemberView[] | null;
+  fronting: PublicFrontingView | null;
+  relationships: PublicRelationshipsView | null;
+  groups: PublicGroupsView | null;
+  linkTo: ((id: string) => string) | null;
+  /** The line in the header strip: which kind of page this is. */
+  notice: React.ReactNode;
+  /** Rendered above the page proper. The preview's "this is a preview" strip
+   *  goes here; the real page has nothing to say. */
+  banner?: React.ReactNode;
+}) {
+  // Which member's card is open in place. Used whenever there is no permalink
+  // to navigate to - a view with them off, or any preview.
+  const [openMemberId, setOpenMemberId] = useState<string | null>(null);
+  const [tab, setTab] = useState<string | null>(null);
+
+  const byId = useMemo(
+    () => new Map((memberList ?? []).map((m) => [m.id, m])),
+    [memberList],
+  );
+  const nav = useMemo<MemberNav>(
+    () => ({
+      linkTo,
+      open: (id: string) => setOpenMemberId(id),
+      card: (id: string) => byId.get(id),
+    }),
+    [linkTo, byId],
+  );
+
   const accent = sys.color ?? undefined;
 
   const tabs: { value: string; label: string }[] = [];
   if (memberList) tabs.push({ value: "members", label: "Members" });
-  if (groups.data) tabs.push({ value: "groups", label: "Groups" });
-  if (relationships.data) {
+  if (groups) tabs.push({ value: "groups", label: "Groups" });
+  if (relationships) {
     tabs.push({ value: "relationships", label: "Relationships" });
   }
   // Controlled rather than defaultValue: the sections arrive one query at a
@@ -365,14 +425,13 @@ export function PublicProfileView({ source }: { source: Source }) {
   return (
     <MemberNavContext.Provider value={nav}>
       <div className="min-h-screen bg-muted/20">
+        {banner}
         {/* Accent strip in the system's colour, for identity. */}
         <div className="h-2 w-full" style={accent ? { backgroundColor: accent } : undefined} />
         <div className="mx-auto w-full max-w-2xl px-4 py-8 space-y-6">
           <PublicPageHeader centered>
             <p className="min-w-0 flex-1 text-center text-xs text-muted-foreground">
-              {source.kind === "link"
-                ? "You're viewing a shared profile."
-                : "You're viewing a public profile."}
+              {notice}
             </p>
           </PublicPageHeader>
 
@@ -420,7 +479,7 @@ export function PublicProfileView({ source }: { source: Source }) {
               the only part that changes while it is open, so it gets a card of
               its own directly under the header rather than a tab you have to
               go looking for. */}
-          {fronting.data && <FrontingSection fronting={fronting.data} />}
+          {fronting && <FrontingSection fronting={fronting} />}
 
           {tabs.length > 0 && activeTab && (
             <Tabs value={activeTab} onValueChange={setTab} className="w-full">
@@ -434,19 +493,19 @@ export function PublicProfileView({ source }: { source: Source }) {
 
               {memberList && (
                 <TabsContent value="members" className="space-y-3">
-                  <MembersSection members={memberList} fronting={fronting.data ?? null} />
+                  <MembersSection members={memberList} fronting={fronting} />
                 </TabsContent>
               )}
 
-              {groups.data && (
+              {groups && (
                 <TabsContent value="groups" className="space-y-3">
-                  <GroupsSection view={groups.data} />
+                  <GroupsSection view={groups} />
                 </TabsContent>
               )}
 
-              {relationships.data && (
+              {relationships && (
                 <TabsContent value="relationships">
-                  <RelationshipsSection view={relationships.data} />
+                  <RelationshipsSection view={relationships} />
                 </TabsContent>
               )}
             </Tabs>
@@ -456,8 +515,9 @@ export function PublicProfileView({ source }: { source: Source }) {
         </div>
       </div>
 
-      {/* No permalinks on this view: a member opens in place, with no URL to
-          send anyone. */}
+      {/* No address for this member: a view with permalinks off, or a preview,
+          where the only real URL would be a public one the owner must not be
+          handed from inside a preview. Either way the card opens in place. */}
       <Dialog
         open={Boolean(openMember)}
         onOpenChange={(open) => !open && setOpenMemberId(null)}

@@ -552,11 +552,19 @@ async def add_member_to_view(
     view: ShareView,
     member: Member,
     already_shared: bool | None = None,
+    added_via_group_id: uuid.UUID | None = None,
 ) -> ShareViewMember | None:
     """Add one member to a view. Returns None if already present.
 
     Refuses `never_shareable` members outright - they are excluded from every
     view, with no override.
+
+    `added_via_group_id` stamps the row with the group expansion that created
+    it, so detaching that group later removes exactly the rows it added. It is
+    only ever set on a row this call CREATES: a member already in the view keeps
+    whatever source they already had (including none), because the reason they
+    are in the view is the first thing that put them there, not the most recent
+    thing that would have.
     """
     if member.never_shareable:
         raise HTTPException(
@@ -584,6 +592,7 @@ async def add_member_to_view(
         id=uuid.uuid4(),
         view_id=view.id,
         member_id=member.id,
+        added_via_group_id=added_via_group_id,
         status=row_status,
         activates_at=activates_at,
         created_at=datetime.now(UTC),
@@ -608,6 +617,14 @@ async def expand_group_into_view(
     provenance and offer an explicit re-sync later. Group membership changing
     never moves anyone into or out of a view by itself, because that would
     publish someone with no deliberate step and no grace window.
+
+    Every row this expansion CREATES is stamped with `added_via_group_id`, which
+    is what makes detaching the group later remove the right people. Members
+    already in the view are left completely untouched - not re-stamped, not
+    re-staged - whatever put them there first is still why they are there. So
+    re-syncing a group that has grown adds the newcomers and changes nothing
+    about anyone already listed, and a member both hand-picked and covered by
+    this group stays hand-picked.
     """
     result = await db.execute(
         select(Member)
@@ -645,6 +662,7 @@ async def expand_group_into_view(
             view=view,
             member=member,
             already_shared=already_shared,
+            added_via_group_id=group_id,
         )
         if row is not None:
             added.append(row)

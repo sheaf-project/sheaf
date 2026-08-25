@@ -208,6 +208,25 @@ class ShareViewMember(UUIDMixin, Base):
         index=True,
     )
 
+    # Which group expansion created this row. NULL means the owner added this
+    # member by hand - or the group has since been deleted, which deliberately
+    # degrades to treated-as-manual (see the FK's SET NULL) so deleting a group
+    # never silently detaches its members from a view.
+    #
+    # Attribution only, and only consulted when a group is DETACHED: the row
+    # itself is the sole authority on who is exposed, exactly as before, and
+    # nothing here is read at projection time. It exists because detaching a
+    # group used to remove that group's CURRENT roster from the view, which
+    # over-removed - a member the owner had also picked by hand, or one an
+    # overlapping group had brought in, got pulled out even though the detached
+    # group was not why they were there.
+    added_via_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
@@ -242,6 +261,11 @@ class ShareViewGroup(UUIDMixin, Base):
     window, which is exactly the accidental-outing failure this whole feature
     is built to prevent. Group membership changes therefore never move anyone
     into or out of a view on their own.
+
+    Detaching one of these rows can offer to take its members with it, and the
+    members it means are the ones stamped `ShareViewMember.added_via_group_id`
+    - what this expansion actually added - never the group's current roster,
+    which is a different set and includes people this group never put here.
     """
 
     __tablename__ = "share_view_groups"

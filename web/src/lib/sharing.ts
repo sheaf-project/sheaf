@@ -4,6 +4,7 @@ import type {
   ShareGrant,
   ShareGrantCreate,
   ShareGrantCreated,
+  SharePreview,
   ShareView,
   ShareViewCreate,
   ShareViewGroupAddResult,
@@ -88,6 +89,21 @@ export function removeViewField(viewId: string, fieldId: string) {
   return apiFetch<void>(`/v1/share-views/${viewId}/fields/${fieldId}`, {
     method: "DELETE",
   });
+}
+
+// --- Preview ---
+
+/**
+ * This view exactly as a visitor would receive it, built by the server from the
+ * same projection the anonymous surface uses.
+ *
+ * Note what it does NOT need: a grant, or the instance's public switch. Looking
+ * at what you are about to publish before you publish it is the point of the
+ * thing, so an unpublished view previews fine - and `suppressed` in the
+ * response says when the page would not actually be reachable.
+ */
+export function getSharePreview(viewId: string) {
+  return apiFetch<SharePreview>(`/v1/share-views/${viewId}/preview`);
 }
 
 // --- Grants ---

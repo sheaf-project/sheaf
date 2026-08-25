@@ -1832,3 +1832,176 @@ def test_a_field_queued_for_deletion_stops_being_served_at_once():
     assert queued.status_code == 202, queued.text
     assert _anon().get(f"{base}/members").json()[0]["fields"] == {}
     owner.close()
+
+
+# ---------------------------------------------------------------------------
+# Owner preview - the same payload, before anyone else gets it
+# ---------------------------------------------------------------------------
+
+
+def _shape(value):
+    """A payload reduced to its structure: key sets all the way down, with leaf
+    VALUES replaced by their type name.
+
+    Values are dropped on purpose. What has to match between the preview and
+    the real thing is the shape - so a field that drifts into one surface and
+    not the other fails this - while the values themselves include signed URLs
+    whose expiry moves between two requests a moment apart.
+    """
+    if isinstance(value, dict):
+        return {k: _shape(v) for k, v in sorted(value.items())}
+    if isinstance(value, list):
+        return [_shape(v) for v in value]
+    return type(value).__name__
+
+
+@pytest.mark.public_profiles
+def test_preview_matches_the_anonymous_endpoints_section_by_section():
+    """The drift test, and the reason the preview goes through the projection
+    instead of imitating it in the client. Every section is compared against
+    the endpoint an actual visitor hits, on a view with everything turned on."""
+    owner = _register()
+    a = _member(owner, "PreviewA", pronouns="they/them")
+    b = _member(owner, "PreviewB")
+    field = owner.post(
+        "/v1/fields",
+        json={"name": "Role", "field_type": "text", "privacy": "public"},
+    ).json()["id"]
+    assert owner.put(
+        f"/v1/members/{a}/fields", json=[{"field_id": field, "value": "cook"}]
+    ).status_code == 200
+
+    system_id, view = _published_system(
+        owner,
+        members=[a, b],
+        include_bio=True,
+        include_fronting=True,
+        include_relationships=True,
+        include_groups=True,
+        member_permalinks=True,
+    )
+    assert owner.post(
+        f"/v1/share-views/{view}/fields", json={"field_id": field}
+    ).status_code == 200
+    _publish_group(owner, _group(owner, "Kitchen", members=[a, b]))
+    _edge(owner, a, b, _rel_type(owner, "Partners"))
+    assert owner.post("/v1/fronts", json={"member_ids": [a]}).status_code == 201
+
+    preview = owner.get(f"/v1/share-views/{view}/preview")
+    assert preview.status_code == 200, preview.text
+    got = preview.json()
+
+    anon = _anon()
+    base = f"/v1/public/systems/{system_id}"
+    for section, path in (
+        ("system", ""),
+        ("members", "/members"),
+        ("fronting", "/fronting"),
+        ("relationships", "/relationships"),
+        ("groups", "/groups"),
+    ):
+        real = anon.get(f"{base}{path}")
+        assert real.status_code == 200, (section, real.text)
+        assert _shape(got[section]) == _shape(real.json()), section
+
+    # Nothing owner-only rides along beside the sections. `suppressed` is the
+    # only addition, and it is about the page rather than in it.
+    assert set(got) == {
+        "system",
+        "members",
+        "fronting",
+        "relationships",
+        "groups",
+        "suppressed",
+    }
+    assert got["suppressed"] is None
+    # Sanity that the comparison above was not comparing two empty pages.
+    assert len(got["members"]) == 2
+    assert got["members"][0]["fields"] == {"Role": "cook"}
+    assert [m["name"] for m in got["fronting"]["members"]] == ["PreviewA"]
+    assert len(got["relationships"]["relationships"]) == 1
+    assert [g["name"] for g in got["groups"]["groups"]] == ["Kitchen"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_preview_nulls_the_sections_the_view_does_not_serve():
+    """Null, not empty. Empty is a thing a served section can legitimately be,
+    and the owner has to be able to tell the two apart - it is the difference
+    between "nobody is fronting" and "visitors cannot see who is fronting"."""
+    owner = _register()
+    m = _member(owner, "Solo")
+    _, view = _published_system(owner, members=[m], include_members=False)
+
+    got = owner.get(f"/v1/share-views/{view}/preview").json()
+    assert got["members"] is None
+    assert got["fronting"] is None
+    assert got["relationships"] is None
+    assert got["groups"] is None
+    # The system section is always served, and reports the roster's absence the
+    # same way the public endpoint does: a null count, never a zero.
+    assert got["system"]["member_count"] is None
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_preview_works_on_a_view_nothing_points_at():
+    """Previewing something UNPUBLISHED is the whole point: an owner should be
+    able to look before they publish, not only after."""
+    owner = _register()
+    m = _member(owner, "NotYetPublic")
+    _go_public(owner)
+    view = owner.post(
+        "/v1/share-views", json={"name": "Draft", "include_members": True}
+    ).json()["id"]
+    assert owner.post(
+        f"/v1/share-views/{view}/members", json={"member_id": m}
+    ).status_code == 200
+
+    r = owner.get(f"/v1/share-views/{view}/preview")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert [c["name"] for c in got["members"]] == ["NotYetPublic"]
+    assert got["suppressed"] is None
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_preview_says_when_nothing_would_actually_serve():
+    """A preview with no suppression notice would be the most convincing lie
+    this feature could tell: a healthy-looking page for something the world is
+    getting a 404 for."""
+    owner = _register()
+    m = _member(owner, "Suppressed")
+    system_id, view = _published_system(owner, members=[m])
+    assert owner.get(f"/v1/share-views/{view}/preview").json()["suppressed"] is None
+
+    assert owner.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    got = owner.get(f"/v1/share-views/{view}/preview").json()
+    assert got["suppressed"] == "system_private"
+    # Deliberately still shows the content: the owner opened this to check what
+    # the page looks like, and blanking it would answer a question they did not
+    # ask while hiding the one they did.
+    assert [c["name"] for c in got["members"]] == ["Suppressed"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_preview_is_not_anonymous():
+    """It serves public-shaped payloads for views that may not be published at
+    all, so it must be exactly as authenticated as the rest of the owner API."""
+    owner = _register()
+    m = _member(owner, "Private")
+    _, view = _published_system(owner, members=[m])
+
+    r = _anon().get(f"/v1/share-views/{view}/preview")
+    assert r.status_code == 401, r.text
+
+    # And another logged-in account gets the same 404 an unknown id gets - no
+    # cross-tenant existence oracle, same as every other view route.
+    stranger = _register()
+    assert stranger.get(f"/v1/share-views/{view}/preview").status_code == 404
+    stranger.close()
+    owner.close()
