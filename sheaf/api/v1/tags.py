@@ -141,7 +141,7 @@ async def get_tag_members(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found"
         )
-    return [decrypt_member_for_read(m) for m in tag.members]
+    return [decrypt_member_for_read(m, user.id) for m in tag.members]
 
 
 @router.put(
@@ -188,7 +188,7 @@ async def set_tag_members(
 
     tag.members = members
     await db.commit()
-    return [decrypt_member_for_read(m) for m in members]
+    return [decrypt_member_for_read(m, user.id) for m in members]
 
 
 @router.delete(

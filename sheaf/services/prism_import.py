@@ -132,6 +132,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_media import (
     ImportImageError,
@@ -421,7 +422,18 @@ async def run_import(
         plaintext_name = clamp_str(
             _clean_str(m.get("name")) or "unnamed", il.M_NAME, report=report
         )
-        plaintext_description = _clean_str(m.get("notes"))
+        # Notes become the member bio, and they are markdown written in
+        # another app, so strip internal image embeds before storing. A ref to
+        # this instance's storage (/v1/files/..., the CDN host, or a bare key)
+        # is re-signed into a live capability URL each time the profile is
+        # read, so a doctored export could carry another account's upload key
+        # and serve that file from the importing user's profile, still working
+        # after the owner un-shares or deletes it. A Prism export has no
+        # legitimate reason to reference Sheaf storage, so every internal ref
+        # goes; external images and the surrounding prose are left as they are.
+        plaintext_description = strip_internal_image_refs_md_to_none(
+            _clean_str(m.get("notes"))
+        )
         custom_color = _normalize_color(m.get("customColorHex")) if m.get(
             "customColorEnabled"
         ) else None
@@ -715,7 +727,10 @@ def _apply_system_profile(
     name = _clean_str(block.get("systemName"))
     if name and not system.name:
         system.name = clamp_str(name, il.SYS_NAME, report=report)
-    description = _clean_str(block.get("systemDescription"))
+    # Same reason as the member notes above.
+    description = strip_internal_image_refs_md_to_none(
+        _clean_str(block.get("systemDescription"))
+    )
     if description and not system.description:
         system.description = description
     color = _normalize_color(block.get("systemColor")) or _normalize_color(
@@ -756,7 +771,10 @@ async def _import_groups(
                 id=uuid.uuid4(),
                 system_id=system_id,
                 name=clamp_str(name, il.GROUP_NAME, report=report),
-                description=_clean_str(g.get("description")),
+                # Same reason as the member notes above.
+                description=strip_internal_image_refs_md_to_none(
+                    _clean_str(g.get("description"))
+                ),
                 color=_normalize_color(g.get("colorHex")),
             )
             db.add(group)
@@ -1004,7 +1022,13 @@ async def _import_notes(
         if not isinstance(n, dict):
             continue
         title = _clean_str(n.get("title"))
-        body = _clean_str(n.get("body")) or ""
+        # Same cross-tenant capability risk as the descriptions above:
+        # a journal body is re-signed on read (`schemas/journal.py` runs
+        # `resolve_description_urls` over it), so an internal Sheaf storage
+        # key smuggled in through a crafted export would come back as a
+        # live serve URL for somebody else's upload. A journal written in
+        # another app has no legitimate Sheaf ref to preserve.
+        body = strip_internal_image_refs_md_to_none(_clean_str(n.get("body"))) or ""
         member_id_str = _clean_str(n.get("memberId"))
         handle = ps_id_to_handle.get(member_id_str) if member_id_str else None
         author_names: list[str] = []

@@ -84,6 +84,7 @@ from sheaf.services.import_dedup import (
     load_member_match_index,
     resolve_member,
 )
+from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_media import (
     ImportImageError,
@@ -308,7 +309,18 @@ async def run_import(
             sys_ref = _coerce_str(amp_m.get("system"))
             if sys_ref:
                 amp_id_to_system[amp_id] = sys_ref
-        plaintext_desc = _coerce_str(amp_m.get("description"))
+        # Bio markdown from a foreign export runs through the internal-image
+        # strip on the way in. Any embed pointing at this instance's storage
+        # (/v1/files/..., the CDN host, or a bare key) is re-signed into a live
+        # capability URL every time the profile is read, so a doctored
+        # Ampersand file could name another account's upload key and turn this
+        # importer into a cross-tenant read of that file, one that outlives the
+        # owner deleting or un-sharing it. An Ampersand export has no
+        # legitimate internal Sheaf ref to preserve, so all of them go;
+        # external images and the surrounding text are left alone.
+        plaintext_desc = strip_internal_image_refs_md_to_none(
+            _coerce_str(amp_m.get("description"))
+        )
         member_id = uuid.uuid4()
         member = Member(
             id=member_id,
@@ -487,7 +499,10 @@ async def _import_systems_as_groups(
             id=uuid.uuid4(),
             system_id=system.id,
             name=name,
-            description=_coerce_str(amp_s.get("description")),
+            # Same reason as the member description above.
+            description=strip_internal_image_refs_md_to_none(
+                _coerce_str(amp_s.get("description"))
+            ),
             color=_normalize_color(amp_s.get("color")),
         )
         db.add(group)
@@ -848,7 +863,15 @@ async def _import_journals(
             if subtitle:
                 body_parts.append(f"*{subtitle}*")
             body_parts.append(_coerce_str(amp_j.get("body")) or "")
-            body = "\n\n".join(p for p in body_parts if p)
+            # Same cross-tenant capability risk as the descriptions above:
+            # a journal body is re-signed on read (`schemas/journal.py` runs
+            # `resolve_description_urls` over it), so an internal Sheaf storage
+            # key smuggled in through a crafted export would come back as a
+            # live serve URL for somebody else's upload. A journal written in
+            # another app has no legitimate Sheaf ref to preserve.
+            body = strip_internal_image_refs_md_to_none(
+                "\n\n".join(p for p in body_parts if p)
+            ) or ""
 
             image_keys: list[str] = []
             if images_enabled:
@@ -892,7 +915,10 @@ async def _import_journals(
     if options.notes:
         for amp_n in _coll(data, "notes"):
             title = _coerce_str(amp_n.get("title"))
-            content = _coerce_str(amp_n.get("content")) or ""
+            # Same reason as above.
+            content = strip_internal_image_refs_md_to_none(
+                _coerce_str(amp_n.get("content"))
+            ) or ""
             entry_id = uuid.uuid4()
             entry = JournalEntry(
                 id=entry_id,
