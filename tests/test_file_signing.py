@@ -490,6 +490,14 @@ async def test_public_file_route_serves_same_origin_in_every_storage_mode(
     monkeypatch.setattr(settings, "image_serving", image_serving)
     monkeypatch.setattr(settings, "s3_public_url", s3_public_url)
     monkeypatch.setattr(files_api, "get_storage", lambda: StubStorage())
+
+    # This test is about serving the bytes correctly per storage mode; the
+    # live-exposure re-check is exercised in test_public_file_recheck.py and the
+    # stack tests, so stand it up as "still serving" here.
+    async def _serving(db, owner_user_id):
+        return True
+
+    monkeypatch.setattr(files_api, "account_serving_public_media", _serving)
     signed = sign_public_file_url("avatars/user/abc.png")
     raw_query = urlparse(signed).query
     query = parse_qs(raw_query)

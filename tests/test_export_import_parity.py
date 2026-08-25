@@ -248,6 +248,11 @@ CLASSIFICATION: dict[type, dict] = {
             ),
             "pending_privacy": _SYSTEM_RAISE_STAGING,
             "privacy_activates_at": _SYSTEM_RAISE_STAGING,
+            "publishing_blocked": (
+                "operator-imposed takedown latch, set and cleared only by an "
+                "admin on this instance; carrying it across a restore would let "
+                "a file re-impose or lift a moderation action"
+            ),
         },
     },
     Member: {

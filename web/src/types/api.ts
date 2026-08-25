@@ -83,6 +83,11 @@ export interface System {
    *  staged. */
   pending_privacy: PrivacyLevel | null;
   privacy_activates_at: string | null;
+  /** Operator takedown latch. When true, an admin has disabled publishing on
+   *  this system: no new grant can be created and the system cannot be raised
+   *  to public until an admin clears it. Read-only to the owner; the sharing
+   *  screen surfaces it as a prominent banner. */
+  publishing_blocked: boolean;
   delete_confirmation: DeleteConfirmation;
   date_format: DateFormat;
   /** Account display timezone. null = "automatic" (each device renders in

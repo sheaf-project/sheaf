@@ -67,6 +67,18 @@ class System(UUIDMixin, TimestampMixin, Base):
     privacy_activates_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Operator takedown latch. Set by the admin revoke-all lever, cleared only
+    # by an admin (with a reason), never by the owner. While true, the owner may
+    # take MORE down - revoke, rotate, tighten a view, go private - but may not
+    # publish anything new: `create_grant` refuses and raising the master switch
+    # back to public is refused too. Distinct from suppression: suspension
+    # PAUSES the surface and gives it back when the account returns, whereas this
+    # is a judgement about the content that has to outlive a revoke the owner
+    # could otherwise undo by POSTing a fresh grant seconds later. Default false;
+    # a normal account never sees it.
+    publishing_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # Historical name. Now the auth tier for all safeguarded destructive
     # actions under System Safety (members, groups, tags, fields, fronts).
     delete_confirmation: Mapped[DeleteConfirmation] = mapped_column(

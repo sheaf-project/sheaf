@@ -11,9 +11,12 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import httpx
+
+BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
 
 
 def _register(base_url: str, email_prefix: str) -> tuple[str, str]:
@@ -558,3 +561,254 @@ def test_revoke_all_share_grants_requires_a_reason(
         f"/v1/admin/systems/{system_id}/share-grants/revoke-all", json={}
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Publishing-blocked latch (takedown that survives a republish) + unblock
+# ---------------------------------------------------------------------------
+
+
+def _key_client(plaintext: str) -> httpx.Client:
+    """Bare client authenticated only with the given API key."""
+    return httpx.Client(
+        base_url=BASE_URL,
+        headers={"Authorization": f"Bearer {plaintext}"},
+    )
+
+
+def test_revoke_all_latches_publishing_blocked(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    """The takedown does not just revoke - it latches the flag so the owner
+    cannot POST a fresh grant and be straight back up."""
+    system_id, _ = _publish(auth_client)
+    assert auth_client.get("/v1/systems/me").json()["publishing_blocked"] is False
+
+    resp = admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "abuse report block"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert auth_client.get("/v1/systems/me").json()["publishing_blocked"] is True
+
+
+def test_revoke_all_records_the_flag_in_the_audit_snapshot(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    me = auth_client.get("/v1/auth/me").json()
+    system_id, _ = _publish(auth_client)
+
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "snapshot check"},
+    )
+    events = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={me['id']}"
+    ).json()
+    row = next(
+        e
+        for e in events
+        if e["action"] == "system_share_grants_revoke_all"
+        and e["reason"] == "snapshot check"
+    )
+    assert row["before_json"]["publishing_blocked"] is False
+    assert row["after_json"]["publishing_blocked"] is True
+
+
+def test_blocked_system_refuses_a_new_grant(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "block then republish attempt"},
+    )
+    # System is still public (the takedown does not touch privacy), so the only
+    # thing standing between the owner and republishing is the latch.
+    view = auth_client.post(
+        "/v1/share-views", json={"name": f"RB-{uuid.uuid4().hex[:6]}"}
+    ).json()["id"]
+    resp = auth_client.post(
+        "/v1/share-grants", json={"view_id": view, "subject_type": "public"}
+    )
+    assert resp.status_code == 403, resp.text
+    assert "operator" in resp.json()["detail"].lower()
+
+
+def test_blocked_system_refuses_privacy_raise_to_public(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "block privacy raise"},
+    )
+    # Lowering is the un-exposing direction and stays allowed while blocked.
+    assert (
+        auth_client.patch("/v1/systems/me", json={"privacy": "private"}).status_code
+        == 200
+    )
+    # Raising the master switch back to public is refused, same as the grant.
+    resp = auth_client.patch("/v1/systems/me", json={"privacy": "public"})
+    assert resp.status_code == 403, resp.text
+    assert "operator" in resp.json()["detail"].lower()
+
+
+def test_blocked_system_can_still_take_things_down(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    """A blocked system may take MORE down: going private still works while the
+    latch is set, which is what lets an owner fully dark themselves."""
+    system_id, _ = _publish(auth_client)
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "still allow going dark"},
+    )
+    assert (
+        auth_client.patch("/v1/systems/me", json={"privacy": "private"}).status_code
+        == 200
+    )
+
+
+def test_unblock_clears_the_latch_and_audits(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    me = auth_client.get("/v1/auth/me").json()
+    system_id, _ = _publish(auth_client)
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "block first"},
+    )
+    assert auth_client.get("/v1/systems/me").json()["publishing_blocked"] is True
+
+    resp = admin_client.post(
+        f"/v1/admin/systems/{system_id}/publishing/unblock",
+        json={"reason": "report resolved"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["publishing_blocked"] is False
+    assert auth_client.get("/v1/systems/me").json()["publishing_blocked"] is False
+
+    events = admin_client.get(
+        f"/v1/admin/audit-events?target_user_id={me['id']}"
+    ).json()
+    row = next(
+        e
+        for e in events
+        if e["action"] == "system_publishing_unblock"
+        and e["reason"] == "report resolved"
+    )
+    assert row["target_type"] == "system"
+    assert row["target_id"] == system_id
+    assert row["before_json"]["publishing_blocked"] is True
+    assert row["after_json"]["publishing_blocked"] is False
+
+
+def test_unblock_lets_the_owner_publish_again(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "block"},
+    )
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/publishing/unblock",
+        json={"reason": "unblock"},
+    )
+    view = auth_client.post(
+        "/v1/share-views", json={"name": f"UB-{uuid.uuid4().hex[:6]}"}
+    ).json()["id"]
+    resp = auth_client.post(
+        "/v1/share-grants", json={"view_id": view, "subject_type": "public"}
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_owner_cannot_clear_publishing_blocked(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    """No owner-side path lifts the latch: the unblock endpoint refuses a
+    non-admin, and a stray publishing_blocked in a system PATCH is ignored."""
+    system_id, _ = _publish(auth_client)
+    admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "block"},
+    )
+    # The owner has no admin route to the unblock lever.
+    assert (
+        auth_client.post(
+            f"/v1/admin/systems/{system_id}/publishing/unblock",
+            json={"reason": "let me out"},
+        ).status_code
+        == 403
+    )
+    # And it is not a writable system field: a PATCH carrying it is a no-op.
+    auth_client.patch("/v1/systems/me", json={"publishing_blocked": False})
+    assert auth_client.get("/v1/systems/me").json()["publishing_blocked"] is True
+
+
+def test_unblock_requires_admin(auth_client: httpx.Client):
+    resp = auth_client.post(
+        f"/v1/admin/systems/{uuid.uuid4()}/publishing/unblock",
+        json={"reason": "nope"},
+    )
+    assert resp.status_code == 403
+
+
+def test_revoke_all_requires_admin(auth_client: httpx.Client):
+    resp = auth_client.post(
+        f"/v1/admin/systems/{uuid.uuid4()}/share-grants/revoke-all",
+        json={"reason": "nope"},
+    )
+    assert resp.status_code == 403
+
+
+def test_unblock_rejects_admin_read_scope(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    key = admin_client.post(
+        "/v1/auth/keys",
+        json={"name": "read only", "scopes": ["admin:read"]},
+    ).json()["key"]
+    with _key_client(key) as c:
+        resp = c.post(
+            f"/v1/admin/systems/{system_id}/publishing/unblock",
+            json={"reason": "read cannot write"},
+        )
+    assert resp.status_code == 403
+
+
+def test_unblock_accepts_admin_write_scope(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    key = admin_client.post(
+        "/v1/auth/keys",
+        json={"name": "write key", "scopes": ["admin:write"]},
+    ).json()["key"]
+    with _key_client(key) as c:
+        resp = c.post(
+            f"/v1/admin/systems/{system_id}/publishing/unblock",
+            json={"reason": "write allowed"},
+        )
+    assert resp.status_code == 200, resp.text
+
+
+def test_unblock_requires_a_reason(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    system_id, _ = _publish(auth_client)
+    resp = admin_client.post(
+        f"/v1/admin/systems/{system_id}/publishing/unblock", json={}
+    )
+    assert resp.status_code == 422
+
+
+def test_unblock_unknown_system_404s(admin_client: httpx.Client):
+    resp = admin_client.post(
+        f"/v1/admin/systems/{uuid.uuid4()}/publishing/unblock",
+        json={"reason": "typo"},
+    )
+    assert resp.status_code == 404
