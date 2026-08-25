@@ -168,14 +168,15 @@ async def _process_pk_export(
             db=db,
             system=system,
         )
-        if resolution.privacy_held_name:
+        if resolution.privacy_held_member_id:
             update_counts(job, members_privacy_skipped=1)
             append_event(
                 job,
                 level="warning",
                 stage="members",
-                message=privacy_hold_warning(resolution.privacy_held_name),
+                message=privacy_hold_warning(resolution.privacy_held_member_id),
                 record_ref=hid or None,
+                member_id=str(resolution.privacy_held_member_id),
             )
         if resolution.disposition == "created":
             db.add(resolution.member)

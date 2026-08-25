@@ -221,8 +221,11 @@ def build_member(
     # PluralKit export has no legitimate reason to reference Sheaf storage at
     # all, so every internal ref goes; external images and the surrounding
     # prose are left exactly as they were.
+    # Clamp before the markdown strip/parse: the length bound also caps the
+    # work the superlinear image parse can be made to do, not just the stored
+    # bytes. Mirrors MemberCreate.description.
     plaintext_description = strip_internal_image_refs_md_to_none(
-        _clean_str(pk_m.get("description"))
+        clamp_str(_clean_str(pk_m.get("description")), il.M_DESCRIPTION, report=report)
     )
 
     pk_hid = _clean_str(pk_m.get("id"))
@@ -296,9 +299,13 @@ async def import_groups(
             id=uuid.uuid4(),
             system_id=system_id,
             name=name,
-            # Same reason as the member description above.
+            # Same reason as the member description above (strip + length cap).
             description=strip_internal_image_refs_md_to_none(
-                _clean_str(pk_g.get("description"))
+                clamp_str(
+                    _clean_str(pk_g.get("description")),
+                    il.GROUP_DESCRIPTION,
+                    report=report,
+                )
             ),
             color=_normalize_color(pk_g.get("color")),
         )

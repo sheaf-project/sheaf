@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.config import settings
@@ -57,15 +57,41 @@ from sheaf.services.sharing import resolve_link_grant, resolve_public_grant
 # groups). Member permalinks share the bucket deliberately: they are the one
 # route whose path a visitor can vary freely, so they must not have a quota of
 # their own to walk a system's member ids through.
-_RATE = rate_limit(60, 60, bucket="public_profiles")
-
-router = APIRouter(prefix="/public", tags=["public-profiles"])
+#
+# fail_closed: the public projection is the most expensive anonymous query on
+# the instance, so a Redis blip must not drop the one throttle that bounds it.
+# Unlike an ordinary endpoint, availability-through-the-blip is the wrong
+# trade here; we 503 until the counter is back, matching the auth endpoints.
+_RATE = rate_limit(60, 60, fail_closed=True, bucket="public_profiles")
 
 
 def _not_found() -> HTTPException:
     # One error shape for every reason a profile is not visible. Deliberately
     # says nothing about which reason.
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+def _reject_query_params(request: Request) -> None:
+    """Reject any query string: none of these routes take a query parameter.
+
+    FastAPI would silently ignore an unknown param, but a shared cache keys on
+    the whole URL, so ?cachebust=N is a guaranteed miss that re-runs the most
+    expensive anonymous query on the instance once per varied value - a cheap
+    cache-buster aimed at exactly the endpoints that can least afford it. The
+    media route holds the same line with its canonical-URL check. The refusal
+    is the SAME 404 as every other one here, so it never becomes an oracle.
+    """
+    if request.scope.get("query_string"):
+        raise _not_found()
+
+
+# The query-param rejection is a router-level dependency so it covers every
+# projection route here, including any added later, without a per-route opt-in.
+router = APIRouter(
+    prefix="/public",
+    tags=["public-profiles"],
+    dependencies=[Depends(_reject_query_params)],
+)
 
 
 def _public_headers(response: Response, *, token_keyed: bool) -> None:

@@ -95,6 +95,11 @@ def test_caps_match_schema_limits():
     # Guard against drift from the schema constants these mirror.
     assert il.M_NAME.limit == 100
     assert il.M_NOTE.limit == 5000
+    # Long-form descriptions share one generous-but-bounded cap across
+    # member / system / group, mirroring schemas/*.py.
+    assert il.M_DESCRIPTION.limit == 20000
+    assert il.SYS_DESCRIPTION.limit == 20000
+    assert il.GROUP_DESCRIPTION.limit == 20000
     assert il.M_BIRTHDAY.limit == 10
     assert il.M_PLURALKIT_ID.limit == 8
     assert il.M_EMOJI.limit == 8

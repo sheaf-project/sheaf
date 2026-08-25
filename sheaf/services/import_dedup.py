@@ -33,7 +33,8 @@ view a grant points at, and the members API only allows that flip behind
 step-up re-auth plus a grace window. A job has no step-up channel, so an
 import must not do what the API refuses: the raise is applied only when
 it exposes nothing, and otherwise the existing value stands and the
-member is named in the job report (`Resolution.privacy_held_name`).
+member is referenced (by id, never by decrypted name) in the job report
+(`Resolution.privacy_held_member_id`).
 Lowering is the un-exposing direction and stays ungated, and a CREATE is
 in no view yet, so neither is gated.
 
@@ -42,7 +43,7 @@ The caller is responsible for three things based on the disposition:
   * use the returned member in its source-id -> member map either way,
     so downstream sections (fronts, groups, custom fields) link to the
     right row whether it was created, skipped, or updated;
-  * count and report `privacy_held_name` when it is set.
+  * count and report `privacy_held_member_id` when it is set.
 """
 
 from __future__ import annotations
@@ -164,17 +165,28 @@ async def load_member_match_index(
 class Resolution:
     member: Member
     disposition: str  # "created" | "skipped" | "updated"
-    # The member's plaintext name when UPDATE declined to raise their privacy
-    # to public, else None. Callers count it and name the member in the job
-    # report so a withheld flip is never silent.
-    privacy_held_name: str | None = None
+    # The matched member's id when UPDATE declined to raise their privacy to
+    # public, else None. Callers count it and reference the member in the job
+    # report so a withheld flip is never silent. Deliberately the id and NOT the
+    # decrypted name: job events are stored as plaintext JSONB, while member
+    # names live in encrypted columns, so a report must not downgrade a name
+    # into the clear. The id is the user's own roster member and resolves to a
+    # current name client-side (the same discipline the archive importer's
+    # image-reference report already follows).
+    privacy_held_member_id: uuid.UUID | None = None
 
 
-def privacy_hold_warning(name: str) -> str:
-    """The report line for a privacy raise an import declined to apply."""
+def privacy_hold_warning(member_id: uuid.UUID) -> str:
+    """The report line for a privacy raise an import declined to apply.
+
+    References the member by id, not by name: this string lands in the job's
+    plaintext event log, and the member's name is an encrypted column. The web
+    report resolves the id to the member's current name from the user's own
+    roster; the id also drops straight into the members-page URL.
+    """
     return (
-        f"Kept member '{name}' at their current privacy setting - the file "
-        "makes them public and they are already in a shared view, so "
+        f"Kept a member (id {member_id}) at their current privacy setting - the "
+        "file makes them public and they are already in a shared view, so "
         "publishing them needs re-authentication. Change it from the members "
         "page if that is what you want."
     )
@@ -280,18 +292,30 @@ async def resolve_member(
         return Resolution(candidate, "created")
     if strategy == ImportConflictStrategy.SKIP:
         return Resolution(existing, "skipped")
+    # Lock and re-read the matched row before evaluating (and possibly applying)
+    # a privacy raise. The match index is a snapshot taken at job start; between
+    # then and now the owner may have taken this member private in a concurrent
+    # request. Without the row lock we would evaluate exposure against - and then
+    # overwrite - a stale privacy value, silently undoing that concurrent change.
+    # Only a raise to public on an armed system can expose, so the lock is scoped
+    # to exactly that case (the same conditions _privacy_raise_exposes needs its
+    # DB read for); other dispositions keep the no-extra-query fast path. FOR
+    # UPDATE both refreshes existing.privacy and serialises us against the writer
+    # for the rest of the transaction, so the subsequent _apply_update is safe.
+    if (
+        candidate.privacy == PrivacyLevel.PUBLIC
+        and existing.privacy != PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+    ):
+        await db.refresh(existing, ["privacy"], with_for_update=True)
     exposes = await _privacy_raise_exposes(db, system, existing, candidate)
     _apply_update(existing, candidate, apply_privacy=not exposes)
     return Resolution(
         existing,
         "updated",
-        # The name is read from the candidate because the update just re-bound
-        # it onto the existing row, so it is what the user will see listed.
-        privacy_held_name=(
-            decrypt(candidate.name, aad=member_name_aad(candidate.id))
-            if exposes
-            else None
-        ),
+        # Reference the held member by id, never by decrypted name: this reaches
+        # the plaintext job event log (see Resolution.privacy_held_member_id).
+        privacy_held_member_id=existing.id if exposes else None,
     )
 
 

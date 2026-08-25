@@ -41,6 +41,10 @@ def reset_settings(monkeypatch):
     monkeypatch.setattr(settings, "file_signing_key", "")
     monkeypatch.setattr(settings, "file_url_expiry_seconds", 3600)
     monkeypatch.setattr(settings, "allow_external_images", True)
+    # The public media route now 404s wholesale when the public surface is
+    # off; these tests exercise it as it behaves on an instance serving public
+    # profiles, so turn the feature on for them.
+    monkeypatch.setattr(settings, "public_profiles_enabled", True)
 
 
 def test_sign_cdn_url_shape(monkeypatch):

@@ -67,6 +67,13 @@ class SecurityEventType(enum.StrEnum):
     ADULT_ATTESTATION = "adult_attestation"
     REFRESH_REUSE = "refresh_reuse"
     DATA_EXPORT = "data_export"
+    # Share-grant lifecycle: publishing a view, rotating a link token, and
+    # revoking a grant. Publishing is the highest-risk act on a live session, so
+    # a stolen session's publish/rotate/revoke leaves an IP/UA-stamped trail the
+    # owner can audit. Same migration rule as the block above.
+    SHARE_GRANT_CREATED = "share_grant_created"
+    SHARE_GRANT_ROTATED = "share_grant_rotated"
+    SHARE_GRANT_REVOKED = "share_grant_revoked"
 
 
 class SecurityEvent(UUIDMixin, Base):

@@ -70,11 +70,18 @@ class _StubSession:
     def __init__(self, rows=()):
         self._rows = list(rows)
         self.queries = 0
+        self.refreshes = 0
 
     async def execute(self, _stmt):
         self.queries += 1
         rows = self._rows
         return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+    async def refresh(self, _instance, _attrs=None, *, with_for_update=None):
+        # The privacy gate locks + re-reads the matched row FOR UPDATE before it
+        # evaluates a raise. The detached test rows carry the value the test set,
+        # so this is a no-op that just records that the lock was taken.
+        self.refreshes += 1
 
 
 # --- MemberMatchIndex.find -------------------------------------------------
@@ -265,8 +272,10 @@ async def test_update_holds_privacy_raise_that_would_publish():
     assert res.disposition == "updated"
     assert existing.privacy == PrivacyLevel.PRIVATE     # the raise was withheld
     assert existing.display_name == "new"               # everything else applied
-    # Named in the report so a withheld flip is never silent.
-    assert res.privacy_held_name == "ren"
+    # Referenced by id (never the decrypted name) in the report so a withheld
+    # flip is never silent, and the row was locked FOR UPDATE first.
+    assert res.privacy_held_member_id == existing.id
+    assert db.refreshes == 1
 
 
 async def test_update_applies_privacy_raise_when_no_grant_points_at_them():
@@ -279,7 +288,7 @@ async def test_update_applies_privacy_raise_when_no_grant_points_at_them():
         system=_system(safeguarded=True),
     )
     assert existing.privacy == PrivacyLevel.PUBLIC
-    assert res.privacy_held_name is None
+    assert res.privacy_held_member_id is None
 
 
 async def test_update_applies_privacy_raise_when_safety_is_not_armed():
@@ -292,7 +301,7 @@ async def test_update_applies_privacy_raise_when_safety_is_not_armed():
         system=_system(safeguarded=False),
     )
     assert existing.privacy == PrivacyLevel.PUBLIC
-    assert res.privacy_held_name is None
+    assert res.privacy_held_member_id is None
     assert db.queries == 0  # short-circuits before the query
 
 
@@ -308,7 +317,7 @@ async def test_update_never_gates_lowering():
             system=_system(safeguarded=True),
         )
         assert existing.privacy == lower
-        assert res.privacy_held_name is None
+        assert res.privacy_held_member_id is None
     assert db.queries == 0  # un-exposing, so the gate never asks
 
 
@@ -322,7 +331,7 @@ async def test_update_does_not_gate_an_already_public_member():
         system=_system(safeguarded=True),
     )
     assert existing.privacy == PrivacyLevel.PUBLIC
-    assert res.privacy_held_name is None
+    assert res.privacy_held_member_id is None
     assert db.queries == 0  # nothing moves, so nothing to check
 
 

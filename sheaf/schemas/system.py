@@ -15,7 +15,11 @@ from sheaf.timezones import is_valid_timezone
 
 class SystemCreate(BaseModel):
     name: str = Field(max_length=100)
-    description: str | None = None
+    # Long-form markdown, capped for the same reason a member bio is: the
+    # image/footnote parse is superlinear and runs on the event loop (write path
+    # and public projection), so an unbounded description is a cheap DoS lever.
+    # 20k chars is generous for a real system description. See schemas/member.py.
+    description: str | None = Field(default=None, max_length=20000)
     note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
@@ -35,7 +39,8 @@ class SystemCreate(BaseModel):
 
 class SystemUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # See SystemCreate.description for the cap rationale.
+    description: str | None = Field(default=None, max_length=20000)
     note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)

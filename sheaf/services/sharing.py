@@ -634,11 +634,15 @@ async def add_member_to_view(
     thing that would have.
     """
     if member.never_shareable:
+        # No `display_name` in the detail: main.py's handler logs `exc.detail`,
+        # so interpolating the decrypted name would land it in the logs. The
+        # client already knows which member it POSTed, so a generic message
+        # loses nothing.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"{member.display_name or 'This member'} is marked never "
-                "shareable and cannot be added to a shared view."
+                "This member is marked never shareable and cannot be added to "
+                "a shared view."
             ),
         )
 
@@ -1139,17 +1143,27 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         grant.status = ShareGrantStatus.ACTIVE.value
         promoted += 1
 
+    # Promote membership and field rows in one conditional UPDATE each, not a
+    # SELECT-then-mutate ORM loop. The loop flushed `status = ACTIVE` keyed only
+    # on the row id, with no status/activates_at predicate in the UPDATE, so a
+    # re-stage that landed between the SELECT and the flush was silently
+    # overwritten - a lost update that would drag a re-staged row live without
+    # its own grace window. Carrying the PENDING + activates_at predicate into
+    # the statement closes that window, exactly as the flag/guard/edge/group
+    # passes below do: a concurrent re-stage either fails the predicate or writes
+    # last.
     for model in (ShareViewMember, ShareViewField):
         rows = await db.execute(
-            select(model).where(
+            update(model)
+            .where(
                 model.status == ShareItemStatus.PENDING.value,
                 model.activates_at.is_not(None),
                 model.activates_at <= now,
             )
+            .values(status=ShareItemStatus.ACTIVE.value)
+            .execution_options(synchronize_session=False)
         )
-        for row in rows.scalars().all():
-            row.status = ShareItemStatus.ACTIVE.value
-            promoted += 1
+        promoted += rows.rowcount or 0
 
     # Promote flags in one conditional UPDATE. If the owner cancels before
     # this statement, a NULL pending value preserves the live flag; if they

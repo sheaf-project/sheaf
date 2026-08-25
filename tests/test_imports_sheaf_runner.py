@@ -1229,7 +1229,9 @@ def test_sheaf_runner_update_will_not_publish_a_shared_member(
     assert after["privacy"] == "private"      # the raise was withheld
     assert after["pronouns"] == "they/them"   # the rest of the update applied
 
-    held = [e for e in final["events"] if "ReAlice" in e["message"]]
+    # The hold names the member by id, never by their (encrypted) name.
+    assert "ReAlice" not in str(final["events"])
+    held = [e for e in final["events"] if after["id"] in e["message"]]
     assert held, final["events"]
     assert held[0]["level"] == "warning", held
 

@@ -32,7 +32,7 @@ other route on this router.
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +48,7 @@ from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.group import Group
 from sheaf.models.member import Member
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.share import (
     ShareGrant,
     ShareGrantStatus,
@@ -58,6 +59,7 @@ from sheaf.models.share import (
 )
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.request import client_ip
 from sheaf.schemas.share import (
     ShareAudit,
     ShareAuditEntry,
@@ -73,6 +75,7 @@ from sheaf.schemas.share import (
     ShareViewRead,
     ShareViewUpdate,
 )
+from sheaf.services.security_events import record_security_event
 from sheaf.services.share_projection import (
     project_fronting,
     project_groups,
@@ -484,7 +487,10 @@ async def update_share_view(
 @router.delete(
     "/share-views/{view_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_scope("sharing:delete"))],
+    # `sharing:write`, not `sharing:delete`: un-exposing is never gated harder
+    # than exposing. Deleting a view only ever destroys exposure, so a key that
+    # can publish must be able to unpublish (owner sessions are unscoped).
+    dependencies=[Depends(require_scope("sharing:write"))],
 )
 async def delete_share_view(
     view_id: uuid.UUID,
@@ -605,7 +611,10 @@ async def add_view_member(
     """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db)
+    # Locked for update: this content mutation must serialise against a
+    # concurrent detach/re-expand of the same view, exactly as update_share_view
+    # does - otherwise a stale read races a re-stage.
+    view = await _get_view(view_id, system, db, for_update=True)
 
     member = (
         await db.execute(
@@ -650,7 +659,9 @@ async def remove_view_member(
 ) -> Response:
     """Remove a member from a view. Immediate, ungated, idempotent."""
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db)
+    # Locked for update: serialise against a concurrent re-expand/re-stage of
+    # this view, exactly as update_share_view does.
+    view = await _get_view(view_id, system, db, for_update=True)
     row = (
         await db.execute(
             select(ShareViewMember).where(
@@ -687,7 +698,10 @@ async def add_view_group(
     """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db)
+    # Locked for update: this content mutation must serialise against a
+    # concurrent detach/re-expand of the same view, exactly as update_share_view
+    # does - otherwise a detach races a re-expand.
+    view = await _get_view(view_id, system, db, for_update=True)
 
     group = (
         await db.execute(
@@ -762,7 +776,9 @@ async def remove_view_group(
     cannot silently rewrite anybody's view).
     """
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db)
+    # Locked for update: a detach must serialise against a concurrent re-expand
+    # of the same group into this view, exactly as update_share_view does.
+    view = await _get_view(view_id, system, db, for_update=True)
 
     link = (
         await db.execute(
@@ -810,7 +826,10 @@ async def add_view_field(
     """
     block_pending_deletion(user)
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db)
+    # Locked for update: this content mutation must serialise against a
+    # concurrent detach/re-expand of the same view, exactly as update_share_view
+    # does - otherwise a stale read races a re-stage.
+    view = await _get_view(view_id, system, db, for_update=True)
 
     field = (
         await db.execute(
@@ -852,7 +871,9 @@ async def remove_view_field(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     system = await _get_user_system(user, db)
-    view = await _get_view(view_id, system, db)
+    # Locked for update: serialise against a concurrent re-expand/re-stage of
+    # this view, exactly as update_share_view does.
+    view = await _get_view(view_id, system, db, for_update=True)
     row = (
         await db.execute(
             select(ShareViewField).where(
@@ -894,6 +915,7 @@ async def list_share_grants(
 )
 async def create_share_grant(
     body: ShareGrantCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareGrantCreated:
@@ -940,6 +962,18 @@ async def create_share_grant(
             detail="This system already has a public profile.",
         ) from None
     await db.refresh(grant)
+    # Durable trail: publishing is the highest-risk act a live session can take
+    # on this surface, so a hijacked session's publish is recorded with its IP
+    # and user-agent for the owner to audit. Best-effort, never raises. Mirrors
+    # the adult-attestation event in auth.attest_adult.
+    await record_security_event(
+        event_type=SecurityEventType.SHARE_GRANT_CREATED,
+        outcome="success",
+        user_id=user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        detail={"grant_id": str(grant.id), "subject_type": grant.subject_type},
+    )
     return ShareGrantCreated(grant=_grant_to_read(grant), token=raw_token)
 
 
@@ -950,6 +984,7 @@ async def create_share_grant(
 )
 async def rotate_share_grant(
     grant_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareGrantCreated:
@@ -973,16 +1008,30 @@ async def rotate_share_grant(
     raw_token = rotate_grant_token(grant)
     await db.commit()
     await db.refresh(grant)
+    # Rotation invalidates the old link, so a hijacked session could use it to
+    # lock the owner out of their own grant; recorded with IP/UA for the trail.
+    await record_security_event(
+        event_type=SecurityEventType.SHARE_GRANT_ROTATED,
+        outcome="success",
+        user_id=user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        detail={"grant_id": str(grant.id)},
+    )
     return ShareGrantCreated(grant=_grant_to_read(grant), token=raw_token)
 
 
 @router.delete(
     "/share-grants/{grant_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_scope("sharing:delete"))],
+    # `sharing:write`, not `sharing:delete`: un-exposing is never gated harder
+    # than exposing. Revoking is the panic button, so a key that can publish
+    # must be able to revoke (owner sessions are unscoped).
+    dependencies=[Depends(require_scope("sharing:write"))],
 )
 async def revoke_share_grant(
     grant_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -1013,6 +1062,17 @@ async def revoke_share_grant(
         )
     revoke_grant(grant)
     await db.commit()
+    # Revoking is the panic button, and "someone revoked my grant" is itself a
+    # takeover signal, so the act is recorded with IP/UA even though it un-
+    # exposes. Best-effort, never raises.
+    await record_security_event(
+        event_type=SecurityEventType.SHARE_GRANT_REVOKED,
+        outcome="success",
+        user_id=user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        detail={"grant_id": str(grant.id)},
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

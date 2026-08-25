@@ -549,8 +549,14 @@ async def run_import(
         # importing user's own profile, indefinitely and past a delete. A
         # PluralSpace export has no legitimate internal Sheaf ref to keep, so
         # all of them are dropped; external images and prose are untouched.
+        # Clamp before the strip/parse so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         plaintext_description = strip_internal_image_refs_md_to_none(
-            _clean_str(m_data.get("description"))
+            clamp_str(
+                _clean_str(m_data.get("description")),
+                il.M_DESCRIPTION,
+                report=report,
+            )
         )
         member_id = uuid.uuid4()
         member = Member(
@@ -634,10 +640,10 @@ async def run_import(
             db=db,
             system=system,
         )
-        if resolution.privacy_held_name:
+        if resolution.privacy_held_member_id:
             result.members_privacy_skipped += 1
             result.warnings.append(
-                privacy_hold_warning(resolution.privacy_held_name)
+                privacy_hold_warning(resolution.privacy_held_member_id)
             )
         if resolution.disposition == "created":
             db.add(resolution.member)
@@ -813,14 +819,18 @@ def _apply_system_profile(data: dict, system: System, report: ClampReport) -> No
     name = _clean_str(sys_data.get("name"))
     if name and not system.name:
         system.name = clamp_str(name, il.SYS_NAME, report=report)
-    # Same reason as the member description above.
+    # Same reason as the member description above (strip + length cap). The long
+    # bio is now bounded to SYS_DESCRIPTION, matching the create API, so an
+    # oversized import can neither over-run storage nor feed the superlinear
+    # markdown parse an unbounded body.
     description = strip_internal_image_refs_md_to_none(
-        _clean_str(sys_data.get("description"))
+        clamp_str(
+            _clean_str(sys_data.get("description")),
+            il.SYS_DESCRIPTION,
+            report=report,
+        )
     )
     if description and not system.description:
-        # System description (the long bio) is intentionally uncapped, like the
-        # create API; only `note` carries the SYS_NOTE business cap and
-        # PluralSpace has no note-equivalent to map here.
         system.description = description
     color = _normalize_color(sys_data.get("color"))
     if color and not system.color:
@@ -932,9 +942,13 @@ async def _import_groups(
                 id=uuid.uuid4(),
                 system_id=system_id,
                 name=clamp_str(name, il.GROUP_NAME, report=report),
-                # Same reason as the member description above.
+                # Same reason as the member description above (strip + length cap).
                 description=strip_internal_image_refs_md_to_none(
-                    _clean_str(g_data.get("description"))
+                    clamp_str(
+                        _clean_str(g_data.get("description")),
+                        il.GROUP_DESCRIPTION,
+                        report=report,
+                    )
                 ),
                 color=_normalize_color(g_data.get("color")),
             )
@@ -1376,6 +1390,10 @@ async def _import_chat(
             body = _clean_str(msg.get("content")) or ""
             if multi_channel:
                 body = f"[{channel_name}] {body}".rstrip()
+            # A message body is markdown, so strip embeds pointing at this
+            # instance's storage before storing - otherwise they re-sign into a
+            # live cross-tenant read on display, exactly as for descriptions.
+            body = strip_internal_image_refs_md_to_none(body) or ""
             body = clamp_str(body, il.MESSAGE_BODY, report=report)
             author_name = _clean_str(msg.get("member_name"))
             author = member_name_to_member.get(author_name) if author_name else None

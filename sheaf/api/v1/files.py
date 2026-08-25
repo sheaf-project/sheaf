@@ -499,7 +499,12 @@ public_serve_router = APIRouter(prefix="/public/files", tags=["public profiles"]
 # well above the public-profile page limit because images fan out: one profile
 # view can pull an avatar, a banner and every image embedded in a bio, and a
 # caching proxy re-fetches them all once its TTL lapses.
-_PUBLIC_FILE_RATE = rate_limit(300, 60, bucket="public_files")
+#
+# fail_closed: this shares the public surface's threat model - the most
+# expensive anonymous traffic on the instance - so a Redis outage must not drop
+# its throttle. We 503 until the counter is back rather than serve unbounded,
+# matching the public_profiles bucket and the auth endpoints.
+_PUBLIC_FILE_RATE = rate_limit(300, 60, fail_closed=True, bucket="public_files")
 
 
 def _canonical_public_file_request(
@@ -543,6 +548,14 @@ async def serve_public_file(
     CSP permits only same-origin images. The bounded HMAC capability keeps the
     route cacheable without making the underlying bucket public.
     """
+
+    # Public profiles off means this media route is gone too. The projection
+    # routes 404 wholesale on this same flag; an anonymous image endpoint that
+    # kept serving would hand out avatars and bio images from an instance that
+    # has deliberately taken its public surface down. Same uniform 404 as every
+    # other refusal here, so flipping the flag is not observable from outside.
+    if not settings.public_profiles_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     if ".." in path or path.startswith("/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
