@@ -34,7 +34,12 @@ import {
 } from "@/hooks/use-relationships";
 import { RelationshipGraphCanvas } from "@/components/relationship-graph";
 import { RelationshipPrivacyControl } from "@/components/relationship-privacy-control";
-import { RelationshipTypeDialog } from "@/components/relationship-type-dialog";
+import {
+  DeleteTypeDialog,
+  EditTypeDialog,
+  RelationshipTypeDialog,
+} from "@/components/relationship-type-dialog";
+import { summariseType } from "@/lib/relationship-types";
 import type { GraphEdge } from "@/lib/relationship-graph";
 import {
   EDGE_VISIBILITY_HELP,
@@ -45,6 +50,7 @@ import type {
   RelationshipEdgeCreate,
   RelationshipGraph,
   RelationshipGraphEdge,
+  RelationshipType,
 } from "@/types/api";
 
 /**
@@ -473,12 +479,107 @@ function AddEdgeDialog({
   );
 }
 
+/**
+ * The type vocabulary, editable right where the graph is looked at. The same
+ * list the Settings page shows, built from the same shared edit/delete/create
+ * components, so neither surface can drift from the other - this is a shortcut,
+ * not a second implementation.
+ */
+function ManageTypesDialog({ onClose }: { onClose: () => void }) {
+  const { data: types } = useRelationshipTypes();
+  const [editing, setEditing] = useState<RelationshipType | null>(null);
+  const [deleting, setDeleting] = useState<RelationshipType | null>(null);
+  const [showNewType, setShowNewType] = useState(false);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Relationship types</DialogTitle>
+          <DialogDescription>
+            The vocabulary your relationships are drawn with. Changing a label
+            re-reads every relationship of that type, everywhere.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          {(types ?? []).map((t) => (
+            <div
+              key={t.id}
+              className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <ColorDot color={t.color} />
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{t.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {summariseType(t)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setEditing(t)}
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-destructive hover:text-destructive"
+                  onClick={() => setDeleting(t)}
+                >
+                  Delete
+                </Button>
+              </div>
+            </div>
+          ))}
+          {types && types.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No relationship types yet.
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowNewType(true)}
+          >
+            New relationship type
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+      {editing && (
+        <EditTypeDialog
+          type={editing}
+          onOpenChange={(open) => !open && setEditing(null)}
+        />
+      )}
+      {deleting && (
+        <DeleteTypeDialog
+          type={deleting}
+          onOpenChange={(open) => !open && setDeleting(null)}
+        />
+      )}
+      {showNewType && (
+        <RelationshipTypeDialog
+          onOpenChange={(open) => !open && setShowNewType(false)}
+        />
+      )}
+    </Dialog>
+  );
+}
+
 export function RelationshipsPage() {
   const [scope, setScope] = useState<"members" | "groups">("members");
   // Off by default: this page is mostly something you look at, and a graph you
   // are dragging around is not a place to be one stray click from changing
   // who is whose anything.
   const [editMode, setEditMode] = useState(false);
+  const [manageTypes, setManageTypes] = useState(false);
   const { data: graph, isLoading } = useRelationshipGraph(scope);
 
   return (
@@ -489,11 +590,18 @@ export function RelationshipsPage() {
           <p className="text-sm text-muted-foreground">
             Drag to pan, scroll to zoom, drag a node to nudge it. Click a line
             between two to see the relationship it draws. Turn on Edit to add,
-            reverse, republish or remove them; existing types are edited in
-            Settings.
+            reverse, republish or remove them; Manage types edits the
+            vocabulary they are drawn with.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setManageTypes(true)}
+          >
+            Manage types
+          </Button>
           <Button
             variant={editMode ? "default" : "outline"}
             size="sm"
@@ -528,6 +636,9 @@ export function RelationshipsPage() {
         </div>
       ) : (
         <GraphCanvas graph={graph} scope={scope} editMode={editMode} />
+      )}
+      {manageTypes && (
+        <ManageTypesDialog onClose={() => setManageTypes(false)} />
       )}
     </div>
   );

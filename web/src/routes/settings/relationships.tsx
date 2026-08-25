@@ -1,38 +1,16 @@
-import { type FormEvent, useState } from "react";
+import { useState } from "react";
 
-import {
-  useRelationshipTypes,
-  useUpdateRelationshipType,
-  useDeleteRelationshipType,
-} from "@/hooks/use-relationships";
-import type { RelationshipSymmetry, RelationshipType } from "@/types/api";
+import { useRelationshipTypes } from "@/hooks/use-relationships";
+import type { RelationshipType } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ColorDot } from "@/components/color-dot";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  RelationshipColorField,
+  DeleteTypeDialog,
+  EditTypeDialog,
   RelationshipTypeForm,
 } from "@/components/relationship-type-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
-/** A one-line, plain summary of how a type reads. */
-function summariseType(t: {
-  symmetry: RelationshipSymmetry;
-  forward_label: string;
-  reverse_label: string | null;
-}): string {
-  if (t.symmetry === "symmetric") return t.forward_label;
-  return `${t.forward_label} -> ${t.reverse_label ?? "?"}`;
-}
+import { summariseType } from "@/lib/relationship-types";
 
 export function SettingsRelationshipsPage() {
   const { data: types } = useRelationshipTypes();
@@ -127,151 +105,5 @@ function NewTypeCard() {
         <RelationshipTypeForm />
       </CardContent>
     </Card>
-  );
-}
-
-function EditTypeDialog({
-  type,
-  onOpenChange,
-}: {
-  type: RelationshipType;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const updateType = useUpdateRelationshipType();
-  const [name, setName] = useState(type.name);
-  const [forwardLabel, setForwardLabel] = useState(type.forward_label);
-  const [reverseLabel, setReverseLabel] = useState(type.reverse_label ?? "");
-  const [color, setColor] = useState<string | null>(type.color);
-
-  const isSymmetric = type.symmetry === "symmetric";
-  const valid =
-    name.trim() !== "" &&
-    forwardLabel.trim() !== "" &&
-    (isSymmetric || reverseLabel.trim() !== "") &&
-    (color === null || /^#[0-9a-f]{6}$/i.test(color));
-
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!valid) return;
-    updateType.mutate(
-      {
-        id: type.id,
-        data: {
-          name: name.trim(),
-          forward_label: forwardLabel.trim(),
-          reverse_label: isSymmetric ? null : reverseLabel.trim(),
-          // An explicit null really does clear the colour server-side.
-          color,
-        },
-      },
-      { onSuccess: () => onOpenChange(false) },
-    );
-  }
-
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Edit relationship type</DialogTitle>
-          <DialogDescription>
-            The kind ({type.symmetry}) can&apos;t be changed after creation. To
-            switch between symmetric and directional, delete this type and make
-            a new one.
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="rel-edit-name">Name</Label>
-            <Input
-              id="rel-edit-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rel-edit-forward">
-              {isSymmetric ? "Label" : "Forward label (source side)"}
-            </Label>
-            <Input
-              id="rel-edit-forward"
-              value={forwardLabel}
-              onChange={(e) => setForwardLabel(e.target.value)}
-              required
-            />
-          </div>
-          {!isSymmetric && (
-            <div className="space-y-2">
-              <Label htmlFor="rel-edit-reverse">
-                Reverse label (target side)
-              </Label>
-              <Input
-                id="rel-edit-reverse"
-                value={reverseLabel}
-                onChange={(e) => setReverseLabel(e.target.value)}
-                required
-              />
-            </div>
-          )}
-          <RelationshipColorField
-            idPrefix="rel-edit"
-            color={color}
-            onChange={setColor}
-          />
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={updateType.isPending || !valid}>
-              {updateType.isPending ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function DeleteTypeDialog({
-  type,
-  onOpenChange,
-}: {
-  type: RelationshipType;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const deleteType = useDeleteRelationshipType();
-
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Delete relationship type</DialogTitle>
-          <DialogDescription>
-            Delete &quot;{type.name}&quot;? This also removes every relationship
-            between members or groups that uses this type. This cannot be undone.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={() =>
-              deleteType.mutate(type.id, {
-                onSuccess: () => onOpenChange(false),
-              })
-            }
-            disabled={deleteType.isPending}
-          >
-            {deleteType.isPending ? "Deleting..." : "Delete"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

@@ -9,6 +9,8 @@ import {
   useGroupRelationships,
   useCreateGroupRelationship,
   useDeleteGroupRelationship,
+  useUpdateMemberRelationship,
+  useUpdateGroupRelationship,
 } from "@/hooks/use-relationships";
 import type {
   PrivacyLevel,
@@ -97,8 +99,11 @@ export function RelationshipsEditor({
   const createGroupEdge = useCreateGroupRelationship();
   const deleteMemberEdge = useDeleteMemberRelationship();
   const deleteGroupEdge = useDeleteGroupRelationship();
+  const updateMemberEdge = useUpdateMemberRelationship();
+  const updateGroupEdge = useUpdateGroupRelationship();
   const createEdge = isMember ? createMemberEdge : createGroupEdge;
   const deleteEdge = isMember ? deleteMemberEdge : deleteGroupEdge;
+  const updateEdge = isMember ? updateMemberEdge : updateGroupEdge;
 
   // The full list resolves names in existing edges; the picker excludes
   // self and non-selectable nodes (e.g. custom fronts).
@@ -196,6 +201,10 @@ export function RelationshipsEditor({
               color={typeColor(edge.relationship_type_id)}
               otherName={nodeName(edge.other_id)}
               readOnly={readOnly}
+              onFlip={() =>
+                updateEdge.mutate({ edgeId: edge.id, data: { flip: true } })
+              }
+              flipping={updateEdge.isPending}
               onRemove={() => deleteEdge.mutate(edge.id)}
               removing={deleteEdge.isPending}
             />
@@ -350,6 +359,8 @@ function EdgeRow({
   color,
   otherName,
   readOnly,
+  onFlip,
+  flipping,
   onRemove,
   removing,
 }: {
@@ -358,9 +369,14 @@ function EdgeRow({
   color: string | null;
   otherName: string;
   readOnly: boolean;
+  onFlip: () => void;
+  flipping: boolean;
   onRemove: () => void;
   removing: boolean;
 }) {
+  // Directionless edges (symmetric type, or a mutual either-edge) have
+  // nothing to reverse - same rule as the graph's edge dialog.
+  const canFlip = edge.direction !== "none";
   return (
     <RelationshipPrivacyControl
       scope={scope}
@@ -369,15 +385,29 @@ function EdgeRow({
       className="rounded-md border px-2 py-1 text-sm"
       trailing={
         readOnly ? null : (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 text-xs text-destructive hover:text-destructive"
-            onClick={onRemove}
-            disabled={removing}
-          >
-            Remove
-          </Button>
+          <>
+            {canFlip && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs"
+                onClick={onFlip}
+                disabled={flipping}
+                title={`Reverse direction: ${otherName} becomes the ${edge.label}`}
+              >
+                Reverse
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs text-destructive hover:text-destructive"
+              onClick={onRemove}
+              disabled={removing}
+            >
+              Remove
+            </Button>
+          </>
         )
       }
     >

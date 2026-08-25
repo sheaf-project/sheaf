@@ -1,6 +1,10 @@
 import { type FormEvent, useState } from "react";
 
-import { useCreateRelationshipType } from "@/hooks/use-relationships";
+import {
+  useCreateRelationshipType,
+  useDeleteRelationshipType,
+  useUpdateRelationshipType,
+} from "@/hooks/use-relationships";
 import { RELATIONSHIP_PRESETS } from "@/types/api";
 import type {
   RelationshipPreset,
@@ -255,6 +259,160 @@ export function RelationshipColorField({
         the plain style.
       </p>
     </div>
+  );
+}
+
+/**
+ * Edit an existing type's labels/colour. One component for both the Settings
+ * page and the graph page's Manage types dialog, so the two surfaces cannot
+ * drift. Symmetry is fixed at creation: changing it would silently re-read
+ * every existing edge of the type, so that stays a delete-and-recreate.
+ */
+export function EditTypeDialog({
+  type,
+  onOpenChange,
+}: {
+  type: RelationshipType;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const updateType = useUpdateRelationshipType();
+  const [name, setName] = useState(type.name);
+  const [forwardLabel, setForwardLabel] = useState(type.forward_label);
+  const [reverseLabel, setReverseLabel] = useState(type.reverse_label ?? "");
+  const [color, setColor] = useState<string | null>(type.color);
+
+  const isSymmetric = type.symmetry === "symmetric";
+  const valid =
+    name.trim() !== "" &&
+    forwardLabel.trim() !== "" &&
+    (isSymmetric || reverseLabel.trim() !== "") &&
+    (color === null || HEX7.test(color));
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!valid) return;
+    updateType.mutate(
+      {
+        id: type.id,
+        data: {
+          name: name.trim(),
+          forward_label: forwardLabel.trim(),
+          reverse_label: isSymmetric ? null : reverseLabel.trim(),
+          // An explicit null really does clear the colour server-side.
+          color,
+        },
+      },
+      { onSuccess: () => onOpenChange(false) },
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit relationship type</DialogTitle>
+          <DialogDescription>
+            The kind ({type.symmetry}) can&apos;t be changed after creation. To
+            switch between symmetric and directional, delete this type and make
+            a new one.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="rel-edit-name">Name</Label>
+            <Input
+              id="rel-edit-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="rel-edit-forward">
+              {isSymmetric ? "Label" : "Forward label (source side)"}
+            </Label>
+            <Input
+              id="rel-edit-forward"
+              value={forwardLabel}
+              onChange={(e) => setForwardLabel(e.target.value)}
+              required
+            />
+          </div>
+          {!isSymmetric && (
+            <div className="space-y-2">
+              <Label htmlFor="rel-edit-reverse">
+                Reverse label (target side)
+              </Label>
+              <Input
+                id="rel-edit-reverse"
+                value={reverseLabel}
+                onChange={(e) => setReverseLabel(e.target.value)}
+                required
+              />
+            </div>
+          )}
+          <RelationshipColorField
+            idPrefix="rel-edit"
+            color={color}
+            onChange={setColor}
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={updateType.isPending || !valid}>
+              {updateType.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Confirm-and-delete for a type. Shared like EditTypeDialog, and blunt about
+ *  the blast radius: deleting a type removes every edge drawn with it. */
+export function DeleteTypeDialog({
+  type,
+  onOpenChange,
+}: {
+  type: RelationshipType;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const deleteType = useDeleteRelationshipType();
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete relationship type</DialogTitle>
+          <DialogDescription>
+            Delete &quot;{type.name}&quot;? This also removes every relationship
+            between members or groups that uses this type. This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() =>
+              deleteType.mutate(type.id, {
+                onSuccess: () => onOpenChange(false),
+              })
+            }
+            disabled={deleteType.isPending}
+          >
+            {deleteType.isPending ? "Deleting..." : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
