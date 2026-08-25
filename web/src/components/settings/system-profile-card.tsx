@@ -20,8 +20,17 @@ import {
   TimezoneSelect,
 } from "@/components/timezone-select";
 import { useTimezone } from "@/hooks/use-timezone";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { dateFormatLabels } from "@/lib/date-format";
-import type { DateFormat, PrivacyLevel } from "@/types/api";
+import { ApiError } from "@/lib/api-error";
+import { showApiErrorToast } from "@/lib/api-errors";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import type {
+  DateFormat,
+  DestructiveConfirm,
+  PrivacyLevel,
+  SystemUpdate,
+} from "@/types/api";
 import { toast } from "sonner";
 
 export function SystemProfileCard() {
@@ -30,8 +39,18 @@ export function SystemProfileCard() {
     queryKey: ["system", "me"],
     queryFn: getMySystem,
   });
+  // Raising the system to Public is a safeguarded exposure like any other, so
+  // the save can come back asking for a password or 2FA code. Hold the data the
+  // form submitted and re-send it with the step-up credentials once confirmed.
+  const [pendingRaise, setPendingRaise] = useState<SystemUpdate | null>(null);
   const update = useMutation({
-    mutationFn: updateMySystem,
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: SystemUpdate;
+      skipErrorToast?: boolean;
+    }) => updateMySystem(data, skipErrorToast),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["system", "me"] });
       toast.success("System settings saved");
@@ -40,13 +59,54 @@ export function SystemProfileCard() {
 
   if (!system) return null;
 
+  function save(data: SystemUpdate) {
+    update.mutate(
+      { data, skipErrorToast: true },
+      {
+        onError: (err) => {
+          if (
+            err instanceof ApiError &&
+            err.status === 400 &&
+            (err.detail === "Password required" ||
+              err.detail === "TOTP code required")
+          ) {
+            setPendingRaise(data);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't save system settings.", {
+            force: true,
+          });
+        },
+      },
+    );
+  }
+
   return (
-    <SystemSettingsForm
-      key={system.id}
-      initial={system}
-      onSubmit={(data) => update.mutate(data)}
-      loading={update.isPending}
-    />
+    <>
+      <SystemSettingsForm
+        key={system.id}
+        initial={system}
+        onSubmit={save}
+        loading={update.isPending}
+      />
+      <DestructiveConfirmDialog
+        open={!!pendingRaise}
+        onOpenChange={(open) => !open && setPendingRaise(null)}
+        title="Confirm making your system public"
+        description="Setting your system to Public exposes it through your shared views and links. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
+        tier={system.delete_confirmation}
+        actionLabel="Confirm"
+        actionLabelLoading="Saving..."
+        loading={update.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!pendingRaise) return;
+          update.mutate(
+            { data: { ...pendingRaise, ...confirm } },
+            { onSuccess: () => setPendingRaise(null) },
+          );
+        }}
+      />
+    </>
   );
 }
 
@@ -55,7 +115,7 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean };
+  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; pending_privacy?: PrivacyLevel | null; privacy_activates_at?: string | null; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean };
   onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null; show_member_created_date: boolean }) => void;
   loading: boolean;
 }) {
@@ -71,6 +131,7 @@ function SystemSettingsForm({
   const [showMemberCreatedDate, setShowMemberCreatedDate] = useState<boolean>(
     initial.show_member_created_date ?? false,
   );
+  const { formatDate } = useDateFormatters();
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -171,6 +232,15 @@ function SystemSettingsForm({
                 <SelectItem value="public">Public</SelectItem>
               </SelectContent>
             </Select>
+            {initial.pending_privacy === "public" &&
+              initial.privacy_activates_at && (
+                <p className="text-xs text-amber-600">
+                  A change to Public is waiting out your System Safety grace
+                  period. It takes effect{" "}
+                  {formatDate(initial.privacy_activates_at)}.
+                  Until then your system stays {initial.privacy}.
+                </p>
+              )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="system-date-format">Date format</Label>

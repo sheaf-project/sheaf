@@ -5,10 +5,11 @@ export function getMySystem() {
   return apiFetch<System>("/v1/systems/me");
 }
 
-export function updateMySystem(data: SystemUpdate) {
+export function updateMySystem(data: SystemUpdate, skipErrorToast = false) {
   return apiFetch<System>("/v1/systems/me", {
     method: "PATCH",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
