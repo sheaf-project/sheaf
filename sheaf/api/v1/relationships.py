@@ -758,7 +758,7 @@ async def relationship_graph(
                 RelationshipGraphNode(
                     id=m.id,
                     name=m.display_name or name_pt,
-                    avatar_url=resolve_avatar_url(m.avatar_url),
+                    avatar_url=resolve_avatar_url(m.avatar_url, user.id),
                     color=m.color,
                 )
             )

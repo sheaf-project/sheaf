@@ -723,7 +723,7 @@ async def list_revisions(
         )
 
     return [
-        ContentRevisionRead.model_validate(decrypt_revision_for_read(r))
+        ContentRevisionRead.model_validate(decrypt_revision_for_read(r, user.id))
         for r in page
     ]
 
@@ -789,7 +789,7 @@ async def pin_message_revision(
         ) from exc
     await db.commit()
     await db.refresh(revision)
-    return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision))
+    return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision, user.id))
 
 
 @router.post(
@@ -843,7 +843,7 @@ async def unpin_message_revision(
     await db.commit()
     await db.refresh(revision)
     return UnpinRevisionResponse(
-        revision=ContentRevisionRead.model_validate(decrypt_revision_for_read(revision)),
+        revision=ContentRevisionRead.model_validate(decrypt_revision_for_read(revision, user.id)),
     )
 
 

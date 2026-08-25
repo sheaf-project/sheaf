@@ -160,6 +160,7 @@ async def list_members(
     decoded = [
         decrypt_member_for_read(
             m,
+            user.id,
             has_bio_revisions=m.id in with_revisions,
             pending_delete_at=pending.get(m.id),
         )
@@ -228,7 +229,7 @@ async def create_member(
     db.add(member)
     await db.commit()
     await db.refresh(member)
-    return decrypt_member_for_read(member)
+    return decrypt_member_for_read(member, user.id)
 
 
 # Quick-switch ranker tunables. Window is generous relative to the
@@ -322,6 +323,7 @@ async def top_fronters(
     return [
         decrypt_member_for_read(
             m,
+            user.id,
             has_bio_revisions=m.id in with_revisions,
             pending_delete_at=pending.get(m.id),
         )
@@ -342,6 +344,7 @@ async def get_member(
     )
     return decrypt_member_for_read(
         member,
+        user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
         pending_delete_at=pending.get(member.id),
     )
@@ -489,6 +492,7 @@ async def update_member(
     await db.refresh(member)
     return decrypt_member_for_read(
         member,
+        user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
     )
 
@@ -572,6 +576,7 @@ async def archive_member(
         await db.refresh(member)
     return decrypt_member_for_read(
         member,
+        user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
     )
 
@@ -596,6 +601,7 @@ async def unarchive_member(
         await db.refresh(member)
     return decrypt_member_for_read(
         member,
+        user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
     )
 
@@ -741,7 +747,7 @@ async def list_bio_revisions(
         )
 
     return [
-        ContentRevisionRead.model_validate(decrypt_revision_for_read(r))
+        ContentRevisionRead.model_validate(decrypt_revision_for_read(r, user.id))
         for r in page
     ]
 
@@ -776,6 +782,7 @@ async def restore_bio_revision(
     await db.refresh(member)
     return decrypt_member_for_read(
         member,
+        user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
     )
 
@@ -812,7 +819,7 @@ async def pin_bio_revision(
         ) from exc
     await db.commit()
     await db.refresh(revision)
-    return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision))
+    return ContentRevisionRead.model_validate(decrypt_revision_for_read(revision, user.id))
 
 
 @router.post(
@@ -867,5 +874,5 @@ async def unpin_bio_revision(
     await db.commit()
     await db.refresh(revision)
     return UnpinRevisionResponse(
-        revision=ContentRevisionRead.model_validate(decrypt_revision_for_read(revision)),
+        revision=ContentRevisionRead.model_validate(decrypt_revision_for_read(revision, user.id)),
     )

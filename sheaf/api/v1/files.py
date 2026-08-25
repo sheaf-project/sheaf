@@ -277,7 +277,7 @@ async def upload_file(
         raise
 
     return {
-        "url": resolve_avatar_url(key),
+        "url": resolve_avatar_url(key, user.id),
         "key": key,
         "size": file_size,
         # True iff the original upload had more than one frame. When the
@@ -332,7 +332,7 @@ async def list_files(
         {
             "id": str(f.id),
             "key": f.key,
-            "url": resolve_avatar_url(f.key),
+            "url": resolve_avatar_url(f.key, user.id),
             "purpose": f.purpose,
             "content_type": f.content_type,
             "size_bytes": f.size_bytes,

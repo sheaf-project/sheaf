@@ -229,26 +229,47 @@ def normalize_avatar_url(url: str | None) -> str | None:
     return url
 
 
-def resolve_avatar_url(url: str | None) -> str | None:
+def resolve_avatar_url(url: str | None, owner_id: object) -> str | None:
     """Convert a stored avatar_url (key or external URL) to a displayable URL.
 
     Priority:
     1. None → None
     2. External URL (not ours) → returned as-is
-    3. Internal URL or bare key, S3 + s3_public_url + signed → {cdn}/{key}?token=…
-    4. Internal URL or bare key, S3 + s3_public_url + unsigned → {cdn}/{key}
-    5. Internal URL or bare key, image_serving=signed → /v1/files/{key}?token=…
-    6. Internal URL or bare key, image_serving=unsigned → /v1/files/{key}
+    3. Internal key NOT owned by `owner_id` → unsigned /v1/files/{key}
+    4. Internal URL or bare key, S3 + s3_public_url + signed → {cdn}/{key}?token=…
+    5. Internal URL or bare key, S3 + s3_public_url + unsigned → {cdn}/{key}
+    6. Internal URL or bare key, image_serving=signed → /v1/files/{key}?token=…
+    7. Internal URL or bare key, image_serving=unsigned → /v1/files/{key}
 
     Recognising our own CDN hostname matters for DB rows written before this
     code landed: they store the full CDN URL, and we want them signed on
     read just the same as bare keys.
+
+    `owner_id` is the account the row belongs to, and it is REQUIRED
+    positionally rather than defaulted so a new caller cannot quietly opt out
+    of the check - a missed call site is a TypeError at import/first-call, not
+    a silent hole. Signing is a capability grant: this function is what turns a
+    storage key into a URL that actually serves bytes. `owned_avatar_url` gates
+    the write handlers, but handlers get added, importers get written, and rows
+    already in the database predate every one of those guards, so the signer
+    does not get to assume its input was vetted.
+
+    A key from somebody else's namespace comes back as the bare, UNSIGNED
+    ``/v1/files/{key}`` path rather than None. That is the fail-closed choice:
+    with signing on (the default) the serve endpoint rejects it with 403, so no
+    bytes move; with signing off the instance already serves every key to
+    anyone who asks, so there is no capability to withhold. Returning the path
+    instead of None also leaves the broken reference visible to the person
+    whose profile it is, rather than silently blanking a field they can still
+    see in their own editor.
     """
     if url is None:
         return None
     key = _to_internal_key(url)
     if key is None:
         return url
+    if internal_key_owner(key) != str(owner_id):
+        return f"/v1/files/{key}"
     if settings.storage_backend == "s3" and settings.s3_public_url:
         if settings.image_serving == "signed":
             return sign_cdn_url(key)
@@ -258,7 +279,7 @@ def resolve_avatar_url(url: str | None) -> str | None:
     return f"/v1/files/{key}"
 
 
-def resolve_description_urls(text: str | None) -> str | None:
+def resolve_description_urls(text: str | None, owner_id: object) -> str | None:
     """Sign image URLs in markdown descriptions for display.
 
     Handles all three forms an internal reference can take:
@@ -267,6 +288,13 @@ def resolve_description_urls(text: str | None) -> str | None:
       3. bare key (unusual, but _to_internal_key accepts it)
 
     Anything _to_internal_key doesn't recognise is left untouched.
+
+    `owner_id` is the account this text belongs to, REQUIRED for the same
+    reason `resolve_avatar_url` requires it: an embed naming a key outside that
+    account's namespace is re-pointed at the canonical but UNSIGNED
+    ``/v1/files/{key}`` instead of being signed, so it 403s at serve time when
+    signing is on and nothing is granted that the instance was not already
+    giving away. See `resolve_avatar_url` for the full reasoning.
     """
     if text is None:
         return None
@@ -275,7 +303,7 @@ def resolve_description_urls(text: str | None) -> str | None:
         key = _to_internal_key(image.url)
         if key is None:
             return None
-        resolved = resolve_avatar_url(key)
+        resolved = resolve_avatar_url(key, owner_id)
         return render_markdown_image(image, resolved or "/v1/files/" + key)
 
     return rewrite_markdown_images(text, _replace)

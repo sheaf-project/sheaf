@@ -110,16 +110,20 @@ class SystemRead(BaseModel):
     show_member_created_date: bool
     created_at: datetime
     updated_at: datetime
+    # The account that owns this system's uploads. Excluded from the response;
+    # see MemberRead.owner_user_id for why it is required. Populated straight
+    # from System.user_id, so `from_attributes` fills it in.
+    user_id: uuid.UUID = Field(exclude=True)
 
     model_config = {"from_attributes": True}
 
     @field_serializer("avatar_url")
     def _sign_avatar_url(self, v: str | None) -> str | None:
-        return resolve_avatar_url(v)
+        return resolve_avatar_url(v, self.user_id)
 
     @field_serializer("description")
     def _sign_description_urls(self, v: str | None) -> str | None:
-        return resolve_description_urls(v)
+        return resolve_description_urls(v, self.user_id)
 
 
 class DeleteConfirmationUpdate(BaseModel):
