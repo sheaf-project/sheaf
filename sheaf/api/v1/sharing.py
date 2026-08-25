@@ -3,14 +3,17 @@
 Every endpoint here is scoped to the caller's own system. The asymmetry that
 runs through the whole feature shows up in the re-auth rules: anything that
 EXPOSES more (creating a grant, adding a member/field/group to a view that is
-already shared, turning one of that view's exposure flags on) is deferred and
-re-auth-gated when the system has armed the `profile_visibility` safety
-category, while anything that exposes LESS (revoking, rotating, removing,
-deleting, turning a flag back off) is immediate and never gated.
+already shared, turning one of that view's exposure flags on) is re-auth-gated
+when the system has armed the `profile_visibility` safety category, while
+anything that exposes LESS (revoking, rotating, removing, deleting, turning a
+flag back off) is immediate and never gated.
 
-Deferred does not mean "refused until later": the change is accepted and parked
-as pending state, and `finalize_share_activations` makes it live once the grace
-window has elapsed.
+Step-up and staging are two separate controls (see `visibility_step_up_required`
+and `visibility_grace_days`). The category being armed demands re-auth; a grace
+window on top of it also PARKS the change as pending state, which
+`finalize_share_activations` makes live once the window has elapsed. With the
+window at 0 (the default) an exposing change re-auths and then lands live at
+once - accepted, not "refused until later".
 
 The same asymmetry decides what an instance with its public surface switched off
 still allows: everything that un-exposes or exposes nothing keeps working
@@ -87,11 +90,12 @@ from sheaf.services.sharing import (
     create_grant,
     expand_group_into_view,
     grant_live_clause,
-    is_exposure_safeguarded,
     revoke_grant,
     rotate_grant_token,
     suppression_reason,
     view_is_shared,
+    visibility_grace_days,
+    visibility_step_up_required,
 )
 from sheaf.services.system_safety import verify_destructive_auth
 
@@ -184,21 +188,24 @@ def _block_new_exposure(user: User) -> None:
         )
 
 
-async def _reauth_if_deferred(
+async def _step_up_if_required(
     *,
     db: AsyncSession,
     user: User,
     system: System,
-    deferred: bool,
+    required: bool,
     password: str | None,
     totp_code: str | None,
 ) -> None:
-    """Step-up auth, but only when the action actually waits out a grace window.
+    """Step-up auth, but only when this exposing action demands it.
 
-    Mirrors the settings path: re-auth is the price of a change that will take
-    effect later without further confirmation, not a toll on every edit.
+    Re-auth is the price of an action that publishes something - whether it goes
+    live at once or waits out a grace window first. It fires on the category
+    being armed (`visibility_step_up_required`), independent of the grace period;
+    staging behind a window is the caller's separate decision via
+    `visibility_grace_days`.
     """
-    if deferred:
+    if required:
         await verify_destructive_auth(user, system, password, totp_code, db)
 
 
@@ -423,28 +430,33 @@ async def update_share_view(
     # setting - is allowed to stand between somebody and going dark.
     if loosening:
         _block_new_exposure(user)
-    deferred = bool(loosening) and shared and is_exposure_safeguarded(system)
-    await _reauth_if_deferred(
+    # Step-up whenever the category is armed and this loosening would actually
+    # reach a reader (the view is shared). Staging behind the grace window is a
+    # separate question answered by `visibility_grace_days`: with a window the
+    # flip parks pending, with none it lands live once the re-auth clears.
+    exposing = bool(loosening) and shared
+    step_up = exposing and visibility_step_up_required(system)
+    await _step_up_if_required(
         db=db,
         user=user,
         system=system,
-        deferred=deferred,
+        required=step_up,
         password=body.password,
         totp_code=body.totp_code,
     )
+    grace = visibility_grace_days(system)
+    stage = exposing and grace > 0
 
     if body.name is not None:
         view.name = body.name.strip()
     if body.member_permalinks is not None:
         view.member_permalinks = body.member_permalinks
 
-    activates_at = datetime.now(UTC) + timedelta(
-        days=system.safety_grace_period_days
-    )
+    activates_at = datetime.now(UTC) + timedelta(days=grace)
     for flag, value in requested.items():
         if value is None:
             continue
-        if deferred and flag in loosening:
+        if stage and flag in loosening:
             setattr(view, f"pending_{flag}", True)
             # One clock for the whole view; a later loosening restarts it.
             view.flags_activate_at = activates_at
@@ -608,11 +620,11 @@ async def add_view_member(
         )
 
     shared = await view_is_shared(db, view.id)
-    await _reauth_if_deferred(
+    await _step_up_if_required(
         db=db,
         user=user,
         system=system,
-        deferred=shared and is_exposure_safeguarded(system),
+        required=shared and visibility_step_up_required(system),
         password=body.password,
         totp_code=body.totp_code,
     )
@@ -690,11 +702,11 @@ async def add_view_group(
         )
 
     shared = await view_is_shared(db, view.id)
-    await _reauth_if_deferred(
+    await _step_up_if_required(
         db=db,
         user=user,
         system=system,
-        deferred=shared and is_exposure_safeguarded(system),
+        required=shared and visibility_step_up_required(system),
         password=body.password,
         totp_code=body.totp_code,
     )
@@ -814,11 +826,11 @@ async def add_view_field(
         )
 
     shared = await view_is_shared(db, view.id)
-    await _reauth_if_deferred(
+    await _step_up_if_required(
         db=db,
         user=user,
         system=system,
-        deferred=shared and is_exposure_safeguarded(system),
+        required=shared and visibility_step_up_required(system),
         password=body.password,
         totp_code=body.totp_code,
     )
@@ -901,11 +913,11 @@ async def create_share_grant(
     system = await _get_user_system(user, db)
     view = await _get_view(body.view_id, system, db)
 
-    await _reauth_if_deferred(
+    await _step_up_if_required(
         db=db,
         user=user,
         system=system,
-        deferred=is_exposure_safeguarded(system),
+        required=visibility_step_up_required(system),
         password=body.password,
         totp_code=body.totp_code,
     )

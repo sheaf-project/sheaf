@@ -6,11 +6,23 @@ rules run through all of it:
 1. **Exposing waits, un-exposing is instant.** Creating a grant, adding a
    member/field to a view that is already shared, turning one of that view's
    exposure flags on, or flipping a member in a shared view to `public`
-   privacy, are all loosenings: when the system has a grace period and the
-   `profile_visibility` safety category on, the change lands PENDING and only
-   the finalize sweep promotes it. Revoking, rotating, removing, and turning
-   flags back off are always immediate and never gated - nothing may slow down
-   going dark.
+   privacy, are all loosenings. Two independent controls stand in front of
+   them, and the decouple between them is deliberate:
+
+   - **Step-up.** When the `profile_visibility` safety category is armed
+     (`visibility_step_up_required`), any of these that would ACTUALLY expose
+     someone demands re-auth first. This is on by default; at the `none` auth
+     tier the re-auth is a no-op, so a fresh account feels no friction until it
+     picks a tier.
+   - **Staging.** When a grace window is also configured
+     (`visibility_grace_days` > 0), the raise does not land live: it parks
+     PENDING and only the finalize sweep promotes it once the window elapses.
+     With grace at 0 (the default) the raise applies immediately - the re-auth
+     already happened, so there is nothing left to wait out and no pending row
+     is written.
+
+   Revoking, rotating, removing, and turning flags back off are always
+   immediate and never gated - nothing may slow down going dark.
 2. **Nothing is exposed implicitly.** `ShareViewMember` is the sole authority
    on who appears. Groups are a bulk picker that expands into explicit member
    rows (see `expand_group_into_view`), never a rule evaluated at read time,
@@ -105,11 +117,34 @@ EXPOSURE_FLAGS: tuple[str, ...] = (
 )
 
 
-def is_exposure_safeguarded(system: System) -> bool:
-    """True when exposing something should wait out the grace window."""
+def visibility_step_up_required(system: System) -> bool:
+    """True when the profile_visibility safety category is armed.
+
+    Drives whether a raise that would actually expose someone has to clear
+    re-auth first. This is ONE half of what the old `is_exposure_safeguarded`
+    bundled: it is deliberately independent of the grace period, because a
+    re-authed raise that applies immediately is a real protection (a hijacked
+    session cannot silently publish) even with no window to wait out. Armed by
+    default; at the `none` auth tier the re-auth verifies nothing, so it costs a
+    fresh account nothing until it picks a tier.
+    """
+    return system.safety_applies_to_profile_visibility
+
+
+def visibility_grace_days(system: System) -> int:
+    """How many days an exposing raise stages before it goes live, or 0.
+
+    The OTHER half of the old `is_exposure_safeguarded`: it decides whether a
+    raise merely re-auths (0) or also parks PENDING behind a window (>0). Reads
+    as 0 whenever the category is disarmed, because a grace window with the
+    category off guards nothing - the raise would apply immediately anyway - so
+    there is one answer to "does this stage?" rather than a stored number that
+    only sometimes bites.
+    """
     return (
-        system.safety_grace_period_days > 0
-        and system.safety_applies_to_profile_visibility
+        system.safety_grace_period_days
+        if system.safety_applies_to_profile_visibility
+        else 0
     )
 
 
@@ -118,12 +153,17 @@ def _activation(system: System, *, already_shared: bool) -> tuple[str, datetime 
 
     Adding to a view that nothing points at yet exposes nothing, so it is
     immediate; the grace window is spent when the grant itself is created.
+    Staging is a question of the grace window ALONE - the step-up, if the
+    category demanded one, already happened at the endpoint before this is
+    reached, so with grace at 0 the row lands live and no pending row is
+    written.
     """
-    if not already_shared or not is_exposure_safeguarded(system):
+    grace = visibility_grace_days(system)
+    if not already_shared or grace <= 0:
         return ShareItemStatus.ACTIVE.value, None
     return (
         ShareItemStatus.PENDING.value,
-        datetime.now(UTC) + timedelta(days=system.safety_grace_period_days),
+        datetime.now(UTC) + timedelta(days=grace),
     )
 
 
@@ -540,6 +580,33 @@ async def field_privacy_raise_exposes(
     return result.scalar_one_or_none() is not None
 
 
+async def system_privacy_raise_exposes(db: AsyncSession, system: System) -> bool:
+    """Whether flipping system privacy to `public` would publish anything.
+
+    `System.privacy` is the master switch over the whole surface
+    (`profile_serving_clause`), so raising it to public is the broadest raise an
+    owner can make - but only when there is a grant behind it to reveal. The
+    sibling of the member/group/field/edge raise tests, asked at system scope:
+    True when any grant on the system passes `grant_live_clause()`, i.e. is live
+    now or pending on its own window. Pending counts for the same reason it does
+    everywhere else here - a pending grant goes live by itself, so a privacy
+    raise landing near the end of its window must serve its own full one.
+
+    A False means the raise is instant and ungated, which is correct AND safe:
+    with no grant to serve, making the system public reveals nobody, and any
+    grant created later carries its own gate and its own window.
+    """
+    result = await db.execute(
+        select(ShareGrant.id)
+        .where(
+            ShareGrant.system_id == system.id,
+            grant_live_clause(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 # ---------------------------------------------------------------------------
 # View membership
 # ---------------------------------------------------------------------------
@@ -824,11 +891,12 @@ async def create_grant(
         raw_token = secrets.token_urlsafe(_TOKEN_BYTES)
         token_hash = hash_share_token(raw_token)
 
-    if is_exposure_safeguarded(system):
+    # Step-up, if the category demanded one, already happened at the endpoint;
+    # here it is only a question of whether a grace window stages the grant.
+    grace = visibility_grace_days(system)
+    if grace > 0:
         grant_status = ShareGrantStatus.PENDING.value
-        activates_at = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
+        activates_at = datetime.now(UTC) + timedelta(days=grace)
     else:
         grant_status = ShareGrantStatus.ACTIVE.value
         activates_at = None
@@ -1223,5 +1291,28 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         .execution_options(synchronize_session=False)
     )
     promoted += field_raises.rowcount or 0
+
+    # Staged system-privacy raises - the master switch itself. Same atomic
+    # shape and the same reasoning as every raise above: a lowering (setting
+    # private/friends) that lands mid-sweep clears `privacy_activates_at` and so
+    # either falls outside the predicate or writes last, and the `case()` covers
+    # the ordering where the timestamp survived but the staged level did not.
+    system_raises = await db.execute(
+        update(System)
+        .where(
+            System.privacy_activates_at.is_not(None),
+            System.privacy_activates_at <= now,
+        )
+        .values(
+            privacy=case(
+                (System.pending_privacy.is_not(None), System.pending_privacy),
+                else_=System.privacy,
+            ),
+            pending_privacy=None,
+            privacy_activates_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    promoted += system_raises.rowcount or 0
 
     return promoted

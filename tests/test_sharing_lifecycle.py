@@ -28,12 +28,13 @@ from sheaf.services.sharing import (
     EXPOSURE_FLAGS,
     _activation,
     grant_live_clause,
-    is_exposure_safeguarded,
     promote_view_flags,
     public_surface_startup_message,
     require_adult_attestation,
     revoke_grant,
     rotate_grant_token,
+    visibility_grace_days,
+    visibility_step_up_required,
 )
 
 
@@ -60,7 +61,7 @@ def _link_grant() -> ShareGrant:
 
 
 # ---------------------------------------------------------------------------
-# Safeguard predicate
+# Split predicates: step-up (category) vs staging (grace)
 # ---------------------------------------------------------------------------
 
 
@@ -68,13 +69,33 @@ def _link_grant() -> ShareGrant:
     ("grace", "category", "expected"),
     [
         (0, False, False),
-        (0, True, False),  # category on but no grace window to serve
-        (7, False, False),  # grace set but the category is not armed
+        (0, True, True),  # armed with no window: re-auth, but land immediately
+        (7, False, False),  # window set but the category disarmed guards nothing
         (7, True, True),
     ],
 )
-def test_is_exposure_safeguarded(grace, category, expected):
-    assert is_exposure_safeguarded(_system(grace=grace, category=category)) is expected
+def test_visibility_step_up_required_tracks_the_category_only(grace, category, expected):
+    # Step-up is decoupled from the grace window on purpose: an armed category
+    # demands re-auth whether or not there is a window to wait out afterwards.
+    assert (
+        visibility_step_up_required(_system(grace=grace, category=category))
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("grace", "category", "expected"),
+    [
+        (0, False, 0),
+        (0, True, 0),  # armed but no window -> immediate, nothing to stage
+        (7, False, 0),  # window meaningless while the category is disarmed
+        (7, True, 7),
+    ],
+)
+def test_visibility_grace_days_only_bites_when_the_category_is_armed(
+    grace, category, expected
+):
+    assert visibility_grace_days(_system(grace=grace, category=category)) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +129,16 @@ def test_shared_view_without_the_category_armed_is_immediate():
     """The grace window only applies when the user opted this category in."""
     status, activates_at = _activation(
         _system(grace=7, category=False), already_shared=True
+    )
+    assert status == ShareItemStatus.ACTIVE.value
+    assert activates_at is None
+
+
+def test_shared_view_armed_but_no_grace_window_is_immediate():
+    """The default posture: category on, grace 0. Step-up happens at the
+    endpoint; _activation stages nothing, so the row lands live at once."""
+    status, activates_at = _activation(
+        _system(grace=0, category=True), already_shared=True
     )
     assert status == ShareItemStatus.ACTIVE.value
     assert activates_at is None

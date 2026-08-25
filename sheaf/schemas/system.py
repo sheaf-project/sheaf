@@ -51,6 +51,14 @@ class SystemUpdate(BaseModel):
     coalesce_contiguous_fronts: bool | None = None
     show_member_created_date: bool | None = None
 
+    # Step-up credentials, only consulted when raising system privacy to
+    # `public` is a deferred exposure (the profile_visibility safety category is
+    # armed and a grant would actually serve). Never stored on the system.
+    password: str | None = Field(
+        default=None, description="Required when the privacy raise is deferred"
+    )
+    totp_code: str | None = None
+
     @field_validator("avatar_url", mode="before")
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:
@@ -102,6 +110,11 @@ class SystemRead(BaseModel):
     avatar_url: str | None
     color: str | None
     privacy: PrivacyLevel
+    # A raise of the master switch waiting out the grace window: `privacy` above
+    # is still the truth, and this says what it will become when
+    # `privacy_activates_at` passes. Null = nothing staged.
+    pending_privacy: PrivacyLevel | None = None
+    privacy_activates_at: datetime | None = None
     delete_confirmation: DeleteConfirmation
     date_format: DateFormat
     timezone: str | None

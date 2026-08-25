@@ -96,6 +96,16 @@ def _arm_visibility_safety(c: httpx.Client) -> None:
     assert r.status_code == 200, r.text
 
 
+def _disarm_visibility_safety(c: httpx.Client) -> None:
+    """Turn the profile_visibility category off. It defaults ON now, so a test
+    that wants the pre-arm 'nothing is gated' baseline has to say so."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={"applies_to_profile_visibility": False},
+    )
+    assert r.status_code == 200, r.text
+
+
 def _view(c: httpx.Client, *, members: list[str], **kw) -> str:
     r = c.post(
         "/v1/share-views",
@@ -259,9 +269,11 @@ def test_staged_raise_serves_the_full_grace_window(auth_client: httpx.Client):
 
 
 def test_raise_is_instant_when_the_system_is_not_safeguarded(auth_client: httpx.Client):
-    """Everything is in place to expose the edge; the owner just has not armed
-    the grace window for profile visibility."""
+    """Everything is in place to expose the edge; the owner has turned the
+    profile-visibility category off, so nothing gates the raise. The category is
+    on by default now, so this disarms it explicitly."""
     edge, _, _, _ = _publishable_edge(auth_client)
+    _disarm_visibility_safety(auth_client)
 
     r = _raise(auth_client, edge)
     assert r.status_code == 200, r.text
@@ -402,7 +414,9 @@ def test_deleting_and_recreating_an_edge_cannot_dodge_the_gate(
 def test_create_public_edge_is_instant_when_the_system_is_not_safeguarded(
     auth_client: httpx.Client,
 ):
+    # Category on by default; disarm it to test the ungated create path.
     _, a, b = _exposing_pair(auth_client)
+    _disarm_visibility_safety(auth_client)
 
     r = _create(auth_client, a, b, _type(auth_client), visibility="public")
     assert r.status_code == 201, r.text

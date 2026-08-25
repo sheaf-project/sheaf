@@ -66,6 +66,16 @@ def _arm_visibility_safety(c: httpx.Client) -> None:
     assert r.status_code == 200, r.text
 
 
+def _disarm_visibility_safety(c: httpx.Client) -> None:
+    """Turn the profile_visibility category off. It defaults ON now, so a test
+    that wants the pre-arm 'nothing is gated' baseline has to say so."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={"applies_to_profile_visibility": False},
+    )
+    assert r.status_code == 200, r.text
+
+
 def _view(c: httpx.Client, *, members: list[str] | None = None, **kw) -> str:
     r = c.post(
         "/v1/share-views",
@@ -204,7 +214,10 @@ def test_raise_is_instant_without_a_grant(auth_client: httpx.Client):
 def test_raise_is_instant_without_the_safety_category_armed(
     auth_client: httpx.Client,
 ):
+    # The category is on by default, so a test of the disarmed path has to turn
+    # it off explicitly: with it off, no exposing raise is gated at all.
     _serving_view(auth_client)
+    _disarm_visibility_safety(auth_client)
     gid = _group(auth_client)
 
     ok = _raise(auth_client, gid)

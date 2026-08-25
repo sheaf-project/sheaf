@@ -45,7 +45,13 @@ def _m(name_hash: str, *, pk_id: str | None = None, is_cf: bool = False, **extra
 
 
 def _system(*, safeguarded: bool):
-    """Just the attributes `is_exposure_safeguarded` and the query read."""
+    """Just the attributes `visibility_step_up_required` and the query read.
+
+    The import holds a public raise on the category being ARMED, not on a grace
+    window - it can neither step up nor stage - so the flag that matters here is
+    `safety_applies_to_profile_visibility`. The grace value is carried along for
+    realism but the hold no longer consults it.
+    """
     return SimpleNamespace(
         id=uuid.uuid4(),
         safety_grace_period_days=7 if safeguarded else 0,

@@ -127,6 +127,43 @@ def _arm_visibility_safety(c: httpx.Client) -> None:
     assert r.status_code == 200, r.text
 
 
+def _arm_visibility_stepup(c: httpx.Client, *, grace: int = 0) -> None:
+    """Arm a real step-up: a password auth tier on the (already-default-on)
+    profile_visibility category, with the grace window at `grace` days. With
+    grace 0 an exposing raise re-auths and lands immediately; with grace > 0 it
+    also stages behind the window."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": grace,
+            "applies_to_profile_visibility": True,
+            "auth_tier": "password",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def _disarm_visibility_safety(c: httpx.Client) -> None:
+    """Turn the profile_visibility category off. It defaults ON now, so a test
+    that wants the pre-arm 'nothing is gated' baseline has to say so."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={"applies_to_profile_visibility": False},
+    )
+    assert r.status_code == 200, r.text
+
+
+def _backdate_system_privacy(system_id: str) -> None:
+    async def _work(db) -> None:
+        from sheaf.models.system import System
+
+        system = await db.get(System, uuid.UUID(system_id))
+        assert system is not None and system.privacy_activates_at is not None
+        system.privacy_activates_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
 def _in_db(work) -> None:
     """Run `work(db)` straight against the test database, then commit.
 
@@ -406,7 +443,9 @@ def test_only_exposed_custom_fields_appear():
     _, view = _published_system(owner, members=[m])
     # Expose only the Role field: selected into the view AND raised to public.
     # Both gates are needed since the definition ceiling became enforced; the
-    # raise is instant here because test systems do not arm System Safety.
+    # raise is instant here because the profile-visibility category, though on
+    # by default, has no grace window and the `none` auth tier makes its step-up
+    # a no-op, so nothing stages and nothing is demanded.
     owner.post(f"/v1/share-views/{view}/fields", json={"field_id": shown_field["id"]})
     r = owner.patch(f"/v1/fields/{shown_field['id']}", json={"privacy": "public"})
     assert r.status_code == 200, r.text
@@ -1561,18 +1600,156 @@ def test_friends_privacy_suppresses_exactly_like_private():
 
 
 @pytest.mark.public_profiles
-def test_going_public_again_brings_the_profile_straight_back():
+def test_a_fresh_account_has_profile_visibility_armed_by_default():
+    """DECISION 1: the category is on out of the box, but with no grace window -
+    armed means 're-auth first', not 'wait a week'."""
+    owner = _register()
+    settings = owner.get("/v1/system/safety").json()["settings"]
+    assert settings["applies_to_profile_visibility"] is True
+    assert settings["grace_period_days"] == 0
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_going_public_again_brings_the_profile_straight_back_by_default():
     """Suppression is not revocation: the grants were never touched, so there
-    is nothing to republish and no grace window to serve twice."""
+    is nothing to republish. The category is armed by default, but at the `none`
+    auth tier the step-up verifies nothing and the grace window is 0, so a bare
+    flip back to public restores the page with no re-auth and no wait."""
     owner = _register()
     system_id, token, _ = _both_grant_urls(owner)
     owner.patch("/v1/systems/me", json={"privacy": "private"})
     assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
 
-    owner.patch("/v1/systems/me", json={"privacy": "public"})
+    r = owner.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    assert r.json()["pending_privacy"] is None
     anon = _anon()
     assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
     assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_republishing_demands_step_up_when_a_tier_is_armed():
+    """DECISION 2, the immediate arm: with an auth tier on the category, raising
+    system privacy to public is an exposure and demands re-auth first. Grace is
+    0, so the correct password republishes at once - no staging."""
+    owner = _register()
+    system_id, token, _ = _both_grant_urls(owner)
+    _arm_visibility_stepup(owner)  # password tier, grace 0
+    owner.patch("/v1/systems/me", json={"privacy": "private"})
+
+    # A bare flip is refused, and the surface stays dark.
+    bare = owner.patch("/v1/systems/me", json={"privacy": "public"})
+    assert bare.status_code == 400, bare.text
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    # Wrong password is refused too.
+    wrong = owner.patch(
+        "/v1/systems/me", json={"privacy": "public", "password": "wrongpass"}
+    )
+    assert wrong.status_code == 403, wrong.text
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    # Correct password republishes immediately (grace 0, nothing staged).
+    ok = owner.patch(
+        "/v1/systems/me",
+        json={"privacy": "public", "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["privacy"] == "public"
+    assert ok.json()["pending_privacy"] is None
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_republishing_with_a_grace_window_stages_then_the_sweep_promotes(
+    admin_client: httpx.Client,
+):
+    """DECISION 2, the staged arm: category on + grace > 0. The re-authed raise
+    is accepted but parks pending; the surface stays dark until the finalize
+    sweep promotes it, exactly like a member/group/edge raise."""
+    owner = _register()
+    system_id, token, _ = _both_grant_urls(owner)
+    _arm_visibility_stepup(owner, grace=7)
+    owner.patch("/v1/systems/me", json={"privacy": "private"})
+
+    staged = owner.patch(
+        "/v1/systems/me",
+        json={"privacy": "public", "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    # Live level is still not public; the raise is staged.
+    assert body["privacy"] != "public"
+    assert body["pending_privacy"] == "public"
+    assert body["privacy_activates_at"] is not None
+    # Still dark inside the window.
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    _backdate_system_privacy(system_id)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
+
+    promoted = owner.get("/v1/systems/me").json()
+    assert promoted["privacy"] == "public"
+    assert promoted["pending_privacy"] is None
+    assert promoted["privacy_activates_at"] is None
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_lowering_system_privacy_is_always_instant_and_ungated():
+    """Un-exposing never waits and never re-auths, even with the tier and a
+    grace window armed - and it cancels any staged raise."""
+    owner = _register()
+    system_id, _, _ = _both_grant_urls(owner)
+    _arm_visibility_stepup(owner, grace=7)
+
+    # Going dark: no password, no window.
+    down = owner.patch("/v1/systems/me", json={"privacy": "private"})
+    assert down.status_code == 200, down.text
+    assert down.json()["privacy"] == "private"
+    assert _anon().get(f"/v1/public/systems/{system_id}").status_code == 404
+
+    # Stage a raise, then lower again: the staged raise is cancelled outright.
+    owner.patch(
+        "/v1/systems/me",
+        json={"privacy": "public", "password": "testpassword123"},
+    )
+    cancelled = owner.patch("/v1/systems/me", json={"privacy": "friends"})
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["privacy"] == "friends"
+    assert cancelled.json()["pending_privacy"] is None
+    assert cancelled.json()["privacy_activates_at"] is None
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_system_privacy_raise_is_ungated_without_a_grant():
+    """Nothing to reveal, nothing to gate: with no grant on the system, going
+    public is instant even with the tier and window armed - the sibling of the
+    member/group/edge 'raise exposes nothing' cases."""
+    owner = _register()
+    _go_public(owner)  # no grant created; profile_serving has nothing to serve
+    owner.patch("/v1/systems/me", json={"privacy": "private"})
+    _arm_visibility_stepup(owner, grace=7)
+
+    r = owner.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "public"
+    assert r.json()["pending_privacy"] is None
     owner.close()
 
 

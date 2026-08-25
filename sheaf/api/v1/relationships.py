@@ -39,8 +39,9 @@ from sheaf.services.relationships import (
     resolve_label,
 )
 from sheaf.services.sharing import (
-    is_exposure_safeguarded,
     relationship_raise_exposes,
+    visibility_grace_days,
+    visibility_step_up_required,
 )
 from sheaf.services.system_safety import verify_destructive_auth
 
@@ -275,7 +276,7 @@ async def _create_edge(
     if (
         gated
         and visibility == PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
         and await relationship_raise_exposes(
             db, system, source_id=src, target_id=tgt
         )
@@ -283,12 +284,14 @@ async def _create_edge(
         await verify_destructive_auth(
             user, system, body.password, body.totp_code, db
         )
-        visibility = PrivacyLevel.PRIVATE
-        extra = {
-            "pending_visibility": PrivacyLevel.PUBLIC,
-            "visibility_activates_at": datetime.now(UTC)
-            + timedelta(days=system.safety_grace_period_days),
-        }
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            visibility = PrivacyLevel.PRIVATE
+            extra = {
+                "pending_visibility": PrivacyLevel.PUBLIC,
+                "visibility_activates_at": datetime.now(UTC)
+                + timedelta(days=grace),
+            }
 
     edge = edge_model(
         system_id=system.id,
@@ -580,22 +583,28 @@ async def update_member_relationship(
             await db.refresh(edge)
         return edge
 
-    deferred = False
+    exposes = False
     if (
         requested == PrivacyLevel.PUBLIC
         and edge.visibility != PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
     ):
-        deferred = await relationship_raise_exposes(
+        exposes = await relationship_raise_exposes(
             db, system, source_id=edge.source_id, target_id=edge.target_id
         )
 
-    if deferred:
+    if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
-        edge.pending_visibility = PrivacyLevel.PUBLIC
-        edge.visibility_activates_at = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            edge.pending_visibility = PrivacyLevel.PUBLIC
+            edge.visibility_activates_at = datetime.now(UTC) + timedelta(
+                days=grace
+            )
+        else:
+            edge.visibility = PrivacyLevel.PUBLIC
+            edge.pending_visibility = None
+            edge.visibility_activates_at = None
     else:
         edge.visibility = requested
         edge.pending_visibility = None

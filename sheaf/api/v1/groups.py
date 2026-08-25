@@ -19,7 +19,11 @@ from sheaf.observability.metrics import groups_created_total
 from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
-from sheaf.services.sharing import group_raise_exposes, is_exposure_safeguarded
+from sheaf.services.sharing import (
+    group_raise_exposes,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -153,20 +157,23 @@ async def create_group(
 
     # Creating a group straight to `public` exposes exactly what raising an
     # existing one does, so it runs the SAME check and gets the same treatment:
-    # step-up now, and the group is born private with the raise staged behind
-    # the grace window. Without this, "delete it and add it back public" would
-    # walk around the PATCH gate entirely.
+    # step-up now when the category is armed and it would actually serve, then a
+    # grace window (if set) stages the raise while the group is born private,
+    # else it is simply born public. Without this, "delete it and add it back
+    # public" would walk around the PATCH gate entirely.
     if (
         fields.get("privacy") == PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
         and await group_raise_exposes(db, system)
     ):
         await verify_destructive_auth(user, system, password, totp_code, db)
-        fields["privacy"] = PrivacyLevel.PRIVATE
-        fields["pending_privacy"] = PrivacyLevel.PUBLIC
-        fields["privacy_activates_at"] = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            fields["privacy"] = PrivacyLevel.PRIVATE
+            fields["pending_privacy"] = PrivacyLevel.PUBLIC
+            fields["privacy_activates_at"] = datetime.now(UTC) + timedelta(
+                days=grace
+            )
 
     group = Group(system_id=system.id, **fields)
     db.add(group)
@@ -237,20 +244,24 @@ async def update_group(
         )
 
     requested_privacy = update_data.pop("privacy", None)
-    deferred = False
+    exposes = False
     if (
         requested_privacy == PrivacyLevel.PUBLIC
         and group.privacy != PrivacyLevel.PUBLIC
-        and is_exposure_safeguarded(system)
+        and visibility_step_up_required(system)
     ):
-        deferred = await group_raise_exposes(db, system, group.id)
+        exposes = await group_raise_exposes(db, system, group.id)
 
-    if deferred:
+    if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
-        group.pending_privacy = PrivacyLevel.PUBLIC
-        group.privacy_activates_at = datetime.now(UTC) + timedelta(
-            days=system.safety_grace_period_days
-        )
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            group.pending_privacy = PrivacyLevel.PUBLIC
+            group.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+        else:
+            group.privacy = PrivacyLevel.PUBLIC
+            group.pending_privacy = None
+            group.privacy_activates_at = None
     elif requested_privacy is not None:
         group.privacy = requested_privacy
         group.pending_privacy = None

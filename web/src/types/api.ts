@@ -77,6 +77,12 @@ export interface System {
   avatar_url: string | null;
   color: string | null;
   privacy: PrivacyLevel;
+  /** A raise of the master switch to public still waiting out the System
+   *  Safety grace window. `privacy` above is still the live truth; this is
+   *  what it becomes when `privacy_activates_at` passes. null = nothing
+   *  staged. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   delete_confirmation: DeleteConfirmation;
   date_format: DateFormat;
   /** Account display timezone. null = "automatic" (each device renders in
@@ -105,6 +111,11 @@ export interface SystemUpdate {
   replace_fronts_default?: boolean;
   coalesce_contiguous_fronts?: boolean;
   show_member_created_date?: boolean;
+  /** Step-up credentials, only consulted when raising privacy to public is a
+   *  deferred exposure (the profile-visibility safety category is armed and a
+   *  grant would actually serve). Never stored. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface Member {

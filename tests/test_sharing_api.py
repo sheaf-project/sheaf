@@ -86,6 +86,16 @@ def _arm_visibility_safety(c: httpx.Client) -> None:
     assert r.status_code == 200, r.text
 
 
+def _disarm_visibility_safety(c: httpx.Client) -> None:
+    """Turn the profile_visibility category off. It defaults ON now, so a test
+    that wants the pre-arm 'nothing is gated' baseline has to say so."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={"applies_to_profile_visibility": False},
+    )
+    assert r.status_code == 200, r.text
+
+
 def _in_db(work) -> None:
     """Run `work(db)` straight against the test database, then commit.
 
@@ -852,7 +862,9 @@ def test_flag_change_on_an_unshared_view_is_immediate(auth_client: httpx.Client)
 def test_flag_change_without_the_category_armed_is_immediate(
     auth_client: httpx.Client,
 ):
+    # Category on by default; disarm it to test the ungated flag-flip path.
     vid = _shared_view(auth_client)
+    _disarm_visibility_safety(auth_client)
     r = auth_client.patch(f"/v1/share-views/{vid}", json={"include_bio": True})
     assert r.status_code == 200, r.text
     assert r.json()["include_bio"] is True

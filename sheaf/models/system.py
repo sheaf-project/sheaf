@@ -1,7 +1,8 @@
 import enum
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -51,6 +52,20 @@ class System(UUIDMixin, TimestampMixin, Base):
         Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,
         nullable=False,
+    )
+    # Staged raise of the master switch, the system-scope twin of
+    # `Group.pending_privacy`. Raising system privacy to `public` while a grant
+    # would actually serve is a loosening, so with a grace window the new level
+    # parks here, `privacy` above stays put, and the share finalizer promotes it
+    # once `privacy_activates_at` passes. Setting a lower (or equal) level
+    # meanwhile cancels the staged raise outright: going dark always wins and
+    # never waits.
+    pending_privacy: Mapped[PrivacyLevel | None] = mapped_column(
+        Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
+        nullable=True,
+    )
+    privacy_activates_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     # Historical name. Now the auth tier for all safeguarded destructive
     # actions under System Safety (members, groups, tags, fields, fronts).
@@ -142,8 +157,15 @@ class System(UUIDMixin, TimestampMixin, Base):
     # share grant, or adding a member/field to an already-shared view). Same
     # asymmetry though - exposing waits out the grace window, un-sharing is
     # always immediate.
+    # Unlike every category above, this one defaults ON. It gates making things
+    # MORE visible, and the decided posture is that a public-facing raise should
+    # demand step-up out of the box (at the `none` auth tier that step-up is a
+    # no-op, so the default costs nobody anything until they pick a tier). The
+    # grace window stays 0 by default: armed means "re-auth first", not "wait a
+    # week", unless the owner sets `safety_grace_period_days`. See
+    # `visibility_step_up_required` / `visibility_grace_days`.
     safety_applies_to_profile_visibility: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false", nullable=False
+        Boolean, default=True, server_default="true", nullable=False
     )
 
     # Auto-pin the first captured revision for each journal entry / member bio.
