@@ -26,6 +26,11 @@ from sheaf.files import (
 )
 from sheaf.markdown_images import iter_markdown_images
 
+# Two account ids. Storage keys are `{prefix}/{user_id}/{uuid}.{ext}`, so the
+# second segment is what every ownership check keys off.
+_OWNER = "11111111-1111-1111-1111-111111111111"
+_OTHER = "22222222-2222-2222-2222-222222222222"
+
 
 @pytest.fixture(autouse=True)
 def reset_settings(monkeypatch):
@@ -105,8 +110,10 @@ def test_resolve_avatar_url_s3_cdn_signed_routes_through_cdn(monkeypatch):
     monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
     monkeypatch.setattr(settings, "image_serving", "signed")
 
-    resolved = resolve_avatar_url("avatars/user/abc.png")
-    assert resolved.startswith("https://images.example.com/avatars/user/abc.png?token=")
+    resolved = resolve_avatar_url(f"avatars/{_OWNER}/abc.png", _OWNER)
+    assert resolved.startswith(
+        f"https://images.example.com/avatars/{_OWNER}/abc.png?token="
+    )
     assert "expires=" in resolved
 
 
@@ -116,8 +123,8 @@ def test_resolve_avatar_url_s3_cdn_unsigned_is_bare(monkeypatch):
     monkeypatch.setattr(settings, "image_serving", "unsigned")
 
     assert (
-        resolve_avatar_url("avatars/user/abc.png")
-        == "https://images.example.com/avatars/user/abc.png"
+        resolve_avatar_url(f"avatars/{_OWNER}/abc.png", _OWNER)
+        == f"https://images.example.com/avatars/{_OWNER}/abc.png"
     )
 
 
@@ -125,10 +132,10 @@ def test_resolve_avatar_url_filesystem_signed_uses_app_serve(monkeypatch):
     monkeypatch.setattr(settings, "storage_backend", "filesystem")
     monkeypatch.setattr(settings, "image_serving", "signed")
 
-    resolved = resolve_avatar_url("avatars/user/abc.png")
-    assert resolved.startswith("/v1/files/avatars/user/abc.png?token=")
+    resolved = resolve_avatar_url(f"avatars/{_OWNER}/abc.png", _OWNER)
+    assert resolved.startswith(f"/v1/files/avatars/{_OWNER}/abc.png?token=")
     # And matches what sign_file_url would produce
-    assert resolved == sign_file_url("avatars/user/abc.png")
+    assert resolved == sign_file_url(f"avatars/{_OWNER}/abc.png")
 
 
 def test_resolve_avatar_url_s3_without_public_url_falls_back_to_app_serve(monkeypatch):
@@ -137,16 +144,18 @@ def test_resolve_avatar_url_s3_without_public_url_falls_back_to_app_serve(monkey
     monkeypatch.setattr(settings, "s3_public_url", "")
     monkeypatch.setattr(settings, "image_serving", "signed")
 
-    resolved = resolve_avatar_url("avatars/user/abc.png")
-    assert resolved.startswith("/v1/files/avatars/user/abc.png?token=")
+    resolved = resolve_avatar_url(f"avatars/{_OWNER}/abc.png", _OWNER)
+    assert resolved.startswith(f"/v1/files/avatars/{_OWNER}/abc.png?token=")
 
 
 def test_resolve_avatar_url_external_url_passthrough():
-    assert resolve_avatar_url("https://gravatar.com/x.png") == "https://gravatar.com/x.png"
+    assert resolve_avatar_url("https://gravatar.com/x.png", _OWNER) == (
+        "https://gravatar.com/x.png"
+    )
 
 
 def test_resolve_avatar_url_none():
-    assert resolve_avatar_url(None) is None
+    assert resolve_avatar_url(None, _OWNER) is None
 
 
 def test_resolve_avatar_url_legacy_full_cdn_url_gets_signed(monkeypatch):
@@ -156,9 +165,11 @@ def test_resolve_avatar_url_legacy_full_cdn_url_gets_signed(monkeypatch):
     monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
     monkeypatch.setattr(settings, "image_serving", "signed")
 
-    stored = "https://images.example.com/avatars/user/abc.png"
-    resolved = resolve_avatar_url(stored)
-    assert resolved.startswith("https://images.example.com/avatars/user/abc.png?token=")
+    stored = f"https://images.example.com/avatars/{_OWNER}/abc.png"
+    resolved = resolve_avatar_url(stored, _OWNER)
+    assert resolved.startswith(
+        f"https://images.example.com/avatars/{_OWNER}/abc.png?token="
+    )
     assert "expires=" in resolved
 
 
@@ -169,13 +180,18 @@ def test_resolve_avatar_url_stored_signed_cdn_url_resigns(monkeypatch):
     monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
     monkeypatch.setattr(settings, "image_serving", "signed")
 
-    stored = "https://images.example.com/avatars/user/abc.png?token=deadbeef&expires=1"
-    resolved = resolve_avatar_url(stored)
+    stored = (
+        f"https://images.example.com/avatars/{_OWNER}/abc.png"
+        "?token=deadbeef&expires=1"
+    )
+    resolved = resolve_avatar_url(stored, _OWNER)
     assert "token=deadbeef" not in resolved
     assert "expires=1&" not in resolved and not resolved.endswith("expires=1")
     # And is in fact a valid signed URL
     q = parse_qs(urlparse(resolved).query)
-    assert verify_file_token("avatars/user/abc.png", q["token"][0], q["expires"][0])
+    assert verify_file_token(
+        f"avatars/{_OWNER}/abc.png", q["token"][0], q["expires"][0]
+    )
 
 
 def test_normalize_avatar_url_strips_cdn_url_to_key(monkeypatch):
@@ -311,8 +327,10 @@ def test_normalize_description_urls_cdn_preserved_even_when_external_disabled(mo
 
 
 def test_resolve_description_urls_signs_hosted(monkeypatch):
-    result = resolve_description_urls("![pic](/v1/files/members/m/a.png)")
-    assert "/v1/files/members/m/a.png" in result
+    result = resolve_description_urls(
+        f"![pic](/v1/files/bios/{_OWNER}/a.png)", _OWNER
+    )
+    assert f"/v1/files/bios/{_OWNER}/a.png" in result
     assert "token=" in result
     assert "expires=" in result
 
@@ -323,15 +341,18 @@ def test_resolve_description_urls_resigns_legacy_cdn_row(monkeypatch):
     monkeypatch.setattr(settings, "storage_backend", "s3")
     monkeypatch.setattr(settings, "s3_public_url", "https://cdn.example.com")
     result = resolve_description_urls(
-        "![pic](https://cdn.example.com/members/m/a.png?token=STALE&expires=1)"
+        f"![pic](https://cdn.example.com/bios/{_OWNER}/a.png?token=STALE&expires=1)",
+        _OWNER,
     )
     assert "STALE" not in result
-    assert "cdn.example.com/members/m/a.png" in result
+    assert f"cdn.example.com/bios/{_OWNER}/a.png" in result
     assert "token=" in result
 
 
 def test_resolve_description_urls_leaves_external_untouched(monkeypatch):
-    result = resolve_description_urls("![avatar](https://gravatar.com/x.png)")
+    result = resolve_description_urls(
+        "![avatar](https://gravatar.com/x.png)", _OWNER
+    )
     assert result == "![avatar](https://gravatar.com/x.png)"
 
 
@@ -599,9 +620,6 @@ def test_resolve_avatar_url_public_none():
 # Ownership binding: a caller can't persist another account's storage key
 # (which would be re-signed into a live serve URL on read).
 
-_OWNER = "11111111-1111-1111-1111-111111111111"
-_OTHER = "22222222-2222-2222-2222-222222222222"
-
 
 def test_internal_key_owner_extracts_user_segment():
     assert internal_key_owner(f"avatars/{_OWNER}/abc.png") == _OWNER
@@ -737,6 +755,81 @@ def test_public_resolvers_accept_uuid_owner_object():
 
 
 # ---------------------------------------------------------------------------
+# Same backstop on the AUTHENTICATED resolvers. The owner's own pages are not
+# a safe place to sign somebody else's key either: signing is a capability
+# grant, and the grantee here is a real session that can save the URL, share
+# it, or keep fetching after the real owner deletes the file. Catches legacy
+# rows and any writer that ever slips past the handler-side ownership filters.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_avatar_url_does_not_sign_foreign_key():
+    stored = f"avatars/{_OTHER}/abc.png"
+
+    resolved = resolve_avatar_url(stored, _OWNER)
+
+    # Unsigned canonical serve path: 403s at the serve endpoint while signing
+    # is on, and never carries a token that would actually fetch the bytes.
+    assert resolved == f"/v1/files/avatars/{_OTHER}/abc.png"
+    assert "token=" not in resolved
+
+
+def test_resolve_avatar_url_does_not_sign_foreign_cdn_url(monkeypatch):
+    """The CDN form is the sneaky one: it looks like an ordinary external
+    https URL, so the importer scheme checks wave it through."""
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    monkeypatch.setattr(settings, "image_serving", "signed")
+
+    stored = f"https://images.example.com/avatars/{_OTHER}/abc.png"
+
+    resolved = resolve_avatar_url(stored, _OWNER)
+
+    assert resolved == f"/v1/files/avatars/{_OTHER}/abc.png"
+    assert "token=" not in resolved
+
+
+def test_resolve_avatar_url_does_not_sign_ownerless_key():
+    """A key outside the upload prefixes has no owner segment to match."""
+    resolved = resolve_avatar_url(f"exports/{_OWNER}/dump.zip", _OWNER)
+
+    assert resolved == f"/v1/files/exports/{_OWNER}/dump.zip"
+    assert "token=" not in resolved
+
+
+def test_resolve_avatar_url_accepts_uuid_owner_object():
+    import uuid
+
+    key = f"avatars/{_OWNER}/abc.png"
+    assert "token=" in resolve_avatar_url(key, uuid.UUID(_OWNER))
+    assert resolve_avatar_url(key, uuid.UUID(_OTHER)) == f"/v1/files/{key}"
+
+
+def test_resolve_description_urls_does_not_sign_foreign_embed():
+    """A bio row carrying somebody else's key - however it got there - must
+    not come back as a working URL."""
+    text = f"before ![pic](/v1/files/bios/{_OTHER}/a.png) after"
+
+    result = resolve_description_urls(text, _OWNER)
+
+    assert result == f"before ![pic](/v1/files/bios/{_OTHER}/a.png) after"
+    assert "token=" not in result
+
+
+def test_resolve_description_urls_mixed_signs_own_only():
+    text = (
+        f"![mine](/v1/files/bios/{_OWNER}/m.png) "
+        f"![theirs](/v1/files/bios/{_OTHER}/t.png)"
+    )
+
+    result = resolve_description_urls(text, _OWNER)
+
+    images = {img.alt: img.url for img in iter_markdown_images(result)}
+    assert "token=" in images["mine"]
+    assert images["theirs"] == f"/v1/files/bios/{_OTHER}/t.png"
+
+
+# ---------------------------------------------------------------------------
 # Reference-style images face the same write-path policy as inline ones
 # ---------------------------------------------------------------------------
 
@@ -846,18 +939,18 @@ def test_normalize_avatar_url_drops_data_uri():
 def test_resolve_description_urls_leaves_data_uri_alone():
     """A data: URI carries its own bytes; it is not a bare storage key."""
     text = "![dot](data:image/png;base64,iVBORw0KGgo=)"
-    assert resolve_description_urls(text) == text
+    assert resolve_description_urls(text, _OWNER) == text
 
 @pytest.mark.parametrize(
     ("text", "expected_alt"),
     [
-        ("![foo [bar]](/v1/files/bios/u/nested.png)", "foo [bar]"),
-        (r"![foo \] bar](/v1/files/bios/u/escaped.png)", r"foo \] bar"),
+        (f"![foo [bar]](/v1/files/bios/{_OWNER}/nested.png)", "foo [bar]"),
+        (rf"![foo \] bar](/v1/files/bios/{_OWNER}/escaped.png)", r"foo \] bar"),
     ],
 )
 def test_resolve_description_urls_uses_commonmark_image_grammar(text, expected_alt):
     """Alt text with nested or escaped brackets survives the rewrite."""
-    result = resolve_description_urls(text)
+    result = resolve_description_urls(text, _OWNER)
 
     rewritten = list(iter_markdown_images(result))
     assert len(rewritten) == 1
@@ -866,26 +959,19 @@ def test_resolve_description_urls_uses_commonmark_image_grammar(text, expected_a
 
 def test_resolve_description_urls_signs_hosted_reference_image():
     """Reference syntax resolves to the same signed URL as the inline form."""
-    text = "![portrait][photo]\n\n[photo]: /v1/files/bios/u/photo.png"
+    text = f"![portrait][photo]\n\n[photo]: /v1/files/bios/{_OWNER}/photo.png"
 
-    result = resolve_description_urls(text)
+    result = resolve_description_urls(text, _OWNER)
 
-    assert "![portrait](/v1/files/bios/u/photo.png?token=" in result
+    assert f"![portrait](/v1/files/bios/{_OWNER}/photo.png?token=" in result
 
 def test_resolve_description_urls_leaves_code_examples_alone():
     """Code spans and code blocks are prose, not image fetches."""
     text = (
-        "Inline `![example](/v1/files/bios/u/a.png)`\n\n"
-        "```markdown\n![example](/v1/files/bios/u/b.png)\n```\n\n"
-        "    ![example](/v1/files/bios/u/c.png)\n"
+        f"Inline `![example](/v1/files/bios/{_OWNER}/a.png)`\n\n"
+        f"```markdown\n![example](/v1/files/bios/{_OWNER}/b.png)\n```\n\n"
+        f"    ![example](/v1/files/bios/{_OWNER}/c.png)\n"
     )
 
-    assert resolve_description_urls(text) == text
+    assert resolve_description_urls(text, _OWNER) == text
 
-
-# ---------------------------------------------------------------------------
-# Ownership binding: a caller can't persist another account's storage key
-# (which would be re-signed into a live serve URL on read).
-
-_OWNER = "11111111-1111-1111-1111-111111111111"
-_OTHER = "22222222-2222-2222-2222-222222222222"

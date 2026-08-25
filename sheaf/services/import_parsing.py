@@ -24,6 +24,8 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from sheaf.services.import_image_strip import is_internal_image_ref
+
 # Per-payload element cap. PK / TB / SP / Sheaf exports of plausible
 # real systems are in the low tens of thousands of elements at most;
 # 5M leaves headroom for an order-of-magnitude growth without making
@@ -50,6 +52,17 @@ def sanitize_external_avatar_url(url: Any) -> str | None:
     forbids hotlinking (ALLOW_EXTERNAL_IMAGES=false), the same policy
     the regular profile-write path enforces via normalize_avatar_url.
 
+    "External" is enforced, not assumed. The scheme check alone does not
+    get there: when the instance runs with a CDN hostname configured
+    (`S3_PUBLIC_URL`), `https://{cdn}/avatars/{someone_else}/{uuid}.png`
+    is a perfectly well-formed https URL that happens to name OUR storage.
+    Stored as-is it would be re-signed into a live serve URL on every read
+    of the importing user's profile - a cross-tenant read of another
+    account's upload, and one that outlives the owner deleting it. A
+    third-party export has no legitimate reason to reference this
+    instance's storage in any of its three forms (serve path, CDN host,
+    bare key), so all three are dropped.
+
     Every importer routes source avatar URLs through here so the rules
     can't drift between formats.
     """
@@ -58,6 +71,8 @@ def sanitize_external_avatar_url(url: Any) -> str | None:
     if not url or not isinstance(url, str):
         return None
     if not url.startswith(("http://", "https://")):
+        return None
+    if is_internal_image_ref(url):
         return None
     if not settings.allow_external_images:
         return None

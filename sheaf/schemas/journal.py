@@ -74,12 +74,18 @@ class JournalEntryRead(BaseModel):
     updated_at: datetime
     # finalize_after timestamp if queued for delete; null otherwise.
     pending_delete_at: datetime | None = None
+    # The account whose uploads this body may reference. Excluded from the
+    # response; see MemberRead.owner_user_id for why it is required. NOT
+    # `author_user_id`: that is whoever typed the entry (and is nullable on
+    # imported rows), while this is the account the storage keys have to
+    # belong to.
+    owner_user_id: uuid.UUID = Field(exclude=True)
 
     model_config = {"from_attributes": True}
 
     @field_serializer("body")
     def _sign_body_urls(self, v: str) -> str:
-        return resolve_description_urls(v) or v
+        return resolve_description_urls(v, self.owner_user_id) or v
 
 
 class JournalEntryReadWithCount(JournalEntryRead):
@@ -103,12 +109,17 @@ class ContentRevisionRead(BaseModel):
     body: str
     created_at: datetime
     pinned_at: datetime | None = None
+    # The account whose uploads this revision body may reference. Excluded
+    # from the response; see MemberRead.owner_user_id. NOT the `user_id`
+    # above, which is the editor who made the revision and is null on
+    # imported history.
+    owner_user_id: uuid.UUID = Field(exclude=True)
 
     model_config = {"from_attributes": True}
 
     @field_serializer("body")
     def _sign_body_urls(self, v: str) -> str:
-        return resolve_description_urls(v) or v
+        return resolve_description_urls(v, self.owner_user_id) or v
 
 
 class RestoreRevisionRequest(BaseModel):

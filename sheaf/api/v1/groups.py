@@ -358,7 +358,7 @@ async def get_group_members(
     group = result.scalar_one_or_none()
     if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return [decrypt_member_for_read(m) for m in group.members]
+    return [decrypt_member_for_read(m, user.id) for m in group.members]
 
 
 @router.put(
@@ -397,4 +397,4 @@ async def set_group_members(
 
     group.members = members
     await db.commit()
-    return [decrypt_member_for_read(m) for m in members]
+    return [decrypt_member_for_read(m, user.id) for m in members]
