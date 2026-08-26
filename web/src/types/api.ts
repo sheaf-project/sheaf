@@ -564,10 +564,16 @@ export interface SystemSafetyUpdate {
   totp_code?: string;
 }
 
+export interface PendingExposure {
+  kind: string;
+  activates_at: string;
+}
+
 export interface SystemSafetyResponse {
   settings: SystemSafetySettings;
   pending_actions: PendingAction[];
   pending_changes: SafetyChangeRequest[];
+  pending_exposures: PendingExposure[];
 }
 
 export interface SystemSafetyUpdateResponse {

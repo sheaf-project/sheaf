@@ -35,12 +35,14 @@ from sheaf.models.user import User
 from sheaf.observability.metrics import pending_actions_finalized_total
 from sheaf.schemas.system_safety import (
     PendingActionRead,
+    PendingExposureRead,
     SafetyChangeRequestRead,
     SystemSafetyResponse,
     SystemSafetySettings,
     SystemSafetyUpdate,
     SystemSafetyUpdateResponse,
 )
+from sheaf.services.sharing import pending_exposures
 from sheaf.services.system_safety import (
     split_safety_changes,
     verify_destructive_auth,
@@ -181,10 +183,12 @@ async def get_system_safety(
 ):
     system = await _get_user_system(user, db)
     actions, changes = await _load_pending(system.id, db)
+    exposures = await pending_exposures(system.id, db)
     return SystemSafetyResponse(
         settings=_settings_from_system(system),
         pending_actions=[_pending_action_to_read(a) for a in actions],
         pending_changes=[SafetyChangeRequestRead.model_validate(c) for c in changes],
+        pending_exposures=[PendingExposureRead.model_validate(e) for e in exposures],
     )
 
 

@@ -662,3 +662,161 @@ def test_split_safety_treats_zero_retention_cap_as_unlimited():
     )
     assert split_tighten.deferred == {"journal_max_revisions": 5}
     assert split_tighten.applied == {}
+
+
+# ---------------------------------------------------------------------------
+# Pending exposures: staged flip-to-public raises surface for the banner
+# ---------------------------------------------------------------------------
+
+
+def _stage_member_view_exposure(
+    email: str, member_id: str, activates_at: datetime
+) -> None:
+    """Leave behind the shape a member privacy raise creates: a share view with
+    the member's row demoted to PENDING (see update_member)."""
+    from sqlalchemy import select
+
+    from sheaf.crypto import blind_index
+
+    async def _run() -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.models.share import ShareItemStatus, ShareView, ShareViewMember
+        from sheaf.models.system import System
+        from sheaf.models.user import User
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            email_hash = blind_index(email)
+            user = (
+                await db.execute(select(User).where(User.email_hash == email_hash))
+            ).scalar_one()
+            system = (
+                await db.execute(select(System).where(System.user_id == user.id))
+            ).scalar_one()
+            view = ShareView(system_id=system.id, name=f"view-{uuid.uuid4().hex[:8]}")
+            db.add(view)
+            await db.flush()
+            db.add(
+                ShareViewMember(
+                    view_id=view.id,
+                    member_id=uuid.UUID(member_id),
+                    status=ShareItemStatus.PENDING.value,
+                    activates_at=activates_at,
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def _stage_pending_grant(email: str, activates_at: datetime) -> None:
+    """Leave behind the shape a first publish creates under a grace window: a
+    view with a grant held PENDING until its activation time."""
+    from sqlalchemy import select
+
+    from sheaf.crypto import blind_index
+
+    async def _run() -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.models.share import (
+            ShareGrant,
+            ShareGrantStatus,
+            ShareSubjectType,
+            ShareView,
+        )
+        from sheaf.models.system import System
+        from sheaf.models.user import User
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            email_hash = blind_index(email)
+            user = (
+                await db.execute(select(User).where(User.email_hash == email_hash))
+            ).scalar_one()
+            system = (
+                await db.execute(select(System).where(System.user_id == user.id))
+            ).scalar_one()
+            view = ShareView(system_id=system.id, name=f"view-{uuid.uuid4().hex[:8]}")
+            db.add(view)
+            await db.flush()
+            db.add(
+                ShareGrant(
+                    system_id=system.id,
+                    view_id=view.id,
+                    subject_type=ShareSubjectType.LINK.value,
+                    token_hash=uuid.uuid4().hex,
+                    status=ShareGrantStatus.PENDING.value,
+                    activates_at=activates_at,
+                    created_by_user_id=user.id,
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_pending_exposures_includes_a_staged_grant(client: httpx.Client):
+    """A first publish behind a grace window is the exposure the banner most
+    needs to catch, so a pending grant must appear."""
+    email, _ = _register(client)
+    grant_at = datetime.now(UTC) + timedelta(days=2)
+    _stage_pending_grant(email, grant_at)
+
+    exposures = client.get("/v1/system/safety").json()["pending_exposures"]
+    by_kind = {e["kind"]: e["activates_at"] for e in exposures}
+    assert "share_grant" in by_kind
+    assert abs(
+        datetime.fromisoformat(by_kind["share_grant"]) - grant_at
+    ) < timedelta(seconds=2)
+
+
+def test_pending_exposures_empty_when_nothing_staged(client: httpx.Client):
+    _register(client)
+    client.post("/v1/members", json={"name": "Quiet"})
+    listing = client.get("/v1/system/safety").json()
+    assert listing["pending_exposures"] == []
+
+
+def test_pending_exposures_lists_system_and_member_raises(client: httpx.Client):
+    from sheaf.models.system import PrivacyLevel
+
+    email, _ = _register(client)
+    member = client.post("/v1/members", json={"name": "Rising"}).json()
+
+    system_at = datetime.now(UTC) + timedelta(days=5)
+    member_at = datetime.now(UTC) + timedelta(days=3)
+
+    # A staged master-switch raise: pending_privacy set with its activation time.
+    _set_system_safety_via_db(
+        email,
+        pending_privacy=PrivacyLevel.PUBLIC,
+        privacy_activates_at=system_at,
+    )
+    # A staged member raise: the member's share-view row is held PENDING.
+    _stage_member_view_exposure(email, member["id"], member_at)
+
+    listing = client.get("/v1/system/safety").json()
+    exposures = listing["pending_exposures"]
+
+    by_kind = {e["kind"]: e["activates_at"] for e in exposures}
+    assert set(by_kind) == {"system_privacy", "member_privacy"}
+    assert abs(
+        datetime.fromisoformat(by_kind["system_privacy"]) - system_at
+    ) < timedelta(seconds=2)
+    assert abs(
+        datetime.fromisoformat(by_kind["member_privacy"]) - member_at
+    ) < timedelta(seconds=2)

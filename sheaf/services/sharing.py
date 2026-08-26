@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
@@ -1405,3 +1406,167 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     promoted += system_raises.rowcount or 0
 
     return promoted
+
+
+# ---------------------------------------------------------------------------
+# Pending exposure summary (read-only mirror of the finalize sweep)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PendingExposure:
+    """One staged flip-to-public raise still waiting out its grace window.
+
+    `kind` names the source, `activates_at` is when the finalize sweep will
+    promote it. Deliberately lightweight: the exposure banner only needs the
+    count and the earliest time, so nothing here carries a row or a label that
+    would name *which* member/group/field is on its way public.
+    """
+
+    kind: str
+    activates_at: datetime
+
+
+async def pending_exposures(
+    system_id: uuid.UUID, db: AsyncSession
+) -> list[PendingExposure]:
+    """Every staged flip-to-public raise for one system, one record per raise.
+
+    The read-only mirror of `finalize_share_activations`: each source below is a
+    column that the sweep promotes once its activate-at timestamp passes, so this
+    reports exactly what is still parked behind the grace window. Only the
+    timestamp and a kind label are selected - never a full row - because the
+    caller (the owner's exposure banner) needs a count and the earliest time,
+    nothing more. `activates_at IS NOT NULL` is the uniform "staged" marker: the
+    sweep keys on it, and the paired `pending_*` value is always written
+    alongside it.
+
+    Owner-scoping is the caller's job: pass the system id resolved from the
+    authenticated owner. Every query is a single scoped predicate on that id
+    (the share-view children reach it through their parent view).
+
+    Member privacy raises have no dedicated `pending_*` column - raising a member
+    to `public` stages by demoting their `ShareViewMember` rows to PENDING (see
+    update_member), so those pending rows ARE the staged member exposure. They
+    are collapsed per member here so one raise counts once rather than once per
+    view the member sits in.
+    """
+    exposures: list[PendingExposure] = []
+
+    # systems.pending_privacy - the master switch raise.
+    system_rows = await db.execute(
+        select(System.privacy_activates_at).where(
+            System.id == system_id,
+            System.privacy_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("system_privacy", ts) for ts in system_rows.scalars()
+    ]
+
+    # members.fronting_private_activates_at - a fronting-guard release.
+    guard_rows = await db.execute(
+        select(Member.fronting_private_activates_at).where(
+            Member.system_id == system_id,
+            Member.fronting_private_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("member_fronting", ts) for ts in guard_rows.scalars()
+    ]
+
+    # A member raised to public: their share-view memberships were demoted to
+    # PENDING. Collapse per member (earliest activation) so one raise counts as
+    # one pending exposure, not once per view the member appears in.
+    member_rows = await db.execute(
+        select(func.min(ShareViewMember.activates_at))
+        .join(ShareView, ShareView.id == ShareViewMember.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+        )
+        .group_by(ShareViewMember.member_id)
+    )
+    exposures += [
+        PendingExposure("member_privacy", ts) for ts in member_rows.scalars()
+    ]
+
+    # groups.pending_privacy - a group raise.
+    group_rows = await db.execute(
+        select(Group.privacy_activates_at).where(
+            Group.system_id == system_id,
+            Group.privacy_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("group_privacy", ts) for ts in group_rows.scalars()
+    ]
+
+    # custom_field_definitions.pending_privacy - a field-definition raise.
+    field_rows = await db.execute(
+        select(CustomFieldDefinition.privacy_activates_at).where(
+            CustomFieldDefinition.system_id == system_id,
+            CustomFieldDefinition.privacy_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("field_privacy", ts) for ts in field_rows.scalars()
+    ]
+
+    # member_relationships.pending_visibility - a staged edge raise.
+    edge_rows = await db.execute(
+        select(MemberRelationship.visibility_activates_at).where(
+            MemberRelationship.system_id == system_id,
+            MemberRelationship.visibility_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("relationship_privacy", ts)
+        for ts in edge_rows.scalars()
+    ]
+
+    # share_views.flags_activate_at - a staged exposure-flag loosening.
+    flag_rows = await db.execute(
+        select(ShareView.flags_activate_at).where(
+            ShareView.system_id == system_id,
+            ShareView.flags_activate_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("view_flags", ts) for ts in flag_rows.scalars()
+    ]
+
+    # A pending grant - a whole view going public (a profile or a link) for the
+    # first time, waiting out the window. The broadest staged exposure there is,
+    # and the one an owner most needs the banner to catch. The grant carries the
+    # system id directly, so no join.
+    grant_rows = await db.execute(
+        select(ShareGrant.activates_at).where(
+            ShareGrant.system_id == system_id,
+            ShareGrant.status == ShareGrantStatus.PENDING.value,
+            ShareGrant.activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("share_grant", ts) for ts in grant_rows.scalars()
+    ]
+
+    # A custom field added to an already-shared view: its row was staged PENDING
+    # exactly like a member's. Collapse per field (earliest activation) so one
+    # newly-exposed field counts once, not once per view it was added to.
+    view_field_rows = await db.execute(
+        select(func.min(ShareViewField.activates_at))
+        .join(ShareView, ShareView.id == ShareViewField.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+        )
+        .group_by(ShareViewField.field_id)
+    )
+    exposures += [
+        PendingExposure("view_field", ts) for ts in view_field_rows.scalars()
+    ]
+
+    return exposures

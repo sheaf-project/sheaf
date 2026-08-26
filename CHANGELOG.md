@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **A banner now warns you when a change that makes something public is still waiting out its grace period.** Raising your system, a member, a group, a custom field, or a relationship to public - or releasing a member's fronting guard - while a grace window is set does not take effect at once: it waits out the window and is applied later. Pending deletions already announced themselves with a banner across the top of every page, but these staged exposures did not, so nothing told you one was on its way live. A matching banner now counts them and shows when the next one takes effect, without naming which entities, exactly as the deletions banner does.
+
 ### Security
 
 - **Imported files can no longer smuggle in references to another account's uploads.** Sheaf stores every uploaded image under a path that names the account it belongs to, and when it shows a profile it turns any such reference it finds into a working image link. The importers for other apps' formats (PluralKit, Tupperbox, SimplyPlural, PluralSpace, Prism, Ampersand) copied bios, system and group descriptions and journal entries across word for word, so a hand-edited export file could name an image belonging to a *different* account and have Sheaf serve it from the importing profile - a way to read someone else's uploaded picture, and to keep reading it after they had deleted it. Those importers now drop any reference to Sheaf's own storage on the way in; nothing written in another app can legitimately point at it. Prose and genuinely external images are untouched, and Sheaf's own backup format is unaffected (it already re-homed images to the importing account). Avatar fields get the same treatment, including the case where the reference is dressed up as an ordinary web address on the instance's image host.
