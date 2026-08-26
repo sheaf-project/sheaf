@@ -107,10 +107,27 @@ class SafetyChangeRequestRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PendingExposureRead(BaseModel):
+    """A staged flip-to-public raise waiting out the grace window.
+
+    `kind` is one of the exposure sources the finalize sweep promotes
+    ("system_privacy", "member_privacy", "member_fronting", "group_privacy",
+    "field_privacy", "relationship_privacy", "view_flags"); `activates_at` is
+    when it goes live. Deliberately count-and-time only, with no entity label,
+    to match the pending-delete banner's style.
+    """
+
+    kind: str
+    activates_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class SystemSafetyResponse(BaseModel):
     settings: SystemSafetySettings
     pending_actions: list[PendingActionRead]
     pending_changes: list[SafetyChangeRequestRead]
+    pending_exposures: list[PendingExposureRead]
 
 
 class SystemSafetyUpdateResponse(BaseModel):
