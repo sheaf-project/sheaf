@@ -1376,14 +1376,83 @@ server {
 }
 ```
 
-Unlisted share links are bearer capabilities: the token appears in both the
-SPA URL (`/s/{token}`) and API requests (`/v1/public/shared/{token}/...`). The
-nginx example suppresses access logging for both. If you enable Caddy access
-logs or use another proxy/CDN, configure equivalent path redaction or exclusion
-and review any upstream load-balancer logs too. Those tokens are verified
-against a hash keyed from `JWT_SECRET_KEY`, so rotating that secret breaks
-every link ever issued and owners must re-issue them; see "What each key does"
-above.
+#### Keep share-link tokens out of your access logs
+
+An unlisted share link is a bearer capability, and the whole capability is in
+the URL **path**: `/s/{token}` for the page and `/v1/public/shared/{token}/...`
+for the API calls it makes. A default access-log line records the request path
+verbatim, so with logging on as shipped by most distributions, every visit to
+a share link writes a working key to that link into a file - one that is world
+readable on plenty of systems, gets shipped to a log aggregator, and outlives
+the link's rotation by however long you keep logs. Anybody who can read the log
+can open the profile. `/v1/public/files/` is the same problem in a second
+shape: the path carries the owner's account id and the query string carries a
+live signed token for the image.
+
+The nginx example above already covers all three with a `map` and a conditional
+`access_log`, which is nginx's way of dropping a line entirely:
+
+```nginx
+map $request_uri $sheaf_access_loggable {
+    default                  1;
+    ~^/s/                    0;
+    ~^/v1/public/shared/     0;
+    ~^/v1/public/files/      0;
+}
+
+server {
+    # ... and in EVERY server block, including the plain-HTTP redirect one:
+    access_log /var/log/nginx/access.log combined if=$sheaf_access_loggable;
+}
+```
+
+Caddy does not write access logs unless you ask it to, so an unmodified Caddy
+config is already safe - but the moment somebody adds a `log` directive it
+starts recording tokens, which is a booby trap to leave lying around. Mark the
+paths instead, with `log_skip`, which costs nothing while logging is off and
+keeps them out of the log when it is turned on:
+
+```
+sheaf.example.com {
+    # Bearer token in the path (/s/, /v1/public/shared/) and a signed image
+    # token in the query (/v1/public/files/). Never log these requests.
+    @secret_urls path /s/* /v1/public/shared/* /v1/public/files/*
+    log_skip @secret_urls
+
+    log {
+        output file /var/log/caddy/access.log
+    }
+
+    # ... handle blocks as above
+}
+```
+
+If you would rather keep the line and lose only the secret, replace `log_skip`
+with a redacting filter on the URI:
+
+```
+log {
+    output file /var/log/caddy/access.log
+    format filter {
+        wrap console
+        fields {
+            request>uri regexp "^(/s/|/v1/public/shared/)[^/?]+" "${1}REDACTED"
+        }
+    }
+}
+```
+
+Whatever proxy you run, the rule is the same: those paths must not reach a log
+in full. Check the layers above it too - a CDN, a cloud load balancer, or a WAF
+in front of Sheaf keeps its own request log, and that one is usually on by
+default with no way to see it from here.
+
+Those tokens are verified against a hash keyed from `JWT_SECRET_KEY`, so
+rotating that secret breaks every link ever issued and owners must re-issue
+them; see "What each key does" above.
+
+Sheaf's own application logs already redact these - it is only the proxy's log
+that needs configuring.
 
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
 

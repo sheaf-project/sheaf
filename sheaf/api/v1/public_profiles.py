@@ -192,7 +192,9 @@ async def public_system(
 ) -> PublicSystemView:
     _public_headers(response, token_keyed=False)
     view, system = await _resolve_system(system_id, db)
-    return await project_system(db, view, system)
+    # The visitor reached this by typing the system id, so echoing it back
+    # discloses nothing they did not already have.
+    return await project_system(db, view, system, expose_system_id=True)
 
 
 @router.get(
@@ -312,7 +314,11 @@ async def public_shared(
 ) -> PublicSystemView:
     _public_headers(response, token_keyed=True)
     view, system = await _resolve_link(token, db)
-    return await project_system(db, view, system)
+    # NOT the system id. An unlisted link is an opaque token so that the system
+    # behind it cannot be named; putting the id in the body would have handed
+    # every link holder the one identifier that ties their link to the owner's
+    # public profile, and to every other link on the same system.
+    return await project_system(db, view, system, expose_system_id=False)
 
 
 @router.get(

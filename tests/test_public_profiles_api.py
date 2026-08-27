@@ -312,8 +312,52 @@ def test_public_system_view_key_set():
     # Presentation configuration the client reads to decide whether a member
     # card links to a page of its own. Off unless the view says otherwise.
     assert body["member_permalinks"] is False
+    # The id IS served on this route, and only on this route: the visitor
+    # reached it by typing the id, so echoing it back tells them nothing new.
+    assert body["id"] == system_id
     # Age of a system is deliberately not exposed.
     assert "created_at" not in body
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_a_share_link_never_carries_the_system_id():
+    """An unlisted link is an opaque token so the system behind it cannot be
+    named. The id used to sit in the body regardless, which handed every link
+    holder the one value that ties their link to the owner's public profile,
+    and to every other link on the same system. Checked against the raw JSON
+    TEXT of every section, not just the key we know about: a correlator does
+    not care which field it comes out of."""
+    owner = _register()
+    m = _member(owner, "Linked", pronouns="they/them")
+    system_id, view = _published_system(
+        owner,
+        members=[m],
+        include_bio=True,
+        include_fronting=True,
+        include_relationships=True,
+        include_groups=True,
+        member_permalinks=True,
+    )
+    _publish_group(owner, _group(owner, "Linked group", members=[m]))
+    token = _link_token(owner, view)
+
+    anon = _anon()
+    root = anon.get(f"/v1/public/shared/{token}")
+    assert root.status_code == 200, root.text
+    # Same key set as the public-profile payload - the contract is one
+    # contract, so the field is null rather than absent.
+    assert set(root.json()) == {
+        "id", "name", "description", "avatar_url", "color", "tag",
+        "member_count", "member_permalinks",
+    }
+    assert root.json()["id"] is None
+
+    for path in ("", "/members", f"/members/{m}", "/fronting",
+                 "/relationships", "/groups"):
+        r = anon.get(f"/v1/public/shared/{token}{path}")
+        assert r.status_code == 200, (path, r.text)
+        assert system_id not in r.text, path
     owner.close()
 
 
@@ -1173,10 +1217,13 @@ def test_group_roster_is_an_intersection_not_a_second_allowlist():
 
 
 @pytest.mark.public_profiles
-def test_public_group_with_an_empty_roster_still_shows():
-    """Name, description and colour are what the owner chose to publish about
-    the group. An empty roster discloses nothing about who is in it, so hiding
-    the group would be withholding something the owner did publish."""
+def test_public_group_whose_members_are_all_outside_the_view_is_absent():
+    """A group's roster is an intersection with the members this view serves,
+    so a public group nobody in the view belongs to would publish a name and a
+    description with nothing behind them - and that name is itself a fact about
+    the system ("there is a Littles here") that the owner did not publish by
+    publishing a roster. It is dropped from the JSON, not merely undrawn: a
+    scraper reads the payload, not the page."""
     owner = _register()
     shown = _member(owner, "Elsewhere")
     outside = _member(owner, "NotInView")
@@ -1185,16 +1232,39 @@ def test_public_group_with_an_empty_roster_still_shows():
     )
     _publish_group(owner, _group(owner, "Offstage", members=[outside]))
 
-    groups = _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"]
-    assert [g["name"] for g in groups] == ["Offstage"]
-    assert groups[0]["members"] == []
+    body = _anon().get(f"/v1/public/systems/{system_id}/groups")
+    # Still a 200 with an empty list: the endpoint's own oracle is
+    # `include_groups`, which is on, and it 404s only on that.
+    assert body.status_code == 200
+    assert body.json()["groups"] == []
+    assert "Offstage" not in body.text
     owner.close()
 
 
 @pytest.mark.public_profiles
-def test_group_roster_is_empty_when_the_member_list_is_off():
-    """The roster comes from the same rows /members serves, so with the roster
-    off there is nobody to intersect with and the group stands on its own."""
+def test_only_the_groups_with_a_visible_roster_are_served():
+    """The empty-roster rule drops one group without touching the next."""
+    owner = _register()
+    shown = _member(owner, "Onstage")
+    outside = _member(owner, "Offstage")
+    system_id, _ = _published_system(
+        owner, members=[shown], include_groups=True
+    )
+    _publish_group(owner, _group(owner, "Visible", members=[shown, outside]))
+    _publish_group(owner, _group(owner, "Invisible", members=[outside]))
+
+    groups = _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"]
+    assert [g["name"] for g in groups] == ["Visible"]
+    assert [gm["name"] for gm in groups[0]["members"]] == ["Onstage"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_no_group_is_served_when_the_member_list_is_off():
+    """With the roster off there is nobody to intersect with, so every group's
+    roster is empty and the same rule drops all of them. The flag oracle is
+    unchanged: `include_groups` is still what decides 404 versus 200, so this
+    is an empty list rather than a missing endpoint."""
     owner = _register()
     m = _member(owner, "Hidden")
     system_id, _ = _published_system(
@@ -1202,9 +1272,10 @@ def test_group_roster_is_empty_when_the_member_list_is_off():
     )
     _publish_group(owner, _group(owner, "Standalone", members=[m]))
 
-    groups = _anon().get(f"/v1/public/systems/{system_id}/groups").json()["groups"]
-    assert [g["name"] for g in groups] == ["Standalone"]
-    assert groups[0]["members"] == []
+    body = _anon().get(f"/v1/public/systems/{system_id}/groups")
+    assert body.status_code == 200
+    assert body.json()["groups"] == []
+    assert "Standalone" not in body.text
     owner.close()
 
 
@@ -1475,7 +1546,10 @@ def test_projection_hides_a_foreign_key_already_in_the_database():
     gid = attacker.post(
         "/v1/groups", json={"name": "Stale", "privacy": "public"}
     ).json()["id"]
-    system_id, _ = _published_system(attacker, include_groups=True)
+    # A group only projects when it names somebody the view serves.
+    m = _member(attacker, "Stale member")
+    attacker.put(f"/v1/groups/{gid}/members", json={"member_ids": [m]})
+    system_id, _ = _published_system(attacker, members=[m], include_groups=True)
     _seed_group_description(gid, f"![x](/v1/files/{victim_key})")
 
     body = _anon().get(f"/v1/public/systems/{system_id}/groups").json()
@@ -1495,7 +1569,9 @@ def test_projection_still_signs_the_owners_own_key():
     gid = owner.post(
         "/v1/groups", json={"name": "Mine", "privacy": "public"}
     ).json()["id"]
-    system_id, _ = _published_system(owner, include_groups=True)
+    m = _member(owner, "Mine member")
+    owner.put(f"/v1/groups/{gid}/members", json={"member_ids": [m]})
+    system_id, _ = _published_system(owner, members=[m], include_groups=True)
     _seed_group_description(gid, f"![x](/v1/files/{own_key})")
 
     body = _anon().get(f"/v1/public/systems/{system_id}/groups").json()

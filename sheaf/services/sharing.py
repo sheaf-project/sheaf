@@ -149,6 +149,38 @@ def visibility_grace_days(system: System) -> int:
     )
 
 
+def reject_mixed_exposure_directions(*, raises: bool, lowers: bool) -> None:
+    """Refuse one request that would both EXPOSE MORE and EXPOSE LESS.
+
+    The rule this module is built on is that un-exposing is never gated: no
+    step-up, no grace window, nothing between somebody and going dark. A single
+    PATCH body carrying both directions breaks that rule by accident, because
+    the two share one fate. The raise demands re-auth, the re-auth fails (wrong
+    password, no TOTP to hand, a stolen session being locked out - exactly the
+    circumstances in which somebody is frantically turning things off), the
+    whole request 403s, and the LOWERING never lands. The gate on the raise has
+    become a gate on the lowering, which is the one thing it must never be.
+
+    So the mixed body is refused BEFORE any step-up runs, and the caller is
+    told to send the two directions as two requests. The lowering one then goes
+    through ungated and instantly, as it always should have, whatever happens
+    to the other. 400 rather than 403 on purpose: nothing was denied, the
+    request was malformed as a matter of policy, and the fix is in the client's
+    hands.
+
+    `raises` is deliberately the endpoint's own "this would demand step-up"
+    answer rather than "the body contains a higher value" - a raise that
+    exposes nobody has no gate in front of it and therefore nothing to block a
+    lowering with, so refusing that combination would be friction bought for
+    nothing.
+    """
+    if raises and lowers:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Send exposure raises and lowerings as separate requests",
+        )
+
+
 def _activation(system: System, *, already_shared: bool) -> tuple[str, datetime | None]:
     """(status, activates_at) for a row that exposes something.
 

@@ -1237,11 +1237,31 @@ export type ShareSubjectType = "public" | "link";
 export type ShareGrantStatus = "pending" | "active" | "revoked";
 export type ShareItemStatus = "pending" | "active";
 
+/** Why a member sitting in a view is not actually being served. Mirrors
+ *  `share_projection.NOT_SERVED_REASONS`; the client renders these rather than
+ *  re-deriving any of them, which is what it used to do off member privacy
+ *  alone - quietly missing the archived and deletion-queued cases, both of
+ *  which drop a member from the public page at once. */
+export type ShareNotServedReason =
+  | "never_shareable"
+  | "deletion_queued"
+  | "archived"
+  | "private"
+  | "pending";
+
 export interface ShareViewMemberRow {
   id: string;
   member_id: string;
   status: ShareItemStatus;
   activates_at: string | null;
+  /** Whether this member is ACTUALLY on the page right now, answered by the
+   *  server through the projection's own filter. Optional so the UI still
+   *  works against a server that predates the field. */
+  served?: boolean;
+  /** Why not, when `served` is false. Null while served, and also in the case
+   *  where the server cannot name a reason - the row then reads as "won't
+   *  show" with no explanation rather than an invented one. */
+  not_served_reason?: ShareNotServedReason | null;
   /** The group expansion that put this member in the view, or null when they
    *  were picked by hand (also null once that group is deleted). This is the
    *  set detaching that group removes - never the group's current roster, which
@@ -1364,11 +1384,20 @@ export interface ShareAuditEntry {
   grant: ShareGrant;
   view_id: string;
   view_name: string;
+  /** The CURATED count: how many members the owner put in this view. Describes
+   *  their curation, not what a visitor gets. */
   member_count: number;
+  /** The SERVED count: how many of those the projection would actually show
+   *  right now. Null when the roster is off entirely, matching
+   *  `PublicSystemView.member_count` - a roster the view refuses to serve must
+   *  not be countable, and zero would be a claim. Optional so the UI still
+   *  works against a server that predates the field; where it differs from
+   *  `member_count`, the audit line says "3 of 5". */
+  served_member_count?: number | null;
   field_count: number;
-  /** False when the roster is off entirely - `member_count` then counts
-   *  members that are in the view but not served, so an audit line has to say
-   *  so rather than quoting the count on its own. */
+  /** False when the roster is off entirely - the counts above then describe
+   *  curation that is not being published, so an audit line has to say so
+   *  rather than quoting a number on its own. */
   include_members: boolean;
   include_bio: boolean;
   include_fronting: boolean;
@@ -1416,7 +1445,12 @@ export interface PublicMemberView {
 }
 
 export interface PublicSystemView {
-  id: string;
+  /** The system's own id, and only on a public profile - the page whose URL
+   *  already contains it. Null behind a share link: the link is an opaque
+   *  token so the system it belongs to cannot be named from it, and an id in
+   *  the body would have let two links, or a link and a public profile, be
+   *  tied back to one system by anything reading the JSON. */
+  id: string | null;
   name: string;
   description: string | null;
   avatar_url: string | null;
@@ -1441,9 +1475,10 @@ export interface PublicGroupMember {
 
 /** One group a view publishes. Its member list is an INTERSECTION with the
  *  members the view already shows, never a second allowlist, so a published
- *  group can never name somebody new - and a public group whose intersection
- *  is empty still appears, because its name and description are what the
- *  owner chose to publish about it. */
+ *  group can never name somebody new. A public group whose intersection is
+ *  EMPTY is not in the payload at all: a name with nobody behind it still
+ *  tells a visitor such a group exists here, which is not something the owner
+ *  published by publishing a roster. */
 export interface PublicGroupView {
   id: string;
   name: string;

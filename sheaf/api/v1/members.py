@@ -55,6 +55,7 @@ from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.sharing import (
     fronting_guard_release_exposes,
+    reject_mixed_exposure_directions,
     shared_view_memberships,
     visibility_grace_days,
     visibility_step_up_required,
@@ -364,6 +365,20 @@ async def update_member(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Edit a member, including the three settings that decide what strangers see.
+
+    Those three - `privacy`, `fronting_private` and `never_shareable` - all
+    obey the same asymmetry as the sharing endpoints: raising exposure is gated
+    (step-up when the profile_visibility category is armed, and then a grace
+    window for the two that have somewhere to be staged), lowering it is
+    instant and ungated. `never_shareable` has no staging column, so its
+    release is step-up-and-apply rather than step-up-and-wait; the two others
+    stage behind `visibility_grace_days` when one is set.
+
+    A single body may not carry BOTH a raise and a lowering: it is refused with
+    400 before the step-up runs, so a failed re-auth can never take a lowering
+    down with it. See `reject_mixed_exposure_directions`.
+    """
     system = await _get_user_system(user, db)
     member = await _get_own_member(member_id, system, db, for_update=True)
     update_data = body.model_dump(exclude_unset=True)
@@ -410,11 +425,75 @@ async def update_member(
             member_is_public=member.privacy == PrivacyLevel.PUBLIC,
         )
 
-    # Step-up fires whenever either raise would actually expose. Staging is the
-    # separate question of whether a grace window is configured: with grace at 0
-    # the raise applies immediately (no pending row, guard released now), the
-    # re-auth having already run above.
-    if exposing_rows or fronting_release_exposes:
+    # Clearing `never_shareable` is the THIRD exposing direction here, and it
+    # used to be the one that fell through to a plain setattr with no gate at
+    # all - which made it the cheap way past the other two. It is the hardest
+    # guard in the product ("this member appears in NO view, ever"), so
+    # releasing it must not be easier than releasing the softer fronting guard
+    # sitting right beside it in the same form.
+    #
+    # What it actually exposes is the same thing that guard does. Setting the
+    # flag deletes every `ShareViewMember` row for the member, so releasing it
+    # cannot put them back on a roster, in a group list, or at the end of an
+    # edge - all of those compose out of those rows. What it CAN do is let
+    # their presence leak through `project_fronting`, which excludes a
+    # never-shareable member from the anonymous `hidden_count` as well as from
+    # the naming, so a release while they are fronting turns "nobody else is
+    # around" into "somebody else is". `fronting_guard_release_exposes` is
+    # exactly that question, so it is the same call, not a parallel one.
+    #
+    # Step-up alone is the gate: unlike `fronting_private` there is no
+    # `never_shareable_activates_at` column to park the release in, and the
+    # finalize sweep has nothing to promote, so with the category armed this
+    # re-auths and applies immediately whatever the grace window is set to.
+    # Adding a staging column is a migration and a sweep pass, and is worth
+    # doing if this guard ever gates more than the presence bit; until then the
+    # re-auth is the protection and the docstring says so rather than the code
+    # implying a wait that does not happen.
+    never_shareable_release_exposes = False
+    if (
+        update_data.get("never_shareable") is False
+        and member.never_shareable
+        and visibility_step_up_required(system)
+    ):
+        never_shareable_release_exposes = await fronting_guard_release_exposes(
+            db,
+            system.id,
+            member.id,
+            member_is_public=member.privacy == PrivacyLevel.PUBLIC,
+        )
+
+    raises_exposure = bool(
+        exposing_rows or fronting_release_exposes or never_shareable_release_exposes
+    )
+    # A body that also takes something DOWN must not ride on the raise's gate:
+    # if the step-up below failed, the lowering would fail with it. Checked
+    # before that step-up runs, and refused outright - see the helper.
+    reject_mixed_exposure_directions(
+        raises=raises_exposure,
+        lowers=(
+            (
+                update_data.get("privacy") is not None
+                and update_data["privacy"] != PrivacyLevel.PUBLIC
+                and member.privacy == PrivacyLevel.PUBLIC
+            )
+            or (
+                update_data.get("fronting_private") is True
+                and not member.fronting_private
+            )
+            or (
+                update_data.get("never_shareable") is True
+                and not member.never_shareable
+            )
+        ),
+    )
+
+    # Step-up fires whenever any of the three raises would actually expose.
+    # Staging is the separate question of whether a grace window is configured:
+    # with grace at 0 the raise applies immediately (no pending row, guard
+    # released now), the re-auth having already run above. The never-shareable
+    # release is never staged either way - it has nowhere to be staged.
+    if raises_exposure:
         await verify_destructive_auth(user, system, password, totp_code, db)
 
     grace = visibility_grace_days(system)

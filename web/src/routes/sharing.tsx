@@ -32,11 +32,14 @@ import { apiErrorMessage } from "@/lib/api-errors";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 import type {
+  ShareAuditEntry,
   ShareGrant,
   ShareGrantCreated,
+  ShareNotServedReason,
   ShareView,
   ShareViewCreate,
   ShareViewGroupRow,
+  ShareViewMemberRow,
 } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -239,6 +242,85 @@ function suppressionNotice(reason: string | null): string | null {
   return null;
 }
 
+/** The member half of one audit line.
+ *
+ *  The audit's job is "who can currently see what", so the number that leads
+ *  is the number of people a visitor actually gets - the same basis as the
+ *  field, relationship and group counts beside it. The curated total is still
+ *  worth showing when it is bigger, because the gap is the interesting part
+ *  ("I put five people in and only three show"), but it is not the headline:
+ *  quoting it alone is what let the audit over-report for years' worth of
+ *  archived, private and deletion-queued members.
+ *
+ *  Falls back to the curated count against a server that predates
+ *  `served_member_count`, which is the old behaviour rather than a claim of
+ *  zero. */
+function servedMembersLabel(e: ShareAuditEntry): string {
+  const served = e.served_member_count ?? e.member_count;
+  const noun = `member${served === 1 ? "" : "s"}`;
+  return served < e.member_count
+    ? `${served} of ${e.member_count} ${noun}`
+    : `${served} ${noun}`;
+}
+
+/** What a member badge says when the view is holding them back, keyed by the
+ *  server's reason. The server decides WHETHER somebody shows (it composes the
+ *  projection's own filter); this only decides how to word it.
+ *
+ *  `pending` is absent on purpose: a pending member is not being held back,
+ *  they are waiting out a grace window, and the row already carries its own
+ *  "pending" badge saying so. Each entry points at the control in the member
+ *  editor that clears it, and uses that control's own wording, so the two
+ *  screens cannot describe the same state differently. */
+const NOT_SERVED_COPY: Record<
+  Exclude<ShareNotServedReason, "pending">,
+  { badge: string; title: string }
+> = {
+  never_shareable: {
+    badge: "won't show: never shareable",
+    title:
+      "This member is marked never shareable, so they can never appear in " +
+      "any view. Clear that in the member editor to show them.",
+  },
+  deletion_queued: {
+    badge: "won't show: deleting",
+    title:
+      "This member is queued for deletion, so they stopped being shown the " +
+      "moment you asked for that. Cancel the deletion to show them again.",
+  },
+  archived: {
+    badge: "won't show: archived",
+    title:
+      "This member is archived, so they are hidden from shared pages just " +
+      "as they are from your own lists. Unarchive them to show them again.",
+  },
+  private: {
+    badge: "won't show",
+    title:
+      "This member's privacy isn't Public, so they won't appear. Set their " +
+      "privacy to Public to show them.",
+  },
+};
+
+/** The copy for one member row, or null when they are actually being served.
+ *  A row the server says is not served but cannot name a reason for reads as a
+ *  plain "won't show" rather than an invented explanation. */
+function notServedCopy(
+  row: ShareViewMemberRow,
+): { badge: string; title: string } | null {
+  if (row.served !== false) return null;
+  if (row.not_served_reason === "pending") return null;
+  if (row.not_served_reason && row.not_served_reason in NOT_SERVED_COPY) {
+    return NOT_SERVED_COPY[
+      row.not_served_reason as Exclude<ShareNotServedReason, "pending">
+    ];
+  }
+  return {
+    badge: "won't show",
+    title: "This member isn't being shown on the published page.",
+  };
+}
+
 function SharingManager() {
   const off = useSharingOff();
   const { data: views } = useShareViews();
@@ -312,10 +394,12 @@ function SharingManager() {
             Your system's own details are the exception, and publishing anything
             at all shows them: the page is headed by your system's{" "}
             <strong>name, avatar, colour, tag and description</strong>, whatever
-            the view contains. A public profile also carries your system's id in
-            its address; a share link uses an opaque token instead, so the id
-            stays out of it. The number of members is shown only when the view
-            serves its member list.
+            the view contains. A public profile carries your system's id in its
+            address; a share link uses an opaque token instead, and your id
+            appears nowhere in what that link serves - so two links, or a link
+            and your public profile, cannot be matched up as belonging to the
+            same system by whoever holds them. The number of members is shown
+            only when the view serves its member list.
           </p>
           <p>
             Images you uploaded show up on a shared page as normal. Images
@@ -382,11 +466,12 @@ function SharingManager() {
                 {/* Reads as the list of what a visitor actually gets. With
                     the roster off the member count is not served at all, so
                     leading with it - or with anything hanging off it - would
-                    describe a page nobody can see. */}
+                    describe a page nobody can see. The number here is the
+                    SERVED one, like every other count on this line; the
+                    curated total only appears when the two differ, as "3 of
+                    5", because that gap is the thing worth knowing. */}
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {e.include_members
-                    ? `${e.member_count} member${e.member_count === 1 ? "" : "s"}`
-                    : "no member list"}
+                  {e.include_members ? servedMembersLabel(e) : "no member list"}
                   {e.field_count > 0 && `, ${e.field_count} field${e.field_count === 1 ? "" : "s"}`}
                   {e.include_members && e.include_bio && ", bios"}
                   {e.include_fronting && ", live fronting"}
@@ -965,12 +1050,9 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
   }, [groups]);
 
   const memberById = useMemo(() => {
-    const m = new Map<string, { label: string; isPublic: boolean }>();
+    const m = new Map<string, string>();
     for (const mem of members ?? [])
-      m.set(mem.id, {
-        label: mem.display_name || mem.name,
-        isPublic: mem.privacy === "public",
-      });
+      m.set(mem.id, mem.display_name || mem.name);
     return m;
   }, [members]);
 
@@ -978,11 +1060,14 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
   const addable = (members ?? []).filter(
     (m) => !inView.has(m.id) && !m.never_shareable,
   );
-  // Members that are in the view but won't actually appear, because their
-  // privacy keeps them off the public tier. Surfaced so "why isn't X showing?"
-  // never becomes a mystery.
+  // Members that are in the view but won't actually appear. Taken from the
+  // server's own answer rather than re-derived from member privacy here: the
+  // client's version of this test missed an archived member and one queued for
+  // deletion, both of which leave the public page at once, so a view could be
+  // showing fewer people than this screen implied. Surfaced so "why isn't X
+  // showing?" never becomes a mystery.
   const hiddenInView = view.members.filter(
-    (row) => memberById.get(row.member_id)?.isPublic === false,
+    (row) => notServedCopy(row) !== null,
   ).length;
 
   function doAdd(memberId: string, reauth?: DestructiveConfirm) {
@@ -1021,21 +1106,23 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {view.members.map((row) => {
-            const info = memberById.get(row.member_id);
-            const hidden = info?.isPublic === false;
+            const label = memberById.get(row.member_id);
+            const notServed = notServedCopy(row);
             return (
               <Badge
                 key={row.id}
-                variant={hidden ? "outline" : "secondary"}
-                className={`gap-1 ${hidden ? "text-muted-foreground" : ""}`}
-                title={
-                  hidden
-                    ? "This member's privacy isn't Public, so they won't appear. Set their privacy to Public to show them."
-                    : undefined
-                }
+                variant={notServed ? "outline" : "secondary"}
+                className={`gap-1 ${notServed ? "text-muted-foreground" : ""}`}
+                title={notServed?.title}
               >
-                {info?.label ?? "member"}
-                {hidden && <span className="text-[9px]">won't show</span>}
+                {label ?? "member"}
+                {notServed && (
+                  <span className="text-[9px]">{notServed.badge}</span>
+                )}
+                {/* Unchanged, and deliberately separate from the badge above:
+                    a member can be both waiting out a grace window AND held
+                    back by something that will still be true afterwards, and
+                    the owner needs to be told both. */}
                 {row.status === "pending" && (
                   <span className="text-[9px] opacity-70">pending</span>
                 )}
@@ -1055,8 +1142,9 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
       {hiddenInView > 0 && (
         <p className="text-[11px] text-amber-600 dark:text-amber-500">
           {hiddenInView} member{hiddenInView === 1 ? "" : "s"} here won't
-          appear: only members whose privacy is Public show on a public profile
-          or link. Change their privacy in the member editor to show them.
+          appear on the page. Each one says why: a member shows only while
+          their privacy is Public, they aren't marked never shareable, and they
+          are neither archived nor queued for deletion.
         </p>
       )}
       {view.groups.length > 0 && (
@@ -1721,6 +1809,7 @@ function PublishDialog({
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
               />
             </div>
           )}
@@ -1731,6 +1820,7 @@ function PublishDialog({
                 id="publish-totp"
                 value={totp}
                 onChange={(e) => setTotp(e.target.value)}
+                placeholder="6-digit code"
                 inputMode="numeric"
                 maxLength={6}
                 autoComplete="off"

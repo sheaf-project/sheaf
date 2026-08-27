@@ -41,7 +41,13 @@ class PublicMemberView(BaseModel):
 
 
 class PublicSystemView(BaseModel):
-    id: str
+    # The system's own id, and ONLY on the routes that are already addressed by
+    # it (`/public/systems/{system_id}/...`). Null on a share link: the link is
+    # an opaque token precisely so the system it belongs to is not learnable
+    # from it, and an id sitting in the body would have let two links - or a
+    # link and a public profile - be correlated back to one system by anything
+    # reading the JSON. See `share_projection.project_system`.
+    id: str | None = None
     name: str
     description: str | None = None
     avatar_url: str | None = None
@@ -155,10 +161,13 @@ class PublicGroupView(BaseModel):
     Reaching this schema means two gates were passed: the view has
     include_groups on, and the group itself is marked `public`. The roster is
     not a third gate but an INTERSECTION - it lists only members this view was
-    already showing, so publishing a group can never name somebody new. A
-    public group whose intersection is empty still appears: its name,
-    description and colour are what the owner chose to publish about the
-    group, and an empty roster discloses nothing about who is in it.
+    already showing, so publishing a group can never name somebody new.
+
+    A public group whose intersection is EMPTY does not reach this schema at
+    all: a bare name and description with nobody behind them still tells a
+    visitor that such a group exists in this system, which is not something the
+    owner published by publishing a roster. See
+    `share_projection._projectable_group_rosters`.
     """
 
     id: str
