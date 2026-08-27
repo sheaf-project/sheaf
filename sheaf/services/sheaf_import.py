@@ -30,7 +30,7 @@ append-everything behaviour.
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,6 +85,10 @@ from sheaf.models.relationship import (
     RelationshipType,
 )
 from sheaf.models.reminder import Reminder, reminder_scope_members
+from sheaf.models.safety_change_request import (
+    SafetyChangeRequest,
+    SafetyChangeStatus,
+)
 from sheaf.models.share import (
     ShareItemStatus,
     ShareView,
@@ -151,7 +155,9 @@ from sheaf.services.reminders import encrypt_title_body
 from sheaf.services.sharing import (
     group_raise_exposes,
     relationship_exposed_member_ids,
+    system_privacy_raise_exposes,
 )
+from sheaf.services.system_safety import split_safety_changes
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -223,6 +229,50 @@ def _group_privacy(
     if level == PrivacyLevel.PUBLIC and would_show:
         return PrivacyLevel.PRIVATE, True
     return level, False
+
+
+def system_privacy_hold_warning(current: object, *, blocked: bool) -> str:
+    """The report line for a system-privacy raise an import declined to apply.
+
+    Two shapes because there are two reasons and they need different things
+    from the reader: a blocked system cannot be raised at all until an operator
+    lifts the latch, so pointing the owner at the settings screen would send
+    them to a control that refuses them. Carries no member, group or account
+    names - the level is one of three fixed words - so it is safe in the job's
+    plaintext event log.
+    """
+    if blocked:
+        return (
+            "Your system was marked public in the file, but was left at "
+            f"{current}: an operator on this instance has disabled publishing "
+            "on your system, so it cannot be set to public until they lift "
+            "that. Contact the instance operator."
+        )
+    return (
+        "Your system was marked public in the file, but was left at "
+        f"{current}: system privacy is the master switch over everything you "
+        "share, and there is already a share link or public profile waiting "
+        "behind it. Set it to public under Settings, system profile if that is "
+        "what you want, where the change goes through re-authentication and "
+        "the grace window - a restore can do neither of those for you."
+    )
+
+
+def safety_deferred_warning(fields: list[str]) -> str:
+    """The report line for imported System Safety settings that loosen.
+
+    Named settings only (no user content), so this is safe in the plaintext
+    job event log. The caller passes the external names the settings surface
+    uses wherever one exists, so the owner can find the row the warning is
+    talking about; the retention caps have no external alias and appear under
+    their own column names.
+    """
+    return (
+        "These System Safety settings would have loosened your protections, so "
+        "they were queued behind your grace window instead of being applied: "
+        f"{', '.join(fields)}. They take effect when the window elapses; "
+        "review or cancel them under Settings, System Safety."
+    )
 
 
 def _rel_visibility(val: object) -> PrivacyLevel:
@@ -947,7 +997,43 @@ async def run_import(
                     else None
                 )
             if sys_data.get("privacy"):
-                system.privacy = _privacy(sys_data["privacy"])
+                # The master switch over the entire public surface
+                # (`profile_serving_clause`), so a file must not flip it on in
+                # a way PATCH /v1/systems/me would refuse. Two holds, matching
+                # that endpoint's two refusals: an operator takedown latch
+                # (403 there), and a raise with a live-or-pending grant behind
+                # it, which there demands step-up re-auth and then stages
+                # behind the grace window. An import job can offer neither, so
+                # the raise is HELD: the current level stands and nothing is
+                # written to `pending_privacy` / `privacy_activates_at`, because
+                # staging is what the re-authed owner path earns and a restore
+                # has not re-authed. Lowering, and a raise with no grant behind
+                # it, apply immediately exactly as before - the same shape as
+                # the member, group and edge holds below.
+                file_privacy = _privacy(sys_data["privacy"])
+                is_raise = (
+                    file_privacy == PrivacyLevel.PUBLIC
+                    and system.privacy != PrivacyLevel.PUBLIC
+                )
+                blocked = is_raise and bool(system.publishing_blocked)
+                held = is_raise and (
+                    blocked or await system_privacy_raise_exposes(db, system)
+                )
+                if held:
+                    warnings.append(
+                        system_privacy_hold_warning(
+                            system.privacy, blocked=blocked
+                        )
+                    )
+                else:
+                    system.privacy = file_privacy
+                    # Any applied write settles the staged pair, exactly as
+                    # the PATCH path does. The case that matters is a
+                    # lowering: going dark must not leave a pending public
+                    # flip behind for the sweep to promote after the owner
+                    # thought they had gone private.
+                    system.pending_privacy = None
+                    system.privacy_activates_at = None
             # Notes are encrypted at rest. Empty-string clears (matches the
             # PATCH /systems/me semantics).
             if "note" in sys_data:
@@ -991,28 +1077,42 @@ async def run_import(
             if "timezone" in sys_data:
                 system.timezone = _timezone(sys_data.get("timezone"))
 
-            # System Safety toggles + grace period + auto-pin. delete_confirmation
-            # is deliberately NOT restored: importing a TOTP-requiring tier onto
+            # System Safety toggles + grace period + auto-pin, and the
+            # revision-retention caps alongside them. delete_confirmation is
+            # deliberately NOT restored: importing a TOTP-requiring tier onto
             # an account without TOTP enrolled would lock destructive actions.
+            #
+            # Collected into one update dict and routed through the API's own
+            # `split_safety_changes` rather than written with setattr. Every
+            # one of these is a setting PATCH /v1/system/safety splits into
+            # "tightening, apply now" and "loosening, wait out the grace
+            # window", so writing them directly made a file a way to disarm the
+            # safety net instantly - including
+            # `safety_applies_to_profile_visibility`, which the member section
+            # further down reads off this same in-memory System. Deferred
+            # loosenings are therefore NOT set on the object; they go in a
+            # SafetyChangeRequest and the finalize sweep applies them.
+            #
+            # No step-up is demanded, unlike the API: an import runs as the
+            # backend with no channel to ask for one, and the grace window is
+            # the protection here.
+            safety_updates: dict[str, object] = {}
             safety = sys_data.get("safety") or {}
             if isinstance(safety, dict):
                 if "grace_period_days" in safety:
-                    system.safety_grace_period_days = _coerce_int(
+                    safety_updates["safety_grace_period_days"] = _coerce_int(
                         safety["grace_period_days"], default=0, minimum=0
                     )
                 for key in _SAFETY_APPLIES_KEYS:
                     if key in safety:
-                        setattr(
-                            system,
-                            f"safety_{key}",
-                            bool(safety[key]),
-                        )
+                        safety_updates[f"safety_{key}"] = bool(safety[key])
                 if "auto_pin_first_revision" in safety:
-                    system.auto_pin_first_revision = bool(
+                    safety_updates["auto_pin_first_revision"] = bool(
                         safety["auto_pin_first_revision"]
                     )
 
-            # Revision-retention caps.
+            # Revision-retention caps. Same treatment: a smaller cap deletes
+            # more, so `split_safety_changes` guards the shrinking direction.
             retention = sys_data.get("retention") or {}
             if isinstance(retention, dict):
                 for key in (
@@ -1021,10 +1121,54 @@ async def run_import(
                     "pinned_revision_max_per_target",
                 ):
                     if key in retention and retention[key] is not None:
-                        setattr(
-                            system,
-                            key,
-                            _coerce_int(retention[key], default=0, minimum=0),
+                        safety_updates[key] = _coerce_int(
+                            retention[key], default=0, minimum=0
+                        )
+
+            if safety_updates:
+                split = split_safety_changes(system, safety_updates)
+                for fld, value in split.applied.items():
+                    setattr(system, fld, value)
+                if split.deferred:
+                    if system.safety_grace_period_days <= 0:
+                        # Mirrors the API exactly: with the window off there is
+                        # nothing to wait out, so a loosening lands at once
+                        # rather than queueing a request that would finalize on
+                        # the sweep's next pass anyway.
+                        for fld, value in split.deferred.items():
+                            setattr(system, fld, value)
+                    else:
+                        # One request for the whole file, not one per setting:
+                        # the owner cancels a restore's loosening as a single
+                        # decision, the same way the settings screen queues one
+                        # request per PATCH. Attributed to the system's owner -
+                        # an import only ever runs against the importing user's
+                        # own system.
+                        from sheaf.api.v1.system_safety import (
+                            _INTERNAL_TO_EXTERNAL,
+                        )
+
+                        now = datetime.now(UTC)
+                        db.add(
+                            SafetyChangeRequest(
+                                system_id=system.id,
+                                requested_at=now,
+                                requested_by_user_id=system.user_id,
+                                finalize_after=now
+                                + timedelta(
+                                    days=system.safety_grace_period_days
+                                ),
+                                changes=split.deferred,
+                                status=SafetyChangeStatus.PENDING,
+                            )
+                        )
+                        warnings.append(
+                            safety_deferred_warning(
+                                sorted(
+                                    _INTERNAL_TO_EXTERNAL.get(f, f)
+                                    for f in split.deferred
+                                )
+                            )
                         )
 
             # OpenPlural import residual: a native export carries it as a

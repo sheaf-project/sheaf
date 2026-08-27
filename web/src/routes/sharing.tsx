@@ -220,8 +220,17 @@ type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
 
 /** The audit lists what each grant WOULD serve. When the account-level
  *  suppression is set, none of it is reachable right now, so the list needs a
- *  line above it saying so - otherwise it reads as a page that is live. */
+ *  line above it saying so - otherwise it reads as a page that is live.
+ *  `publishing_blocked` outranks the other two server-side, so its line is the
+ *  one that shows when an operator has latched the system shut. */
 function suppressionNotice(reason: string | null): string | null {
+  if (reason === "publishing_blocked") {
+    return (
+      "None of this is being served right now: an operator on this instance " +
+      "has disabled publishing on your system. Nothing below has been " +
+      "deleted, and it serves again if they lift it."
+    );
+  }
   if (reason === "system_private") {
     return (
       "None of this is reachable right now: your system's privacy is not set " +

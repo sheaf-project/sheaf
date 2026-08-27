@@ -1387,10 +1387,12 @@ export interface ShareAuditEntry {
 export interface ShareAudit {
   entries: ShareAuditEntry[];
   /** Null while the profile is actually served. Otherwise the reason nothing
-   *  below is reachable right now - `"system_private"` (the system's own
-   *  privacy gates every grant at once) or `"account_state"`. Account-level
-   *  rather than per-entry because it suppresses the lot: the grants and the
-   *  counts above stay accurate as curation, but every public URL 404s. */
+   *  below is reachable right now - `"publishing_blocked"` (an operator has
+   *  latched the system shut, and only they can lift it), `"system_private"`
+   *  (the system's own privacy gates every grant at once) or `"account_state"`.
+   *  Reported in that order when more than one applies. Account-level rather
+   *  than per-entry because it suppresses the lot: the grants and the counts
+   *  above stay accurate as curation, but every public URL 404s. */
   profile_suppressed: string | null;
 }
 

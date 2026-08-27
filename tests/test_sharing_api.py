@@ -1531,6 +1531,41 @@ def test_audit_reports_a_private_system(auth_client: httpx.Client):
     assert len(audit["entries"]) == 1
 
 
+def test_audit_reports_an_operator_takedown_above_everything_else(
+    auth_client: httpx.Client,
+):
+    """`publishing_blocked` outranks the other reasons, and unlike them it is
+    named. The owner already sees the latch on their own system read, and it is
+    the one reason here they cannot clear themselves - pointing them at the
+    privacy switch instead would send them to a control that just 403s."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client)
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    system_id = auth_client.get("/v1/systems/me").json()["id"]
+
+    async def _work(db) -> None:
+        from sheaf.models.system import System
+
+        system = await db.get(System, uuid.UUID(system_id))
+        assert system is not None
+        system.publishing_blocked = True
+
+    _in_db(_work)
+
+    audit = auth_client.get("/v1/sharing/audit").json()
+    assert audit["profile_suppressed"] == "publishing_blocked"
+    assert len(audit["entries"]) == 1
+
+    # Still the latch's answer once the owner also goes private: the switch
+    # they can flip is not the one keeping them dark.
+    auth_client.patch("/v1/systems/me", json={"privacy": "private"})
+    audit = auth_client.get("/v1/sharing/audit").json()
+    assert audit["profile_suppressed"] == "publishing_blocked"
+
+
 def _set_account_status(email: str, status: str) -> None:
     async def _work(db) -> None:
         from sqlalchemy import select

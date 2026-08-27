@@ -211,17 +211,20 @@ class ShareAuditEntry(BaseModel):
 class ShareAudit(BaseModel):
     entries: list[ShareAuditEntry]
     # Why NOTHING below is being served right now, or None when the entries
-    # describe live exposure. One of "system_private" (the system-level privacy
-    # selector is not public) or "account_state" (the account is not in good
-    # standing). Account-level, not per-grant, because it suppresses every grant
-    # at once.
+    # describe live exposure. One of "publishing_blocked" (an operator has
+    # latched the system shut and only they can lift it), "system_private" (the
+    # system-level privacy selector is not public) or "account_state" (the
+    # account is not in good standing), reported in that order when more than
+    # one applies. Account-level, not per-grant, because it suppresses every
+    # grant at once.
     #
     # This exists so an owner whose page 404s can tell the difference between a
     # switch they can flip and one they cannot, instead of debugging their own
     # grants. Deliberately coarse: the anonymous surface returns the same
     # uniform 404 for every one of these, and the specific account state is
     # something the owner was already told at login, so naming it here would
-    # add a leakable value to buy nothing.
+    # add a leakable value to buy nothing. "publishing_blocked" is the one named
+    # state, because the owner's own system read already carries the flag.
     profile_suppressed: str | None = None
 
 

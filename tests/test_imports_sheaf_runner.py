@@ -7,7 +7,9 @@ a fixture file, matching the existing test_sheaf_import.py convention.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import uuid
 
 import httpx
@@ -1310,3 +1312,266 @@ def test_sheaf_runner_update_never_gates_lowering_privacy(
         m for m in auth_client.get("/v1/members").json() if m["name"] == "ReAlice"
     )
     assert after["privacy"] == "private"
+
+
+# --- The master switch, and the safety net a file must not disarm ----------
+#
+# A restore is a backup coming home, not an owner sitting at the settings
+# screen. Two settings it therefore cannot simply write: `system.privacy`, the
+# master ceiling over the whole public surface, and the System Safety block,
+# which includes the very flag the member hold above used to consult.
+
+
+BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
+
+
+def _in_db(work) -> None:
+    """Run `work(db)` straight against the test database, then commit.
+
+    Used only for the operator takedown latch, which by design has no
+    owner-side route: the admin lever that sets it also revokes every grant,
+    and the case that matters here is a system that is latched WITH something
+    still live behind it.
+    """
+
+    async def _run() -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with session() as db:
+            await work(db)
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def _block_publishing(system_id: str) -> None:
+    async def _work(db) -> None:
+        from sheaf.models.system import System
+
+        system = await db.get(System, uuid.UUID(system_id))
+        assert system is not None
+        system.publishing_blocked = True
+
+    _in_db(_work)
+
+
+def _system_id(client: httpx.Client) -> str:
+    return client.get("/v1/systems/me").json()["id"]
+
+
+def _export_with(system_extra: dict, **top_level) -> bytes:
+    """The base export with extra keys merged into its `system` block."""
+    export = json.loads(json.dumps(_SHEAF_EXPORT))
+    export["system"].update(system_extra)
+    export.update(top_level)
+    return json.dumps(export).encode()
+
+
+def _publish_a_view(client: httpx.Client, member_ids: list[str] | None = None) -> str:
+    """Publish a public grant over a fresh view; returns the view id."""
+    assert client.post("/v1/auth/me/attest-adult").status_code == 200
+    view = client.post("/v1/share-views", json={"name": "Shared"})
+    assert view.status_code == 201, view.text
+    vid = view.json()["id"]
+    for mid in member_ids or []:
+        added = client.post(
+            f"/v1/share-views/{vid}/members", json={"member_id": mid}
+        )
+        assert added.status_code == 200, added.text
+    grant = client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    assert grant.status_code == 201, grant.text
+    return vid
+
+
+def _run(client: httpx.Client, payload: bytes, **options) -> dict:
+    job = _post_file(client, payload=payload, options=options or None)
+    drive_import_runner()
+    final = wait_for_terminal(client, job["id"])
+    assert final["status"] == "complete", final
+    return final
+
+
+def _warnings(final: dict) -> list[str]:
+    return [e["message"] for e in final["events"] if e["level"] == "warning"]
+
+
+def test_sheaf_runner_holds_system_privacy_when_a_grant_is_waiting(
+    auth_client: httpx.Client,
+):
+    """The master switch is the broadest publish there is, so a file cannot
+    flip it on while a live grant sits behind it waiting to serve. PATCH
+    /v1/systems/me demands step-up and a grace window for that raise; an import
+    can offer neither, so it holds and says so."""
+    _go_public(auth_client)
+    _publish_a_view(auth_client)
+    system_id = _system_id(auth_client)
+    assert auth_client.patch(
+        "/v1/systems/me", json={"privacy": "private"}
+    ).status_code == 200
+
+    final = _run(auth_client, _export_with({"privacy": "public"}))
+
+    system = auth_client.get("/v1/systems/me").json()
+    assert system["privacy"] == "private"
+    # Held, NOT staged: staging is what the re-authed owner path earns.
+    assert system["pending_privacy"] is None
+    assert system["privacy_activates_at"] is None
+    held = [w for w in _warnings(final) if "marked public in the file" in w]
+    assert held, final["events"]
+    assert "left at private" in held[0]
+
+    # And the anonymous surface is still dark, which is the point of all this.
+    with httpx.Client(base_url=BASE_URL) as anon:
+        assert anon.get(f"/v1/public/systems/{system_id}").status_code == 404
+
+
+def test_sheaf_runner_holds_system_privacy_while_publishing_is_blocked(
+    auth_client: httpx.Client,
+):
+    """The operator takedown latch, with no grant anywhere. PATCH
+    /v1/systems/me answers this one with a 403, so the import holds too rather
+    than quietly undoing a moderation action from a file."""
+    system_id = _system_id(auth_client)
+    _block_publishing(system_id)
+
+    final = _run(auth_client, _export_with({"privacy": "public"}))
+
+    assert auth_client.get("/v1/systems/me").json()["privacy"] == "private"
+    held = [w for w in _warnings(final) if "disabled publishing" in w]
+    assert held, final["events"]
+
+
+def test_sheaf_runner_raises_system_privacy_when_nothing_is_behind_it(
+    auth_client: httpx.Client,
+):
+    """No grant, no latch: the raise reveals nobody, so it applies at once -
+    the sibling of every other 'this exposes nothing' case, and the check that
+    the hold above did not just break restoring a backup."""
+    final = _run(auth_client, _export_with({"privacy": "public"}))
+
+    assert auth_client.get("/v1/systems/me").json()["privacy"] == "public"
+    assert not [w for w in _warnings(final) if "marked public in the file" in w]
+
+
+def test_sheaf_runner_queues_a_safety_loosening_and_still_holds_the_member(
+    auth_client: httpx.Client,
+):
+    """The ordering bug, pinned. One file that turns the profile_visibility
+    category OFF and raises an already-shared member to public in the same
+    breath: the loosening is queued behind the grace window rather than written
+    onto the system, and the member is held either way."""
+    alice = _seed_roster(auth_client)
+    _go_public(auth_client)
+    _publish_a_view(auth_client, [alice["id"]])
+    _arm_visibility_safety(auth_client)
+
+    export = json.loads(json.dumps(_SHEAF_EXPORT))
+    export["system"]["safety"] = {"applies_to_profile_visibility": False}
+    for m in export["members"]:
+        if m["id"] == "m1":
+            m["privacy"] = "public"
+    final = _run(
+        auth_client, json.dumps(export).encode(), conflict_strategy="update"
+    )
+
+    safety = auth_client.get("/v1/system/safety").json()
+    # The flag itself did not move - the deferred value is nowhere near the row.
+    assert safety["settings"]["applies_to_profile_visibility"] is True
+    pending = safety["pending_changes"]
+    assert len(pending) == 1, pending
+    assert pending[0]["status"] == "pending"
+    assert pending[0]["changes"] == {
+        "safety_applies_to_profile_visibility": False
+    }
+    queued = [w for w in _warnings(final) if "queued behind your grace window" in w]
+    assert queued, final["events"]
+    assert "applies_to_profile_visibility" in queued[0]
+
+    # And the member the same file wanted published is still private.
+    assert final["counts"]["members_privacy_skipped"] == 1, final["counts"]
+    after = next(
+        m for m in auth_client.get("/v1/members").json() if m["name"] == "ReAlice"
+    )
+    assert after["privacy"] == "private"
+
+
+def test_sheaf_runner_applies_a_safety_tightening_immediately(
+    auth_client: httpx.Client,
+):
+    """Turning a category back ON adds protection, so there is nothing to wait
+    for and no request to queue."""
+    assert auth_client.patch(
+        "/v1/system/safety", json={"applies_to_journals": False}
+    ).status_code == 200
+    assert auth_client.patch(
+        "/v1/system/safety", json={"grace_period_days": 7}
+    ).status_code == 200
+
+    _run(auth_client, _export_with({"safety": {"applies_to_journals": True}}))
+
+    safety = auth_client.get("/v1/system/safety").json()
+    assert safety["settings"]["applies_to_journals"] is True
+    assert safety["pending_changes"] == [], safety["pending_changes"]
+
+
+def test_sheaf_runner_applies_a_safety_loosening_immediately_with_no_grace(
+    auth_client: httpx.Client,
+):
+    """Grace at 0 means the window guards nothing, so a loosening lands at once
+    rather than queueing a request the next sweep would finalize anyway. Mirrors
+    what PATCH /v1/system/safety does with the same settings."""
+    # Arm the category first (a tightening, applied at once) so the file has
+    # something to loosen; grace stays at the fresh-account default of 0.
+    assert auth_client.patch(
+        "/v1/system/safety", json={"applies_to_journals": True}
+    ).status_code == 200
+    settings = auth_client.get("/v1/system/safety").json()["settings"]
+    assert settings["grace_period_days"] == 0
+    assert settings["applies_to_journals"] is True
+
+    _run(auth_client, _export_with({"safety": {"applies_to_journals": False}}))
+
+    safety = auth_client.get("/v1/system/safety").json()
+    assert safety["settings"]["applies_to_journals"] is False
+    assert safety["pending_changes"] == [], safety["pending_changes"]
+
+
+def test_sheaf_runner_lowering_system_privacy_clears_a_staged_raise(
+    auth_client: httpx.Client,
+):
+    """Going dark wins. A raise staged behind the grace window must not survive
+    a file that lowers the level, or the sweep would promote it after the owner
+    believed they were private - the same rule PATCH /v1/systems/me applies."""
+    _go_public(auth_client)
+    system_id = _system_id(auth_client)
+
+    async def _stage(db) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from sheaf.models.system import PrivacyLevel, System
+
+        system = await db.get(System, uuid.UUID(system_id))
+        assert system is not None
+        system.privacy = PrivacyLevel.PRIVATE
+        system.pending_privacy = PrivacyLevel.PUBLIC
+        system.privacy_activates_at = datetime.now(UTC) + timedelta(days=3)
+
+    _in_db(_stage)
+    before = auth_client.get("/v1/systems/me").json()
+    assert before["pending_privacy"] == "public"
+
+    _run(auth_client, _export_with({"privacy": "private"}))
+
+    system = auth_client.get("/v1/systems/me").json()
+    assert system["privacy"] == "private"
+    assert system["pending_privacy"] is None
+    assert system["privacy_activates_at"] is None

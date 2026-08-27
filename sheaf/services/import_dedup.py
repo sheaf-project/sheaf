@@ -34,7 +34,9 @@ step-up re-auth plus a grace window. A job has no step-up channel, so an
 import must not do what the API refuses: the raise is applied only when
 it exposes nothing, and otherwise the existing value stands and the
 member is referenced (by id, never by decrypted name) in the job report
-(`Resolution.privacy_held_member_id`).
+(`Resolution.privacy_held_member_id`). The hold does NOT consult the
+profile_visibility safety category - see `_privacy_raise_exposes` for why
+a gate the same file can switch off is no gate.
 Lowering is the un-exposing direction and stays ungated, and a CREATE is
 in no view yet, so neither is gated.
 
@@ -63,10 +65,7 @@ from sheaf.encrypted_fields import (
 )
 from sheaf.models.member import Member
 from sheaf.models.system import PrivacyLevel, System
-from sheaf.services.sharing import (
-    shared_view_memberships,
-    visibility_step_up_required,
-)
+from sheaf.services.sharing import shared_view_memberships
 
 
 class ImportConflictStrategy(enum.StrEnum):
@@ -206,25 +205,32 @@ async def _privacy_raise_exposes(
     """Whether taking the candidate's privacy would publish the existing row.
 
     Only the raise to `public` can expose: lowering takes the member off the
-    public surface and an equal value moves nothing. A raise on a system whose
-    safety net does not cover profile visibility, or on a member no live or
-    pending grant can reach, exposes nobody and stays ungated - the same
-    conditions PATCH /v1/members uses before it demands step-up re-auth, and
-    the same place the parked friends tier will need an audience-aware test.
+    public surface and an equal value moves nothing. A raise on a member no live
+    or pending grant can reach exposes nobody and stays ungated - the same
+    "would this actually reveal somebody" question PATCH /v1/members asks before
+    it demands step-up re-auth, and the same place the parked friends tier will
+    need an audience-aware test.
 
-    Keyed on `visibility_step_up_required` (the category being armed), NOT on a
-    grace window: an import is non-interactive, so it can neither perform the
-    step-up the API would demand nor stage a pending raise. When the category is
-    armed it therefore HOLDS the raise outright - keeps the existing lower level
-    and reports it - rather than silently publishing somebody from a file. That
-    is the conservative reading, and it is the reason the category defaulting on
-    is safe here: the worst an import can do to visibility is leave it where it
-    was.
+    Deliberately NOT keyed on the profile_visibility safety category, and that
+    is the difference from the API. Two reasons, either of which is sufficient:
+
+    - An import is non-interactive. Where the API would demand a step-up it can
+      neither perform one nor stage a pending raise, so the only honest answers
+      are "publish from a file with no gate at all" or "hold". It holds.
+    - The category flag is itself importable (it rides in `system.safety` in the
+      very same payload), so a hold that consulted it could be switched off by
+      the file that wants the raise. A gate an attacker's input can disarm is
+      not a gate.
+
+    So the hold applies whenever the file raises a member who is already sitting
+    in a view a live-or-pending grant points at: keep the existing lower level
+    and report it, rather than silently publishing somebody from a file. That is
+    the conservative reading, and the worst an import can do to visibility is
+    leave it where it was.
     """
     if (
         candidate.privacy != PrivacyLevel.PUBLIC
         or existing.privacy == PrivacyLevel.PUBLIC
-        or not visibility_step_up_required(system)
     ):
         return False
     return bool(await shared_view_memberships(db, system, existing.id))
@@ -297,15 +303,14 @@ async def resolve_member(
     # then and now the owner may have taken this member private in a concurrent
     # request. Without the row lock we would evaluate exposure against - and then
     # overwrite - a stale privacy value, silently undoing that concurrent change.
-    # Only a raise to public on an armed system can expose, so the lock is scoped
-    # to exactly that case (the same conditions _privacy_raise_exposes needs its
-    # DB read for); other dispositions keep the no-extra-query fast path. FOR
-    # UPDATE both refreshes existing.privacy and serialises us against the writer
-    # for the rest of the transaction, so the subsequent _apply_update is safe.
+    # Only a raise to public can expose, so the lock is scoped to exactly that
+    # case (the same conditions _privacy_raise_exposes needs its DB read for);
+    # other dispositions keep the no-extra-query fast path. FOR UPDATE both
+    # refreshes existing.privacy and serialises us against the writer for the
+    # rest of the transaction, so the subsequent _apply_update is safe.
     if (
         candidate.privacy == PrivacyLevel.PUBLIC
         and existing.privacy != PrivacyLevel.PUBLIC
-        and visibility_step_up_required(system)
     ):
         await db.refresh(existing, ["privacy"], with_for_update=True)
     exposes = await _privacy_raise_exposes(db, system, existing, candidate)

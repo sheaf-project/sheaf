@@ -45,12 +45,13 @@ def _m(name_hash: str, *, pk_id: str | None = None, is_cf: bool = False, **extra
 
 
 def _system(*, safeguarded: bool):
-    """Just the attributes `visibility_step_up_required` and the query read.
+    """Just the attributes the exposure query reads.
 
-    The import holds a public raise on the category being ARMED, not on a grace
-    window - it can neither step up nor stage - so the flag that matters here is
-    `safety_applies_to_profile_visibility`. The grace value is carried along for
-    realism but the hold no longer consults it.
+    The import holds a public raise whenever it would actually publish somebody,
+    full stop: it can neither step up nor stage, and the safety category is
+    itself importable, so keying the hold on either would be keying it on
+    something the file controls. Both safety attributes are carried here for
+    realism, and the tests below prove the hold ignores them.
     """
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -291,7 +292,14 @@ async def test_update_applies_privacy_raise_when_no_grant_points_at_them():
     assert res.privacy_held_member_id is None
 
 
-async def test_update_applies_privacy_raise_when_safety_is_not_armed():
+async def test_update_holds_the_raise_even_with_the_category_disarmed():
+    """The hold does not consult `safety_applies_to_profile_visibility`.
+
+    Two reasons, either sufficient: an import can never step up whatever the
+    category says, and the category flag rides in the SAME payload - a file
+    that turns it off in its `safety` block and publishes a member in its
+    `members` block would otherwise walk straight through its own gate.
+    """
     existing = _m("ren", privacy=PrivacyLevel.PRIVATE)
     db = _StubSession(rows=[object()])
     res = await _update(
@@ -300,9 +308,9 @@ async def test_update_applies_privacy_raise_when_safety_is_not_armed():
         db=db,
         system=_system(safeguarded=False),
     )
-    assert existing.privacy == PrivacyLevel.PUBLIC
-    assert res.privacy_held_member_id is None
-    assert db.queries == 0  # short-circuits before the query
+    assert existing.privacy == PrivacyLevel.PRIVATE
+    assert res.privacy_held_member_id == existing.id
+    assert db.refreshes == 1  # locked FOR UPDATE regardless of the category
 
 
 async def test_update_never_gates_lowering():

@@ -1790,6 +1790,66 @@ def test_the_page_returns_when_the_account_does():
     owner.close()
 
 
+def _block_publishing(system_id: str) -> None:
+    """Latch the operator takedown flag with the grants left alone.
+
+    The admin revoke-all lever sets this AND revokes everything, so it cannot
+    produce the state under test: a system that is latched shut while a grant
+    is still live behind it. That is the race the resolver gate exists for - a
+    grant whose creation landed either side of the takedown - so it is set
+    straight in the database here.
+    """
+
+    async def _work(db) -> None:
+        from sheaf.models.system import System
+
+        system = await db.get(System, uuid.UUID(system_id))
+        assert system is not None
+        system.publishing_blocked = True
+
+    _in_db(_work)
+
+
+@pytest.mark.public_profiles
+def test_publishing_blocked_suppresses_a_grant_that_outlived_the_takedown():
+    """The latch has to bite at the resolver, not only where grants are made.
+
+    `create_grant` and the master-switch raise both refuse while it is set, but
+    a refusal at the door only covers what walks in afterwards. A grant that was
+    already serving when the latch went on must go dark, not keep serving a page
+    an operator has taken down."""
+    owner = _register()
+    system_id, token, _ = _both_grant_urls(owner)
+
+    anon = _anon()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    assert anon.get(f"/v1/public/shared/{token}").status_code == 200
+
+    _block_publishing(system_id)
+
+    for path in (f"/v1/public/systems/{system_id}", f"/v1/public/shared/{token}"):
+        r = anon.get(path)
+        assert r.status_code == 404
+        # The same uniform 404 as every other refusal here: an anonymous
+        # visitor learns nothing about a moderation action against a stranger.
+        assert r.json()["detail"] == "Not found"
+
+    for suffix in ("/members", "/fronting", "/relationships", "/groups"):
+        assert (
+            anon.get(f"/v1/public/systems/{system_id}{suffix}").status_code == 404
+        )
+
+    # The owner IS told, because they already see the flag on their own system
+    # read and would otherwise spend a week debugging their own grants.
+    assert owner.get("/v1/systems/me").json()["publishing_blocked"] is True
+    audit = owner.get("/v1/sharing/audit").json()
+    assert audit["profile_suppressed"] == "publishing_blocked"
+    # Suppression, not revocation: both grants (public and link) are still
+    # listed underneath, untouched.
+    assert len(audit["entries"]) == 2
+    owner.close()
+
+
 # ---------------------------------------------------------------------------
 # Archived and deletion-queued members leave the surface immediately
 # ---------------------------------------------------------------------------
@@ -2237,6 +2297,21 @@ def test_public_media_404s_after_system_set_private():
     assert _anon().get(media_path).status_code == 200
 
     assert owner.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
+    assert _anon().get(media_path).status_code == 404
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_public_media_404s_after_publishing_is_blocked():
+    """The media re-check composes `profile_serving_clause`, so it picked up
+    the takedown latch with no change of its own - pinned here so a future
+    refactor of that route cannot quietly drop the gate."""
+    owner = _register()
+    system_id, _, media_path = _published_member_with_avatar(owner)
+    assert _anon().get(media_path).status_code == 200
+
+    _block_publishing(system_id)
+
     assert _anon().get(media_path).status_code == 404
     owner.close()
 

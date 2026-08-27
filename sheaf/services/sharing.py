@@ -991,7 +991,7 @@ def profile_serving_clause():
     reason the owner is shown can never disagree. Requires a join to `System`
     and `User`.
 
-    Two gates:
+    Three gates:
 
     - `System.privacy == public`. The system-level privacy selector is now a
       real master ceiling over the entire public surface, not a label on a
@@ -1001,6 +1001,17 @@ def profile_serving_clause():
       grant that exists today is PUBLIC-tier, so `friends` suppresses exactly
       like `private` until the parked friends tier lands and this becomes
       audience-aware alongside `share_projection._active_member_filter`.
+
+    - `System.publishing_blocked` is False. The operator takedown latch is
+      checked here, at the resolver, and not only at create time. `create_grant`
+      and the master-switch raise both refuse while it is set, but a refusal at
+      the door only covers what walks in afterwards: a grant whose creation
+      raced the takedown - or any grant that was already live when the latch
+      went on and somehow survived the revoke sweep - would otherwise keep
+      serving a page an operator has taken down. A latch that means "this system
+      publishes nothing" has to be asked on the way out as well as on the way
+      in. Unlike the two below it this one is not the owner's to lift; only the
+      sibling admin unblock action clears it.
 
     - the owning account is in good standing. Suspended, banned, and
       pending-deletion accounts all serve nobody.
@@ -1027,6 +1038,7 @@ def profile_serving_clause():
     )
     return (
         (System.privacy == PrivacyLevel.PUBLIC)
+        & System.publishing_blocked.is_(False)
         & (
             User.account_status.not_in(_SUPPRESSING_ACCOUNT_STATES)
             | (
@@ -1049,9 +1061,16 @@ def suppression_reason(system: System, user: User) -> str | None:
     private" - which they can fix in one click and would otherwise spend an
     afternoon debugging - and "this is about your account", which they cannot.
 
-    System privacy is reported first when both apply, because it is the one the
-    owner can act on.
+    `publishing_blocked` is reported first when more than one applies, and it is
+    the exception to the "never name the state" rule above: the owner already
+    sees the latch on their own system read, the sharing screen already carries
+    a card for it, and it is the only reason here that flipping their own
+    settings cannot clear - so pointing them at the privacy switch instead would
+    send them to a control that just 403s. System privacy comes next, ahead of
+    the account states, because it is the one they can act on.
     """
+    if system.publishing_blocked:
+        return "publishing_blocked"
     if system.privacy != PrivacyLevel.PUBLIC:
         return "system_private"
     if user.account_status == AccountStatus.SUSPENDED:
