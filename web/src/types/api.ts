@@ -382,6 +382,12 @@ export interface GroupCreate {
   color?: string | null;
   parent_id?: string | null;
   privacy?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them. Creating a group already public is the same exposure as raising an
+   *  existing one, so it goes through the same door - otherwise "delete it and
+   *  add it back public" would be the way around the slower one. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface GroupUpdate {
@@ -1131,6 +1137,11 @@ export interface RelationshipEdgeCreate {
    *  is one question, so it gets one vocabulary rather than a parallel set of
    *  words that can drift apart. Private unless said otherwise. */
   visibility?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them. Creating an edge straight to public is the same exposure as raising
+   *  an existing one, and runs the same gate. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface RelationshipEdge {

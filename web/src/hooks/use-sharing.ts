@@ -39,8 +39,15 @@ export function useCreateShareView() {
 export function useUpdateShareView() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: ShareViewUpdate }) =>
-      api.updateShareView(id, data),
+    mutationFn: ({
+      id,
+      data,
+      skipErrorToast = false,
+    }: {
+      id: string;
+      data: ShareViewUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateShareView(id, data, skipErrorToast),
     onSuccess: () => invalidateAll(qc),
   });
 }
@@ -61,8 +68,17 @@ export function useDeleteShareView() {
 export function useAddViewMember() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ viewId, memberId, reauth }: { viewId: string; memberId: string; reauth?: { password?: string; totp_code?: string } }) =>
-      api.addViewMember(viewId, memberId, reauth),
+    mutationFn: ({
+      viewId,
+      memberId,
+      reauth,
+      skipErrorToast = false,
+    }: {
+      viewId: string;
+      memberId: string;
+      reauth?: { password?: string; totp_code?: string };
+      skipErrorToast?: boolean;
+    }) => api.addViewMember(viewId, memberId, reauth, skipErrorToast),
     onSuccess: () => invalidateAll(qc),
   });
 }
@@ -79,8 +95,17 @@ export function useRemoveViewMember() {
 export function useAddViewGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ viewId, groupId, reauth }: { viewId: string; groupId: string; reauth?: { password?: string; totp_code?: string } }) =>
-      api.addViewGroup(viewId, groupId, reauth),
+    mutationFn: ({
+      viewId,
+      groupId,
+      reauth,
+      skipErrorToast = false,
+    }: {
+      viewId: string;
+      groupId: string;
+      reauth?: { password?: string; totp_code?: string };
+      skipErrorToast?: boolean;
+    }) => api.addViewGroup(viewId, groupId, reauth, skipErrorToast),
     onSuccess: (res) => {
       invalidateAll(qc);
       const skips: string[] = [];
@@ -108,8 +133,17 @@ export function useRemoveViewGroup() {
 export function useAddViewField() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ viewId, fieldId, reauth }: { viewId: string; fieldId: string; reauth?: { password?: string; totp_code?: string } }) =>
-      api.addViewField(viewId, fieldId, reauth),
+    mutationFn: ({
+      viewId,
+      fieldId,
+      reauth,
+      skipErrorToast = false,
+    }: {
+      viewId: string;
+      fieldId: string;
+      reauth?: { password?: string; totp_code?: string };
+      skipErrorToast?: boolean;
+    }) => api.addViewField(viewId, fieldId, reauth, skipErrorToast),
     onSuccess: () => invalidateAll(qc),
   });
 }

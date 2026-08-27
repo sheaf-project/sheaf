@@ -28,7 +28,11 @@ import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { useGroups } from "@/hooks/use-groups";
 import { useCustomFields } from "@/hooks/use-custom-fields";
 import { useAuth } from "@/hooks/use-auth";
-import { apiErrorMessage } from "@/lib/api-errors";
+import {
+  apiErrorMessage,
+  isStepUpRequiredError,
+  showApiErrorToast,
+} from "@/lib/api-errors";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 import type {
@@ -191,10 +195,36 @@ function PublishingBlockedCard() {
   );
 }
 
-// Re-auth context shared by every exposing action on the page.
+/**
+ * Re-auth context shared by every exposing action on the page.
+ *
+ * Two separate questions, kept apart because the server keeps them apart. They
+ * used to be one boolean here, and because that boolean also demanded a grace
+ * period, the default setup - category armed, grace at 0, a password tier -
+ * showed no credential field, sent no credentials, and collected a 400
+ * "Password required" with nowhere to type it.
+ */
 interface SafetyContext {
-  safeguarded: boolean;
+  /** The profile_visibility safety category is armed, so an action that
+   *  actually reaches a reader has to clear re-auth first. Independent of the
+   *  grace period, exactly as `visibility_step_up_required` is server-side: a
+   *  re-authed raise that applies at once is still a real protection. Drives
+   *  whether a credential field is shown, never the copy. */
+  stepUp: boolean;
+  /** ...and there is a window for the change to wait out, so it parks pending
+   *  instead of going live. Mirrors `visibility_grace_days() > 0`, which reads
+   *  as 0 whenever the category is disarmed. Drives the copy, never a field. */
+  staged: boolean;
   tier: DeleteConfirmation;
+}
+
+/** The sentence every "you are about to expose something" dialog ends on.
+ *  Promising a grace period that is not configured would be a lie about the
+ *  one thing the owner is being asked to weigh. */
+function effectSentence(safety: SafetyContext): string {
+  return safety.staged
+    ? "It takes effect after your grace period."
+    : "It takes effect immediately.";
 }
 
 /** Every view flag that shows MORE when it is turned on, in one list (the
@@ -252,8 +282,13 @@ function SharingManager() {
 
   const safetyCtx: SafetyContext = useMemo(() => {
     const s = safety?.settings;
+    // The category being armed is the whole of the step-up question; the grace
+    // period is the whole of the staging question, and only counts while the
+    // category is armed (a window over a disarmed category stages nothing).
+    const armed = !!s && s.applies_to_profile_visibility;
     return {
-      safeguarded: !!s && s.grace_period_days > 0 && s.applies_to_profile_visibility,
+      stepUp: armed,
+      staged: armed && (s?.grace_period_days ?? 0) > 0,
       tier: s?.auth_tier ?? "none",
     };
   }, [safety]);
@@ -817,15 +852,31 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
    *  so the page never invites a click it knows will fail. */
   const lockedOn = (checked: boolean) => off && !checked;
 
-  // Turning an option ON while the view is shared is a loosening; when safety
-  // is armed it needs re-auth. Turning off is always immediate.
+  // Turning an option ON while the view is shared is a loosening; when the
+  // safety category is armed it needs re-auth, whether or not a grace period
+  // then stages it. Turning off is always immediate.
   function change(field: ExposureFlag, value: boolean) {
     const loosening = value && view.is_shared;
-    if (loosening && safety.safeguarded && safety.tier !== "none") {
+    if (loosening && safety.stepUp && safety.tier !== "none") {
       setReauth({ field, value });
       return;
     }
-    update.mutate({ id: view.id, data: { [field]: value } });
+    // Sent bare, and re-prompted if the server asks for credentials anyway.
+    // The gate above is a mirror of the server's own predicate, and a mirror
+    // can drift; when it does, this is what keeps the bounce from being a dead
+    // end with no field to type a password into.
+    update.mutate(
+      { id: view.id, data: { [field]: value }, skipErrorToast: true },
+      {
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setReauth({ field, value });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't update this view.", { force: true });
+        },
+      },
+    );
   }
 
   /** Member permalinks bypass `change()` on purpose: nothing is exposed that
@@ -928,7 +979,7 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           open
           onOpenChange={(o) => !o && setReauth(null)}
           title="Confirm change"
-          description="This exposes more on an already-shared view, so it waits out the grace period and needs confirmation."
+          description={`This exposes more on an already-shared view, so it needs confirmation. ${effectSentence(safety)}`}
           tier={safety.tier}
           actionLabel="Confirm"
           actionLabelLoading="Saving..."
@@ -990,11 +1041,26 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
   }
 
   function onPick(memberId: string) {
-    if (view.is_shared && safety.safeguarded && safety.tier !== "none") {
+    if (view.is_shared && safety.stepUp && safety.tier !== "none") {
       setPendingAdd(memberId);
-    } else {
-      doAdd(memberId);
+      return;
     }
+    // Bare first, re-prompt if the server disagrees about whether this needed
+    // credentials - see the same fallback on the exposure flags above.
+    addMember.mutate(
+      { viewId: view.id, memberId, skipErrorToast: true },
+      {
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setPendingAdd(memberId);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't add that member to the view.", {
+            force: true,
+          });
+        },
+      },
+    );
   }
 
   function doAddGroup(groupId: string, reauth?: DestructiveConfirm) {
@@ -1004,11 +1070,24 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
   // Same gate as adding a member one at a time: a group add on a shared view
   // exposes people, so it needs the step-up rather than a bounced request.
   function onPickGroup(groupId: string) {
-    if (view.is_shared && safety.safeguarded && safety.tier !== "none") {
+    if (view.is_shared && safety.stepUp && safety.tier !== "none") {
       setPendingGroupAdd(groupId);
-    } else {
-      doAddGroup(groupId);
+      return;
     }
+    addGroup.mutate(
+      { viewId: view.id, groupId, skipErrorToast: true },
+      {
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setPendingGroupAdd(groupId);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't add that group to the view.", {
+            force: true,
+          });
+        },
+      },
+    );
   }
 
   return (
@@ -1132,7 +1211,7 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
           open
           onOpenChange={(o) => !o && setPendingAdd(null)}
           title="Add member to a shared view"
-          description="This view is already published, so adding a member exposes them after the grace period. Confirm to continue."
+          description={`This view is already published, so adding a member exposes them. ${effectSentence(safety)} Confirm to continue.`}
           tier={safety.tier}
           actionLabel="Add"
           actionLabelLoading="Adding..."
@@ -1148,7 +1227,7 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
           open
           onOpenChange={(o) => !o && setPendingGroupAdd(null)}
           title="Add a group to a shared view"
-          description="This view is already published, so adding this group's current members exposes them after the grace period. Confirm to continue."
+          description={`This view is already published, so adding this group's current members exposes them. ${effectSentence(safety)} Confirm to continue.`}
           tier={safety.tier}
           actionLabel="Add"
           actionLabelLoading="Adding..."
@@ -1261,11 +1340,24 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
   }
 
   function onPick(fieldId: string) {
-    if (view.is_shared && safety.safeguarded && safety.tier !== "none") {
+    if (view.is_shared && safety.stepUp && safety.tier !== "none") {
       setPendingAdd(fieldId);
-    } else {
-      doAdd(fieldId);
+      return;
     }
+    addField.mutate(
+      { viewId: view.id, fieldId, skipErrorToast: true },
+      {
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setPendingAdd(fieldId);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't add that field to the view.", {
+            force: true,
+          });
+        },
+      },
+    );
   }
 
   if ((fields ?? []).length === 0) return null;
@@ -1340,7 +1432,7 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
           open
           onOpenChange={(o) => !o && setPendingAdd(null)}
           title="Expose a field on a shared view"
-          description="This view is already published, so exposing a field takes effect after the grace period. Confirm to continue."
+          description={`This view is already published, so exposing a field shows its value on everyone the view shows. ${effectSentence(safety)} Confirm to continue.`}
           tier={safety.tier}
           actionLabel="Expose"
           actionLabelLoading="Adding..."
@@ -1416,6 +1508,10 @@ function PublishSection({
   // can fix (system privacy still private), and the auto-toast flattens a 400
   // to "Invalid request." Keep the server's own wording in the dialog.
   const [publishError, setPublishError] = useState<string | null>(null);
+  // Set when the server bounces a publish asking for credentials the dialog did
+  // not offer. The client's own gate mirrors the server's; if the mirror ever
+  // drifts, this is what turns a dead end into a second attempt.
+  const [publishStepUp, setPublishStepUp] = useState(false);
   const [tokenShown, setTokenShown] = useState<ShareGrantCreated | null>(null);
   const [confirmRotate, setConfirmRotate] = useState<ShareGrant | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<ShareGrant | null>(null);
@@ -1425,6 +1521,7 @@ function PublishSection({
 
   function beginPublish(kind: "public" | "link") {
     setPublishError(null);
+    setPublishStepUp(false);
     setPublishing(kind);
   }
 
@@ -1526,8 +1623,10 @@ function PublishSection({
           kind={publishing}
           needsAttestation={!!user && user.adult_attested_at === null}
           safety={safety}
+          demanded={publishStepUp}
           onCancel={() => {
             setPublishError(null);
+            setPublishStepUp(false);
             setPublishing(null);
           }}
           busy={attest.isPending || createGrant.isPending}
@@ -1552,6 +1651,10 @@ function PublishSection({
                 // The dialog stays open so the owner can act on this without
                 // rebuilding their input - the re-auth failure path too.
                 onError: (err) => {
+                  // A bounce asking for credentials is the one failure the
+                  // dialog can fix itself: turn the fields on and let the owner
+                  // try again in place.
+                  if (isStepUpRequiredError(err)) setPublishStepUp(true);
                   // preferDetail: publishing fails for reasons written for the
                   // owner about their own settings, and the generic summary for
                   // a 400 ("Invalid request.") throws away the one sentence
@@ -1654,6 +1757,7 @@ function PublishDialog({
   kind,
   needsAttestation,
   safety,
+  demanded,
   onConfirm,
   onCancel,
   busy,
@@ -1662,6 +1766,9 @@ function PublishDialog({
   kind: "public" | "link";
   needsAttestation: boolean;
   safety: SafetyContext;
+  /** The server bounced a publish asking for step-up credentials this dialog
+   *  did not think were needed. Shows the fields regardless of `safety`. */
+  demanded: boolean;
   onConfirm: (creds: { password?: string; totp_code?: string }) => void;
   onCancel: () => void;
   busy: boolean;
@@ -1672,12 +1779,21 @@ function PublishDialog({
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
 
+  // `stepUp`, not `staged`: publishing re-auths whenever the category is armed,
+  // whether or not a grace window then holds the grant back. `demanded` is the
+  // belt-and-braces half - if the server asks for a credential this dialog did
+  // not offer, the field appears rather than the owner being left reading
+  // "Password required" with nowhere to type one.
+  const armed = safety.stepUp || demanded;
+  // Same TOTP-not-enrolled fallback the shared DestructiveConfirmDialog makes,
+  // for the same reason and against the same server-side fail-safe.
+  const totpByTier = safety.tier === "totp" || safety.tier === "both";
+  const needsTotp = armed && totpByTier && !!user?.totp_enabled;
   const needsPassword =
-    safety.safeguarded && (safety.tier === "password" || safety.tier === "both");
-  const needsTotp =
-    safety.safeguarded &&
-    (safety.tier === "totp" || safety.tier === "both") &&
-    !!user?.totp_enabled;
+    armed &&
+    (safety.tier === "password" ||
+      safety.tier === "both" ||
+      (totpByTier && !user?.totp_enabled));
 
   const disabled =
     busy ||
@@ -1696,7 +1812,7 @@ function PublishDialog({
             {kind === "public"
               ? "This view becomes reachable to anyone with your system link."
               : "This creates an opaque, revocable link to this view."}
-            {safety.safeguarded && " It takes effect after your grace period."}
+            {safety.staged && " It takes effect after your grace period."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">

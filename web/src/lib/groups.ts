@@ -16,10 +16,14 @@ export function getGroup(id: string) {
   return apiFetch<Group>(`/v1/groups/${id}`);
 }
 
-export function createGroup(data: GroupCreate) {
+/** Creating a group already public runs the same step-up gate a raise does,
+ *  so it can come back with the same 400 - hence the same `skipErrorToast`
+ *  escape the update below takes. */
+export function createGroup(data: GroupCreate, skipErrorToast = false) {
   return apiFetch<Group>("/v1/groups", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 

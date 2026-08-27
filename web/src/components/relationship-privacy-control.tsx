@@ -16,8 +16,7 @@ import {
   useUpdateGroupRelationship,
   useUpdateMemberRelationship,
 } from "@/hooks/use-relationships";
-import { ApiError } from "@/lib/api-error";
-import { showApiErrorToast } from "@/lib/api-errors";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import {
   EDGE_VISIBILITY_HELP,
   EDGE_VISIBILITY_LEVELS,
@@ -138,12 +137,7 @@ export function RelationshipPrivacyControl({
       { edgeId: edge.id, data: { visibility: next }, skipErrorToast: true },
       {
         onError: (err) => {
-          if (
-            err instanceof ApiError &&
-            err.status === 400 &&
-            (err.detail === "Password required" ||
-              err.detail === "TOTP code required")
-          ) {
+          if (isStepUpRequiredError(err)) {
             setPendingRaise({
               visibility: next,
               tier:
@@ -214,7 +208,7 @@ export function RelationshipPrivacyControl({
       open={!!pendingRaise}
       onOpenChange={(open) => !open && setPendingRaise(null)}
       title="Confirm public visibility change"
-      description="Publishing this relationship can reveal it through an existing public profile or share link. Confirm now; it takes effect after your System Safety grace period."
+      description="Publishing this relationship can reveal it through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
       tier={pendingRaise?.tier ?? "none"}
       actionLabel="Confirm change"
       actionLabelLoading="Saving..."

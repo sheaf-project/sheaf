@@ -51,7 +51,13 @@ export function useAllGroupMembers(): Map<string, Set<string>> {
 export function useCreateGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: GroupCreate) => api.createGroup(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: GroupCreate;
+      skipErrorToast?: boolean;
+    }) => api.createGroup(data, skipErrorToast),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: groupKeys.all });
       toast.success("Group created");

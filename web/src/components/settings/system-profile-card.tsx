@@ -22,8 +22,7 @@ import {
 import { useTimezone } from "@/hooks/use-timezone";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { dateFormatLabels } from "@/lib/date-format";
-import { ApiError } from "@/lib/api-error";
-import { showApiErrorToast } from "@/lib/api-errors";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import type {
   DateFormat,
@@ -64,12 +63,7 @@ export function SystemProfileCard() {
       { data, skipErrorToast: true },
       {
         onError: (err) => {
-          if (
-            err instanceof ApiError &&
-            err.status === 400 &&
-            (err.detail === "Password required" ||
-              err.detail === "TOTP code required")
-          ) {
+          if (isStepUpRequiredError(err)) {
             setPendingRaise(data);
             return;
           }
