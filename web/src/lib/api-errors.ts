@@ -65,6 +65,29 @@ export function apiErrorMessage(
 }
 
 /**
+ * True when the server bounced this write asking for step-up credentials.
+ *
+ * Every exposing write (raising privacy, publishing a view, adding someone to
+ * an already-shared view, creating something straight to public) answers a
+ * missing password or TOTP code with a 400 carrying one of exactly these two
+ * details. Callers send the write bare first and re-prompt on this, so the
+ * common case stays one click and the dialog only appears when it is genuinely
+ * a step-up.
+ *
+ * Named once because every surface that can be bounced has to agree on the
+ * test: the client's own "will this need re-auth?" predicates are a mirror of
+ * the server's and a mirror can drift, at which point this is the only thing
+ * standing between the owner and a dead end with nowhere to type.
+ */
+export function isStepUpRequiredError(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 400 &&
+    (err.detail === "Password required" || err.detail === "TOTP code required")
+  );
+}
+
+/**
  * Toast an error with technical detail iff the user has opted in.
  *
  * Designed for two callsite shapes:

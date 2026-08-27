@@ -22,8 +22,7 @@ import {
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
-import { ApiError } from "@/lib/api-error";
-import { showApiErrorToast } from "@/lib/api-errors";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { cn } from "@/lib/utils";
 import { Plus, X } from "lucide-react";
 import type {
@@ -101,12 +100,7 @@ function FieldPrivacyControl({
       { id: field.id, data: { privacy: next }, skipErrorToast: true },
       {
         onError: (err) => {
-          if (
-            err instanceof ApiError &&
-            err.status === 400 &&
-            (err.detail === "Password required" ||
-              err.detail === "TOTP code required")
-          ) {
+          if (isStepUpRequiredError(err)) {
             setPendingRaise({
               privacy: next,
               tier:
@@ -159,7 +153,7 @@ function FieldPrivacyControl({
         open={!!pendingRaise}
         onOpenChange={(open) => !open && setPendingRaise(null)}
         title="Confirm public visibility change"
-        description="Publishing this field can reveal its value for every member shown through an existing public profile or share link. Confirm now; it takes effect after your System Safety grace period."
+        description="Publishing this field can reveal its value for every member shown through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
         tier={pendingRaise?.tier ?? "none"}
         actionLabel="Confirm change"
         actionLabelLoading="Saving..."

@@ -43,10 +43,17 @@ export function listMemberRelationships(memberId: string) {
   );
 }
 
-export function createMemberRelationship(data: RelationshipEdgeCreate) {
+/** Creating an edge straight to `public` runs the same step-up gate raising an
+ *  existing one does, so it can come back with the same 400 asking for
+ *  credentials - hence the same `skipErrorToast` escape the PATCH takes. */
+export function createMemberRelationship(
+  data: RelationshipEdgeCreate,
+  skipErrorToast = false,
+) {
   return apiFetch<RelationshipEdge>("/v1/member-relationships", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
@@ -80,10 +87,16 @@ export function listGroupRelationships(groupId: string) {
   );
 }
 
-export function createGroupRelationship(data: RelationshipEdgeCreate) {
+/** The group twin. Never gated server-side (no share view reaches a group
+ *  edge), but it takes the same option so both scopes call the same shape. */
+export function createGroupRelationship(
+  data: RelationshipEdgeCreate,
+  skipErrorToast = false,
+) {
   return apiFetch<RelationshipEdge>("/v1/group-relationships", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 

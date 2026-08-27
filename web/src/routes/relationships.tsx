@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ColorDot } from "@/components/color-dot";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -39,13 +41,18 @@ import {
   EditTypeDialog,
   RelationshipTypeDialog,
 } from "@/components/relationship-type-dialog";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { summariseType } from "@/lib/relationship-types";
 import type { GraphEdge } from "@/lib/relationship-graph";
 import {
   EDGE_VISIBILITY_HELP,
   EDGE_VISIBILITY_LEVELS,
 } from "@/lib/relationship-privacy";
+import { getSystemSafety } from "@/lib/system-safety";
+import { getMySystem } from "@/lib/systems";
 import type {
+  DeleteConfirmation,
+  DestructiveConfirm,
   PrivacyLevel,
   RelationshipEdgeCreate,
   RelationshipGraph,
@@ -353,6 +360,22 @@ function AddEdgeDialog({
   // Private until said otherwise, same as the per-member editor.
   const [visibility, setVisibility] = useState<PrivacyLevel>("private");
   const [showNewType, setShowNewType] = useState(false);
+  // The bounced add, held so the step-up dialog can retry the exact same edge
+  // with credentials attached rather than rebuilding it from the form.
+  const [stepUp, setStepUp] = useState<RelationshipEdgeCreate | null>(null);
+
+  // Read only to pick the re-auth tier for a gated add; both are cached queries
+  // the rest of the app already keeps warm.
+  const { data: safety } = useQuery({
+    queryKey: ["system-safety"],
+    queryFn: getSystemSafety,
+  });
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
+  const stepUpTier: DeleteConfirmation =
+    safety?.settings.auth_tier ?? system?.delete_confirmation ?? "password";
 
   const type = types?.find((t) => t.id === typeId);
   const symmetry = type?.symmetry;
@@ -366,8 +389,9 @@ function AddEdgeDialog({
     setMutual(false);
   }
 
-  function submit() {
-    if (!type) return;
+  /** The edge the form currently describes, or null while it is incomplete. */
+  function buildPayload(): RelationshipEdgeCreate | null {
+    if (!type) return null;
     let payload: RelationshipEdgeCreate;
     if (symmetry === "symmetric") {
       payload = { source_id: source.id, target_id: target.id, relationship_type_id: type.id };
@@ -378,7 +402,33 @@ function AddEdgeDialog({
     } else {
       payload = { source_id: target.id, target_id: source.id, relationship_type_id: type.id };
     }
-    create.mutate({ ...payload, visibility }, { onSuccess: onClose });
+    return { ...payload, visibility };
+  }
+
+  /** Add the edge.
+   *
+   * Sent without credentials first, exactly as the per-edge privacy select
+   * does: an edge born `public` is the same exposure as raising an existing one
+   * to public, and the server answers it with the same 400 asking for step-up.
+   */
+  function submit() {
+    const payload = buildPayload();
+    if (!payload) return;
+    create.mutate(
+      { data: payload, skipErrorToast: true },
+      {
+        onSuccess: onClose,
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setStepUp(payload);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't add this relationship.", {
+            force: true,
+          });
+        },
+      },
+    );
   }
 
   return (
@@ -475,6 +525,31 @@ function AddEdgeDialog({
           onCreated={(created) => onTypeChange(created.id)}
         />
       )}
+      {/* Step-up for a new edge the server would not accept as public without
+          re-auth. Same prompt, same words as raising an existing edge, because
+          it is the same exposure. */}
+      <DestructiveConfirmDialog
+        open={!!stepUp}
+        onOpenChange={(open) => !open && setStepUp(null)}
+        title="Confirm public visibility change"
+        description="Publishing this relationship can reveal it through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
+        tier={stepUpTier}
+        actionLabel="Confirm change"
+        actionLabelLoading="Adding..."
+        loading={create.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!stepUp) return;
+          create.mutate(
+            { data: { ...stepUp, ...confirm } },
+            {
+              onSuccess: () => {
+                setStepUp(null);
+                onClose();
+              },
+            },
+          );
+        }}
+      />
     </Dialog>
   );
 }

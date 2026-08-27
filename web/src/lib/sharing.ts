@@ -38,10 +38,19 @@ export function createShareView(data: ShareViewCreate) {
   });
 }
 
-export function updateShareView(id: string, data: ShareViewUpdate) {
+/** Turning an exposure flag ON while the view is already shared is answered
+ *  with a 400 asking for step-up credentials, so callers pass `skipErrorToast`
+ *  and re-prompt instead of firing a toast at something the user can still
+ *  complete. Tightening is never gated. */
+export function updateShareView(
+  id: string,
+  data: ShareViewUpdate,
+  skipErrorToast = false,
+) {
   return apiFetch<ShareView>(`/v1/share-views/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
@@ -51,10 +60,18 @@ export function deleteShareView(id: string) {
 
 // --- View contents ---
 
-export function addViewMember(viewId: string, memberId: string, reauth?: { password?: string; totp_code?: string }) {
+/** Adding to an already-shared view exposes somebody, so it can come back as
+ *  the same step-up 400 an exposure flag does - hence `skipErrorToast`. */
+export function addViewMember(
+  viewId: string,
+  memberId: string,
+  reauth?: { password?: string; totp_code?: string },
+  skipErrorToast = false,
+) {
   return apiFetch<ShareView>(`/v1/share-views/${viewId}/members`, {
     method: "POST",
     body: JSON.stringify({ member_id: memberId, ...reauth }),
+    skipErrorToast,
   });
 }
 
@@ -64,10 +81,16 @@ export function removeViewMember(viewId: string, memberId: string) {
   });
 }
 
-export function addViewGroup(viewId: string, groupId: string, reauth?: { password?: string; totp_code?: string }) {
+export function addViewGroup(
+  viewId: string,
+  groupId: string,
+  reauth?: { password?: string; totp_code?: string },
+  skipErrorToast = false,
+) {
   return apiFetch<ShareViewGroupAddResult>(`/v1/share-views/${viewId}/groups`, {
     method: "POST",
     body: JSON.stringify({ group_id: groupId, ...reauth }),
+    skipErrorToast,
   });
 }
 
@@ -78,10 +101,16 @@ export function removeViewGroup(viewId: string, groupId: string, removeMembers =
   );
 }
 
-export function addViewField(viewId: string, fieldId: string, reauth?: { password?: string; totp_code?: string }) {
+export function addViewField(
+  viewId: string,
+  fieldId: string,
+  reauth?: { password?: string; totp_code?: string },
+  skipErrorToast = false,
+) {
   return apiFetch<ShareView>(`/v1/share-views/${viewId}/fields`, {
     method: "POST",
     body: JSON.stringify({ field_id: fieldId, ...reauth }),
+    skipErrorToast,
   });
 }
 

@@ -35,8 +35,11 @@ import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialo
 import { RelationshipsEditor } from "@/components/relationships-editor";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { apiErrorMessage, showApiErrorToast } from "@/lib/api-errors";
-import { ApiError } from "@/lib/api-error";
+import {
+  apiErrorMessage,
+  isStepUpRequiredError,
+  showApiErrorToast,
+} from "@/lib/api-errors";
 
 const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
@@ -1259,12 +1262,7 @@ export function MembersPage() {
           setViewing(updated);
         },
         onError: (err) => {
-          if (
-            err instanceof ApiError &&
-            err.status === 400 &&
-            (err.detail === "Password required" ||
-              err.detail === "TOTP code required")
-          ) {
+          if (isStepUpRequiredError(err)) {
             setPendingExposureEdit({
               member,
               data,
@@ -1452,7 +1450,7 @@ export function MembersPage() {
         open={!!pendingExposureEdit}
         onOpenChange={(open) => !open && setPendingExposureEdit(null)}
         title="Confirm public visibility change"
-        description="This edit can reveal member information through an existing public profile or share link. Confirm now; when exposure is possible, it takes effect after your System Safety grace period."
+        description="This edit can reveal member information through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
         tier={pendingExposureEdit?.tier ?? "none"}
         actionLabel="Confirm change"
         actionLabelLoading="Saving..."

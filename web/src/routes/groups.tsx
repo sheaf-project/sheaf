@@ -11,8 +11,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { getMySystem } from "@/lib/systems";
 import { getSystemSafety } from "@/lib/system-safety";
-import { ApiError } from "@/lib/api-error";
-import { showApiErrorToast } from "@/lib/api-errors";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   buildGroupTree,
@@ -49,6 +48,7 @@ import type {
   DeleteConfirmation,
   DestructiveConfirm,
   Group,
+  GroupCreate,
   GroupUpdate,
   PrivacyLevel,
 } from "@/types/api";
@@ -165,12 +165,19 @@ export function GroupsPage() {
   // no matter what its members are set to.
   const [privacy, setPrivacy] = useState<PrivacyLevel>("private");
   // The bounced save, held so the step-up dialog can retry the exact same
-  // payload with credentials attached rather than reconstructing it.
-  const [stepUp, setStepUp] = useState<{
-    id: string;
-    data: GroupUpdate;
-    tier: DeleteConfirmation;
-  } | null>(null);
+  // payload with credentials attached rather than reconstructing it. Creating a
+  // group already public goes through the same server-side door as raising one,
+  // so both shapes land here and the dialog retries whichever it was holding.
+  const [stepUp, setStepUp] = useState<
+    | { kind: "create"; data: GroupCreate; tier: DeleteConfirmation }
+    | { kind: "update"; id: string; data: GroupUpdate; tier: DeleteConfirmation }
+    | null
+  >(null);
+
+  /** The tier to prompt at, which is the safety category's own setting when it
+   *  has one. Same fallback chain the other privacy surfaces use. */
+  const stepUpTier: DeleteConfirmation =
+    safety?.settings.auth_tier ?? system?.delete_confirmation ?? "password";
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -195,14 +202,35 @@ export function GroupsPage() {
     setPrivacy("private");
   }
 
+  /** Create the group.
+   *
+   * Sent without credentials first, exactly as the edit form is: a new group
+   * born public is the same exposure as raising an existing one, so the server
+   * answers it with the same 400 asking for step-up. Without this the "new
+   * group, privacy: Public" path would be a dead end, and worse, a way around
+   * the gate the edit form honours.
+   */
   function handleCreate(e: FormEvent) {
     e.preventDefault();
+    const data: GroupCreate = {
+      name,
+      color: color || null,
+      parent_id: parentId || null,
+      privacy,
+    };
     createGroup.mutate(
-      { name, color: color || null, parent_id: parentId || null, privacy },
+      { data, skipErrorToast: true },
       {
         onSuccess: () => {
           setShowCreate(false);
           resetForm();
+        },
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setStepUp({ kind: "create", data, tier: stepUpTier });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't create this group.", { force: true });
         },
       },
     );
@@ -230,20 +258,8 @@ export function GroupsPage() {
       {
         onSuccess: () => setEditing(null),
         onError: (err) => {
-          if (
-            err instanceof ApiError &&
-            err.status === 400 &&
-            (err.detail === "Password required" ||
-              err.detail === "TOTP code required")
-          ) {
-            setStepUp({
-              id,
-              data,
-              tier:
-                safety?.settings.auth_tier ??
-                system?.delete_confirmation ??
-                "password",
-            });
+          if (isStepUpRequiredError(err)) {
+            setStepUp({ kind: "update", id, data, tier: stepUpTier });
             return;
           }
           showApiErrorToast(err, "Couldn't update this group.", { force: true });
@@ -586,19 +602,38 @@ export function GroupsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Step-up for a privacy raise the server bounced. Retries the same
-          save with credentials attached; the raise is still staged after. */}
+      {/* Step-up for a public group the server bounced, whether it was a raise
+          on an existing one or a new one born public. Retries the same save
+          with credentials attached; with a grace period set it is still staged
+          after. */}
       <DestructiveConfirmDialog
         open={!!stepUp}
         onOpenChange={(open) => !open && setStepUp(null)}
         title="Confirm public visibility change"
-        description="Publishing this group can reveal it, and everyone shown in it, through an existing public profile or share link. Confirm now; it takes effect after your System Safety grace period."
+        description="Publishing this group can reveal it, and everyone shown in it, through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
         tier={stepUp?.tier ?? "none"}
         actionLabel="Confirm change"
         actionLabelLoading="Saving..."
-        loading={updateGroup.isPending}
+        loading={
+          stepUp?.kind === "create"
+            ? createGroup.isPending
+            : updateGroup.isPending
+        }
         onConfirm={(confirm?: DestructiveConfirm) => {
           if (!stepUp) return;
+          if (stepUp.kind === "create") {
+            createGroup.mutate(
+              { data: { ...stepUp.data, ...confirm } },
+              {
+                onSuccess: () => {
+                  setStepUp(null);
+                  setShowCreate(false);
+                  resetForm();
+                },
+              },
+            );
+            return;
+          }
           updateGroup.mutate(
             { id: stepUp.id, data: { ...stepUp.data, ...confirm } },
             {

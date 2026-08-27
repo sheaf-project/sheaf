@@ -82,8 +82,13 @@ export function useMemberRelationships(memberId: string | null) {
 export function useCreateMemberRelationship() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: RelationshipEdgeCreate) =>
-      api.createMemberRelationship(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: RelationshipEdgeCreate;
+      skipErrorToast?: boolean;
+    }) => api.createMemberRelationship(data, skipErrorToast),
     onSuccess: () => {
       invalidateEdges(qc);
       toast.success("Relationship added");
@@ -146,8 +151,13 @@ export function useGroupRelationships(groupId: string | null) {
 export function useCreateGroupRelationship() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: RelationshipEdgeCreate) =>
-      api.createGroupRelationship(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: RelationshipEdgeCreate;
+      skipErrorToast?: boolean;
+    }) => api.createGroupRelationship(data, skipErrorToast),
     onSuccess: () => {
       invalidateEdges(qc);
       toast.success("Relationship added");
