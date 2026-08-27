@@ -125,14 +125,20 @@ async def _resolve_system(
 
 
 def _require_roster(view: ShareView) -> None:
-    """404 the member surfaces when the view does not serve its roster.
+    """404 every surface that depends on the roster when the view withholds it.
 
-    Same no-oracle rule as fronting and relationships, and worth spelling out:
-    turning `include_members` off makes the roster UNADDRESSABLE, not empty.
-    An empty list would answer "does this profile have members?" for anyone
-    who asked, which is a fact about the system and not one the owner chose to
-    publish. The curation itself is untouched and comes straight back when the
-    flag does.
+    Same no-oracle rule as fronting, and worth spelling out: turning
+    `include_members` off makes the roster UNADDRESSABLE, not empty. An empty
+    list would answer "does this profile have members?" for anyone who asked,
+    which is a fact about the system and not one the owner chose to publish.
+    The curation itself is untouched and comes straight back when the flag
+    does.
+
+    "Depends on the roster" covers the member routes and the relationships
+    route, because an edge only projects when this view publishes both of its
+    endpoints in full (see `share_projection.projectable_relationships`). Any
+    future surface that composes out of the member list belongs here too - the
+    rule is one call, not one per endpoint's memory of it.
     """
     if not view.include_members:
         raise _not_found()
@@ -272,6 +278,13 @@ async def public_system_relationships(
     # cannot be answered separately from "is this profile public?".
     if not view.include_relationships:
         raise _not_found()
+    # The roster gates edges as well (see `projectable_relationships`: an edge
+    # needs two endpoints this view publishes in full, so with the roster off
+    # nothing can ever clear the bar). Serving the empty list that would come
+    # back answered "is the roster off?" for anyone who asked - the exact
+    # question `_require_roster` exists to refuse - so this surface holds the
+    # same line the members, groups and fronting ones do.
+    _require_roster(view)
     return await project_relationships(db, view)
 
 
@@ -378,6 +391,9 @@ async def public_shared_relationships(
     view, _ = await _resolve_link(token, db)
     if not view.include_relationships:
         raise _not_found()
+    # Roster off means no edge could project either - 404, not an empty list.
+    # See the public-grant twin for why.
+    _require_roster(view)
     return await project_relationships(db, view)
 
 

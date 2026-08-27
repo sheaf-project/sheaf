@@ -96,6 +96,7 @@ from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
@@ -1341,6 +1342,7 @@ async def run_import(
         # otherwise trip the UNIQUE constraint, a hard error rather than
         # a preference. Pre-seeded with the system's existing pairs.
         value_guard = await load_field_value_guard(db, system.id)
+        oversized_values = 0
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
             field_def = old_field_to_def.get(old_fid)
@@ -1353,14 +1355,25 @@ async def run_import(
                     continue
                 if not value_guard.add((field_def.id, member.id)):
                     continue
+                value = v_data.get("value")
+                # Stored at full length whatever its size. This is a restore of
+                # the owner's own data, so the cap the editor applies to new
+                # text does not get to shorten or drop what they already had -
+                # a backup that comes back altered is not a backup. Counted for
+                # the report instead.
+                if value_over_text_cap(value):
+                    oversized_values += 1
                 cfv_id = uuid.uuid4()
                 cfv = CustomFieldValue(
                     id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value(v_data.get("value"), cfv_id),
+                    value=encrypt_field_value(value, cfv_id),
                 )
                 db.add(cfv)
+
+        if oversized_values:
+            warnings.append(il.oversized_field_values_warning(oversized_values))
 
     # --- Groups ---
     if groups:

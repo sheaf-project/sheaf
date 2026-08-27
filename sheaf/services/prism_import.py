@@ -106,6 +106,7 @@ from sheaf.models.poll import (
 )
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.schemas.prism_import import (
     PrismImportResult,
     PrismPreviewMember,
@@ -915,6 +916,7 @@ async def _import_custom_fields(
     await db.flush()
 
     values_imported = 0
+    oversized_values = 0
     # Pre-seeded with the system's existing pairs: a reused definition
     # plus a deduped (skipped) member would otherwise trip the
     # UNIQUE(field_id, member_id) constraint on every re-import.
@@ -933,6 +935,10 @@ async def _import_custom_fields(
             continue
         if not value_guard.add((field_def.id, handle.member.id)):
             continue
+        # Stored at full length; the editor's cap does not retroactively edit
+        # an import. Counted for the report instead.
+        if value_over_text_cap(raw_value):
+            oversized_values += 1
         cfv_id = uuid.uuid4()
         cfv = CustomFieldValue(
             id=cfv_id,
@@ -942,6 +948,9 @@ async def _import_custom_fields(
         )
         db.add(cfv)
         values_imported += 1
+
+    if oversized_values:
+        warnings.append(il.oversized_field_values_warning(oversized_values))
     return created, values_imported
 
 

@@ -34,6 +34,7 @@ from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
 from sheaf.models.message import BoardKind, Message
 from sheaf.models.system import System
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.schemas.sp_import import (
     SPImportOptions,
     SPImportResult,
@@ -669,6 +670,7 @@ async def run_import(
         value_guard = await load_field_value_guard(db, system.id)
         sp_member_by_id = {m.get("_id"): m for m in sp_members if m.get("_id")}
         unknown_field_refs = 0
+        oversized_values = 0
         for sp_id, member in sp_id_to_member.items():
             sp_m = sp_member_by_id.get(sp_id)
             if not sp_m:
@@ -685,14 +687,21 @@ async def run_import(
                     continue
                 if not value_guard.add((field_def.id, member.id)):
                     continue
+                text = str(raw_value)
+                # Stored at full length; the editor's cap does not retroactively
+                # edit an import. Counted for the report instead.
+                if value_over_text_cap(text):
+                    oversized_values += 1
                 cfv_id = uuid.uuid4()
                 cfv = CustomFieldValue(
                     id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value({"v": str(raw_value)}, cfv_id),
+                    value=encrypt_field_value({"v": text}, cfv_id),
                 )
                 db.add(cfv)
+        if oversized_values:
+            warnings.append(il.oversized_field_values_warning(oversized_values))
         if unknown_field_refs:
             warnings.append(
                 f"Dropped {unknown_field_refs} custom-field values whose "

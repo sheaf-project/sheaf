@@ -21,10 +21,16 @@ account's namespace, so every function here threads an `owner_id` down to them.
 Payload identity is deliberately ONE name field. `_shown_name` decides what a
 visitor reads and nothing else reaches a schema, so a canonical name behind a
 display name never leaves the account.
+
+Shape of every projection here: run the queries on the event loop, then hand
+the already-loaded rows to ONE `asyncio.to_thread` call that does the whole
+CPU-bound pass (decrypt, markdown resolve, card assembly, sort). See
+`_build_member_views` for why.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from sqlalchemy import func, select
@@ -332,6 +338,50 @@ def _member_view(
     )
 
 
+def _build_member_views(
+    members: list[Member],
+    *,
+    include_bio: bool,
+    field_names: dict[uuid.UUID, str],
+    values_by_member: dict[uuid.UUID, list[CustomFieldValue]],
+    owner_id: uuid.UUID,
+) -> list[PublicMemberView]:
+    """The whole roster's cards, built off the event loop.
+
+    THE reason this is a separate sync function rather than a comprehension in
+    `project_members`: everything it does is CPU-bound and unbounded by the
+    roster's owner. Each card decrypts a name (and, sorting, decrypts every
+    name again), decrypts a description, and runs a full CommonMark parse over
+    it via `resolve_description_urls_public`. A bio may be 20k characters, and
+    a roster may be large, so a single hostile profile is a multi-hundred-
+    millisecond block of pure Python - and an async worker that is blocking is
+    not serving anybody else's request either, public or authenticated. One
+    `asyncio.to_thread` hop per projection moves that cost onto a worker
+    thread, where it competes for the GIL instead of parking the loop.
+
+    It takes ALREADY-LOADED rows and plain values on purpose. Nothing here may
+    touch the AsyncSession: every query runs on the loop before the hop, and
+    only column attributes of these rows are read (never a relationship, which
+    would try to lazy-load from a thread with no greenlet context). The rows
+    also cannot be expired - the session is built with `expire_on_commit=False`
+    - so a column read here can never turn into IO. The crypto is pure
+    functions over bytes and a process-wide key, and the markdown parser is a
+    module-level instance that builds fresh per-call state, so both are safe to
+    run from several threads at once.
+    """
+    ordered = sorted(members, key=_sort_key)
+    return [
+        _member_view(
+            m,
+            include_bio=include_bio,
+            field_names=field_names,
+            values=values_by_member.get(m.id, []),
+            owner_id=owner_id,
+        )
+        for m in ordered
+    ]
+
+
 async def project_members(
     db: AsyncSession,
     view: ShareView,
@@ -358,21 +408,21 @@ async def project_members(
     members = await _active_members(db, view)
     if only_id is not None:
         members = [m for m in members if m.id == only_id]
-    members.sort(key=_sort_key)
     field_names = await _exposed_fields(db, view)
     values_by_member = await _field_values_by_member(
         db, [m.id for m in members], set(field_names)
     )
-    return [
-        _member_view(
-            m,
-            include_bio=view.include_bio,
-            field_names=field_names,
-            values=values_by_member.get(m.id, []),
-            owner_id=owner_id,
-        )
-        for m in members
-    ]
+    # Queries done; the decrypt-and-render pass goes to a thread. The permalink
+    # route lands here too (`only_id`), so a single hostile card is bounded the
+    # same way the whole roster is.
+    return await asyncio.to_thread(
+        _build_member_views,
+        members,
+        include_bio=view.include_bio,
+        field_names=field_names,
+        values_by_member=values_by_member,
+        owner_id=owner_id,
+    )
 
 
 async def projectable_relationships(
@@ -409,7 +459,9 @@ async def projectable_relationships(
     name, meant to be joined against /members for anything richer, so with
     /members gone the name in the edge would be the only thing a visitor got,
     which is precisely the "edge outs an endpoint" case this function exists to
-    make impossible.
+    make impossible. The API layer 404s on that flag as well, for the same
+    reason it 404s on `include_relationships`: the empty list this returns is
+    an answer, and "is the roster off?" is not a question this surface takes.
     """
     if not view.include_relationships or not view.include_members:
         return []
@@ -440,16 +492,17 @@ async def projectable_relationships(
     return list(result.all())
 
 
-async def project_relationships(
-    db: AsyncSession, view: ShareView
+def _build_relationship_views(
+    by_id: dict[uuid.UUID, Member],
+    pairs: list[tuple[MemberRelationship, RelationshipType]],
 ) -> PublicRelationshipsView:
-    """Published edges between members this view shows, as a flat list."""
-    members = await _active_members(db, view)
-    # Same rows `_active_member_ids` would return (identical filter), reused so
-    # the names and the id gate cannot disagree about who is in the view.
-    by_id = {m.id: m for m in members}
-    pairs = await projectable_relationships(db, view, active_ids=set(by_id))
+    """Edge payloads, built off the event loop - see `_build_member_views`.
 
+    Every endpoint name is a `_shown_name`, so a busy graph decrypts once per
+    edge end and then sorts on those names; same CPU-bound shape as the roster,
+    same thread hop. Only column attributes of the already-loaded edge, type,
+    and member rows are read here.
+    """
     out: list[PublicRelationship] = []
     for edge, rtype in pairs:
         source = by_id.get(edge.source_id)
@@ -491,6 +544,18 @@ async def project_relationships(
         )
     )
     return PublicRelationshipsView(relationships=out)
+
+
+async def project_relationships(
+    db: AsyncSession, view: ShareView
+) -> PublicRelationshipsView:
+    """Published edges between members this view shows, as a flat list."""
+    members = await _active_members(db, view)
+    # Same rows `_active_member_ids` would return (identical filter), reused so
+    # the names and the id gate cannot disagree about who is in the view.
+    by_id = {m.id: m for m in members}
+    pairs = await projectable_relationships(db, view, active_ids=set(by_id))
+    return await asyncio.to_thread(_build_relationship_views, by_id, pairs)
 
 
 async def projectable_groups(
@@ -537,34 +602,20 @@ async def projectable_groups(
     return list(result.scalars().unique().all())
 
 
-async def project_groups(
-    db: AsyncSession, view: ShareView, *, owner_id: uuid.UUID
+def _build_group_views(
+    groups: list[Group],
+    roster: dict[uuid.UUID, list[Member]],
+    *,
+    owner_id: uuid.UUID,
 ) -> PublicGroupsView:
-    """Published groups, each with the part of its roster this view shows."""
-    groups = await projectable_groups(db, view)
-    if not groups:
-        return PublicGroupsView(groups=[])
+    """Group payloads, built off the event loop - see `_build_member_views`.
 
-    # The same rows `project_members` serves (identical filter, and skipped
-    # entirely when the roster is off), reused so a group's member list and the
-    # /members list cannot disagree about who is in the view or what they are
-    # called.
-    members = await _active_members(db, view) if view.include_members else []
-    by_id = {m.id: m for m in members}
-
-    roster: dict[uuid.UUID, list[Member]] = {}
-    if by_id:
-        rows = await db.execute(
-            select(group_members.c.group_id, group_members.c.member_id).where(
-                group_members.c.group_id.in_([g.id for g in groups]),
-                group_members.c.member_id.in_(by_id),
-            )
-        )
-        for group_id, member_id in rows:
-            member = by_id.get(member_id)
-            if member is not None:
-                roster.setdefault(group_id, []).append(member)
-
+    A group description is markdown and gets the same full CommonMark resolve
+    pass a bio does, and each roster entry decrypts a name to sort and to show,
+    so a system with many groups pays the roster's CPU cost several times over.
+    Only column attributes of the already-loaded group and member rows are read
+    here; the membership rows were resolved into `roster` before the hop.
+    """
     out: list[PublicGroupView] = []
     for group in groups:
         shown = roster.get(group.id, [])
@@ -601,16 +652,51 @@ async def project_groups(
     return PublicGroupsView(groups=out)
 
 
-async def project_system(
-    db: AsyncSession, view: ShareView, system: System
-) -> PublicSystemView:
-    # A roster this view refuses to serve must not be countable either:
-    # "23 members you cannot see" is still a fact about the system, and it is
-    # exactly the fact somebody turning the roster off was trying not to
-    # publish. Null, not zero - zero would be a claim, and a false one.
-    member_count = (
-        await _active_member_count(db, view) if view.include_members else None
+async def project_groups(
+    db: AsyncSession, view: ShareView, *, owner_id: uuid.UUID
+) -> PublicGroupsView:
+    """Published groups, each with the part of its roster this view shows."""
+    groups = await projectable_groups(db, view)
+    if not groups:
+        return PublicGroupsView(groups=[])
+
+    # The same rows `project_members` serves (identical filter, and skipped
+    # entirely when the roster is off), reused so a group's member list and the
+    # /members list cannot disagree about who is in the view or what they are
+    # called.
+    members = await _active_members(db, view) if view.include_members else []
+    by_id = {m.id: m for m in members}
+
+    roster: dict[uuid.UUID, list[Member]] = {}
+    if by_id:
+        rows = await db.execute(
+            select(group_members.c.group_id, group_members.c.member_id).where(
+                group_members.c.group_id.in_([g.id for g in groups]),
+                group_members.c.member_id.in_(by_id),
+            )
+        )
+        for group_id, member_id in rows:
+            member = by_id.get(member_id)
+            if member is not None:
+                roster.setdefault(group_id, []).append(member)
+
+    return await asyncio.to_thread(
+        _build_group_views, groups, roster, owner_id=owner_id
     )
+
+
+def _build_system_view(
+    system: System,
+    *,
+    member_count: int | None,
+    member_permalinks: bool,
+) -> PublicSystemView:
+    """The system card, built off the event loop - see `_build_member_views`.
+
+    One description here rather than a roster's worth, but it is the same
+    unbounded markdown parse over an owner-supplied string, and it is on the
+    first request of every page load.
+    """
     return PublicSystemView(
         id=str(system.id),
         name=system.name,
@@ -625,7 +711,74 @@ async def project_system(
         color=system.color,
         tag=system.tag,
         member_count=member_count,
+        member_permalinks=member_permalinks,
+    )
+
+
+async def project_system(
+    db: AsyncSession, view: ShareView, system: System
+) -> PublicSystemView:
+    # A roster this view refuses to serve must not be countable either:
+    # "23 members you cannot see" is still a fact about the system, and it is
+    # exactly the fact somebody turning the roster off was trying not to
+    # publish. Null, not zero - zero would be a claim, and a false one.
+    member_count = (
+        await _active_member_count(db, view) if view.include_members else None
+    )
+    return await asyncio.to_thread(
+        _build_system_view,
+        system,
+        member_count=member_count,
         member_permalinks=view.member_permalinks,
+    )
+
+
+def _build_fronting_view(
+    members_by_id: dict[uuid.UUID, Member],
+    since_by_member: dict[uuid.UUID, object],
+    in_view: set[uuid.UUID],
+    *,
+    owner_id: uuid.UUID,
+    show_count: bool,
+) -> PublicFrontingView:
+    """Fronting cards, built off the event loop - see `_build_member_views`.
+
+    No bios on this surface, but every named member still decrypts a name, and
+    this is the endpoint a page polls on a timer, so it is the one most likely
+    to be running many times over at once.
+    """
+    named: list[PublicFrontingMember] = []
+    hidden = 0
+    for mid, member in members_by_id.items():
+        if member.never_shareable or member.fronting_private:
+            # Front state does not propagate for these members, not even as a
+            # number.
+            continue
+        if mid in in_view:
+            started = since_by_member.get(mid)
+            named.append(
+                PublicFrontingMember(
+                    id=str(member.id),
+                    # One name, the shown one - same rule and same reasoning as
+                    # `_member_view`. This surface is polled repeatedly, so a
+                    # canonical name here is the one a scraper would collect
+                    # most cheaply of all.
+                    name=_shown_name(member),
+                    pronouns=member.pronouns,
+                    avatar_url=resolve_avatar_url_public(
+                        member.avatar_url, owner_id
+                    ),
+                    color=member.color,
+                    since=started.isoformat() if started is not None else None,
+                )
+            )
+        else:
+            hidden += 1
+
+    named.sort(key=lambda pm: pm.name.casefold())
+    return PublicFrontingView(
+        members=named,
+        hidden_count=hidden if show_count else 0,
     )
 
 
@@ -687,36 +840,11 @@ async def project_fronting(
 
     in_view = await _active_member_ids(db, view)
 
-    named: list[PublicFrontingMember] = []
-    hidden = 0
-    for mid, member in members_by_id.items():
-        if member.never_shareable or member.fronting_private:
-            # Front state does not propagate for these members, not even as a
-            # number.
-            continue
-        if mid in in_view:
-            started = since_by_member.get(mid)
-            named.append(
-                PublicFrontingMember(
-                    id=str(member.id),
-                    # One name, the shown one - same rule and same reasoning as
-                    # `_member_view`. This surface is polled repeatedly, so a
-                    # canonical name here is the one a scraper would collect
-                    # most cheaply of all.
-                    name=_shown_name(member),
-                    pronouns=member.pronouns,
-                    avatar_url=resolve_avatar_url_public(
-                        member.avatar_url, system.user_id
-                    ),
-                    color=member.color,
-                    since=started.isoformat() if started is not None else None,
-                )
-            )
-        else:
-            hidden += 1
-
-    named.sort(key=lambda pm: pm.name.casefold())
-    return PublicFrontingView(
-        members=named,
-        hidden_count=hidden if view.fronting_show_count else 0,
+    return await asyncio.to_thread(
+        _build_fronting_view,
+        members_by_id,
+        since_by_member,
+        in_view,
+        owner_id=system.user_id,
+        show_count=view.fronting_show_count,
     )

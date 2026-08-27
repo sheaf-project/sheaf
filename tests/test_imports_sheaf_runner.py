@@ -615,6 +615,58 @@ def test_sheaf_runner_dedupes_custom_field_definitions(auth_client: httpx.Client
     assert len(pronouns) == 1, fields
 
 
+def test_sheaf_runner_keeps_an_oversized_field_value_and_says_so(
+    auth_client: httpx.Client,
+):
+    """A restore does not get to edit the data it is restoring.
+
+    The write API caps a custom-field value at 20k characters, but a backup
+    carrying a longer one - written before the cap, or exported from another
+    app - comes back whole. Truncating it would hand the owner something that
+    is not what they backed up, and dropping it would lose the value outright,
+    so the import stores it as-is and the report says the editor will not
+    accept it as new text.
+    """
+    long_value = "x" * 20_500
+    payload = {
+        "version": "2",
+        "system": {"name": "Long Value System"},
+        "members": [{"id": "m1", "name": "LongValueAda"}],
+        "fronts": [],
+        "groups": [],
+        "tags": [],
+        "custom_fields": [
+            {
+                "id": "f1",
+                "name": "Long Answer",
+                "field_type": "text",
+                "options": None,
+                "order": 0,
+                "privacy": "private",
+                "values": [{"member_id": "m1", "value": long_value}],
+            }
+        ],
+    }
+    job = _post_file(auth_client, payload=json.dumps(payload).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    warned = [
+        e["message"]
+        for e in final["events"]
+        if e["level"] == "warning" and "full length" in e["message"]
+    ]
+    assert warned, final["events"]
+    assert "20,000" in warned[0]
+
+    # And the value is there, whole.
+    members = auth_client.get("/v1/members").json()
+    member = next(m for m in members if m["name"] == "LongValueAda")
+    values = auth_client.get(f"/v1/members/{member['id']}/fields").json()
+    assert [v["value"] for v in values] == [long_value]
+
+
 def test_sheaf_runner_fails_on_invalid_json(auth_client: httpx.Client):
     job = _post_file(auth_client, payload=b"not json")
     drive_import_runner()

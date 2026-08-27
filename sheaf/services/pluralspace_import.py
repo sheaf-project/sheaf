@@ -102,6 +102,7 @@ from sheaf.models.poll import (
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.schemas.pluralspace_import import (
     PluralspaceImportResult,
     PluralspacePreviewMember,
@@ -1121,10 +1122,16 @@ async def _import_custom_fields(
     # otherwise trip the UNIQUE(field_id, member_id) constraint - a hard
     # error on every re-import that carries custom field values.
     value_guard = await load_field_value_guard(db, system_id)
+    oversized_values = 0
     for (field_id, member_id), values in pairs.items():
         if not value_guard.add((field_id, member_id)):
             continue
         joined = "\n".join(values)
+        # Stored at full length; the editor's cap does not retroactively edit
+        # an import. Counted for the report instead. Worth noting the join is
+        # what can push a member over here even when no single value does.
+        if value_over_text_cap(joined):
+            oversized_values += 1
         cfv_id = uuid.uuid4()
         cfv = CustomFieldValue(
             id=cfv_id,
@@ -1133,6 +1140,9 @@ async def _import_custom_fields(
             value=encrypt_field_value(joined, cfv_id),
         )
         db.add(cfv)
+
+    if oversized_values:
+        warnings.append(il.oversized_field_values_warning(oversized_values))
 
     if flat_collapsed:
         warnings.append(
