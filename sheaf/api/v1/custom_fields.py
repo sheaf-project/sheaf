@@ -32,6 +32,7 @@ from sheaf.services.custom_fields import (
 )
 from sheaf.services.sharing import (
     field_privacy_raise_exposes,
+    reject_mixed_exposure_directions,
     visibility_grace_days,
     visibility_step_up_required,
 )
@@ -193,6 +194,12 @@ async def update_field(
 
     The level applies to this field on every member. There is deliberately no
     per-member-per-field setting to reconcile here.
+
+    House rule shared with every other exposure PATCH: one body may not carry
+    both a raise and a lowering, because the raise's step-up would then be able
+    to fail the lowering with it. `privacy` is this endpoint's only exposure
+    axis, so the check cannot bite here yet - it is applied so a second axis
+    added later cannot land without it.
     """
     system = await _get_user_system(user, db)
     # FOR UPDATE for the same reason `update_member` and the group and edge
@@ -225,6 +232,13 @@ async def update_field(
         and visibility_step_up_required(system)
     ):
         exposes = await field_privacy_raise_exposes(db, system, field.id)
+
+    # Same uniform check as the other exposure PATCHes: one body may not both
+    # raise and lower exposure, because the raise's step-up would then be able
+    # to fail the lowering with it. `privacy` is this endpoint's only exposure
+    # axis, so it cannot fire today; it is here so a second axis added later
+    # inherits the rule rather than rediscovering the bug.
+    reject_mixed_exposure_directions(raises=exposes, lowers=False)
 
     if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)

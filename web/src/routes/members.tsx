@@ -1229,6 +1229,46 @@ function MemberView({
   );
 }
 
+/** The three member settings that decide what strangers can see. Named once so
+ *  the raise/lowering tests below cannot drift apart from each other, and so a
+ *  fourth one added later is a single edit. */
+const EXPOSURE_KEYS = [
+  "privacy",
+  "fronting_private",
+  "never_shareable",
+] as const;
+
+type ExposureKey = (typeof EXPOSURE_KEYS)[number];
+
+/** Would this field, in this body, show a stranger MORE than it does now? */
+function isRaise(
+  member: Member,
+  data: MemberUpdate,
+  key: ExposureKey,
+): boolean {
+  if (key === "privacy") {
+    return data.privacy === "public" && member.privacy !== "public";
+  }
+  return data[key] === false && member[key] === true;
+}
+
+/** ...and would it show them LESS? Not simply the negation: a field the body
+ *  leaves alone, or sets to the value it already has, is neither. */
+function isLowering(
+  member: Member,
+  data: MemberUpdate,
+  key: ExposureKey,
+): boolean {
+  if (key === "privacy") {
+    return (
+      data.privacy !== undefined &&
+      data.privacy !== "public" &&
+      member.privacy === "public"
+    );
+  }
+  return data[key] === true && member[key] !== true;
+}
+
 export function MembersPage() {
   const { data: members, isLoading } = useMembers();
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
@@ -1266,7 +1306,47 @@ export function MembersPage() {
     ? system?.delete_confirmation ?? "none"
     : "none";
 
+  /**
+   * Save an edit, splitting it in two when it both shows more and shows less.
+   *
+   * The member form is one form with one save button, so a single body can
+   * carry a privacy raise and a fronting guard being switched on at the same
+   * time. The API refuses that outright (400), and rightly: the raise may
+   * demand a password, and if that password is wrong the whole request fails -
+   * taking the guard, the thing that HIDES something, down with it. Nothing is
+   * ever allowed to stand between somebody and going dark.
+   *
+   * So the client sends the un-exposing half first, on its own, where it is
+   * never gated and lands immediately. Only then does it send the raise, which
+   * takes the step-up dialog through the normal path below. If the step-up is
+   * abandoned or fails, the half that hides something has already been saved.
+   */
   function saveMemberEdit(member: Member, data: MemberUpdate) {
+    const raising = EXPOSURE_KEYS.filter((k) => isRaise(member, data, k));
+    const lowering = EXPOSURE_KEYS.filter((k) => isLowering(member, data, k));
+    if (raising.length > 0 && lowering.length > 0) {
+      const withoutRaises = { ...data };
+      for (const key of raising) delete withoutRaises[key];
+      const raisesOnly: MemberUpdate = {};
+      for (const key of raising) {
+        // Narrowed one key at a time so the value keeps its own type.
+        if (key === "privacy") raisesOnly.privacy = data.privacy;
+        else raisesOnly[key] = data[key];
+      }
+      updateMember.mutate(
+        { id: member.id, data: withoutRaises, skipErrorToast: true },
+        {
+          onSuccess: () => doSaveMemberEdit(member, raisesOnly),
+          onError: (err) =>
+            showApiErrorToast(err, "Couldn't update member.", { force: true }),
+        },
+      );
+      return;
+    }
+    doSaveMemberEdit(member, data);
+  }
+
+  function doSaveMemberEdit(member: Member, data: MemberUpdate) {
     updateMember.mutate(
       { id: member.id, data, skipErrorToast: true },
       {

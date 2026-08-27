@@ -98,6 +98,25 @@ function MarkdownPreview({
           [rehypeHighlight, { detect: true, ignoreMissing: true }],
         ]}
         components={{
+          // On a public surface every link out of the bio carries
+          // rel="noreferrer noopener". A share link's URL is its secret and a
+          // public profile's URL names the system, so neither may be handed to
+          // whatever host an owner linked to - and the owner writes these
+          // links, while the person clicking them is a stranger who agreed to
+          // nothing. The page-level `referrer` meta covers this too; both are
+          // here because they fail independently (an extension or a browser
+          // that ignores one still honours the other), and `noopener` closes
+          // the separate window.opener handle. No `target` change: where the
+          // link opens is the visitor's business.
+          a: ({ href, children, ...props }) => (
+            <a
+              href={href}
+              {...props}
+              rel={publicSurface ? "noreferrer noopener" : props.rel}
+            >
+              {children}
+            </a>
+          ),
           img: ({ src, alt, ...props }) => {
             const hosted = src
               ? publicSurface

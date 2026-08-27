@@ -1324,11 +1324,20 @@ def test_audit_lists_live_grants_only(auth_client: httpx.Client):
 def test_audit_group_count_matches_what_is_served(auth_client: httpx.Client):
     """The audit counts groups through the projection's own choke point, so it
     reports what a visitor gets rather than what the flag permits: only public
-    groups, and none at all while the flag is off."""
+    groups, only ones with somebody in them this view serves, and none at all
+    while the flag is off."""
     _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client, "GroupAudit")
+    m = _member(auth_client, "InTheGroup", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
     shown = _group(auth_client, "Shown")
+    assert (
+        auth_client.put(
+            f"/v1/groups/{shown}/members", json={"member_ids": [m]}
+        ).status_code
+        == 200
+    )
     _group(auth_client, "Hidden")
     assert (
         auth_client.patch(
@@ -1351,11 +1360,47 @@ def test_audit_group_count_matches_what_is_served(auth_client: httpx.Client):
     assert entry["group_count"] == 1
 
 
+def test_audit_does_not_count_a_public_group_with_an_empty_roster(
+    auth_client: httpx.Client,
+):
+    """A public group nobody in this view belongs to is not served, so the
+    audit must not count it either - the count and the payload come through one
+    function precisely so they cannot disagree."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "EmptyGroupAudit", include_groups=True)
+    shown = _member(auth_client, "Shown", privacy="public")
+    outside = _member(auth_client, "Outside", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": shown})
+    offstage = _group(auth_client, "Offstage")
+    assert (
+        auth_client.put(
+            f"/v1/groups/{offstage}/members", json={"member_ids": [outside]}
+        ).status_code
+        == 200
+    )
+    assert (
+        auth_client.patch(
+            f"/v1/groups/{offstage}", json={"privacy": "public"}
+        ).status_code
+        == 200
+    )
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+
+    entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
+    assert entry["include_groups"] is True
+    assert entry["group_count"] == 0
+
+
 def test_audit_reports_the_member_list_and_permalink_settings(
     auth_client: httpx.Client,
 ):
     """With the roster off, `member_count` still reports the curation (nothing
-    was destroyed) and `include_members` is what says it is not being served."""
+    was destroyed) and `include_members` is what says it is not being served.
+    The served count goes null rather than zero, for the same reason the public
+    payload's does: a roster that is not served must not be countable."""
     _go_public(auth_client)
     _attest(auth_client)
     vid = _view(auth_client, "RosterAudit", include_members=False)
@@ -1369,7 +1414,284 @@ def test_audit_reports_the_member_list_and_permalink_settings(
     entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
     assert entry["include_members"] is False
     assert entry["member_count"] == 1
+    assert entry["served_member_count"] is None
     assert entry["member_permalinks"] is True
+
+
+def test_audit_served_member_count_is_what_visitors_get(
+    auth_client: httpx.Client,
+):
+    """`member_count` is curation, `served_member_count` is exposure, and the
+    audit reports both because they answer different questions. Every reason a
+    member drops off the page - their privacy, the archive, a queued delete -
+    moves the second number without touching the first."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "ServedCount")
+    shown = _member(auth_client, "Shown", privacy="public")
+    private = _member(auth_client, "Private", privacy="private")
+    archived = _member(auth_client, "Archived", privacy="public")
+    for m in (shown, private, archived):
+        assert (
+            auth_client.post(
+                f"/v1/share-views/{vid}/members", json={"member_id": m}
+            ).status_code
+            == 200
+        )
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+
+    entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
+    assert entry["member_count"] == 3
+    assert entry["served_member_count"] == 2
+
+    assert auth_client.post(f"/v1/members/{archived}/archive").status_code == 200
+    entry = auth_client.get("/v1/sharing/audit").json()["entries"][0]
+    # The curation is untouched by archiving; the exposure is not.
+    assert entry["member_count"] == 3
+    assert entry["served_member_count"] == 1
+
+
+def test_view_rows_say_who_is_actually_being_served(auth_client: httpx.Client):
+    """Each curated member row carries the projection's own answer to "does
+    this person appear?", with a named reason when they do not. The client used
+    to infer this from member privacy alone, which missed archiving and a
+    queued deletion - both of which drop a member from the page at once."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "RowStates")
+    shown = _member(auth_client, "Shown", privacy="public")
+    private = _member(auth_client, "Private", privacy="private")
+    archived = _member(auth_client, "Archived", privacy="public")
+    for m in (shown, private, archived):
+        auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+    assert auth_client.post(f"/v1/members/{archived}/archive").status_code == 200
+
+    rows = auth_client.get(f"/v1/share-views/{vid}").json()["members"]
+    by_member = {r["member_id"]: r for r in rows}
+    assert by_member[shown]["served"] is True
+    assert by_member[shown]["not_served_reason"] is None
+    assert by_member[private]["served"] is False
+    assert by_member[private]["not_served_reason"] == "private"
+    assert by_member[archived]["served"] is False
+    assert by_member[archived]["not_served_reason"] == "archived"
+
+
+def test_view_rows_report_a_queued_deletion_as_not_served(
+    auth_client: httpx.Client,
+):
+    """Deleting a member is held for the grace window so the owner can change
+    their mind - the member stops being published at once, and the sharing
+    screen has to say so rather than showing them as live."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "QueuedDelete")
+    doomed = _member(auth_client, "Doomed", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": doomed})
+    # The `members` category is what holds a member delete for the window; the
+    # profile-visibility one governs exposure and is a different switch.
+    assert (
+        auth_client.patch(
+            "/v1/system/safety",
+            json={
+                "grace_period_days": 7,
+                "applies_to_members": True,
+                "auth_tier": "password",
+            },
+        ).status_code
+        == 200
+    )
+
+    r = auth_client.request(
+        "DELETE",
+        f"/v1/members/{doomed}",
+        json={"password": "testpassword123"},
+    )
+    assert r.status_code == 202, r.text
+
+    row = next(
+        row
+        for row in auth_client.get(f"/v1/share-views/{vid}").json()["members"]
+        if row["member_id"] == doomed
+    )
+    assert row["served"] is False
+    assert row["not_served_reason"] == "deletion_queued"
+
+
+def test_view_rows_report_a_member_still_inside_the_grace_window(
+    auth_client: httpx.Client,
+):
+    """A member added to an already-shared view waits out the window. That is
+    not "held back" - it resolves by itself - so it gets its own reason and the
+    row's own `pending` status still says the same thing beside it."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "PendingRow")
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    _arm_visibility_safety(auth_client)
+    m = _member(auth_client, "Waiting", privacy="public")
+    r = auth_client.post(
+        f"/v1/share-views/{vid}/members",
+        json={"member_id": m, "password": "testpassword123"},
+    )
+    assert r.status_code == 200, r.text
+
+    row = next(
+        row
+        for row in r.json()["members"]
+        if row["member_id"] == m
+    )
+    assert row["status"] == "pending"
+    assert row["served"] is False
+    assert row["not_served_reason"] == "pending"
+
+
+def test_a_mixed_share_view_patch_is_refused(auth_client: httpx.Client):
+    """One body may not both loosen and tighten. The loosening needs a step-up,
+    and if that step-up failed the tightening would fail with it - which would
+    put a gate in front of going dark, the one thing nothing may do."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "Mixed", include_bio=True)
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={
+            "include_fronting": True,
+            "include_bio": False,
+            "password": "testpassword123",
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "separate requests" in r.json()["detail"]
+
+    # The tightening on its own is ungated and lands immediately, which is the
+    # whole point of refusing to bundle it with the raise.
+    r = auth_client.patch(f"/v1/share-views/{vid}", json={"include_bio": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["include_bio"] is False
+
+
+def test_an_unexposing_share_view_patch_may_still_flip_several_flags(
+    auth_client: httpx.Client,
+):
+    """The refusal is about MIXING directions, not about touching more than one
+    flag: turning three things off at once is still one un-exposing act and
+    must stay ungated."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(
+        auth_client,
+        "AllOff",
+        include_bio=True,
+        include_fronting=True,
+        include_groups=True,
+    )
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={
+            "include_bio": False,
+            "include_fronting": False,
+            "include_groups": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["include_bio"] is False
+    assert body["include_fronting"] is False
+    assert body["include_groups"] is False
+
+
+def test_releasing_never_shareable_is_gated_like_the_fronting_guard(
+    auth_client: httpx.Client,
+):
+    """Clearing the hardest share guard must not be easier than clearing the
+    softer one beside it. It used to fall through to a plain write with no
+    step-up at all, which made it the cheap way past the other gates."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "GuardRelease", include_fronting=True)
+    m = _member(auth_client, "Secret", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    _mark_never_shareable(auth_client, m)
+    _arm_visibility_safety(auth_client)
+
+    # No credentials: refused, exactly as releasing fronting_private is.
+    r = auth_client.patch(f"/v1/members/{m}", json={"never_shareable": False})
+    assert r.status_code in (400, 403), r.text
+
+    r = auth_client.patch(
+        f"/v1/members/{m}",
+        json={"never_shareable": False, "password": "testpassword123"},
+    )
+    assert r.status_code == 200, r.text
+    # No staging column for this guard, so the re-auth IS the gate and the
+    # release lands at once rather than waiting out the window.
+    assert r.json()["never_shareable"] is False
+
+
+def test_setting_never_shareable_is_never_gated(auth_client: httpx.Client):
+    """The other direction is un-exposing, so it stays instant and ungated even
+    with the category armed - nothing may slow down going dark."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "GuardSet", include_fronting=True)
+    m = _member(auth_client, "Ordinary", privacy="public")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(f"/v1/members/{m}", json={"never_shareable": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["never_shareable"] is True
+
+
+def test_a_mixed_member_patch_is_refused(auth_client: httpx.Client):
+    """Same rule on the member editor's three exposure settings: a body that
+    raises one and lowers another is refused before the step-up runs, so a
+    failed password can never take the lowering down with it."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    vid = _view(auth_client, "MixedMember", include_fronting=True)
+    m = _member(auth_client, "Both", privacy="private")
+    auth_client.post(f"/v1/share-views/{vid}/members", json={"member_id": m})
+    auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    _arm_visibility_safety(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/members/{m}",
+        json={
+            "privacy": "public",
+            "fronting_private": True,
+            "password": "testpassword123",
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "separate requests" in r.json()["detail"]
+
+    # Sent on its own, the lowering needs nothing and lands at once.
+    r = auth_client.patch(f"/v1/members/{m}", json={"fronting_private": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["fronting_private"] is True
 
 
 # ---------------------------------------------------------------------------

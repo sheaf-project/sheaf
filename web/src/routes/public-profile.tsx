@@ -78,17 +78,36 @@ type Source =
   | { kind: "system"; systemId: string }
   | { kind: "link"; token: string };
 
-/** Set robots=noindex for the lifetime of a public-profile page. The server
- *  also sends X-Robots-Tag, but a SPA route needs the meta tag too: link
- *  sharing, not search presence. */
+/**
+ * Two meta tags for the lifetime of a public-profile page, both removed again
+ * on the way out so they never leak onto the logged-in app.
+ *
+ * `robots=noindex, nofollow` - the server also sends X-Robots-Tag, but a SPA
+ * route needs the meta tag too: link sharing, not search presence.
+ *
+ * `referrer=no-referrer` - a share link's URL IS its secret, so it must never
+ * be handed to a third party in a Referer header. The reverse-proxy examples
+ * set `Referrer-Policy` on the document, but only a self-hoster who followed
+ * them has it, and neither header covers a request the page makes after that
+ * document loaded. This one belongs to the page itself, applies to every
+ * request it makes and every link a visitor clicks out of it, and travels with
+ * the app rather than with somebody's proxy config. It matters just as much on
+ * a public profile, where the URL carries the system id.
+ */
 function useNoIndex() {
   useEffect(() => {
-    const meta = document.createElement("meta");
-    meta.name = "robots";
-    meta.content = "noindex, nofollow";
-    document.head.appendChild(meta);
+    const metas = [
+      ["robots", "noindex, nofollow"],
+      ["referrer", "no-referrer"],
+    ].map(([name, content]) => {
+      const meta = document.createElement("meta");
+      meta.name = name;
+      meta.content = content;
+      document.head.appendChild(meta);
+      return meta;
+    });
     return () => {
-      document.head.removeChild(meta);
+      for (const meta of metas) document.head.removeChild(meta);
     };
   }, []);
 }

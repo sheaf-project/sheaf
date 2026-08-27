@@ -60,6 +60,20 @@ class ShareViewMemberRead(BaseModel):
     member_id: uuid.UUID
     status: str
     activates_at: datetime | None = None
+    # Is this person ACTUALLY appearing on the page right now? Computed by
+    # `share_projection.member_service_states`, which composes the projection's
+    # own filter, so it is the projection's answer rather than the client's
+    # guess. The client used to derive this from member privacy alone, which
+    # silently missed an archived member and one queued for deletion - both of
+    # which drop off the public surface at once - so a view could be quietly
+    # showing fewer people than the screen implied.
+    served: bool = True
+    # Why not, when `served` is False: one of
+    # `share_projection.NOT_SERVED_REASONS`. Null while served, and also in the
+    # (drift-only) case where the projection excludes a member for a reason
+    # that classifier cannot name - the client then says the member will not
+    # show without inventing a reason for it.
+    not_served_reason: str | None = None
     # Which group expansion put this member here, or null for a hand-picked one
     # (and for a row whose group has since been deleted). Owner-side only, and
     # it is what detaching that group will remove - so the client can be honest
@@ -185,7 +199,22 @@ class ShareAuditEntry(BaseModel):
     grant: ShareGrantRead
     view_id: uuid.UUID
     view_name: str
+    # The CURATED count: how many members the owner has put in this view. It
+    # describes their curation, not what a visitor gets, which is why it sits
+    # next to `served_member_count` rather than instead of it.
     member_count: int
+    # The SERVED count - how many of those members the projection would
+    # actually show right now, through `projectable_member_count`, which is the
+    # same filter the member cards are built from. Null when the roster is off
+    # entirely (matching `PublicSystemView.member_count`), because a roster the
+    # view refuses to serve must not be countable and zero would be a claim.
+    #
+    # This is the number that belongs beside the field, relationship and group
+    # counts, all three of which have always been served counts. Without it the
+    # audit line read "5 members, 2 fields" with one curated number and one
+    # served number in the same sentence, and the curated one over-reported
+    # whenever anybody in the view was private, archived, or on their way out.
+    served_member_count: int | None = None
     field_count: int
     # Whether the curated roster above is actually served. With this off the
     # counts still describe real curation, they are just not published - which

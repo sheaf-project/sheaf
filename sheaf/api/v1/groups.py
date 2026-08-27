@@ -21,6 +21,7 @@ from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.sharing import (
     group_raise_exposes,
+    reject_mixed_exposure_directions,
     visibility_grace_days,
     visibility_step_up_required,
 )
@@ -228,6 +229,12 @@ async def update_group(
     it exposes nobody. When friends lands, this check and
     `share_projection.projectable_groups` have to become audience-aware
     together.
+
+    House rule shared with every other exposure PATCH: one body may not carry
+    both a raise and a lowering, because the raise's step-up would then be able
+    to fail the lowering with it. `privacy` is this endpoint's only exposure
+    axis, so the check cannot bite here yet - it is applied so a second axis
+    added later cannot land without it.
     """
     system = await _get_user_system(user, db)
     group = await _get_own_group(group_id, system, db, for_update=True)
@@ -251,6 +258,15 @@ async def update_group(
         and visibility_step_up_required(system)
     ):
         exposes = await group_raise_exposes(db, system, group.id)
+
+    # The house rule that one request may not carry an exposure raise and an
+    # exposure lowering at once, applied here for uniformity rather than
+    # because it can fire: `privacy` is this endpoint's only exposure axis, and
+    # a single field cannot go both ways in one body. It is called anyway so a
+    # second axis added to groups later inherits the rule instead of quietly
+    # reintroducing the "failed step-up swallows a lowering" bug the helper
+    # exists to prevent.
+    reject_mixed_exposure_directions(raises=exposes, lowers=False)
 
     if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)

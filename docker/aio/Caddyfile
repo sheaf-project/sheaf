@@ -26,6 +26,19 @@
 	@compressible not path /v1/fronts/stream
 	encode @compressible zstd gzip
 
+	# Never write these paths to an access log. A share link's token IS the
+	# capability and it lives in the path (/s/{token} for the page,
+	# /v1/public/shared/{token}/... for the API calls it makes), and a public
+	# file URL carries the owner's account id in the path with a live signed
+	# token in the query - so an ordinary logged request line is a working key
+	# to somebody's profile, sitting in a file that outlives rotating the link.
+	# Caddy writes no access log unless one is configured, so this changes
+	# nothing today; it is here so that adding `log` to this file later - or an
+	# operator adding one downstream - cannot quietly start recording them.
+	# Sheaf's own access-log filter already redacts the same three.
+	@secret_urls path /s/* /v1/public/shared/* /v1/public/files/*
+	log_skip @secret_urls
+
 	# Realtime SSE stream: flush each event straight through with no buffering.
 	# reverse_proxy already auto-streams text/event-stream, but pin it so a
 	# future default can't reintroduce the stall. Must precede @backend below,

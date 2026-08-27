@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -181,6 +182,136 @@ async def _active_member_count(db: AsyncSession, view: ShareView) -> int:
         _active_member_filter(select(func.count(Member.id)), view)
     )
     return int(result.scalar_one())
+
+
+async def projectable_member_count(
+    db: AsyncSession, view: ShareView
+) -> int | None:
+    """How many members this view would serve right now, or None with the
+    roster off.
+
+    A public name for `_active_member_count`, in the same spirit as
+    `projectable_fields` / `projectable_relationships` / `projectable_groups`:
+    the owner-side audit counts through exactly the filter the member cards are
+    built from, so a number the owner reads off the sharing screen is a number
+    a visitor could reconstruct. The audit's other count of members is the
+    CURATED one (how many rows the owner put in the view), and the two are
+    different questions on purpose - this one answers "how many people is this
+    actually showing".
+
+    None rather than 0 when `include_members` is off, matching what
+    `project_system` puts in `member_count` for the same reason: a roster the
+    view refuses to serve must not be countable, and zero would be a claim.
+    """
+    if not view.include_members:
+        return None
+    return await _active_member_count(db, view)
+
+
+# The reasons a member sitting in a view is not actually being served. A small
+# fixed vocabulary so the client can render each one rather than re-deriving
+# any of them from other fields - which is what it used to do, off member
+# privacy alone, quietly missing the archived and deletion-queued cases.
+#
+# Order is precedence, most permanent first: a member can be several of these
+# at once, and the owner needs to be told the one that will still be true after
+# the others clear. `pending` sits last for exactly that reason - it is the
+# only entry here that resolves by itself, so anything else about the member is
+# the more useful answer, and the row's own `status` still says "pending"
+# beside it.
+NOT_SERVED_REASONS: tuple[str, ...] = (
+    "never_shareable",
+    "deletion_queued",
+    "archived",
+    "private",
+    "pending",
+)
+
+
+class MemberServiceState(NamedTuple):
+    """Whether one curated member is actually being served, and why not.
+
+    `reason` is one of `NOT_SERVED_REASONS`, or None - which means "served"
+    when `served` is True, and "excluded for a reason this classifier cannot
+    name" when it is False (see `member_service_states`).
+    """
+
+    served: bool
+    reason: str | None
+
+
+async def member_service_states(
+    db: AsyncSession, view: ShareView, rows: list[ShareViewMember]
+) -> dict[uuid.UUID, MemberServiceState]:
+    """Per member row: is this person actually appearing, and if not, why not.
+
+    The owner-side answer to "will this person actually appear?", computed
+    where the answer lives instead of guessed at by the client. It composes out
+    of `_active_member_ids` rather than restating any of that filter's
+    predicates: the served set IS the projection's own, so this cannot claim
+    somebody shows when the projection would drop them, however that filter
+    grows later.
+
+    Only the misses need explaining, and they take ONE further query - the
+    member row plus a correlated "is a delete queued for you" existence test,
+    the same `_not_deletion_queued` predicate the filter uses, negated. The
+    pending case needs no query at all: it is the row's own status.
+
+    A reason of None on an unserved member would mean this classifier and
+    `_active_member_filter` had drifted apart, so it is left as None rather
+    than guessed at - the client then says the member will not show without
+    inventing a reason for it.
+    """
+    served = await _active_member_ids(db, view)
+    states: dict[uuid.UUID, MemberServiceState] = {}
+    misses: set[uuid.UUID] = set()
+    for row in rows:
+        if row.member_id in served:
+            states[row.member_id] = MemberServiceState(True, None)
+        else:
+            misses.add(row.member_id)
+    if not misses:
+        return states
+
+    pending_ids = {
+        row.member_id
+        for row in rows
+        if row.status != ShareItemStatus.ACTIVE.value
+    }
+    result = await db.execute(
+        select(
+            Member.id,
+            Member.never_shareable,
+            Member.privacy,
+            Member.archived_at,
+            ~_not_deletion_queued(
+                PendingActionType.MEMBER_DELETE, Member.id, view.system_id
+            ),
+        ).where(
+            Member.id.in_(misses),
+            # Tenant-pinned like every other query in this module.
+            Member.system_id == view.system_id,
+        )
+    )
+    for member_id, never, privacy, archived_at, deletion_queued in result:
+        if never:
+            reason = "never_shareable"
+        elif deletion_queued:
+            reason = "deletion_queued"
+        elif archived_at is not None:
+            reason = "archived"
+        elif privacy != PrivacyLevel.PUBLIC:
+            reason = "private"
+        elif member_id in pending_ids:
+            reason = "pending"
+        else:
+            reason = None
+        states[member_id] = MemberServiceState(False, reason)
+    # A row whose member is not this system's (impossible while the FK stands)
+    # is not served and has no nameable reason.
+    for member_id in misses:
+        states.setdefault(member_id, MemberServiceState(False, None))
+    return states
 
 
 async def _exposed_fields(
@@ -558,15 +689,20 @@ async def project_relationships(
     return await asyncio.to_thread(_build_relationship_views, by_id, pairs)
 
 
-async def projectable_groups(
+async def _projectable_group_rosters(
     db: AsyncSession, view: ShareView
-) -> list[Group]:
-    """The groups this view would serve right now.
+) -> list[tuple[Group, list[Member]]]:
+    """The groups this view would serve right now, each with its roster.
 
     THE choke point for group exposure, and a single function for the same
     reason `projectable_relationships` is one: the owner-side audit counts
     exactly what an anonymous visitor gets, because both come through here.
-    Two gates, both in the query:
+    `projectable_groups` and `project_groups` are both thin wrappers over this,
+    so the count and the payload cannot disagree about which groups are served
+    - they used to be two functions applying two different rules, which is
+    precisely how the count could over-report.
+
+    Four gates. The first three are in the query:
 
     - the view's `include_groups` flag (an off flag yields nothing, and the API
       layer 404s the endpoint outright rather than serving an empty list, so
@@ -578,11 +714,26 @@ async def projectable_groups(
       outlives the request that deleted it; `_not_deletion_queued` explains why
       the public surface must not keep serving it in the meantime.
 
-    There is deliberately no per-view group allowlist and no third gate on who
-    is IN the group. A group's published payload is what the owner wrote about
-    the group; its roster is assembled in `project_groups` as an intersection
-    with the members this view already serves, so a public group can never be
-    the thing that names somebody new.
+    The fourth is the roster itself: a public group whose intersection with the
+    members this view serves is EMPTY is dropped. A group with nobody in it, as
+    far as this view is concerned, is a name and a description with nothing
+    behind them - it tells a visitor that a "Littles" or a "Trauma holders"
+    exists in this system while the view was set up to name nobody in it, which
+    is a fact about the system the owner did not publish by publishing a
+    roster. Dropped from the PAYLOAD, not merely hidden by the client: a
+    scraper reads the JSON, so a group the page does not draw must not be in
+    the response either.
+
+    There is deliberately no per-view group allowlist and no gate on WHO is in
+    the group beyond that intersection: a public group can never be the thing
+    that names somebody new, because its roster is built from the members the
+    view already serves.
+
+    With `include_members` off every roster is empty, so this returns nothing
+    and the groups endpoint serves `{"groups": []}`. The flag oracle is
+    unchanged - the endpoint still 404s on `include_groups` being off, and an
+    empty list is what a view with no servable group has always returned - so
+    "does this profile show groups?" is still not separately answerable.
 
     The tenant predicate is redundant with the write paths and is here anyway,
     for the reason every query on this surface pins its tenant: it feeds
@@ -599,12 +750,47 @@ async def projectable_groups(
             ),
         )
     )
-    return list(result.scalars().unique().all())
+    groups = list(result.scalars().unique().all())
+    if not groups:
+        return []
+
+    # The same rows `project_members` serves (identical filter, and skipped
+    # entirely when the roster is off), reused so a group's member list and the
+    # /members list cannot disagree about who is in the view or what they are
+    # called.
+    members = await _active_members(db, view) if view.include_members else []
+    by_id = {m.id: m for m in members}
+
+    roster: dict[uuid.UUID, list[Member]] = {}
+    if by_id:
+        rows = await db.execute(
+            select(group_members.c.group_id, group_members.c.member_id).where(
+                group_members.c.group_id.in_([g.id for g in groups]),
+                group_members.c.member_id.in_(by_id),
+            )
+        )
+        for group_id, member_id in rows:
+            member = by_id.get(member_id)
+            if member is not None:
+                roster.setdefault(group_id, []).append(member)
+
+    return [(g, roster[g.id]) for g in groups if roster.get(g.id)]
+
+
+async def projectable_groups(
+    db: AsyncSession, view: ShareView
+) -> list[Group]:
+    """The groups this view would serve right now, for the owner-side count.
+
+    Exactly the groups `project_groups` publishes and no others, because both
+    come through `_projectable_group_rosters` - including its empty-roster
+    rule, which is the part that used to be applied by one and not the other.
+    """
+    return [group for group, _ in await _projectable_group_rosters(db, view)]
 
 
 def _build_group_views(
-    groups: list[Group],
-    roster: dict[uuid.UUID, list[Member]],
+    pairs: list[tuple[Group, list[Member]]],
     *,
     owner_id: uuid.UUID,
 ) -> PublicGroupsView:
@@ -617,8 +803,7 @@ def _build_group_views(
     here; the membership rows were resolved into `roster` before the hop.
     """
     out: list[PublicGroupView] = []
-    for group in groups:
-        shown = roster.get(group.id, [])
+    for group, shown in pairs:
         shown.sort(key=_sort_key)
         out.append(
             PublicGroupView(
@@ -656,33 +841,10 @@ async def project_groups(
     db: AsyncSession, view: ShareView, *, owner_id: uuid.UUID
 ) -> PublicGroupsView:
     """Published groups, each with the part of its roster this view shows."""
-    groups = await projectable_groups(db, view)
-    if not groups:
+    pairs = await _projectable_group_rosters(db, view)
+    if not pairs:
         return PublicGroupsView(groups=[])
-
-    # The same rows `project_members` serves (identical filter, and skipped
-    # entirely when the roster is off), reused so a group's member list and the
-    # /members list cannot disagree about who is in the view or what they are
-    # called.
-    members = await _active_members(db, view) if view.include_members else []
-    by_id = {m.id: m for m in members}
-
-    roster: dict[uuid.UUID, list[Member]] = {}
-    if by_id:
-        rows = await db.execute(
-            select(group_members.c.group_id, group_members.c.member_id).where(
-                group_members.c.group_id.in_([g.id for g in groups]),
-                group_members.c.member_id.in_(by_id),
-            )
-        )
-        for group_id, member_id in rows:
-            member = by_id.get(member_id)
-            if member is not None:
-                roster.setdefault(group_id, []).append(member)
-
-    return await asyncio.to_thread(
-        _build_group_views, groups, roster, owner_id=owner_id
-    )
+    return await asyncio.to_thread(_build_group_views, pairs, owner_id=owner_id)
 
 
 def _build_system_view(
@@ -690,6 +852,7 @@ def _build_system_view(
     *,
     member_count: int | None,
     member_permalinks: bool,
+    expose_system_id: bool,
 ) -> PublicSystemView:
     """The system card, built off the event loop - see `_build_member_views`.
 
@@ -698,7 +861,7 @@ def _build_system_view(
     first request of every page load.
     """
     return PublicSystemView(
-        id=str(system.id),
+        id=str(system.id) if expose_system_id else None,
         name=system.name,
         # Rendered as markdown on the public page, same as a member bio - and
         # the resolve pass is also what signs an internal image ref here, which
@@ -716,8 +879,29 @@ def _build_system_view(
 
 
 async def project_system(
-    db: AsyncSession, view: ShareView, system: System
+    db: AsyncSession,
+    view: ShareView,
+    system: System,
+    *,
+    expose_system_id: bool,
 ) -> PublicSystemView:
+    """The system header every public page is topped with.
+
+    `expose_system_id` has no default on purpose: every caller has to decide,
+    because getting it wrong is the difference between an unlisted link and a
+    listed one. A share link is sold to the owner as "an opaque token instead
+    of your system id", and the id was in the payload anyway - so two links
+    handed to two different people, or one link and the owner's public profile,
+    could be tied to the same system by anyone who read the JSON, which is the
+    one thing the opaque token exists to prevent. The public-grant routes pass
+    True because the id is already in the URL the visitor typed; the link
+    routes pass False and the key is served as null.
+
+    Null rather than dropping the key: the key set of this payload is the
+    fail-closed contract (see the module docstring on the schemas), and a
+    payload whose shape depends on which grant served it would make that
+    contract two contracts.
+    """
     # A roster this view refuses to serve must not be countable either:
     # "23 members you cannot see" is still a fact about the system, and it is
     # exactly the fact somebody turning the roster off was trying not to
@@ -730,6 +914,7 @@ async def project_system(
         system,
         member_count=member_count,
         member_permalinks=view.member_permalinks,
+        expose_system_id=expose_system_id,
     )
 
 

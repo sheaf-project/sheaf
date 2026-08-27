@@ -77,6 +77,7 @@ from sheaf.schemas.share import (
 )
 from sheaf.services.security_events import record_security_event
 from sheaf.services.share_projection import (
+    member_service_states,
     project_fronting,
     project_groups,
     project_members,
@@ -84,6 +85,7 @@ from sheaf.services.share_projection import (
     project_system,
     projectable_fields,
     projectable_groups,
+    projectable_member_count,
     projectable_relationships,
 )
 from sheaf.services.sharing import (
@@ -93,6 +95,7 @@ from sheaf.services.sharing import (
     create_grant,
     expand_group_into_view,
     grant_live_clause,
+    reject_mixed_exposure_directions,
     revoke_grant,
     rotate_grant_token,
     suppression_reason,
@@ -212,7 +215,19 @@ async def _step_up_if_required(
         await verify_destructive_auth(user, system, password, totp_code, db)
 
 
-def _view_to_read(view: ShareView, *, is_shared: bool) -> ShareViewRead:
+async def _view_to_read(
+    db: AsyncSession, view: ShareView, *, is_shared: bool
+) -> ShareViewRead:
+    """The owner's picture of one view, including what it is REALLY serving.
+
+    `served` / `not_served_reason` on each member row come from
+    `share_projection.member_service_states`, i.e. from the projection's own
+    filter, rather than being left to the client to infer. The client's
+    inference was member privacy, and only member privacy, so an archived
+    member and one queued for deletion both looked like they were on the page
+    when the public surface had already dropped them.
+    """
+    states = await member_service_states(db, view, list(view.members))
     return ShareViewRead(
         id=view.id,
         name=view.name,
@@ -239,6 +254,8 @@ def _view_to_read(view: ShareView, *, is_shared: bool) -> ShareViewRead:
                 "status": m.status,
                 "activates_at": m.activates_at,
                 "added_via_group_id": m.added_via_group_id,
+                "served": states[m.member_id].served,
+                "not_served_reason": states[m.member_id].reason,
             }
             for m in view.members
         ],
@@ -303,7 +320,9 @@ async def list_share_views(
         )
     )
     shared = set(shared_rows.scalars().all())
-    return [_view_to_read(v, is_shared=v.id in shared) for v in views]
+    return [
+        await _view_to_read(db, v, is_shared=v.id in shared) for v in views
+    ]
 
 
 @router.post(
@@ -366,7 +385,7 @@ async def create_share_view(
             detail="A share view with that name already exists.",
         ) from None
     await db.refresh(view, ["members", "fields", "groups"])
-    return _view_to_read(view, is_shared=False)
+    return await _view_to_read(db, view, is_shared=False)
 
 
 @router.get("/share-views/{view_id}", response_model=ShareViewRead)
@@ -377,7 +396,9 @@ async def get_share_view(
 ) -> ShareViewRead:
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db, load=True)
-    return _view_to_read(view, is_shared=await view_is_shared(db, view.id))
+    return await _view_to_read(
+        db, view, is_shared=await view_is_shared(db, view.id)
+    )
 
 
 @router.patch(
@@ -404,6 +425,11 @@ async def update_share_view(
     Loosening is also where the instance-level switch applies: with the public
     surface off, a flag turned on now would come into force under whoever is
     around when it is turned back on. Tightening is never refused.
+
+    One body may not carry both directions: a request that turns one flag on
+    and another off is refused with 400 before the step-up runs, so a failed
+    re-auth on the loosening cannot take the tightening down with it. Send them
+    as two requests; the tightening one is never gated.
 
     `member_permalinks` is handled outside that machinery on purpose. It is not
     in `EXPOSURE_FLAGS`, has no pending twin, and is applied in both directions
@@ -439,6 +465,16 @@ async def update_share_view(
     # flip parks pending, with none it lands live once the re-auth clears.
     exposing = bool(loosening) and shared
     step_up = exposing and visibility_step_up_required(system)
+    # One body may not both loosen and tighten. Refused before the step-up
+    # runs, so a failed re-auth on the loosening can never swallow the
+    # tightening with it - see `reject_mixed_exposure_directions`.
+    reject_mixed_exposure_directions(
+        raises=step_up,
+        lowers=any(
+            value is False and getattr(view, flag)
+            for flag, value in requested.items()
+        ),
+    )
     await _step_up_if_required(
         db=db,
         user=user,
@@ -481,7 +517,7 @@ async def update_share_view(
             detail="A share view with that name already exists.",
         ) from None
     await db.refresh(view, ["members", "fields", "groups"])
-    return _view_to_read(view, is_shared=shared)
+    return await _view_to_read(db, view, is_shared=shared)
 
 
 @router.delete(
@@ -562,7 +598,12 @@ async def preview_share_view(
     view = await _get_view(view_id, system, db)
 
     return SharePreview(
-        system=await project_system(db, view, system),
+        # The owner's own system, on a screen they reached by logging into it,
+        # so the id is theirs already. The preview is per-VIEW rather than per
+        # grant and cannot know which kind of grant will serve it; the id is
+        # the one field where the two grant types differ, and it is not one the
+        # page draws.
+        system=await project_system(db, view, system, expose_system_id=True),
         # Each of these mirrors one anonymous endpoint's gate, in the same
         # order it applies there: the flag decides whether the section exists
         # at all, and the projection decides what is in it.
@@ -643,7 +684,7 @@ async def add_view_member(
     )
     await db.commit()
     await db.refresh(view, ["members", "fields", "groups"])
-    return _view_to_read(view, is_shared=shared)
+    return await _view_to_read(db, view, is_shared=shared)
 
 
 @router.delete(
@@ -856,7 +897,7 @@ async def add_view_field(
     await add_field_to_view(db=db, system=system, view=view, field_id=field.id)
     await db.commit()
     await db.refresh(view, ["members", "fields", "groups"])
-    return _view_to_read(view, is_shared=shared)
+    return await _view_to_read(db, view, is_shared=shared)
 
 
 @router.delete(
@@ -1144,18 +1185,20 @@ async def sharing_audit(
                 # are being shown. Zeroing it would read as "your curation is
                 # gone" for a flag that destroyed nothing.
                 member_count=len(view.members),
-                # The SERVED count, not the curated one, and the deliberate
-                # difference from `member_count` above. A member held back by
-                # their own privacy is visible as such right beside this
-                # number - the roster flag is reported here and the sharing
-                # screen badges every member the ceiling is holding - so the
-                # curated count reads as curation rather than as a claim about
-                # what visitors get. A field has no such companion: the audit
-                # entry says nothing about which definitions are public, so a
-                # count of selection rows would be the only number on the
-                # screen and it would over-report the exposure. Counting
-                # through the projection's own filter is also what stops the
-                # two from drifting.
+                # And the SERVED count beside it, through the projection's own
+                # filter. Both, because they answer different questions and the
+                # audit used to publish only the first one while every other
+                # number on the line was the second - so "5 members, 2 fields"
+                # mixed a curated count with a served one and over-reported
+                # whenever anybody in the view was private, archived, or queued
+                # for deletion. The client says "3 of 5" when they differ.
+                served_member_count=await projectable_member_count(db, view),
+                # The SERVED count, not the curated one. A field has no curated
+                # companion worth reporting: the audit entry says nothing about
+                # which definitions are public, so a count of selection rows
+                # would be the only number on the screen and it would
+                # over-report the exposure. Counting through the projection's
+                # own filter is also what stops the two from drifting.
                 field_count=len(fields),
                 include_members=view.include_members,
                 include_bio=view.include_bio,
