@@ -403,6 +403,16 @@ function unwrapValue(raw: unknown): unknown {
   return raw;
 }
 
+/**
+ * Server-side cap on a custom-field value's text (see
+ * sheaf/schemas/custom_field.py). Mirrored on the free-text inputs so new text
+ * stops at the keyboard rather than coming back as a rejected save the user has
+ * to guess the reason for. A value that is ALREADY longer - stored before the
+ * cap, or imported - is still shown in full and still saves unchanged, because
+ * maxLength bounds typing rather than truncating what is put in the field.
+ */
+const CUSTOM_FIELD_VALUE_MAX = 20000;
+
 /** Coerce a server-side stored value into the editor's per-type shape. */
 function valueForEditor(
   field: { field_type: FieldType },
@@ -562,6 +572,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
                 // matches mobile's current behaviour.
                 <Input
                   id={id}
+                  maxLength={CUSTOM_FIELD_VALUE_MAX}
                   value={String(effectiveValue(f.id, ""))}
                   onChange={(e) => updateField(f.id, e.target.value)}
                 />
@@ -600,6 +611,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
                 // parity with the freeform select pattern).
                 <Input
                   id={id}
+                  maxLength={CUSTOM_FIELD_VALUE_MAX}
                   placeholder="Comma-separated tags"
                   value={(() => {
                     const current = effectiveValue(f.id, []);
@@ -620,6 +632,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
               // text (default)
               <Input
                 id={id}
+                maxLength={CUSTOM_FIELD_VALUE_MAX}
                 value={String(effectiveValue(f.id, ""))}
                 onChange={(e) => updateField(f.id, e.target.value)}
               />

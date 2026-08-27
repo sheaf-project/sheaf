@@ -15,6 +15,7 @@ from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.observability.metrics import custom_fields_created_total
 from sheaf.schemas.custom_field import (
+    MAX_CUSTOM_FIELD_VALUE_CHARS,
     CustomFieldCreate,
     CustomFieldRead,
     CustomFieldUpdate,
@@ -22,6 +23,7 @@ from sheaf.schemas.custom_field import (
     CustomFieldValueSet,
     _validate_options_for_type,
     _validate_value_for_field,
+    value_over_text_cap,
 )
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.custom_fields import (
@@ -383,6 +385,43 @@ async def set_member_field_values(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Field '{defn.name}': {e}",
             ) from e
+
+    # Length is checked HERE rather than in the schema validator because it is
+    # the only rule on this endpoint that depends on what is already stored.
+    # The cap bounds new text; it does not retroactively invalidate what was
+    # stored before it existed. Nothing rewrites an over-cap row, imports carry
+    # one in at full length, and a value that comes back byte-identical to the
+    # stored one is accepted - otherwise somebody holding a long value from
+    # before the cap could not save a change to any OTHER field on that member
+    # without first destroying that one. Change the long value and the cap
+    # applies again, because that is new text.
+    stored_by_field: dict[uuid.UUID, CustomFieldValue] | None = None
+    for item in body:
+        if not value_over_text_cap(item.value):
+            continue
+        if stored_by_field is None:
+            stored_result = await db.execute(
+                select(CustomFieldValue).where(
+                    CustomFieldValue.member_id == member_id
+                )
+            )
+            stored_by_field = {
+                v.field_id: v for v in stored_result.scalars().all()
+            }
+        stored = stored_by_field.get(item.field_id)
+        unchanged = (
+            stored is not None
+            and decrypt_field_value(stored.value, stored.id) == item.value
+        )
+        if not unchanged:
+            defn = field_by_id[item.field_id]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Field '{defn.name}': text values are limited to "
+                    f"{MAX_CUSTOM_FIELD_VALUE_CHARS:,} characters."
+                ),
+            )
 
     # Upsert values. Stored value is the encrypted JSON-serialised plaintext.
     for item in body:

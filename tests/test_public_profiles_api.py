@@ -1015,10 +1015,15 @@ def test_relationships_need_the_roster_too():
     roster off it publishes none of them, and an edge endpoint is deliberately
     just an id and a name meant to be joined against /members - so the name in
     the edge would be all a visitor got, which is the exact leak the edge gates
-    exist to prevent."""
+    exist to prevent.
+
+    404, not an empty list, and on both grant types: an empty body answers "is
+    the roster off?" for anyone who asks, which is the same oracle the members,
+    groups and fronting routes refuse.
+    """
     owner = _register()
     a, b = _member(owner, "EdgeA"), _member(owner, "EdgeB")
-    system_id, _ = _published_system(
+    system_id, view_id = _published_system(
         owner,
         members=[a, b],
         include_members=False,
@@ -1026,8 +1031,12 @@ def test_relationships_need_the_roster_too():
     )
     _edge(owner, a, b, _rel_type(owner, "Partner"))
 
-    body = _anon().get(f"/v1/public/systems/{system_id}/relationships").json()
-    assert body["relationships"] == []
+    r = _anon().get(f"/v1/public/systems/{system_id}/relationships")
+    assert r.status_code == 404, r.text
+
+    token = _link_token(owner, view_id)
+    r = _anon().get(f"/v1/public/shared/{token}/relationships")
+    assert r.status_code == 404, r.text
     owner.close()
 
 

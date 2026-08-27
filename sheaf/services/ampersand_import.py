@@ -68,6 +68,7 @@ from sheaf.schemas.ampersand_import import (
     AmpersandImportResult,
     AmpersandPreviewSummary,
 )
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
@@ -423,7 +424,14 @@ async def run_import(
     # --- Custom fields (+ member.age) ------------------------------------
     if options.custom_fields:
         await _import_custom_fields(
-            data, system, db, amp_id_to_member, created_member_ids, result, report
+            data,
+            system,
+            db,
+            amp_id_to_member,
+            created_member_ids,
+            result,
+            report,
+            warnings,
         )
 
     # --- Front history ----------------------------------------------------
@@ -693,6 +701,7 @@ async def _import_custom_fields(
     created_member_ids: set[uuid.UUID],
     result: AmpersandImportResult,
     report: ClampReport,
+    warnings: list[str],
 ) -> None:
     """Import customField defs (all TEXT) + per-member values, plus a
     synthesised "Age" field from ``member.age``."""
@@ -743,6 +752,7 @@ async def _import_custom_fields(
     # Values. member.customFields is {fieldUuid: value}; member.age is a
     # number. Both keyed to the (field, member) UNIQUE, so guard the pair.
     seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    oversized = 0
     for amp_m in _coll(data, "members"):
         amp_mid = _coerce_str(amp_m.get("uuid"))
         member = amp_id_to_member.get(amp_mid) if amp_mid else None
@@ -765,6 +775,11 @@ async def _import_custom_fields(
             if pair in seen:
                 continue
             seen.add(pair)
+            # Stored at full length whatever its size - an import is a restore,
+            # so the cap the editor applies to new text does not get to edit
+            # what somebody already had. Counted for the report instead.
+            if value_over_text_cap(value):
+                oversized += 1
             cfv_id = uuid.uuid4()
             db.add(
                 CustomFieldValue(
@@ -774,6 +789,9 @@ async def _import_custom_fields(
                     value=encrypt_field_value({"v": value}, cfv_id),
                 )
             )
+
+    if oversized:
+        warnings.append(il.oversized_field_values_warning(oversized))
 
 
 async def _import_fronts(
