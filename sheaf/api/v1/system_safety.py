@@ -68,6 +68,7 @@ _EXTERNAL_TO_INTERNAL = {
     "applies_to_reminders": "safety_applies_to_reminders",
     "applies_to_polls": "safety_applies_to_polls",
     "applies_to_messages": "safety_applies_to_messages",
+    "applies_to_relationships": "safety_applies_to_relationships",
     "applies_to_archive": "safety_applies_to_archive",
     "applies_to_profile_visibility": "safety_applies_to_profile_visibility",
     "auto_pin_first_revision": "auto_pin_first_revision",
@@ -91,6 +92,7 @@ def _settings_from_system(system: System) -> SystemSafetySettings:
         applies_to_reminders=system.safety_applies_to_reminders,
         applies_to_polls=system.safety_applies_to_polls,
         applies_to_messages=system.safety_applies_to_messages,
+        applies_to_relationships=system.safety_applies_to_relationships,
         applies_to_archive=system.safety_applies_to_archive,
         applies_to_profile_visibility=system.safety_applies_to_profile_visibility,
         auto_pin_first_revision=system.auto_pin_first_revision,
@@ -285,6 +287,19 @@ async def cancel_pending_action(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Call off a queued deletion. Instant and ungated, deliberately.
+
+    Cancelling puts a member (or group, or field) back on the public surface
+    that the queued delete took them off, so it looks like an exposing act -
+    but it is a reversal of the owner's own decision, taken inside the window
+    that exists precisely so they can take it back, and nothing about their
+    configuration changed while they waited. Making the undo slower than the
+    thing it undoes would mean an owner who pressed delete by mistake has to
+    re-auth and then wait a week to get their member back, which is the safety
+    feature punishing the person it protects. An owner who wants that member
+    hidden rather than restored has the tool for it: set them private (or
+    archive them), which is un-exposing and therefore instant.
+    """
     system = await _get_user_system(user, db)
     pending = await db.get(PendingAction, pending_id)
     if pending is None or pending.system_id != system.id:

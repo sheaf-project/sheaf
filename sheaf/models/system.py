@@ -158,6 +158,13 @@ class System(UUIDMixin, TimestampMixin, Base):
     safety_applies_to_messages: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # Deleting a relationship TYPE, which cascades every member and group edge
+    # drawn with it - the widest blast radius of any single delete in the
+    # product, and the reason it earns a category of its own rather than
+    # riding on the per-edge controls.
+    safety_applies_to_relationships: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # Unlike the other categories (which gate the deletion grace period),
     # this one gates whether archiving a member requires re-auth. Archive
     # has no grace period, so this is a pure re-auth speed-bump.

@@ -2,12 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import * as api from "@/lib/relationships";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import type {
+  DestructiveConfirm,
   RelationshipEdgeCreate,
   RelationshipEdgeUpdate,
   RelationshipTypeCreate,
   RelationshipTypeUpdate,
 } from "@/types/api";
+import { isDeleteQueued } from "@/types/api";
 
 export const relationshipKeys = {
   types: ["relationship-types"] as const,
@@ -59,12 +62,28 @@ export function useUpdateRelationshipType() {
 
 export function useDeleteRelationshipType() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
-    mutationFn: (id: string) => api.deleteRelationshipType(id),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.deleteRelationshipType(id, confirm),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: relationshipKeys.types });
       invalidateEdges(qc); // deleting a type cascades its edges
-      toast.success("Relationship type deleted");
+      if (isDeleteQueued(result)) {
+        // Queued, not gone: the type and its edges are still there, but they
+        // have already left any published profile.
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Relationship type scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
+        );
+      } else {
+        toast.success("Relationship type deleted");
+      }
     },
   });
 }

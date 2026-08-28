@@ -44,6 +44,7 @@ from sheaf.models.pending_action import (
     PendingActionType,
 )
 from sheaf.models.poll import Poll
+from sheaf.models.relationship import RelationshipType
 from sheaf.models.reminder import Reminder
 from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
@@ -72,6 +73,10 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "reminders",
     "polls",
     "messages",
+    # Deleting a relationship TYPE, which takes every edge drawn with it. The
+    # per-edge visibility controls live elsewhere; this is the category for
+    # destroying the vocabulary itself.
+    "relationships",
     # Unlike the others, "archive" has no grace-able PendingAction; it only
     # gates whether archiving a member requires re-auth (checked directly in
     # the archive endpoint). Listed here so the settings surface treats it
@@ -104,6 +109,7 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     # System Safety v2 future-work entry.
     PendingActionType.MESSAGE_DELETE: "messages",
     PendingActionType.MESSAGE_THREAD_DELETE: "messages",
+    PendingActionType.RELATIONSHIP_TYPE_DELETE: "relationships",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -124,6 +130,9 @@ _MODEL_BY_ACTION: dict[str, type] = {
     # `finalize_pending_action`.
     PendingActionType.MESSAGE_DELETE: Message,
     PendingActionType.MESSAGE_THREAD_DELETE: Message,
+    # The edges go with the type by DB cascade, so finalize deletes the one
+    # row and the FK does the rest - see `finalize_pending_action`.
+    PendingActionType.RELATIONSHIP_TYPE_DELETE: RelationshipType,
 }
 
 

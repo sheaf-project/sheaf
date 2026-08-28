@@ -309,6 +309,7 @@ _SAFETY_APPLIES_KEYS = (
     "applies_to_reminders",
     "applies_to_polls",
     "applies_to_messages",
+    "applies_to_relationships",
     "applies_to_archive",
     "applies_to_profile_visibility",
 )

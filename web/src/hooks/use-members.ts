@@ -105,13 +105,32 @@ export function useArchiveMember() {
 
 export function useUnarchiveMember() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
-    mutationFn: (id: string) => api.unarchiveMember(id),
-    onSuccess: (_data, id) => {
+    mutationFn: ({
+      id,
+      confirm,
+      skipErrorToast,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+      skipErrorToast?: boolean;
+    }) => api.unarchiveMember(id, confirm, skipErrorToast),
+    onSuccess: (member, { id }) => {
       qc.invalidateQueries({ queryKey: memberKeys.all });
       qc.invalidateQueries({ queryKey: ["members", "top-fronters"] });
       qc.invalidateQueries({ queryKey: memberKeys.detail(id) });
-      toast.success("Member unarchived");
+      if (member.share_exposure_activates_at) {
+        // They are back on the owner's own roster now; the shared pages wait
+        // out the grace window, so say which is which rather than letting
+        // "unarchived" imply the profile already shows them.
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Member unarchived - they return to your shared pages on ${formatDate(member.share_exposure_activates_at)}.`,
+        );
+      } else {
+        toast.success("Member unarchived");
+      }
     },
   });
 }

@@ -132,12 +132,14 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
       the member from the owner's own roster, switcher and pickers. A member the
       owner has put away is not one they are still publishing to strangers, so
       the public surface honours it at the same instant the private one does.
-      Nothing is re-staged on the way back: archiving does not touch the
-      `ShareViewMember` row, so unarchiving returns the member to the profile
-      immediately rather than sending them back through the grace window. That
-      asymmetry is deliberate and is the same one that governs every flag here -
-      going dark is instant, and coming back is not a new exposure decision
-      because the owner never revoked the curation.
+      Coming back is the exposing direction and is gated to match: the
+      unarchive endpoint re-auths when the `profile_visibility` category is
+      armed and demotes the member's `ShareViewMember` rows to PENDING behind
+      the grace window, so this filter goes on excluding them (now on the row
+      status rather than `archived_at`) until the sweep promotes them. The
+      member row itself comes back at once - only the public surface waits.
+      Same asymmetry as every other flag here: going dark is instant, coming
+      back out is not.
     - no queued deletion - see `_not_deletion_queued`.
 
     The tenant predicate is redundant with the write paths, which refuse a
@@ -583,6 +585,16 @@ async def projectable_relationships(
 
     Group edges are deliberately absent: nothing projects them at all.
 
+    A fourth gate rides on the type rather than the edge: a relationship type
+    with a queued (safeguarded) delete stops projecting its edges at once, for
+    the same reason `_active_member_filter` drops a member queued for deletion.
+    Deleting the type is an un-exposing act on the way to a destructive one,
+    and un-exposing lands now - the grace window buys the owner time to change
+    their mind, not strangers a last look at a graph the owner has asked to be
+    rid of. Because the owner-side audit counts through this function, its
+    `relationship_count` follows the same instant, with no second rule to keep
+    in step.
+
     `include_members` gates this too, and that follows from the third bullet
     rather than being a separate policy: with the roster off, the view does not
     publish ANY endpoint in full, so no edge can clear the bar. It matters
@@ -618,6 +630,11 @@ async def projectable_relationships(
             MemberRelationship.visibility == PrivacyLevel.PUBLIC,
             MemberRelationship.source_id.in_(active_ids),
             MemberRelationship.target_id.in_(active_ids),
+            _not_deletion_queued(
+                PendingActionType.RELATIONSHIP_TYPE_DELETE,
+                RelationshipType.id,
+                view.system_id,
+            ),
         )
     )
     return list(result.all())

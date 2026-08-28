@@ -53,6 +53,7 @@ def test_export_includes_system_safety_settings(auth_client: httpx.Client):
         "applies_to_members",
         "applies_to_journals",
         "applies_to_notifications",
+        "applies_to_relationships",
         "auto_pin_first_revision",
     ):
         assert key in safety

@@ -16,6 +16,7 @@ const actionLabels: Record<PendingActionType, string> = {
   poll_delete: "Delete poll",
   message_delete: "Delete message",
   message_thread_delete: "Delete message thread",
+  relationship_type_delete: "Delete relationship type",
 };
 
 function timeRemaining(finalizeAfter: string): string {

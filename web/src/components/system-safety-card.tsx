@@ -65,6 +65,11 @@ const categoryLabels: {
     desc: "Deleting a board message or thread",
   },
   {
+    key: "applies_to_relationships",
+    label: "Relationships",
+    desc: "Deleting a relationship type, which takes every relationship drawn with it",
+  },
+  {
     key: "applies_to_archive",
     label: "Archive members",
     desc: "Re-auth to archive a member. No grace period - speed-bump only.",
@@ -429,6 +434,7 @@ const CATEGORY_KEYS = [
   "applies_to_reminders",
   "applies_to_polls",
   "applies_to_messages",
+  "applies_to_relationships",
   "applies_to_archive",
   "applies_to_profile_visibility",
 ] as const;

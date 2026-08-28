@@ -728,6 +728,9 @@ def _system_dict(system: System) -> dict:
             "applies_to_reminders": system.safety_applies_to_reminders,
             "applies_to_polls": system.safety_applies_to_polls,
             "applies_to_messages": system.safety_applies_to_messages,
+            "applies_to_relationships": (
+                system.safety_applies_to_relationships
+            ),
             "applies_to_archive": system.safety_applies_to_archive,
             "applies_to_profile_visibility": (
                 system.safety_applies_to_profile_visibility
