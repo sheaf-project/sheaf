@@ -49,6 +49,7 @@ from sheaf.services.sharing import (
 )
 from sheaf.services.system_safety import (
     is_safeguarded,
+    pending_finalize_after_by_target,
     queue_pending_action,
     verify_destructive_auth,
 )
@@ -99,7 +100,16 @@ async def list_relationship_types(
         .where(RelationshipType.system_id == system.id)
         .order_by(RelationshipType.name)
     )
-    return list(rows.scalars().all())
+    types = list(rows.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system, PendingActionType.RELATIONSHIP_TYPE_DELETE
+    )
+    out: list[RelationshipTypeRead] = []
+    for rt in types:
+        tr = RelationshipTypeRead.model_validate(rt)
+        tr.pending_delete_at = pending.get(rt.id)
+        out.append(tr)
+    return out
 
 
 @router.post(
@@ -155,7 +165,13 @@ async def get_relationship_type(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
-    return await _get_type_in_system(type_id, system, db)
+    rt = await _get_type_in_system(type_id, system, db)
+    pending = await pending_finalize_after_by_target(
+        db, system, PendingActionType.RELATIONSHIP_TYPE_DELETE
+    )
+    tr = RelationshipTypeRead.model_validate(rt)
+    tr.pending_delete_at = pending.get(rt.id)
+    return tr
 
 
 @router.patch(
@@ -221,6 +237,8 @@ async def delete_relationship_type(
     its edges stay exactly where they are until the finalize sweep, and
     cancelling in Settings restores nothing because nothing was destroyed.
     With the category off or the window at 0 it deletes immediately, as before.
+    A second DELETE while one is already queued is a 409 rather than a second
+    identical row.
 
     The public surface does NOT wait: `projectable_relationships` drops edges
     whose type has a queued delete the moment the action is queued. Un-exposing
@@ -239,6 +257,21 @@ async def delete_relationship_type(
     rt = await _get_type_in_system(type_id, system, db)
 
     if is_safeguarded(system, PendingActionType.RELATIONSHIP_TYPE_DELETE):
+        # One queued delete per type. Without this a second DELETE writes a
+        # second identical PendingAction, and the Safety page then shows two
+        # rows where cancelling one leaves the type still on its way out - the
+        # cancel silently does nothing the owner can see.
+        already = await pending_finalize_after_by_target(
+            db, system, PendingActionType.RELATIONSHIP_TYPE_DELETE
+        )
+        if rt.id in already:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This relationship type is already queued for deletion; "
+                    "cancel it in Settings > Safety first"
+                ),
+            )
         pending = await queue_pending_action(
             db=db,
             system=system,

@@ -59,6 +59,10 @@ class RelationshipTypeRead(BaseModel):
     color: str | None = None
     created_at: datetime
     updated_at: datetime
+    # finalize_after timestamp if this type is queued for delete in System
+    # Safety's grace window; null otherwise. Drives the pending-delete badge
+    # + dim styling in the type lists, same as tags, groups and fields.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

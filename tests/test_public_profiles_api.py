@@ -2447,6 +2447,76 @@ def test_a_relationship_type_delete_is_immediate_with_the_window_at_zero():
     owner.close()
 
 
+@pytest.mark.public_profiles
+def test_a_second_relationship_type_delete_while_queued_is_a_conflict():
+    """One queued delete per type. A second DELETE used to write a second
+    identical PendingAction, so Safety showed two rows and cancelling one left
+    the type still on its way out."""
+    owner = _register()
+    _full_surface(owner)
+    rtype = _only_type_id(owner)
+    _arm_relationship_delete_safety(owner)
+
+    first = owner.delete(f"/v1/relationship-types/{rtype}")
+    assert first.status_code == 202, first.text
+
+    second = owner.delete(f"/v1/relationship-types/{rtype}")
+    assert second.status_code == 409, second.text
+    assert "already queued" in second.json()["detail"]
+
+    queued = [
+        p
+        for p in owner.get("/v1/system/safety").json()["pending_actions"]
+        if p["action_type"] == "relationship_type_delete"
+    ]
+    assert len(queued) == 1, queued
+    assert queued[0]["id"] == first.json()["pending_action_id"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_relationship_types_surface_pending_delete_at():
+    """The type lists carry the same pending-delete marker every other
+    safeguarded surface does, so the UI can badge it and refuse a second
+    delete rather than the owner finding out from a 409."""
+    owner = _register()
+    _full_surface(owner)
+    rtype = _only_type_id(owner)
+    _arm_relationship_delete_safety(owner)
+
+    assert owner.get("/v1/relationship-types").json()[0][
+        "pending_delete_at"
+    ] is None
+    assert (
+        owner.get(f"/v1/relationship-types/{rtype}").json()["pending_delete_at"]
+        is None
+    )
+
+    pending_id = owner.delete(f"/v1/relationship-types/{rtype}").json()[
+        "pending_action_id"
+    ]
+    listed = owner.get("/v1/relationship-types").json()[0]
+    single = owner.get(f"/v1/relationship-types/{rtype}").json()
+    assert listed["pending_delete_at"] is not None
+    assert single["pending_delete_at"] == listed["pending_delete_at"]
+
+    # Cancelling clears it again - the row is excluded by status, not deleted.
+    assert (
+        owner.delete(
+            f"/v1/system/safety/pending-actions/{pending_id}"
+        ).status_code
+        == 204
+    )
+    assert owner.get("/v1/relationship-types").json()[0][
+        "pending_delete_at"
+    ] is None
+    assert (
+        owner.get(f"/v1/relationship-types/{rtype}").json()["pending_delete_at"]
+        is None
+    )
+    owner.close()
+
+
 # ---------------------------------------------------------------------------
 # Owner preview - the same payload, before anyone else gets it
 # ---------------------------------------------------------------------------

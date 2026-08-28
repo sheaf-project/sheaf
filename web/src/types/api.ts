@@ -1122,6 +1122,9 @@ export interface RelationshipType {
   color: string | null;
   created_at: string;
   updated_at: string;
+  /** finalize_after of a queued System Safety delete for this type, else null.
+   *  Drives the pending-delete badge and disables Delete while it is set. */
+  pending_delete_at: string | null;
 }
 
 export interface RelationshipTypeCreate {

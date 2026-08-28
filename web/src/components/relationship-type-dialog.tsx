@@ -407,6 +407,11 @@ export function DeleteTypeDialog({
     !!safety?.settings.applies_to_relationships &&
     (safety?.settings.grace_period_days ?? 0) > 0;
 
+  // `auth_tier` and `delete_confirmation` are the same column under two names;
+  // prefer the safety payload this dialog already reads so a stale `system`
+  // cache cannot show the wrong tier. Same idiom as the unarchive dialogs.
+  const tier = safety?.settings.auth_tier ?? system?.delete_confirmation ?? "none";
+
   return (
     <DestructiveConfirmDialog
       open
@@ -420,7 +425,7 @@ export function DeleteTypeDialog({
           ? `It is scheduled rather than deleted now: nothing is destroyed for ${safety?.settings.grace_period_days} day(s) and you can call it off in Settings > Safety. Any shared profile stops showing these relationships straight away.`
           : "This cannot be undone.")
       }
-      tier={system?.delete_confirmation ?? "none"}
+      tier={tier}
       loading={deleteType.isPending}
       actionLabel={queues ? "Schedule deletion" : "Delete"}
       actionLabelLoading={queues ? "Scheduling..." : "Deleting..."}

@@ -35,6 +35,7 @@ import {
   useUpdateMemberRelationship,
 } from "@/hooks/use-relationships";
 import { RelationshipGraphCanvas } from "@/components/relationship-graph";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { RelationshipPrivacyControl } from "@/components/relationship-privacy-control";
 import {
   DeleteTypeDialog,
@@ -50,6 +51,7 @@ import {
 } from "@/lib/relationship-privacy";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
+import { cn } from "@/lib/utils";
 import type {
   DeleteConfirmation,
   DestructiveConfirm,
@@ -580,12 +582,21 @@ function ManageTypesDialog({ onClose }: { onClose: () => void }) {
           {(types ?? []).map((t) => (
             <div
               key={t.id}
-              className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+              className={cn(
+                "flex items-center justify-between rounded-md border px-3 py-2 text-sm",
+                t.pending_delete_at && "opacity-60",
+              )}
             >
               <div className="flex min-w-0 items-center gap-2">
                 <ColorDot color={t.color} />
                 <div className="min-w-0">
-                  <p className="truncate font-medium">{t.name}</p>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p className="truncate font-medium">{t.name}</p>
+                    <PendingDeleteBadge
+                      finalizeAt={t.pending_delete_at}
+                      className="shrink-0"
+                    />
+                  </div>
                   <p className="truncate text-xs text-muted-foreground">
                     {summariseType(t)}
                   </p>
@@ -605,6 +616,12 @@ function ManageTypesDialog({ onClose }: { onClose: () => void }) {
                   size="sm"
                   className="h-7 text-xs text-destructive hover:text-destructive"
                   onClick={() => setDeleting(t)}
+                  disabled={!!t.pending_delete_at}
+                  title={
+                    t.pending_delete_at
+                      ? "Already queued for deletion. Cancel from Settings -> Safety."
+                      : undefined
+                  }
                 >
                   Delete
                 </Button>
