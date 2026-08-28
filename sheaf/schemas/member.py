@@ -147,6 +147,13 @@ class MemberRead(BaseModel):
     # Set when the member is archived (soft-hidden from lists / switcher /
     # pickers; still shown in history). Null = active.
     archived_at: datetime | None = None
+    # Response-only: when a request re-exposed this member on a published
+    # profile and the grace window staged it, this is when they come back to
+    # the shared pages. Null everywhere else, including when the restore was
+    # immediate - it is not a stored column, it is what the request just did.
+    # Set by the unarchive endpoint; read by the client to say "they return to
+    # your shared pages on <date>" instead of implying it already happened.
+    share_exposure_activates_at: datetime | None = None
     # The account that owns this row's uploads. Required, and excluded from
     # the response: it exists purely so the serialisers below can tell "this
     # profile's own file" from "somebody else's key sitting in this column".

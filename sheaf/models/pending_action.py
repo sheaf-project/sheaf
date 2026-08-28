@@ -24,6 +24,7 @@ class PendingActionType(StrEnum):
     POLL_DELETE = "poll_delete"
     MESSAGE_DELETE = "message_delete"
     MESSAGE_THREAD_DELETE = "message_thread_delete"
+    RELATIONSHIP_TYPE_DELETE = "relationship_type_delete"
 
 
 class PendingActionStatus(StrEnum):

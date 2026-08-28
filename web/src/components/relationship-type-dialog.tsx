@@ -1,4 +1,5 @@
 import { type FormEvent, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   useCreateRelationshipType,
@@ -11,6 +12,9 @@ import type {
   RelationshipSymmetry,
   RelationshipType,
 } from "@/types/api";
+import { getMySystem } from "@/lib/systems";
+import { getSystemSafety } from "@/lib/system-safety";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -375,7 +379,11 @@ export function EditTypeDialog({
 }
 
 /** Confirm-and-delete for a type. Shared like EditTypeDialog, and blunt about
- *  the blast radius: deleting a type removes every edge drawn with it. */
+ *  the blast radius: deleting a type removes every edge drawn with it.
+ *
+ *  Safeguarded like member and field delete, so it asks for whatever re-auth
+ *  the current tier wants and says when the grace window will finalize it
+ *  rather than claiming the deletion has already happened. */
 export function DeleteTypeDialog({
   type,
   onOpenChange,
@@ -384,35 +392,45 @@ export function DeleteTypeDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const deleteType = useDeleteRelationshipType();
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
+  const { data: safety } = useQuery({
+    queryKey: ["system-safety"],
+    queryFn: getSystemSafety,
+  });
+
+  // Queued rather than deleted when the category is armed AND a window is
+  // set - the same pair the server checks in `is_safeguarded`.
+  const queues =
+    !!safety?.settings.applies_to_relationships &&
+    (safety?.settings.grace_period_days ?? 0) > 0;
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Delete relationship type</DialogTitle>
-          <DialogDescription>
-            Delete &quot;{type.name}&quot;? This also removes every relationship
-            between members or groups that uses this type. This cannot be undone.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={() =>
-              deleteType.mutate(type.id, {
-                onSuccess: () => onOpenChange(false),
-              })
-            }
-            disabled={deleteType.isPending}
-          >
-            {deleteType.isPending ? "Deleting..." : "Delete"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <DestructiveConfirmDialog
+      open
+      onOpenChange={onOpenChange}
+      title="Delete relationship type"
+      description={
+        `Delete "${type.name}"? This also removes every relationship between ` +
+        "members or groups that uses this type, and re-adding the type does " +
+        "not bring them back. " +
+        (queues
+          ? `It is scheduled rather than deleted now: nothing is destroyed for ${safety?.settings.grace_period_days} day(s) and you can call it off in Settings > Safety. Any shared profile stops showing these relationships straight away.`
+          : "This cannot be undone.")
+      }
+      tier={system?.delete_confirmation ?? "none"}
+      loading={deleteType.isPending}
+      actionLabel={queues ? "Schedule deletion" : "Delete"}
+      actionLabelLoading={queues ? "Scheduling..." : "Deleting..."}
+      onConfirm={(confirm) =>
+        deleteType.mutate(
+          { id: type.id, confirm },
+          { onSuccess: () => onOpenChange(false) },
+        )
+      }
+    />
   );
 }
 

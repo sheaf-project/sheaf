@@ -21,7 +21,7 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.share import ShareItemStatus, ShareViewMember
+from sheaf.models.share import ShareViewMember
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
@@ -54,9 +54,11 @@ from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.sharing import (
+    exposure_activates_at,
     fronting_guard_release_exposes,
     reject_mixed_exposure_directions,
     shared_view_memberships,
+    stage_membership_exposure,
     visibility_grace_days,
     visibility_step_up_required,
 )
@@ -499,8 +501,8 @@ async def update_member(
     grace = visibility_grace_days(system)
     stage = grace > 0
     visibility_activates_at = (
-        datetime.now(UTC) + timedelta(days=grace)
-        if (exposing_rows or fronting_release_exposes) and stage
+        exposure_activates_at(system)
+        if (exposing_rows or fronting_release_exposes)
         else None
     )
     # Only keep the guard live pending the finalizer when there is a window to
@@ -576,10 +578,7 @@ async def update_member(
     # them, exactly as if they had just been added to the view. With no window
     # (grace 0) the rows stay live and the member is exposed now - the re-auth
     # above was the whole gate.
-    if exposing_rows and stage:
-        for row in exposing_rows:
-            row.status = ShareItemStatus.PENDING.value
-            row.activates_at = visibility_activates_at
+    stage_membership_exposure(exposing_rows, visibility_activates_at)
 
     await db.commit()
     await db.refresh(member)
@@ -681,22 +680,81 @@ async def archive_member(
 )
 async def unarchive_member(
     member_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Restore an archived member to active. Ungated - restoring visibility
-    is not a destructive action."""
+    """Restore an archived member, treating a return to a published view as a raise.
+
+    Archiving takes a member off every public surface at once (see
+    `share_projection._active_member_filter`), so undoing it is an EXPOSING
+    act wherever a grant still points at a view they sit in - and this module's
+    rule is that exposing waits. So an unarchive that would put somebody back
+    in front of strangers goes through the same two controls as raising them to
+    `public`: step-up when the `profile_visibility` category is armed, then, if
+    a grace window is set, their `ShareViewMember` rows are demoted to PENDING
+    so the projection keeps hiding them until the finalize sweep promotes them.
+    Both use the same helper as the privacy raise (`stage_membership_exposure`)
+    rather than a second copy of the rule. With grace at 0 the rows stay ACTIVE
+    and the re-auth is the whole gate.
+
+    What does NOT wait is the member row itself: `archived_at` is cleared
+    immediately either way, so the owner gets them back in their own roster,
+    switcher and pickers the moment they ask. Only the public surface serves
+    the window. Deliberately: archive is the owner's private filing decision as
+    well as a public one, and making them wait a week to see their own member
+    again would be the safety feature punishing the person it protects.
+
+    The member's own `privacy` is never touched here. A member who was public
+    before archiving is still public after; the wait is carried entirely by the
+    membership rows, so nothing about their configuration silently changes
+    under them.
+
+    Ungated and instant when nothing points at them - no live-or-pending grant
+    over a view they belong to means unarchiving exposes nobody, and friction
+    bought for nothing is friction the next person learns to click through.
+    The optional body carries step-up credentials in the same shape the member
+    PATCH and the archive endpoint take.
+    """
     system = await _get_user_system(user, db)
-    member = await _get_own_member(member_id, system, db)
-    if member.archived_at is not None:
-        member.archived_at = None
-        await db.commit()
-        await db.refresh(member)
-    return decrypt_member_for_read(
+    # Locked like the privacy raise: this reads `archived_at`, decides whether
+    # the restore exposes anybody, and writes back, so two concurrent restores
+    # must not both pass the gate on the same stale read.
+    member = await _get_own_member(member_id, system, db, for_update=True)
+    if member.archived_at is None:
+        # Already active: nothing is being re-exposed, so nothing to gate.
+        return decrypt_member_for_read(
+            member,
+            user.id,
+            has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+        )
+
+    exposing_rows: list[ShareViewMember] = []
+    if visibility_step_up_required(system):
+        exposing_rows = await shared_view_memberships(db, system, member.id)
+    if exposing_rows:
+        await verify_destructive_auth(
+            user,
+            system,
+            body.password if body else None,
+            body.totp_code if body else None,
+            db,
+        )
+
+    member.archived_at = None
+    activates_at = exposure_activates_at(system) if exposing_rows else None
+    stage_membership_exposure(exposing_rows, activates_at)
+    await db.commit()
+    await db.refresh(member)
+    result = decrypt_member_for_read(
         member,
         user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
     )
+    # Tells the client whether the restore is live to strangers now or still
+    # sitting behind the window, so it can say which without a second request.
+    result.share_exposure_activates_at = activates_at
+    return result
 
 
 @router.get("/{member_id}/tags", response_model=list[TagRead])

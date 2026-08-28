@@ -1290,6 +1290,12 @@ export function MembersPage() {
     data: MemberUpdate;
     tier: DeleteConfirmation;
   } | null>(null);
+  // Unarchiving somebody who is still sitting in a published view is a raise,
+  // so it takes the same credential prompt as the edits above.
+  const [pendingUnarchive, setPendingUnarchive] = useState<{
+    member: Member;
+    tier: DeleteConfirmation;
+  } | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Archived members stay fetched (so historical surfaces can resolve their
@@ -1367,6 +1373,41 @@ export function MembersPage() {
             return;
           }
           showApiErrorToast(err, "Couldn't update member.", { force: true });
+        },
+      },
+    );
+  }
+
+  /**
+   * Restore an archived member, retrying with credentials if the server asks.
+   *
+   * Coming back to a published profile is an exposing act, so the server
+   * refuses the first bare attempt with the step-up error whenever a grant
+   * still points at a view this member sits in. That refusal is a prompt, not
+   * a failure: swallow the toast, ask for the credential, and send it again.
+   * When nothing publishes them the first call simply succeeds.
+   */
+  function doUnarchive(member: Member, confirm?: DestructiveConfirm) {
+    unarchiveMember.mutate(
+      { id: member.id, confirm, skipErrorToast: !confirm },
+      {
+        onSuccess: (updated) => {
+          setPendingUnarchive(null);
+          setEditing(null);
+          setViewing(updated);
+        },
+        onError: (err) => {
+          if (!confirm && isStepUpRequiredError(err)) {
+            setPendingUnarchive({
+              member,
+              tier:
+                safety?.settings.auth_tier ??
+                system?.delete_confirmation ??
+                "password",
+            });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't unarchive member.", { force: true });
         },
       },
     );
@@ -1511,14 +1552,7 @@ export function MembersPage() {
                     variant="outline"
                     size="sm"
                     disabled={unarchiveMember.isPending}
-                    onClick={() =>
-                      unarchiveMember.mutate(editing.id, {
-                        onSuccess: (updated) => {
-                          setEditing(null);
-                          setViewing(updated);
-                        },
-                      })
-                    }
+                    onClick={() => doUnarchive(editing)}
                   >
                     {unarchiveMember.isPending ? "Unarchiving..." : "Unarchive member"}
                   </Button>
@@ -1564,6 +1598,22 @@ export function MembersPage() {
             },
           );
         }}
+      />
+
+      {/* Unarchive step-up: only ever shown after the server has said this
+          restore would put the member back in front of strangers. */}
+      <DestructiveConfirmDialog
+        open={!!pendingUnarchive}
+        onOpenChange={(open) => !open && setPendingUnarchive(null)}
+        title="Confirm restoring a shared member"
+        description="This member is still in a view you publish, so restoring them puts them back on a public profile or share link. Confirm now; with a grace period set they return to those pages after your System Safety window, and to your own lists straight away."
+        tier={pendingUnarchive?.tier ?? "none"}
+        actionLabel="Restore member"
+        actionLabelLoading="Restoring..."
+        loading={unarchiveMember.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) =>
+          pendingUnarchive && doUnarchive(pendingUnarchive.member, confirm ?? {})
+        }
       />
 
       {/* Delete confirm */}

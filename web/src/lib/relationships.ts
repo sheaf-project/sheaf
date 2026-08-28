@@ -1,4 +1,6 @@
 import type {
+  DeleteResult,
+  DestructiveConfirm,
   RelationshipEdge,
   RelationshipEdgeCreate,
   RelationshipEdgeUpdate,
@@ -31,8 +33,17 @@ export function updateRelationshipType(id: string, data: RelationshipTypeUpdate)
   });
 }
 
-export function deleteRelationshipType(id: string) {
-  return apiFetch<void>(`/v1/relationship-types/${id}`, { method: "DELETE" });
+/** Delete a relationship type and every edge drawn with it.
+ *
+ *  Safeguarded: with the System Safety "relationships" category armed and a
+ *  grace window set the server answers 202 with a pending action instead of
+ *  deleting, so the result is `DeleteResult` (void or queued), not void. The
+ *  optional confirm body carries the re-auth the current tier asks for. */
+export function deleteRelationshipType(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/relationship-types/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }
 
 // --- Member edges ---

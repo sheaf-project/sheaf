@@ -232,6 +232,7 @@ CLASSIFICATION: dict[type, dict] = {
             "safety_applies_to_images", "safety_applies_to_revisions",
             "safety_applies_to_notifications", "safety_applies_to_reminders",
             "safety_applies_to_polls", "safety_applies_to_messages",
+            "safety_applies_to_relationships",
             "safety_applies_to_archive", "safety_applies_to_profile_visibility",
             "journal_max_revisions", "journal_max_revision_days",
             "pinned_revision_max_per_target", "openplural_archive",

@@ -5,9 +5,10 @@ rules run through all of it:
 
 1. **Exposing waits, un-exposing is instant.** Creating a grant, adding a
    member/field to a view that is already shared, turning one of that view's
-   exposure flags on, or flipping a member in a shared view to `public`
-   privacy, are all loosenings. Two independent controls stand in front of
-   them, and the decouple between them is deliberate:
+   exposure flags on, flipping a member in a shared view to `public` privacy,
+   or unarchiving a member who is still in one, are all loosenings. Two
+   independent controls stand in front of them, and the decouple between them
+   is deliberate:
 
    - **Step-up.** When the `profile_visibility` safety category is armed
      (`visibility_step_up_required`), any of these that would ACTUALLY expose
@@ -198,6 +199,45 @@ def _activation(system: System, *, already_shared: bool) -> tuple[str, datetime 
         ShareItemStatus.PENDING.value,
         datetime.now(UTC) + timedelta(days=grace),
     )
+
+
+def exposure_activates_at(system: System) -> datetime | None:
+    """When a raise staged right now would go live, or None with no window.
+
+    One definition of "now + the grace window" for every caller that stages an
+    exposure outside the `_activation` path (a member privacy raise, an
+    unarchive that puts somebody back on a published roster). None means grace
+    is 0 - nothing is staged, the raise lands immediately, and the step-up the
+    endpoint already ran was the whole gate.
+    """
+    grace = visibility_grace_days(system)
+    if grace <= 0:
+        return None
+    return datetime.now(UTC) + timedelta(days=grace)
+
+
+def stage_membership_exposure(
+    rows: list[ShareViewMember], activates_at: datetime | None
+) -> None:
+    """Park a member's share-view rows PENDING until `activates_at`.
+
+    A member has no `pending_privacy` twin to hold a staged raise, so their
+    staging lives in the membership rows themselves: demoted to PENDING, the
+    projection keeps hiding them exactly as if they had just been added to the
+    view, and `finalize_share_activations` promotes them when the window
+    elapses. `pending_exposures` reads the same rows back for the owner's
+    banner.
+
+    Called by every path that re-exposes an existing member - raising them to
+    `public`, and unarchiving one who is still sitting in a published view -
+    so the two cannot drift over what "staged" means. A None `activates_at`
+    (grace 0) leaves the rows live: there is no window to wait out.
+    """
+    if activates_at is None:
+        return
+    for row in rows:
+        row.status = ShareItemStatus.PENDING.value
+        row.activates_at = activates_at
 
 
 def promote_view_flags(view: ShareView) -> None:
@@ -1496,11 +1536,12 @@ async def pending_exposures(
     authenticated owner. Every query is a single scoped predicate on that id
     (the share-view children reach it through their parent view).
 
-    Member privacy raises have no dedicated `pending_*` column - raising a member
-    to `public` stages by demoting their `ShareViewMember` rows to PENDING (see
-    update_member), so those pending rows ARE the staged member exposure. They
-    are collapsed per member here so one raise counts once rather than once per
-    view the member sits in.
+    Member raises have no dedicated `pending_*` column - they stage by demoting
+    the member's `ShareViewMember` rows to PENDING (`stage_membership_exposure`,
+    called by the privacy raise in update_member and by unarchive_member), so
+    those pending rows ARE the staged member exposure, whichever of the two put
+    them there. They are collapsed per member here so one raise counts once
+    rather than once per view the member sits in.
     """
     exposures: list[PendingExposure] = []
 
@@ -1526,9 +1567,10 @@ async def pending_exposures(
         PendingExposure("member_fronting", ts) for ts in guard_rows.scalars()
     ]
 
-    # A member raised to public: their share-view memberships were demoted to
-    # PENDING. Collapse per member (earliest activation) so one raise counts as
-    # one pending exposure, not once per view the member appears in.
+    # A member raised to public, or unarchived back onto a published view:
+    # their share-view memberships were demoted to PENDING. Collapse per member
+    # (earliest activation) so one raise counts as one pending exposure, not
+    # once per view the member appears in.
     member_rows = await db.execute(
         select(func.min(ShareViewMember.activates_at))
         .join(ShareView, ShareView.id == ShareViewMember.view_id)

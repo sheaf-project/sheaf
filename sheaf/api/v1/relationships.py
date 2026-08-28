@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ from sheaf.database import get_db
 from sheaf.files import resolve_avatar_url
 from sheaf.models.group import Group
 from sheaf.models.member import Member
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.relationship import (
     GroupRelationship,
     MemberRelationship,
@@ -20,6 +22,7 @@ from sheaf.models.relationship import (
 )
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.relationship import (
     RelationshipEdgeCreate,
     RelationshipEdgeRead,
@@ -44,7 +47,11 @@ from sheaf.services.sharing import (
     visibility_grace_days,
     visibility_step_up_required,
 )
-from sheaf.services.system_safety import verify_destructive_auth
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    queue_pending_action,
+    verify_destructive_auth,
+)
 
 router = APIRouter(tags=["relationships"])
 
@@ -195,13 +202,61 @@ async def update_relationship_type(
 )
 async def delete_relationship_type(
     type_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    # Deleting a type cascades its edges (DB FK). Low-stakes + reversible by
-    # re-adding, so no System Safety gate; the web client confirms first.
+    """Delete a relationship type, and with it every edge drawn using it.
+
+    A safeguarded action like member, group and field delete. It used to be
+    treated as low-stakes and reversible by re-adding, which was wrong twice
+    over: the DB cascade takes every member AND group edge of this type with
+    it, so "partner" deleted by mistake is the entire relationship graph gone,
+    and re-adding the type does not bring a single edge back. That is the
+    widest blast radius of any one delete in the product, and it had less
+    friction in front of it than deleting a tag.
+
+    So with the `relationships` category armed and a grace window set, this
+    queues a `PendingAction` (202) and changes nothing yet: the type and all
+    its edges stay exactly where they are until the finalize sweep, and
+    cancelling in Settings restores nothing because nothing was destroyed.
+    With the category off or the window at 0 it deletes immediately, as before.
+
+    The public surface does NOT wait: `projectable_relationships` drops edges
+    whose type has a queued delete the moment the action is queued. Un-exposing
+    is instant, and the grace window is there so the owner can change their
+    mind, not so strangers get a last look at a graph the owner has asked to be
+    rid of.
+    """
     system = await _get_user_system(user, db)
+    await verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+        db,
+    )
     rt = await _get_type_in_system(type_id, system, db)
+
+    if is_safeguarded(system, PendingActionType.RELATIONSHIP_TYPE_DELETE):
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.RELATIONSHIP_TYPE_DELETE,
+            target_id=rt.id,
+            target_label=rt.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(rt)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

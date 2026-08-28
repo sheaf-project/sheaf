@@ -188,6 +188,20 @@ def _in_db(work) -> None:
     asyncio.run(_run())
 
 
+def _backdate_pending_action(pending_id: str) -> None:
+    """Put a queued safeguarded delete's window in the past so the finalize
+    sweep will pick it up on its next run."""
+
+    async def _work(db) -> None:
+        from sheaf.models.pending_action import PendingAction
+
+        pending = await db.get(PendingAction, uuid.UUID(pending_id))
+        assert pending is not None
+        pending.finalize_after = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
 def _backdate_view_flags(view_id: str) -> None:
     async def _work(db) -> None:
         from sheaf.models.share import ShareView
@@ -2032,24 +2046,112 @@ def test_archiving_a_member_removes_them_from_every_public_surface():
 
 
 @pytest.mark.public_profiles
-def test_unarchiving_restores_a_member_without_re_staging_them():
-    """Coming back is not a new exposure decision: archiving never touched the
-    view membership, so there is no grace window to serve a second time."""
+def test_unarchiving_a_published_member_is_a_gated_re_exposure(
+    admin_client: httpx.Client,
+):
+    """Archiving takes somebody off every public surface at once, so undoing it
+    puts them back in front of strangers - an exposing act, gated like any
+    other. Step-up first, then the grace window, and only the PUBLIC half
+    waits: the owner's own roster gets them back immediately."""
     owner = _register()
     system_id, a, b, group = _full_surface(owner)
-    _arm_visibility_safety(owner)
+    _arm_visibility_safety(owner)  # password tier, grace 7
 
     owner.post(f"/v1/members/{b}/archive")
     assert _surface_snapshot(system_id, group)["members"] == [a]
 
-    assert owner.post(f"/v1/members/{b}/unarchive").status_code == 200
+    # A bare restore is refused, and nothing moves.
+    bare = owner.post(f"/v1/members/{b}/unarchive")
+    assert bare.status_code == 400, bare.text
+    assert owner.get(f"/v1/members/{b}").json()["archived_at"] is not None
+
+    wrong = owner.post(f"/v1/members/{b}/unarchive", json={"password": "wrongpass"})
+    assert wrong.status_code == 403, wrong.text
+    assert owner.get(f"/v1/members/{b}").json()["archived_at"] is not None
+
+    ok = owner.post(
+        f"/v1/members/{b}/unarchive", json={"password": "testpassword123"}
+    )
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    # The member row is back for the owner at once...
+    assert body["archived_at"] is None
+    # ...their privacy is untouched - the wait is carried by the view rows...
+    assert body["privacy"] == "public"
+    # ...and the response says when the shared pages get them back.
+    assert body["share_exposure_activates_at"] is not None
+
+    # Still nowhere on the public surface: the membership rows were demoted.
+    staged = _surface_snapshot(system_id, group)
+    assert staged["members"] == [a]
+    assert staged["count"] == 1
+    assert staged["edges"] == []
+    assert staged["group_roster"] == [a]
+    assert (
+        _anon().get(f"/v1/public/systems/{system_id}/members/{b}").status_code == 404
+    )
+
+    # The owner's pending-exposure banner counts it like any other staged raise.
+    exposures = owner.get("/v1/system/safety").json()["pending_exposures"]
+    assert any(e["kind"] == "member_privacy" for e in exposures), exposures
+
+    _backdate_pending_membership(b)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
 
     restored = _surface_snapshot(system_id, group)
     assert set(restored["members"]) == {a, b}
     assert restored["count"] == 2
-    assert set(restored["fronting"]) == {a, b}
     assert len(restored["edges"]) == 1
     assert set(restored["group_roster"]) == {a, b}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_unarchiving_with_no_grace_window_re_auths_then_lands_at_once():
+    """Grace 0: the re-auth is the whole gate, so the rows stay live and the
+    member is back on the profile the moment the password checks out."""
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    _arm_visibility_stepup(owner, grace=0)
+
+    owner.post(f"/v1/members/{b}/archive")
+    assert owner.post(f"/v1/members/{b}/unarchive").status_code == 400
+
+    ok = owner.post(
+        f"/v1/members/{b}/unarchive", json={"password": "testpassword123"}
+    )
+    assert ok.status_code == 200, ok.text
+    # Nothing was staged, so nothing to report and nothing to wait for.
+    assert ok.json()["share_exposure_activates_at"] is None
+    assert set(_surface_snapshot(system_id, group)["members"]) == {a, b}
+    assert owner.get("/v1/system/safety").json()["pending_exposures"] == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_unarchiving_a_member_nobody_publishes_is_ungated_and_instant():
+    """Friction bought for nothing is friction people learn to click through:
+    with no grant over a view this member sits in, the restore exposes nobody
+    and asks for nothing."""
+    owner = _register()
+    shown = _member(owner, "OnTheProfile")
+    hidden = _member(owner, "NeverInAView")
+    system_id, _ = _published_system(owner, members=[shown])
+    _arm_visibility_safety(owner)  # password tier, grace 7
+
+    owner.post(f"/v1/members/{hidden}/archive")
+    ok = owner.post(f"/v1/members/{hidden}/unarchive")
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["archived_at"] is None
+    assert ok.json()["share_exposure_activates_at"] is None
+    assert owner.get("/v1/system/safety").json()["pending_exposures"] == []
+    # The published member is unaffected either way.
+    assert len(_anon().get(f"/v1/public/systems/{system_id}/members").json()) == 1
     owner.close()
 
 
@@ -2153,6 +2255,148 @@ def test_a_field_queued_for_deletion_stops_being_served_at_once():
     queued = owner.delete(f"/v1/fields/{field}")
     assert queued.status_code == 202, queued.text
     assert _anon().get(f"{base}/members").json()[0]["fields"] == {}
+    owner.close()
+
+
+def _arm_relationship_delete_safety(c: httpx.Client) -> None:
+    """Grace window on relationship-type deletion, with no re-auth tier, so the
+    delete queues instead of executing and the test needs no password."""
+    r = c.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 7,
+            "applies_to_relationships": True,
+            "auth_tier": "none",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def _only_type_id(c: httpx.Client) -> str:
+    types = c.get("/v1/relationship-types").json()
+    assert len(types) == 1, types
+    return types[0]["id"]
+
+
+@pytest.mark.public_profiles
+def test_a_relationship_type_queued_for_deletion_stops_publishing_its_edges():
+    """Deleting a type takes every edge drawn with it, so the queued delete is
+    an un-exposing act: the edges leave the profile now, while the data itself
+    waits out the window in case the owner changes their mind."""
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    rtype = _only_type_id(owner)
+    _arm_relationship_delete_safety(owner)
+
+    assert len(_surface_snapshot(system_id, group)["edges"]) == 1
+    audit_before = owner.get("/v1/sharing/audit").json()["entries"][0]
+    assert audit_before["relationship_count"] == 1
+
+    queued = owner.delete(f"/v1/relationship-types/{rtype}")
+    assert queued.status_code == 202, queued.text
+
+    # Nothing is destroyed yet: the type and its edges are exactly where they
+    # were, on the owner's side.
+    assert owner.get(f"/v1/relationship-types/{rtype}").status_code == 200
+    assert len(owner.get(f"/v1/members/{a}/relationships").json()) == 1
+
+    # But the public surface has already let them go, and the owner-side audit
+    # count follows because it reads through the same projection.
+    after = _surface_snapshot(system_id, group)
+    assert after["edges"] == []
+    assert owner.get("/v1/sharing/audit").json()["entries"][0][
+        "relationship_count"
+    ] == 0
+    # Only the edges went - the members they joined are still published.
+    assert set(after["members"]) == {a, b}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_cancelling_a_queued_relationship_type_delete_restores_the_edges():
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    rtype = _only_type_id(owner)
+    _arm_relationship_delete_safety(owner)
+
+    pending_id = owner.delete(f"/v1/relationship-types/{rtype}").json()[
+        "pending_action_id"
+    ]
+    assert _surface_snapshot(system_id, group)["edges"] == []
+
+    cancelled = owner.delete(f"/v1/system/safety/pending-actions/{pending_id}")
+    assert cancelled.status_code == 204, cancelled.text
+    # Nothing had to be restored - nothing was deleted - so the edges are
+    # simply projected again.
+    assert len(_surface_snapshot(system_id, group)["edges"]) == 1
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_finalizing_a_queued_relationship_type_delete_takes_the_type_and_edges(
+    admin_client: httpx.Client,
+):
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    rtype = _only_type_id(owner)
+    _arm_relationship_delete_safety(owner)
+
+    pending_id = owner.delete(f"/v1/relationship-types/{rtype}").json()[
+        "pending_action_id"
+    ]
+    _backdate_pending_action(pending_id)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_pending_actions/run"
+        ).status_code
+        == 200
+    )
+
+    assert owner.get(f"/v1/relationship-types/{rtype}").status_code == 404
+    # The DB cascade took the edges with it.
+    assert owner.get(f"/v1/members/{a}/relationships").json() == []
+    assert _surface_snapshot(system_id, group)["edges"] == []
+    # And the members it joined are untouched.
+    assert set(_surface_snapshot(system_id, group)["members"]) == {a, b}
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_a_relationship_type_delete_is_immediate_when_the_category_is_off():
+    """Unchanged behaviour for anyone who has not armed the category: no
+    pending row, no window, gone on the spot."""
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    rtype = _only_type_id(owner)
+
+    gone = owner.delete(f"/v1/relationship-types/{rtype}")
+    assert gone.status_code == 204, gone.text
+    assert owner.get(f"/v1/relationship-types/{rtype}").status_code == 404
+    assert owner.get("/v1/system/safety").json()["pending_actions"] == []
+    assert _surface_snapshot(system_id, group)["edges"] == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_a_relationship_type_delete_is_immediate_with_the_window_at_zero():
+    """The category armed but no grace window is the same "nothing to wait
+    out" case the exposure paths have: `is_safeguarded` needs both."""
+    owner = _register()
+    system_id, a, b, group = _full_surface(owner)
+    rtype = _only_type_id(owner)
+    r = owner.patch(
+        "/v1/system/safety",
+        json={
+            "grace_period_days": 0,
+            "applies_to_relationships": True,
+            "auth_tier": "none",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    gone = owner.delete(f"/v1/relationship-types/{rtype}")
+    assert gone.status_code == 204, gone.text
+    assert owner.get(f"/v1/relationship-types/{rtype}").status_code == 404
     owner.close()
 
 

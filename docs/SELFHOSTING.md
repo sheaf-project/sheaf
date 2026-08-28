@@ -902,7 +902,7 @@ The `auto_pin_first_revision` toggle (per-system, default on) auto-pins the firs
 
 ## System Safety
 
-Optional grace + re-auth on destructive actions: member/group/tag/field/front/journal/image deletes, plus revision unpin. Configured per-system in Settings -> Safety, no env vars: each system picks its own grace period (0 disables), auth tier (none / password / TOTP / both), and which categories the policy applies to.
+Optional grace + re-auth on destructive actions: member/group/tag/field/front/journal/image/reminder/poll/message/relationship-type deletes, notification channel deletes and watcher revokes, plus revision unpin. Deleting a relationship type cascades every member and group edge drawn with it, which is why it has a category of its own. Configured per-system in Settings -> Safety, no env vars: each system picks its own grace period (0 disables), auth tier (none / password / TOTP / both), and which categories the policy applies to.
 
 Tightening (longer grace, stronger auth tier, enabling more categories) takes effect immediately. Loosening (shorter grace, weaker auth, disabling categories, lowering revision caps, disabling auto-pin) requires re-auth and is deferred behind the current grace period as a `SafetyChangeRequest` the user can cancel before it finalizes.
 

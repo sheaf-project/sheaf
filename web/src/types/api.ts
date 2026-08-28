@@ -171,6 +171,12 @@ export interface Member {
    *  default member list view but still resolve in historical surfaces
    *  (front history, journals). */
   archived_at: string | null;
+  /** Response-only, and only from the unarchive endpoint: when restoring
+   *  this member put them back on a published profile and the grace window
+   *  staged it, this is when they return to the shared pages. Null when the
+   *  restore was immediate (nothing published them, or no grace window is
+   *  set) and on every other member response. */
+  share_exposure_activates_at?: string | null;
 }
 
 export interface MemberCreate {
@@ -494,7 +500,8 @@ export type PendingActionType =
   | "reminder_delete"
   | "poll_delete"
   | "message_delete"
-  | "message_thread_delete";
+  | "message_thread_delete"
+  | "relationship_type_delete";
 
 export type PendingActionStatus =
   | "pending"
@@ -543,6 +550,7 @@ export interface SystemSafetySettings {
   applies_to_reminders: boolean;
   applies_to_polls: boolean;
   applies_to_messages: boolean;
+  applies_to_relationships: boolean;
   applies_to_archive: boolean;
   applies_to_profile_visibility: boolean;
   auto_pin_first_revision: boolean;
@@ -563,6 +571,7 @@ export interface SystemSafetyUpdate {
   applies_to_reminders?: boolean;
   applies_to_polls?: boolean;
   applies_to_messages?: boolean;
+  applies_to_relationships?: boolean;
   applies_to_archive?: boolean;
   applies_to_profile_visibility?: boolean;
   auto_pin_first_revision?: boolean;
