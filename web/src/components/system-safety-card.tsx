@@ -9,6 +9,7 @@ import {
   updateSystemSafety,
 } from "@/lib/system-safety";
 import { apiErrorMessage } from "@/lib/api-errors";
+import { invalidateForPendingAction } from "@/lib/pending-actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -357,8 +358,17 @@ function PendingActionsList({ actions }: { actions: PendingAction[] }) {
   const qc = useQueryClient();
   const cancel = useMutation({
     mutationFn: cancelPendingAction,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["system-safety"] });
+    onSuccess: (_data, id) => {
+      // Cancelling clears the pending badge (and re-enables Delete) on the
+      // entity's own lists, so refresh those too - invalidating only
+      // ["system-safety"] left the badge on the members / groups / fields /
+      // tags / types pages until something else refetched them.
+      const cancelled = actions.find((a) => a.id === id);
+      if (cancelled) {
+        invalidateForPendingAction(qc, cancelled.action_type);
+      } else {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+      }
       toast.success("Cancelled");
     },
   });

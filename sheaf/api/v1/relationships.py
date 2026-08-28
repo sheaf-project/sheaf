@@ -257,21 +257,8 @@ async def delete_relationship_type(
     rt = await _get_type_in_system(type_id, system, db)
 
     if is_safeguarded(system, PendingActionType.RELATIONSHIP_TYPE_DELETE):
-        # One queued delete per type. Without this a second DELETE writes a
-        # second identical PendingAction, and the Safety page then shows two
-        # rows where cancelling one leaves the type still on its way out - the
-        # cancel silently does nothing the owner can see.
-        already = await pending_finalize_after_by_target(
-            db, system, PendingActionType.RELATIONSHIP_TYPE_DELETE
-        )
-        if rt.id in already:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "This relationship type is already queued for deletion; "
-                    "cancel it in Settings > Safety first"
-                ),
-            )
+        # One queued delete per type - the 409 for a second DELETE comes from
+        # queue_pending_action, which enforces that for every entity.
         pending = await queue_pending_action(
             db=db,
             system=system,

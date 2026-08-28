@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 
 def _set_system_safety_via_db(user_email: str, **fields) -> None:
@@ -284,6 +285,115 @@ def test_cancel_pending_action(client: httpx.Client):
     # No longer pending
     listing = client.get("/v1/system/safety").json()
     assert listing["pending_actions"] == []
+
+
+# ---------------------------------------------------------------------------
+# One queued action per target
+# ---------------------------------------------------------------------------
+
+
+def _pending_of_type(client: httpx.Client, action_type: str) -> list[dict]:
+    listing = client.get("/v1/system/safety").json()
+    return [
+        p for p in listing["pending_actions"] if p["action_type"] == action_type
+    ]
+
+
+# One entity per safeguarded surface that has its own list page, since that is
+# where a duplicate row shows up. The path is both the create and the delete
+# collection - they match everywhere here.
+_DOUBLE_QUEUE_CASES = [
+    pytest.param(
+        "safety_applies_to_members",
+        "/v1/members",
+        {"name": "Twice-deleted"},
+        "member_delete",
+        id="members",
+    ),
+    pytest.param(
+        "safety_applies_to_groups",
+        "/v1/groups",
+        {"name": "Twice-deleted group"},
+        "group_delete",
+        id="groups",
+    ),
+    pytest.param(
+        "safety_applies_to_fields",
+        "/v1/fields",
+        {"name": "Twice-deleted field", "field_type": "text"},
+        "field_delete",
+        id="fields",
+    ),
+    pytest.param(
+        "safety_applies_to_tags",
+        "/v1/tags",
+        {"name": "Twice-deleted tag"},
+        "tag_delete",
+        id="tags",
+    ),
+    pytest.param(
+        "safety_applies_to_relationships",
+        "/v1/relationship-types",
+        {
+            "name": "Twice-deleted type",
+            "symmetry": "symmetric",
+            "forward_label": "twin",
+        },
+        "relationship_type_delete",
+        id="relationship-types",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "safety_field,path,create_body,action_type", _DOUBLE_QUEUE_CASES
+)
+def test_second_delete_while_queued_is_a_conflict(
+    client: httpx.Client,
+    safety_field: str,
+    path: str,
+    create_body: dict,
+    action_type: str,
+):
+    """A second delete on an already-queued target is a 409, not a second row.
+
+    The duplicate row was the visible bug: two entries on the Safety page for
+    one thing, where cancelling either left the target still on its way out.
+    Cancelling has to leave the target queueable again, so this walks the
+    whole loop - queue, refuse, cancel, queue afresh.
+    """
+    email, _ = _register(client)
+    _set_system_safety_via_db(
+        email, safety_grace_period_days=7, **{safety_field: True}
+    )
+
+    created = client.post(path, json=create_body)
+    assert created.status_code == 201, created.text
+    target_id = created.json()["id"]
+
+    first = client.delete(f"{path}/{target_id}")
+    assert first.status_code == 202, first.text
+    first_pending = first.json()["pending_action_id"]
+
+    second = client.delete(f"{path}/{target_id}")
+    assert second.status_code == 409, second.text
+    assert "already queued" in second.json()["detail"]
+
+    # Exactly one row, and it is the one the first delete created.
+    assert [p["id"] for p in _pending_of_type(client, action_type)] == [
+        first_pending
+    ]
+
+    cancel = client.delete(f"/v1/system/safety/pending-actions/{first_pending}")
+    assert cancel.status_code == 204, cancel.text
+    assert _pending_of_type(client, action_type) == []
+
+    # Cancelled means cancelled: the target can be queued again, and gets a
+    # fresh row rather than reviving the old one.
+    third = client.delete(f"{path}/{target_id}")
+    assert third.status_code == 202, third.text
+    assert third.json()["pending_action_id"] != first_pending
+    assert len(_pending_of_type(client, action_type)) == 1
 
 
 # ---------------------------------------------------------------------------
