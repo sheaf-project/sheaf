@@ -15,12 +15,16 @@ window on top of it also PARKS the change as pending state, which
 window at 0 (the default) an exposing change re-auths and then lands live at
 once - accepted, not "refused until later".
 
-The same asymmetry decides what an instance with its public surface switched off
-still allows: everything that un-exposes or exposes nothing keeps working
-(revoke, rotate, tighten, delete, and curating a view's contents), while the two
-acts that would EXPOSE MORE are refused outright (`_block_new_exposure`). The
-audit is never gated - dormant grants are precisely the ones an owner needs to
-be able to see and revoke.
+An instance with its public surface switched off is stricter than that: EVERY
+loosening on this router is refused (`_block_new_exposure`), not only the ones
+that reach a reader today. Creating a view, adding a member/field/group to one,
+re-syncing a group, turning an exposure flag on and minting a grant all answer
+403 while the switch is off, because whatever they stage gets promoted by the
+finalize sweep on its own schedule and would then be served the moment an
+operator flips the switch back, with nobody present to agree to it. Everything
+that un-exposes stays open - revoke, rotate, tighten, delete a view, remove a
+member/field/group - as does the audit, which is never gated: dormant grants are
+precisely the ones an owner needs to be able to see and revoke.
 
 The anonymous read surface lives in a separate router. The one endpoint here
 that produces public-shaped payloads is `preview_share_view`, and it produces
@@ -168,12 +172,24 @@ def _block_new_exposure(user: User) -> None:
       grant that wakes up on somebody else's config change is exactly the
       exposure the rest of this feature is built to make impossible.
 
-    Deliberately NOT applied to creating a view, or to adding a member, a field
-    or a group to one: those expose nothing by themselves - a view nothing
-    points at is a private list - so the gate belongs on publishing, which is
-    the same place the safety category puts it. The pending-deletion half is
-    stricter and stays where it already is on those endpoints, for its own
-    reason: an account being deleted should not be building anything.
+    This used to apply only to publishing and to turning an exposure flag on,
+    on the reasoning that "selection is not publication": a view nothing points
+    at is a private list, so building one while the surface was off exposed
+    nobody. That was half the picture, and the missing half is what this gate
+    now covers. A view that ALREADY has a grant is not a private list. Adding a
+    member to it stages a row; the finalize sweep promotes that row on schedule
+    whatever this setting says; the member is then sitting on a live page,
+    waiting for an operator to turn the surface back on. A dormant-but-live view
+    is a wake-up hazard in exactly the way a dormant grant is, and the owner is
+    no more present for the waking in one case than in the other.
+
+    So while the surface is off, EVERY loosening on this router is refused:
+    creating a view, adding a member, a field or a group (a group re-sync
+    included), turning an exposure flag on, and creating a grant. The cost is
+    that an owner cannot stage work for the day the surface comes back; that
+    trade was made deliberately, because unbuilt preparation is recoverable and
+    a member who finds themselves published is not. Nothing that un-exposes is
+    ever refused, and the audit is never gated.
 
     403 rather than the 409 `block_pending_deletion` answers with, and the
     difference is the point. A pending deletion is a state the caller can change
@@ -188,8 +204,9 @@ def _block_new_exposure(user: User) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 "Public profiles and share links are turned off on this "
-                "instance, so nothing new can be published. Anything already "
-                "published is kept, and unpublishing still works."
+                "instance, so nothing new can be published and nothing can be "
+                "set to show more. Anything already published is kept, and "
+                "unpublishing still works."
             ),
         )
 
@@ -339,14 +356,15 @@ async def create_share_view(
     """Create an empty view.
 
     Creating a view exposes nothing on its own (no grant points at it yet), so
-    this is deliberately ungated. The gate is on publishing.
+    the safety category does not gate it: its step-up is on publishing.
 
-    That holds for the instance-level switch too: with the public surface off,
-    building a view is note-taking, and refusing it would only stop somebody
-    preparing for the day the operator turns the surface on. `create_share_grant`
-    is where the switch bites.
+    The instance-level switch is stricter, and no longer stops at publishing.
+    A view built while the surface is off is a fully-populated view sitting one
+    grant away from serving on the day an operator turns the surface back on,
+    so the switch bites at the first act on that chain rather than only the
+    last - see `_block_new_exposure`.
     """
-    block_pending_deletion(user)
+    _block_new_exposure(user)
     system = await _get_user_system(user, db)
 
     existing = (
@@ -644,13 +662,15 @@ async def add_view_member(
 ) -> ShareViewRead:
     """Add one member to a view's selection.
 
-    Not gated on the instance's public switch, same as the rest of the view
-    contents: putting somebody in a view publishes nothing until a grant serves
-    it, and with the surface off no grant can be created at all. The grace
-    window still applies when the view is already shared, because "already
-    shared" is about this view, not about the instance.
+    Refused while the instance's public surface is off (`_block_new_exposure`).
+    Staging a row here does not wait on the switch: the finalize sweep promotes
+    it on its own schedule, and the member is then on a view that resumes
+    serving the moment an operator flips the setting back.
+
+    The grace window still applies when the view is already shared, because
+    "already shared" is about this view, not about the instance.
     """
-    block_pending_deletion(user)
+    _block_new_exposure(user)
     system = await _get_user_system(user, db)
     # Locked for update: this content mutation must serialise against a
     # concurrent detach/re-expand of the same view, exactly as update_share_view
@@ -734,10 +754,12 @@ async def add_view_group(
     are NOT pulled in automatically, because that would publish someone with
     no deliberate step and no grace window. Re-post to re-sync.
 
-    Ungated on the instance switch for the same reason as `add_view_member`:
-    selection is not publication.
+    Refused while the instance's public surface is off, and the re-sync is the
+    case worth spelling out: re-posting expands the group's CURRENT roster into
+    the view, which is the same new exposure as adding each of those members by
+    hand. See `_block_new_exposure`.
     """
-    block_pending_deletion(user)
+    _block_new_exposure(user)
     system = await _get_user_system(user, db)
     # Locked for update: this content mutation must serialise against a
     # concurrent detach/re-expand of the same view, exactly as update_share_view
@@ -862,10 +884,12 @@ async def add_view_field(
 ) -> ShareViewRead:
     """Select a custom field into a view.
 
-    Ungated on the instance switch, same as the member and group selections:
-    nothing here reaches a reader until a grant serves the view.
+    Refused while the instance's public surface is off, same as the member and
+    group selections: a field staged onto an already-granted view is promoted by
+    the finalize sweep and served on whatever day the surface comes back. See
+    `_block_new_exposure`.
     """
-    block_pending_deletion(user)
+    _block_new_exposure(user)
     system = await _get_user_system(user, db)
     # Locked for update: this content mutation must serialise against a
     # concurrent detach/re-expand of the same view, exactly as update_share_view

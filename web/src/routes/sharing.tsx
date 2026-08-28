@@ -107,9 +107,13 @@ function useSharingOff(): boolean {
   return Boolean(user && !user.public_profiles_enabled);
 }
 
-/** What the operator's switch means for the things you already published. The
- *  second paragraph is the load-bearing one: the setting stops the serving, it
- *  does not revoke anything, so "off" is not the same as "gone". */
+/** The one banner the page shows while the instance's public surface is off,
+ *  and the only explanation of it: every control that would add or loosen
+ *  something is simply not rendered below, so this card carries the whole
+ *  answer to "where did those go?".
+ *
+ *  The second paragraph is the load-bearing one: the setting stops the serving,
+ *  it does not revoke anything, so "off" is not the same as "gone". */
 function SharingOffCard() {
   return (
     <Card>
@@ -118,20 +122,21 @@ function SharingOffCard() {
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          Public profiles and share links are turned off on this instance, so
-          nothing below is reaching anyone right now. The server operator can
-          turn them on by setting{" "}
+          Sharing is turned off on this instance. Anything already published is
+          not being served; you can still revoke links and remove members here.
+          The server operator can turn it back on by setting{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">
             PUBLIC_PROFILES_ENABLED=true
           </code>
           .
         </p>
         <p className="text-[11px] text-amber-600 dark:text-amber-500">
-          Anything published before it was turned off is kept exactly as it was,
-          and it starts serving again if the setting ever comes back. Nothing new
-          can be published while it is off, but unpublishing, rotating a link and
-          narrowing a view all still work - so if there is something you would
-          not want to reappear, unpublish it now rather than relying on the
+          Nothing was revoked when it was turned off, so anything published
+          before then starts serving again if the setting ever comes back. While
+          it is off you cannot publish, create a view, add anyone to one, or set
+          a view to show more - unpublishing, rotating a link, removing people
+          and narrowing a view all still work. If there is something you would
+          not want to reappear, take it down now rather than relying on the
           setting.
         </p>
       </CardContent>
@@ -470,7 +475,11 @@ function SharingManager() {
         </CardContent>
       </Card>
 
-      <NewViewCard />
+      {/* Creating a view is refused by the API while the surface is off (it
+          would be a fully-built view sitting one grant away from serving on
+          whatever day an operator turns the switch back on), so the form that
+          would collect one is not offered. The banner at the top says why. */}
+      {!off && <NewViewCard />}
 
       {(views ?? []).map((view) => (
         <ViewCard
@@ -1091,6 +1100,7 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
 }
 
 function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext }) {
+  const off = useSharingOff();
   const { data: members } = useMembers();
   const { data: groups } = useGroups();
   const { formatDate } = useDateFormatters();
@@ -1261,48 +1271,57 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
           ))}
         </div>
       )}
-      <div className="flex gap-2">
-        <Select value="" onValueChange={onPick}>
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue placeholder="Add a member..." />
-          </SelectTrigger>
-          <SelectContent>
-            {addable.length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                No more members to add
-              </div>
-            ) : (
-              addable.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.display_name || m.name}
-                </SelectItem>
-              ))
-            )}
-          </SelectContent>
-        </Select>
-        <Select value="" onValueChange={onPickGroup}>
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue placeholder="Add from group..." />
-          </SelectTrigger>
-          <SelectContent>
-            {(groups ?? []).length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                No groups
-              </div>
-            ) : (
-              (groups ?? []).map((g) => (
-                <SelectItem key={g.id} value={g.id}>
-                  {g.name}
-                </SelectItem>
-              ))
-            )}
-          </SelectContent>
-        </Select>
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        Adding a group brings in its current members as a one-time pick; adding
-        someone to the group later never publishes them automatically.
-      </p>
+      {/* Both pickers disappear while the instance's public surface is off:
+          the API refuses either add, and a staged row would be promoted by the
+          finalize sweep and served on whatever day the switch comes back. The
+          removal buttons above stay - taking people out always works. */}
+      {!off && (
+        <>
+          <div className="flex gap-2">
+            <Select value="" onValueChange={onPick}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Add a member..." />
+              </SelectTrigger>
+              <SelectContent>
+                {addable.length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                    No more members to add
+                  </div>
+                ) : (
+                  addable.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.display_name || m.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+            <Select value="" onValueChange={onPickGroup}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Add from group..." />
+              </SelectTrigger>
+              <SelectContent>
+                {(groups ?? []).length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                    No groups
+                  </div>
+                ) : (
+                  (groups ?? []).map((g) => (
+                    <SelectItem key={g.id} value={g.id}>
+                      {g.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Adding a group brings in its current members as a one-time pick;
+            adding someone to the group later never publishes them
+            automatically.
+          </p>
+        </>
+      )}
       {pendingAdd && (
         <DestructiveConfirmDialog
           open
@@ -1410,6 +1429,7 @@ function RemoveGroupDialog({
 }
 
 function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }) {
+  const off = useSharingOff();
   const { data: fields } = useCustomFields();
   const addField = useAddViewField();
   const removeField = useRemoveViewField();
@@ -1458,6 +1478,9 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
   }
 
   if ((fields ?? []).length === 0) return null;
+  // With the surface off there is no picker to offer, so a view that exposes no
+  // field has nothing to say here at all rather than an empty heading.
+  if (off && view.fields.length === 0) return null;
 
   return (
     <div className="space-y-2">
@@ -1506,24 +1529,28 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
           field on every member.
         </p>
       )}
-      <Select value="" onValueChange={onPick}>
-        <SelectTrigger className="h-8 text-xs w-full">
-          <SelectValue placeholder="Expose a custom field..." />
-        </SelectTrigger>
-        <SelectContent>
-          {addable.length === 0 ? (
-            <div className="px-2 py-1.5 text-xs text-muted-foreground">
-              No more fields to add
-            </div>
-          ) : (
-            addable.map((f) => (
-              <SelectItem key={f.id} value={f.id}>
-                {f.name}
-              </SelectItem>
-            ))
-          )}
-        </SelectContent>
-      </Select>
+      {/* Gone while the surface is off, same as the member and group pickers:
+          the API refuses the add. Removing a field stays available. */}
+      {!off && (
+        <Select value="" onValueChange={onPick}>
+          <SelectTrigger className="h-8 text-xs w-full">
+            <SelectValue placeholder="Expose a custom field..." />
+          </SelectTrigger>
+          <SelectContent>
+            {addable.length === 0 ? (
+              <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                No more fields to add
+              </div>
+            ) : (
+              addable.map((f) => (
+                <SelectItem key={f.id} value={f.id}>
+                  {f.name}
+                </SelectItem>
+              ))
+            )}
+          </SelectContent>
+        </Select>
+      )}
       {pendingAdd && (
         <DestructiveConfirmDialog
           open
@@ -1544,41 +1571,27 @@ function ViewFields({ view, safety }: { view: ShareView; safety: SafetyContext }
   );
 }
 
-/** One publish control, which explains itself when the instance's public
- *  surface is off. The title sits on a wrapper rather than on the button
- *  because a disabled button receives no mouse events in several browsers, so
- *  a tooltip on the button itself would simply never appear. */
+/** One publish control. It used to carry its own disabled-and-explained state
+ *  for the instance switch; it no longer needs one, because with the surface
+ *  off the whole row is unrendered rather than shown as something to click. */
 function PublishButton({
-  off,
   icon: Icon,
   label,
   onClick,
 }: {
-  off: boolean;
   icon: typeof Globe;
   label: string;
   onClick: () => void;
 }) {
   return (
-    <span
-      className="inline-flex"
-      title={
-        off
-          ? "Sharing is off on this instance, so nothing new can be published " +
-            "until the operator turns it back on."
-          : undefined
-      }
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-8 text-xs"
+      onClick={onClick}
     >
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 text-xs"
-        disabled={off}
-        onClick={onClick}
-      >
-        <Icon className="mr-1 h-3.5 w-3.5" /> {label}
-      </Button>
-    </span>
+      <Icon className="mr-1 h-3.5 w-3.5" /> {label}
+    </Button>
   );
 }
 
@@ -1615,6 +1628,11 @@ function PublishSection({
 
   const hasPublic = grants.some((g) => g.subject_type === "public");
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+  // Surface off and nothing published from this view: there is no publishing to
+  // offer and no exposure to take down, so the section is not drawn at all. An
+  // empty "Publish" heading would only invite the click that is not there.
+  if (off && grants.length === 0) return null;
 
   function beginPublish(kind: "public" | "link") {
     setPublishError(null);
@@ -1691,27 +1709,29 @@ function PublishSection({
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        {!hasPublic && (
+      {/* Not rendered at all while the surface is off - the API refuses the
+          publish, so offering the button would only promise a click it cannot
+          honour. The rotate and unpublish controls above stay. */}
+      {!off ? (
+        <div className="flex flex-wrap gap-2">
+          {!hasPublic && (
+            <PublishButton
+              icon={Globe}
+              label="Make public"
+              onClick={() => beginPublish("public")}
+            />
+          )}
           <PublishButton
-            off={off}
-            icon={Globe}
-            label="Make public"
-            onClick={() => beginPublish("public")}
+            icon={Link2}
+            label="Create share link"
+            onClick={() => beginPublish("link")}
           />
-        )}
-        <PublishButton
-          off={off}
-          icon={Link2}
-          label="Create share link"
-          onClick={() => beginPublish("link")}
-        />
-      </div>
-      {off && (
+        </div>
+      ) : (
         <p className="text-[11px] text-muted-foreground">
-          Publishing is off on this instance. Anything already published above is
-          kept and is serving nobody for now; unpublishing and rotating still
-          work, and are the only way to make sure it stays that way.
+          Nothing above is being served while sharing is off on this instance,
+          and nothing new can be published. Unpublishing and rotating still work,
+          and are the only way to make sure it stays that way.
         </p>
       )}
 

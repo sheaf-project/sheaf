@@ -2002,6 +2002,14 @@ def test_pending_deletion_still_allows_rotating_a_link():
 # operator turned the setting off (or never had it on) while grants already
 # existed. The setting stops the serving; it does not revoke anything, so the
 # owner-side API has to keep every way OUT open while refusing every way in.
+#
+# "Every way in" is the whole surface, not just publishing. Staging a member
+# into an already-granted view does not wait for the switch - the finalize sweep
+# promotes the row on its own schedule - so the member would be sitting on a
+# live page the day an operator turns the surface back on, with nobody present
+# to agree to it. A dormant-but-live view is the same wake-up hazard as a
+# dormant grant, so creating a view, adding a member/field/group (re-sync
+# included) and turning a flag on are all refused alongside minting a grant.
 # ---------------------------------------------------------------------------
 
 
@@ -2040,12 +2048,111 @@ def _grant_row_in_db(system_id: str, view_id: str, subject_type: str) -> str:
     return grant_id
 
 
+def _view_row_in_db(system_id: str, name: str, **flags) -> str:
+    """Write a share view straight into the database.
+
+    Needed for the same reason `_grant_row_in_db` is: with the surface off the
+    API refuses to create a view, so a view that was built while the surface was
+    ON has to be simulated rather than asked for.
+    """
+    view_id = str(uuid.uuid4())
+
+    async def _work(db) -> None:
+        from sheaf.models.share import ShareView
+
+        db.add(
+            ShareView(
+                id=uuid.UUID(view_id),
+                system_id=uuid.UUID(system_id),
+                name=name,
+                **flags,
+            )
+        )
+
+    _in_db(_work)
+    return view_id
+
+
+def _stock_view_in_db(
+    view_id: str,
+    *,
+    member_id: str | None = None,
+    field_id: str | None = None,
+    group_id: str | None = None,
+    member_pending: bool = False,
+) -> None:
+    """Put member/field/group rows into a view straight through the database.
+
+    Same reason again: the API refuses every add while the surface is off, so a
+    view curated back when it was on has to be written directly. With
+    `member_pending` the membership lands PENDING with its window already
+    elapsed - exactly the row the finalize sweep exists to promote, staged
+    before the switch was ever turned off.
+    """
+
+    async def _work(db) -> None:
+        from sheaf.models.share import (
+            ShareItemStatus,
+            ShareViewField,
+            ShareViewGroup,
+            ShareViewMember,
+        )
+
+        now = datetime.now(UTC)
+        if member_id is not None:
+            db.add(
+                ShareViewMember(
+                    id=uuid.uuid4(),
+                    view_id=uuid.UUID(view_id),
+                    member_id=uuid.UUID(member_id),
+                    status=(
+                        ShareItemStatus.PENDING.value
+                        if member_pending
+                        else ShareItemStatus.ACTIVE.value
+                    ),
+                    activates_at=(
+                        now - timedelta(minutes=1) if member_pending else None
+                    ),
+                    created_at=now,
+                )
+            )
+        if field_id is not None:
+            db.add(
+                ShareViewField(
+                    id=uuid.uuid4(),
+                    view_id=uuid.UUID(view_id),
+                    field_id=uuid.UUID(field_id),
+                    status=ShareItemStatus.ACTIVE.value,
+                    created_at=now,
+                )
+            )
+        if group_id is not None:
+            db.add(
+                ShareViewGroup(
+                    id=uuid.uuid4(),
+                    view_id=uuid.UUID(view_id),
+                    group_id=uuid.UUID(group_id),
+                    synced_at=now,
+                    created_at=now,
+                )
+            )
+
+    _in_db(_work)
+
+
 def _dormant_setup(c: httpx.Client, subject_type: str = "public") -> tuple[str, str]:
-    """A view with a dormant grant pointing at it. Returns (view_id, grant_id)."""
+    """A view with a dormant grant pointing at it. Returns (view_id, grant_id).
+
+    Both rows go in through the database, because both acts are now refused
+    while the surface is off - which is the state these tests describe: a view
+    and a grant that were made while it was ON and are sitting dormant.
+    """
     _go_public(c)
     _attest(c)
-    vid = _view(c, name=f"Dormant-{uuid.uuid4().hex[:6]}", include_bio=False)
     system_id = c.get("/v1/systems/me").json()["id"]
+    vid = _view_row_in_db(
+        system_id, f"Dormant-{uuid.uuid4().hex[:6]}", include_bio=False
+    )
     return vid, _grant_row_in_db(system_id, vid, subject_type)
 
 
@@ -2058,7 +2165,10 @@ def test_publishing_is_refused_while_the_instance_surface_is_off(
     who remembers agreeing to it."""
     _go_public(auth_client)
     _attest(auth_client)
-    vid = _view(auth_client)
+    # View creation is itself refused while the surface is off, so the view
+    # under test is written straight into the database.
+    system_id = auth_client.get("/v1/systems/me").json()["id"]
+    vid = _view_row_in_db(system_id, f"Off-{uuid.uuid4().hex[:6]}")
 
     for subject in ("public", "link"):
         r = auth_client.post(
@@ -2073,29 +2183,108 @@ def test_publishing_is_refused_while_the_instance_surface_is_off(
 
 
 @pytest.mark.public_profiles_off
-def test_curating_a_view_still_works_with_the_surface_off(
+def test_creating_a_view_is_refused_with_the_surface_off(
     auth_client: httpx.Client,
 ):
-    """Selection is not publication. Building a view exposes nothing while no
-    grant can be created at all, so none of this is refused."""
+    """"Selection is not publication" was only half true, and this is the half
+    that bites: a view built now is a fully-curated view sitting one grant away
+    from serving on whatever day an operator turns the surface back on."""
+    r = auth_client.post(
+        "/v1/share-views", json={"name": f"Prepared-{uuid.uuid4().hex[:6]}"}
+    )
+    assert r.status_code == 403, r.text
+    assert "turned off" in r.json()["detail"]
+    assert auth_client.get("/v1/share-views").json() == []
+
+
+@pytest.mark.public_profiles_off
+def test_adding_to_a_view_is_refused_with_the_surface_off(
+    auth_client: httpx.Client,
+):
+    """The wake-up hazard this closes: a row staged into an already-granted view
+    is promoted by the finalize sweep on its own schedule, so the member, field
+    or group would be on a live page the day the switch comes back."""
+    vid, _ = _dormant_setup(auth_client)
     m = _member(auth_client, "Prep", privacy="public")
     g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
     f = _field(auth_client, f"F-{uuid.uuid4().hex[:6]}")
 
-    vid = _view(auth_client, name=f"Prepared-{uuid.uuid4().hex[:6]}")
-    assert auth_client.post(
-        f"/v1/share-views/{vid}/members", json={"member_id": m}
+    for path, body in (
+        (f"/v1/share-views/{vid}/members", {"member_id": m}),
+        (f"/v1/share-views/{vid}/groups", {"group_id": g}),
+        (f"/v1/share-views/{vid}/fields", {"field_id": f}),
+    ):
+        r = auth_client.post(path, json=body)
+        assert r.status_code == 403, f"{path}: {r.text}"
+        assert "turned off" in r.json()["detail"]
+
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["members"] == []
+    assert got["fields"] == []
+    assert got["groups"] == []
+
+
+@pytest.mark.public_profiles_off
+def test_group_resync_is_refused_with_the_surface_off(auth_client: httpx.Client):
+    """The re-sync is the same endpoint and the same refusal, and it is the one
+    worth a test of its own: re-posting expands the group's CURRENT roster, so
+    somebody who joined the group after the switch went off would otherwise be
+    pulled into a dormant-but-live view."""
+    vid, _ = _dormant_setup(auth_client)
+    g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
+    _stock_view_in_db(vid, group_id=g)
+
+    joined_later = _member(auth_client, "JoinedLater", privacy="public")
+    assert auth_client.put(
+        f"/v1/groups/{g}/members", json={"member_ids": [joined_later]}
     ).status_code == 200
-    assert auth_client.post(
-        f"/v1/share-views/{vid}/groups", json={"group_id": g}
-    ).status_code == 200
-    assert auth_client.post(
-        f"/v1/share-views/{vid}/fields", json={"field_id": f}
-    ).status_code == 200
-    # Renaming exposes nothing either.
-    assert auth_client.patch(
-        f"/v1/share-views/{vid}", json={"name": "Renamed"}
-    ).status_code == 200
+
+    r = auth_client.post(f"/v1/share-views/{vid}/groups", json={"group_id": g})
+    assert r.status_code == 403, r.text
+    assert auth_client.get(f"/v1/share-views/{vid}").json()["members"] == []
+
+
+@pytest.mark.public_profiles_off
+def test_renaming_a_view_still_works_with_the_surface_off(
+    auth_client: httpx.Client,
+):
+    """Renaming exposes nothing, so it is not part of the block - the gate is on
+    loosening, not on touching a view at all."""
+    vid, _ = _dormant_setup(auth_client)
+
+    r = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"name": f"Renamed-{uuid.uuid4().hex[:6]}"}
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.public_profiles_off
+def test_removing_from_a_view_still_works_with_the_surface_off(
+    auth_client: httpx.Client,
+):
+    """Taking somebody out of a dormant view is precisely how an owner stops
+    them waking up with it, so no setting the owner does not control may stand
+    in the way."""
+    vid, _ = _dormant_setup(auth_client)
+    m = _member(auth_client, "Curated", privacy="public")
+    g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
+    f = _field(auth_client, f"F-{uuid.uuid4().hex[:6]}")
+    _stock_view_in_db(vid, member_id=m, field_id=f, group_id=g)
+
+    assert (
+        auth_client.delete(f"/v1/share-views/{vid}/members/{m}").status_code == 204
+    )
+    assert (
+        auth_client.delete(f"/v1/share-views/{vid}/fields/{f}").status_code == 204
+    )
+    assert (
+        auth_client.delete(f"/v1/share-views/{vid}/groups/{g}").status_code == 204
+    )
+
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["members"] == []
+    assert got["fields"] == []
+    assert got["groups"] == []
 
 
 @pytest.mark.public_profiles_off
@@ -2173,3 +2362,30 @@ def test_deleting_a_view_with_the_surface_off_still_works(
     assert not [
         g for g in auth_client.get("/v1/share-grants").json() if g["id"] == gid
     ]
+
+
+@pytest.mark.public_profiles_off
+def test_a_row_staged_before_the_switch_still_promotes(
+    auth_client: httpx.Client, admin_client: httpx.Client
+):
+    """The finalize sweep is deliberately NOT gated on the instance switch.
+
+    Every row it can find was staged while the surface was on (nothing can stage
+    one now), so its window is one the owner consented to. Freezing it would
+    move the promotion onto an operator's schedule instead of the owner's -
+    the same wake-up hazard, relocated. Nothing promoted here is served while
+    the surface is off; the anonymous router 404s regardless.
+    """
+    vid, _ = _dormant_setup(auth_client)
+    m = _member(auth_client, "Staged", privacy="public")
+    _stock_view_in_db(vid, member_id=m, member_pending=True)
+
+    staged = auth_client.get(f"/v1/share-views/{vid}").json()["members"]
+    assert [row["status"] for row in staged] == ["pending"]
+
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+    assert run.json()["status"] == "success"
+
+    promoted = auth_client.get(f"/v1/share-views/{vid}").json()["members"]
+    assert [row["status"] for row in promoted] == ["active"]
