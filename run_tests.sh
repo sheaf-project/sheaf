@@ -402,8 +402,11 @@ fi
 # 11. Public profiles disabled - the other side of the same switch, and the
 # production default. Pins that the anonymous router 404s wholesale, and that
 # the owner-side sharing API splits the way it promises with the surface off:
-# revoking, rotating and narrowing still work, publishing and loosening are
-# refused, and the audit still lists the grants that are sitting dormant.
+# revoking, rotating, removing and narrowing still work and the audit still
+# lists the dormant grants, while EVERY loosening is refused - creating a view,
+# adding a member/field/group, re-syncing a group, turning a flag on, and
+# publishing. Also pins that a row staged before the switch went off still
+# promotes on its own schedule.
 if should_run "selfhosted/public_profiles_off"; then
     CONFIG_INDEX=$((CONFIG_INDEX + 1))
     echo ""

@@ -1294,6 +1294,17 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     Mirrors the pending-action sweep. Returns the number of rows promoted.
     Revoked grants are skipped: revocation during the grace window means the
     exposure never happens at all.
+
+    Deliberately NOT gated on `settings.public_profiles_enabled`, and the
+    decision is worth recording because the obvious reading points the other
+    way. Every row this sweep can find was staged while the surface was ON (or
+    before the sharing router refused staging at all), so its window is one the
+    owner consented to, and freezing it would mean the promotion happens on an
+    operator's schedule instead of the owner's - the same wake-up hazard, moved.
+    Nothing this sweep promotes is SERVED while the surface is off; the
+    anonymous router 404s regardless. The block that matters lives at the other
+    end, in `sharing._block_new_exposure`, which stops NEW staging while the
+    switch is off, so the set of rows waiting here can only shrink.
     """
     now = datetime.now(UTC)
     promoted = 0
