@@ -144,6 +144,7 @@ from sheaf.services.import_image_strip import (
     rewrite_internal_image_refs_md_to_none,
 )
 from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.messages import encrypt_body
 from sheaf.services.polls import (
@@ -1237,6 +1238,7 @@ async def run_import(
             report=report,
         )
         member_id = uuid.uuid4()
+        is_cf = bool(m_data.get("is_custom_front", False))
         member = Member(
             id=member_id,
             system_id=system.id,
@@ -1283,12 +1285,23 @@ async def run_import(
                 m_data.get("pluralkit_id"), il.M_PLURALKIT_ID, report=report
             ),
             emoji=clamp_str(m_data.get("emoji"), il.M_EMOJI, report=report),
-            is_custom_front=bool(m_data.get("is_custom_front", False)),
+            is_custom_front=is_cf,
             privacy=_privacy(m_data.get("privacy")),
             # Default False only when the key is absent (an older export).
             # A member marked never-shareable stays never-shareable.
             never_shareable=bool(m_data.get("never_shareable", False)),
-            fronting_private=bool(m_data.get("fronting_private", False)),
+            # The file wins whenever it carries the column, so a native export
+            # round-trips a guard the owner deliberately released rather than
+            # silently re-arming it. Only an export old enough to predate the
+            # column takes the server default, which is ON for a custom front.
+            fronting_private=default_fronting_private(
+                is_custom_front=is_cf,
+                requested=(
+                    bool(m_data["fronting_private"])
+                    if m_data.get("fronting_private") is not None
+                    else None
+                ),
+            ),
             quick_switch_pin=_coerce_pin(m_data.get("quick_switch_pin")),
             notify_on_front_global=bool(
                 m_data.get("notify_on_front_global", False)

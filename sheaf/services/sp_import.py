@@ -68,6 +68,7 @@ from sheaf.services.import_dedup import (
 from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import")
@@ -531,6 +532,10 @@ async def run_import(
                 avatar_url=_sp_avatar_url(sp_cf, sp_owner_id),
                 privacy=_map_privacy(sp_cf.get("private", True)),
                 is_custom_front=True,
+                # SP has no per-front-status share guard to carry, so this
+                # takes the server default: guarded, because "Asleep" is a
+                # state nobody published by publishing a roster.
+                fronting_private=default_fronting_private(is_custom_front=True),
             )
             custom_front_candidates.append((member, sp_id))
 

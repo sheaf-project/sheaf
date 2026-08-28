@@ -33,9 +33,14 @@ class MemberCreate(BaseModel):
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
     note: str | None = Field(default=None, max_length=5000)
     quick_switch_pin: int | None = Field(default=None, ge=0)
-    # Share hard guards (see sheaf/models/member.py). Both default off.
+    # Share hard guards (see sheaf/models/member.py).
     never_shareable: bool = False
-    fronting_private: bool = False
+    # Tri-state on purpose, unlike its sibling: omitted (or null) means "use
+    # the server default", which is ON for a custom front and off for an
+    # ordinary member - see services/member_defaults.default_fronting_private.
+    # A body that says `false` outright still gets `false`; a new member is in
+    # no view, so there is nothing for the release gate to protect.
+    fronting_private: bool | None = None
 
     # banner_url shares the avatar normaliser: both are image storage keys /
     # external URLs with the same allow_external_images gate.

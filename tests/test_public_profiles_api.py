@@ -861,6 +861,53 @@ def test_fronting_private_member_not_even_counted():
 
 
 @pytest.mark.public_profiles
+def test_custom_front_in_the_view_is_neither_named_nor_counted_by_default():
+    """The whole point of the default. "Asleep" is public, curated into the
+    view, and actively fronting - and the page still says nothing about it,
+    because a custom front is created with the fronting guard on. Not even as
+    the anonymous count, which would still leak that something is going on."""
+    owner = _register()
+    shown = _member(owner, "Visible")
+    asleep = _member(owner, "Asleep", is_custom_front=True)
+    system_id, _ = _published_system(
+        owner,
+        members=[shown, asleep],
+        include_fronting=True,
+        fronting_show_count=True,
+    )
+    owner.post("/v1/fronts", json={"member_ids": [shown, asleep]})
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/fronting").json()
+    assert {pm["name"] for pm in body["members"]} == {"Visible"}
+    assert body["hidden_count"] == 0
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_custom_front_is_named_once_the_owner_releases_the_guard():
+    """The default is a default, not a wall: releasing it through the ordinary
+    PATCH puts the custom front on the page like any other member. This account
+    has never picked an auth tier or a grace window, so the release gate costs
+    it nothing and applies at once; the gated and staged shapes of the same
+    release have their own coverage in test_sharing_api.py."""
+    owner = _register()
+    asleep = _member(owner, "Asleep", is_custom_front=True)
+    system_id, _ = _published_system(
+        owner, members=[asleep], include_fronting=True, fronting_show_count=True
+    )
+    released = owner.patch(
+        f"/v1/members/{asleep}", json={"fronting_private": False}
+    )
+    assert released.status_code == 200, released.text
+    assert released.json()["fronting_private"] is False
+    owner.post("/v1/fronts", json={"member_ids": [asleep]})
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/fronting").json()
+    assert {pm["name"] for pm in body["members"]} == {"Asleep"}
+    owner.close()
+
+
+@pytest.mark.public_profiles
 def test_fronting_show_count_off_hides_the_number():
     owner = _register()
     shown = _member(owner, "OnlyShown")

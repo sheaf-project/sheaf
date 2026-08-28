@@ -50,6 +50,7 @@ from sheaf.services.journals import (
     restore_member_bio_revision,
     unpin_revision_immediate,
 )
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
@@ -199,6 +200,13 @@ async def create_member(
             )
 
     data = body.model_dump()
+    # The one field whose default depends on another field in the same body.
+    # Resolved through the shared helper so this endpoint and the importers
+    # cannot disagree about what a brand new custom front is guarded with.
+    data["fronting_private"] = default_fronting_private(
+        is_custom_front=bool(data.get("is_custom_front")),
+        requested=data.get("fronting_private"),
+    )
     plaintext_name: str = data.pop("name")
     plaintext_description: str | None = data.pop("description", None)
     plaintext_note: str | None = data.pop("note", None)

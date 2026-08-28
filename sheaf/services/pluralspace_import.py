@@ -141,6 +141,7 @@ from sheaf.services.import_parsing import (
     safe_json_loads,
     sanitize_external_avatar_url,
 )
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.polls import max_concurrent_open_for_tier
 from sheaf.services.sheaf_import import (
@@ -581,6 +582,9 @@ async def run_import(
             color=_normalize_color(m_data.get("color")),
             is_custom_front=is_cf,
             privacy=PrivacyLevel.PRIVATE,
+            # PluralSpace carries no share guard of its own, so this takes the
+            # server default: a custom front lands guarded.
+            fronting_private=default_fronting_private(is_custom_front=is_cf),
         )
         candidates.append((member, ps_id, plaintext_name, is_cf))
 

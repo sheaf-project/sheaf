@@ -55,7 +55,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -1116,10 +1118,25 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
     return m;
   }, [members]);
 
+  // A custom front ("Asleep", "Away") is a Member row like any other, so both
+  // the chips and the picker used to show it unlabelled next to the people -
+  // and a custom front in a view with fronting on publishes a status, which is
+  // a different thing to publish than a name. Marked in both places.
+  const customFrontIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const mem of members ?? []) if (mem.is_custom_front) s.add(mem.id);
+    return s;
+  }, [members]);
+
   const inView = new Set(view.members.map((m) => m.member_id));
   const addable = (members ?? []).filter(
     (m) => !inView.has(m.id) && !m.never_shareable,
   );
+  // Sectioned rather than toggled: the Select already renders labelled groups
+  // elsewhere (see timezone-select), so a divider is the smaller change and
+  // costs the picker no extra state.
+  const addableMembers = addable.filter((m) => !m.is_custom_front);
+  const addableFronts = addable.filter((m) => m.is_custom_front);
   // Members that are in the view but won't actually appear. Taken from the
   // server's own answer rather than re-derived from member privacy here: the
   // client's version of this test missed an archived member and one queued for
@@ -1204,6 +1221,14 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
                 title={notServed?.title}
               >
                 {label ?? "member"}
+                {customFrontIds.has(row.member_id) && (
+                  <span
+                    className="text-[9px] opacity-70"
+                    title="A custom front - a status like Asleep or Away rather than a person. Its live state shows on this page only if its 'keep fronting private' setting is off, which for a custom front is on by default."
+                  >
+                    custom front
+                  </span>
+                )}
                 {notServed && (
                   <span className="text-[9px]">{notServed.badge}</span>
                 )}
@@ -1272,11 +1297,28 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
                 No more members to add
               </div>
             ) : (
-              addable.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.display_name || m.name}
-                </SelectItem>
-              ))
+              <>
+                {addableMembers.length > 0 && (
+                  <SelectGroup>
+                    <SelectLabel>Members</SelectLabel>
+                    {addableMembers.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.display_name || m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )}
+                {addableFronts.length > 0 && (
+                  <SelectGroup>
+                    <SelectLabel>Custom fronts</SelectLabel>
+                    {addableFronts.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.display_name || m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )}
+              </>
             )}
           </SelectContent>
         </Select>

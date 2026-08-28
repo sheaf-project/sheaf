@@ -85,6 +85,44 @@ def test_sheaf_runner_roundtrip_from_export(auth_client: httpx.Client):
     assert len([m for m in members if m["name"] == "RoundtripMember"]) == 1
 
 
+def test_sheaf_runner_custom_front_guard_follows_the_file(
+    auth_client: httpx.Client,
+):
+    """The native format carries `fronting_private` outright, so it wins: a
+    guard the owner deliberately released comes back released. Only an export
+    old enough to predate the column has nothing to say, and that one takes
+    the server default - which for a custom front is guarded."""
+    payload = {
+        **_SHEAF_EXPORT,
+        "members": [
+            {"id": "c1", "name": "GuardAbsent", "is_custom_front": True},
+            {
+                "id": "c2",
+                "name": "GuardReleased",
+                "is_custom_front": True,
+                "fronting_private": False,
+            },
+            {
+                "id": "c3",
+                "name": "GuardKept",
+                "is_custom_front": True,
+                "fronting_private": True,
+            },
+            {"id": "c4", "name": "PlainMember"},
+        ],
+    }
+    job = _post_file(auth_client, payload=json.dumps(payload).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    by_name = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    assert by_name["GuardAbsent"]["fronting_private"] is True
+    assert by_name["GuardReleased"]["fronting_private"] is False
+    assert by_name["GuardKept"]["fronting_private"] is True
+    assert by_name["PlainMember"]["fronting_private"] is False
+
+
 def test_sheaf_runner_roundtrips_relationships(auth_client: httpx.Client):
     """Relationship types (symmetric / directional / either) and both member
     and group edges import, and a re-export carries them back with correct

@@ -189,7 +189,9 @@ export interface MemberCreate {
   note?: string | null;
   quick_switch_pin?: number | null;
   never_shareable?: boolean;
-  fronting_private?: boolean;
+  /** Omit (or send null) to take the server default, which is on for a custom
+   *  front and off for an ordinary member. An explicit value is honoured. */
+  fronting_private?: boolean | null;
 }
 
 export interface MemberUpdate {

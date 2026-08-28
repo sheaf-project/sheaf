@@ -94,6 +94,7 @@ from sheaf.services.import_media import (
     store_imported_image,
     user_can_upload_images,
 )
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.messages import encrypt_body
 from sheaf.services.polls import encrypt_text
@@ -330,6 +331,7 @@ async def run_import(
             )
         )
         member_id = uuid.uuid4()
+        is_cf = bool(amp_m.get("isCustomFront"))
         member = Member(
             id=member_id,
             system_id=system.id,
@@ -344,7 +346,10 @@ async def run_import(
                 _coerce_str(amp_m.get("pronouns")) or None, il.M_PRONOUNS, report=report
             ),
             color=_normalize_color(amp_m.get("color")),
-            is_custom_front=bool(amp_m.get("isCustomFront")),
+            is_custom_front=is_cf,
+            # Ampersand carries no share guard of its own, so this takes the
+            # server default: a custom front lands guarded.
+            fronting_private=default_fronting_private(is_custom_front=is_cf),
         )
         created = _parse_iso(amp_m.get("dateCreated"))
         if created:

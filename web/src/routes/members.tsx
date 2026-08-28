@@ -329,6 +329,13 @@ function MemberForm({
                 This member may appear in a view, but their live front status is
                 never shown publicly - not even as an anonymous count.
               </p>
+              {isCustomFront && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Custom fronts keep their front state private by default so a
+                  status like Asleep is never broadcast; turn this off to show
+                  it on shared pages.
+                </p>
+              )}
               {initial?.fronting_private_activates_at && (
                 <p className="text-xs text-amber-600 mt-1">
                   A request to release this guard is waiting out the System
@@ -343,7 +350,17 @@ function MemberForm({
         <input
           type="checkbox"
           checked={isCustomFront}
-          onChange={(e) => setIsCustomFront(e.target.checked)}
+          onChange={(e) => {
+            setIsCustomFront(e.target.checked);
+            // The form always sends `fronting_private`, so it has to mirror
+            // the server's create-time default or it would talk the API out
+            // of it: a new custom front lands with its front state private.
+            // Create only, and only while the owner has not set the guard
+            // themselves - on an existing member the stored value wins.
+            if (!initial && !frontingPrivateTouched) {
+              setFrontingPrivate(e.target.checked);
+            }
+          }}
           className="h-4 w-4 mt-0.5 rounded border-input"
         />
         <div>
