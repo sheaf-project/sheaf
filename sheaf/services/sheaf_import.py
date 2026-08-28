@@ -1935,6 +1935,19 @@ async def run_import(
             "skipped."
         )
 
+    # Views restore whatever the instance switch says, and that is correct: no
+    # grant round-trips, so a restored view points at nobody and nothing serves
+    # it. Say so anyway. Without this line the import reports "3 share views"
+    # on an instance that will not show them to a soul, and the owner is left
+    # to work out for themselves whether their curation survived.
+    if result.share_views_imported and not settings.public_profiles_enabled:
+        warnings.append(
+            f"{result.share_views_imported} share view(s) were restored, but "
+            "public profiles and share links are turned off on this instance, "
+            "so none of them are published; they can be published if the "
+            "operator turns sharing on."
+        )
+
     await db.flush()
 
     # --- Fronts ---

@@ -18,10 +18,11 @@ once - accepted, not "refused until later".
 An instance with its public surface switched off is stricter than that: EVERY
 loosening on this router is refused (`_block_new_exposure`), not only the ones
 that reach a reader today. Creating a view, adding a member/field/group to one,
-re-syncing a group, turning an exposure flag on and minting a grant all answer
-403 while the switch is off, because whatever they stage gets promoted by the
-finalize sweep on its own schedule and would then be served the moment an
-operator flips the switch back, with nobody present to agree to it. Everything
+re-syncing a group, turning an exposure flag on, turning member permalinks on
+and minting a grant all answer 403 while the switch is off, because whatever
+they stage gets promoted by the finalize sweep on its own schedule and would
+then be served the moment an operator flips the switch back, with nobody
+present to agree to it. Everything
 that un-exposes stays open - revoke, rotate, tighten, delete a view, remove a
 member/field/group - as does the audit, which is never gated: dormant grants are
 precisely the ones an owner needs to be able to see and revoke.
@@ -185,7 +186,10 @@ def _block_new_exposure(user: User) -> None:
 
     So while the surface is off, EVERY loosening on this router is refused:
     creating a view, adding a member, a field or a group (a group re-sync
-    included), turning an exposure flag on, and creating a grant. The cost is
+    included), turning an exposure flag on, turning member permalinks on, and
+    creating a grant. `member_permalinks` sits outside the staged-flag
+    machinery but not outside this gate: it is still a set of addresses that
+    would start resolving the day an operator flips the switch back. The cost is
     that an owner cannot stage work for the day the surface comes back; that
     trade was made deliberately, because unbuilt preparation is recoverable and
     a member who finds themselves published is not. Nothing that un-exposes is
@@ -450,11 +454,19 @@ async def update_share_view(
     as two requests; the tightening one is never gated.
 
     `member_permalinks` is handled outside that machinery on purpose. It is not
-    in `EXPOSURE_FLAGS`, has no pending twin, and is applied in both directions
-    the moment it is asked for, because it publishes nothing new: every member
-    it gives an address to is already on the roster this view serves. Staging a
-    change that reveals nobody would cost the owner a re-auth and a wait for no
-    protection, and would teach them that the grace window is a formality.
+    in `EXPOSURE_FLAGS`, has no pending twin, and is applied the moment it is
+    asked for, because it publishes nothing new: every member it gives an
+    address to is already on the roster this view serves. Staging a change that
+    reveals nobody would cost the owner a re-auth and a wait for no protection,
+    and would teach them that the grace window is a formality.
+
+    It is outside the staging machinery, not outside the instance switch. With
+    the public surface off, turning permalinks ON is refused by the same
+    `_block_new_exposure` gate the flag loosenings use: it mints a per-member
+    address for every member on the roster, and those addresses start resolving
+    the day an operator turns the surface back on, with nobody around who agreed
+    to them. Turning permalinks OFF stays immediate and ungated in every state,
+    like every other tightening here.
     """
     system = await _get_user_system(user, db)
     view = await _get_view(view_id, system, db, load=True, for_update=True)
@@ -469,13 +481,19 @@ async def update_share_view(
         for flag, value in requested.items()
         if value is True and not getattr(view, flag)
     }
+    # `member_permalinks` skips the staging machinery but not this gate. It
+    # publishes no new member, which is why it never stages and never steps up,
+    # but it does hand every member on the roster their own address, and an
+    # address minted now is one that starts resolving the day the surface comes
+    # back. Turning it OFF is a tightening and is never refused.
+    permalinks_on = body.member_permalinks is True and not view.member_permalinks
     # Only the loosening direction is refused, and it is refused for both of
     # the reasons in `_block_new_exposure` - an account on its way out, and an
     # instance whose public surface is switched off. Turning a flag OFF has to
     # stay available to the very last minute: it is the un-exposing direction,
     # and nothing - not the safety system, not this check, not the operator's
     # setting - is allowed to stand between somebody and going dark.
-    if loosening:
+    if loosening or permalinks_on:
         _block_new_exposure(user)
     # Step-up whenever the category is armed and this loosening would actually
     # reach a reader (the view is shared). Staging behind the grace window is a

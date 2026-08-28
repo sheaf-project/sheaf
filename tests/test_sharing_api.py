@@ -2310,6 +2310,63 @@ def test_loosening_is_refused_but_tightening_is_not(auth_client: httpx.Client):
 
 
 @pytest.mark.public_profiles_off
+def test_member_permalinks_cannot_be_turned_on_while_the_surface_is_off(
+    auth_client: httpx.Client,
+):
+    """Permalinks sit outside the staging machinery, not outside this gate.
+
+    They stage nothing and step up for nobody, because they publish no member
+    the roster does not already publish - but turning them on mints an address
+    per member, and those addresses start resolving the day an operator flips
+    the switch back, with nobody around who agreed to them. Turning them off is
+    a tightening and stays open, like every other way out on this router.
+    """
+    vid, _ = _dormant_setup(auth_client)
+
+    on = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"member_permalinks": True}
+    )
+    assert on.status_code == 403, on.text
+    assert (
+        auth_client.get(f"/v1/share-views/{vid}").json()["member_permalinks"]
+        is False
+    )
+
+    off = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"member_permalinks": False}
+    )
+    assert off.status_code == 200, off.text
+    assert (
+        auth_client.get(f"/v1/share-views/{vid}").json()["member_permalinks"]
+        is False
+    )
+
+
+@pytest.mark.public_profiles_off
+def test_member_permalinks_can_be_turned_off_while_the_surface_is_off(
+    auth_client: httpx.Client,
+):
+    """The un-exposing direction on a view that HAS them on, which is the case
+    that matters: a view curated while the surface was up, whose owner now wants
+    the per-member addresses gone before it ever comes back."""
+    _go_public(auth_client)
+    _attest(auth_client)
+    system_id = auth_client.get("/v1/systems/me").json()["id"]
+    vid = _view_row_in_db(
+        system_id, f"Dormant-{uuid.uuid4().hex[:6]}", member_permalinks=True
+    )
+
+    off = auth_client.patch(
+        f"/v1/share-views/{vid}", json={"member_permalinks": False}
+    )
+    assert off.status_code == 200, off.text
+    assert (
+        auth_client.get(f"/v1/share-views/{vid}").json()["member_permalinks"]
+        is False
+    )
+
+
+@pytest.mark.public_profiles_off
 def test_revoking_a_dormant_grant_still_works(auth_client: httpx.Client):
     """The whole reason the audit and this endpoint stay ungated: a dormant
     grant is exactly the one somebody needs to be able to kill before an

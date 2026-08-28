@@ -70,6 +70,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { ReasonBadge } from "@/components/reason-badge";
 import { PageHeader } from "@/components/page-header";
 import type { DeleteConfirmation, DestructiveConfirm } from "@/types/api";
 
@@ -254,7 +255,10 @@ const EXPOSURE_FLAGS = [
 // because it exposes nothing new - a permalink is only a stable address for a
 // member the view already shows - so it must not ride the staged-flag
 // machinery, which would make it demand a step-up and sit out a grace period
-// for a change that reveals no one.
+// for a change that reveals no one. It is still subject to the INSTANCE
+// switch in the ON direction, because addresses minted now start resolving the
+// day an operator turns the public surface back on; that lives on the row
+// itself rather than here, since it is not a staging question.
 
 type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
 
@@ -327,8 +331,8 @@ function accountSuppressionNotice(reason: string | null): string | null {
   return match ? SUPPRESSION_NOTICE[match] : null;
 }
 
-/** The tooltip on a dormant badge. Says the same thing as the notice above the
- *  list, in the one sentence a badge can carry: it is retained, it is not
+/** The reason behind a dormant badge. Says the same thing as the notice above
+ *  the list, in the one sentence a badge can carry: it is retained, it is not
  *  being served, and here is which switch did it. The "retained" half is the
  *  load-bearing one - dormant must not read as "gone", or an owner stops
  *  looking for the grant they actually wanted to revoke. */
@@ -367,6 +371,13 @@ function servedMembersLabel(e: ShareAuditEntry): string {
     ? `${served} of ${e.member_count} ${noun}`
     : `${served} ${noun}`;
 }
+
+/** Why a member chip is marked "custom front". Lifted out of the JSX so it
+ *  sits with the other badge copy rather than inline in a component. */
+const CUSTOM_FRONT_REASON =
+  "A custom front - a status like Asleep or Away rather than a person. Its " +
+  "live state shows on this page only if its 'keep fronting private' setting " +
+  "is off, which for a custom front is on by default.";
 
 /** What a member badge says when the view is holding them back, keyed by the
  *  server's reason. The server decides WHETHER somebody shows (it composes the
@@ -643,21 +654,20 @@ function GrantStatusBadge({ grant }: { grant: ShareGrant }) {
   }
   if (suppression) {
     return (
-      <Badge
+      <ReasonBadge
         variant="outline"
-        // The expiry is carried into the tooltip rather than dropped: it is
+        label="dormant"
+        // The expiry is carried into the reason rather than dropped: it is
         // still ticking while the grant is dormant, so an owner counting on it
         // to lapse should not have to turn the instance back on to see when.
-        title={
+        reason={
           DORMANT_TITLE[suppression] +
           (grant.expires_at
             ? ` It still expires ${formatDate(grant.expires_at)}.`
             : "")
         }
         className="text-[10px] border-amber-500/50 text-amber-600 dark:text-amber-500"
-      >
-        dormant
-      </Badge>
+      />
     );
   }
   if (grant.expires_at) {
@@ -1093,7 +1103,8 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
 
   /** Member permalinks bypass `change()` on purpose: nothing is exposed that
    *  the roster does not already expose, so there is nothing to stage and
-   *  nothing to step up for, in either direction. */
+   *  nothing to step up for, in either direction. The instance switch still
+   *  applies to the ON direction - see `lockedOn` on the row below. */
   function changePermalinks(value: boolean) {
     update.mutate({ id: view.id, data: { member_permalinks: value } });
   }
@@ -1176,14 +1187,19 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
       </div>
 
       {/* Outside the block above, because it is the one display option here
-          that neither stages nor exposes: it addresses what is already shown. */}
+          that neither stages nor exposes: it addresses what is already shown.
+          It is NOT outside `lockedOn`, though - the API refuses to turn it on
+          while the instance's public surface is off, because the addresses it
+          mints would start resolving the day an operator turns that back on.
+          Turning it off stays available, same as every other tightening. */}
       <div className="space-y-2 border-t pt-3">
         <CheckboxRow
           checked={view.member_permalinks}
           onChange={changePermalinks}
           label="Member permalinks"
           desc="Give each member this view already shows their own stable link, so you can point someone at one member. It reveals nothing the view does not already show, so it applies immediately - turning it on and turning it off both take effect at once."
-          disabled={membersOff}
+          disabled={membersOff || lockedOn(view.member_permalinks)}
+          title={lockedOn(view.member_permalinks) ? LOOSEN_OFF_REASON : undefined}
         />
       </div>
       {reauth && (
@@ -1335,19 +1351,24 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
                 key={row.id}
                 variant={notServed ? "outline" : "secondary"}
                 className={`gap-1 ${notServed ? "text-muted-foreground" : ""}`}
-                title={notServed?.title}
               >
                 {label ?? "member"}
                 {customFrontIds.has(row.member_id) && (
-                  <span
+                  <ReasonBadge
                     className="text-[9px] opacity-70"
-                    title="A custom front - a status like Asleep or Away rather than a person. Its live state shows on this page only if its 'keep fronting private' setting is off, which for a custom front is on by default."
-                  >
-                    custom front
-                  </span>
+                    label="custom front"
+                    reason={CUSTOM_FRONT_REASON}
+                  />
                 )}
+                {/* The reason now hangs off the words that state it rather
+                    than off the whole chip. The chip also carries a remove
+                    button, so it cannot be the focusable trigger itself. */}
                 {notServed && (
-                  <span className="text-[9px]">{notServed.badge}</span>
+                  <ReasonBadge
+                    className="text-[9px]"
+                    label={notServed.badge}
+                    reason={notServed.title}
+                  />
                 )}
                 {/* Unchanged, and deliberately separate from the badge above:
                     a member can be both waiting out a grace window AND held

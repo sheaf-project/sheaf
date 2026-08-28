@@ -13,6 +13,7 @@ import os
 import uuid
 
 import httpx
+import pytest
 
 from tests._import_runner_helpers import (
     drive_import_runner,
@@ -1665,3 +1666,43 @@ def test_sheaf_runner_lowering_system_privacy_clears_a_staged_raise(
     assert system["privacy"] == "private"
     assert system["pending_privacy"] is None
     assert system["privacy_activates_at"] is None
+
+
+# --- Restoring share views onto an instance with sharing switched off ------
+#
+# Views restore whatever the switch says, on purpose: no grant round-trips, so
+# a restored view points at nobody and nothing serves it. What the report owes
+# the owner is the other half of that sentence - their curation came back, and
+# it is going nowhere until an operator turns sharing on.
+
+
+@pytest.mark.public_profiles_off
+def test_sheaf_runner_says_restored_views_are_not_published_while_off(
+    auth_client: httpx.Client,
+):
+    """The views land, and the report says out loud that nobody can see them.
+
+    Without the line, an import reports "1 share view" on an instance that will
+    not show it to a soul, and the owner is left guessing whether the restore
+    worked or whether their curation quietly went missing.
+    """
+    name = f"Restored-{uuid.uuid4().hex[:6]}"
+    final = _run(auth_client, _export_with({}, share_views=[{"name": name}]))
+
+    assert final["counts"]["share_views_imported"] == 1, final["counts"]
+    assert [v for v in auth_client.get("/v1/share-views").json() if v["name"] == name]
+
+    noted = [w for w in _warnings(final) if "turned off on this instance" in w]
+    assert noted, final["events"]
+    assert "1 share view(s) were restored" in noted[0]
+
+
+@pytest.mark.public_profiles_off
+def test_sheaf_runner_stays_quiet_when_no_view_was_restored(
+    auth_client: httpx.Client,
+):
+    """The note is about restored views, so an import that restored none must
+    not go out of its way to mention sharing at all."""
+    final = _run(auth_client, _export_with({}))
+
+    assert not [w for w in _warnings(final) if "turned off on this instance" in w]
