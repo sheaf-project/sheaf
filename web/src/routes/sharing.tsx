@@ -258,35 +258,94 @@ const EXPOSURE_FLAGS = [
 
 type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
 
-/** The audit lists what each grant WOULD serve. When the account-level
- *  suppression is set, none of it is reachable right now, so the list needs a
- *  line above it saying so - otherwise it reads as a page that is live.
- *  `publishing_blocked` outranks the other two server-side, so its line is the
- *  one that shows when an operator has latched the system shut. */
-function suppressionNotice(reason: string | null): string | null {
-  if (reason === "publishing_blocked") {
-    return (
-      "None of this is being served right now: an operator on this instance " +
-      "has disabled publishing on your system. Nothing below has been " +
-      "deleted, and it serves again if they lift it."
-    );
-  }
-  if (reason === "system_private") {
-    return (
-      "None of this is reachable right now: your system's privacy is not set " +
-      "to Public, and that is the master switch over everything you share. " +
-      "Change it under Settings - system profile to serve these again."
-    );
-  }
-  if (reason === "account_state") {
-    return (
-      "None of this is being served right now because of the state of your " +
-      "account. Nothing has been deleted and everything below is still set up " +
-      "exactly as you left it; it comes back when your account does."
-    );
-  }
-  return null;
+/** Why nothing on this page is reaching anybody, or null when it is.
+ *
+ *  Two independent facts collapse into one value here, and everything that has
+ *  to react to "nothing is being served" reads it rather than re-deriving it:
+ *  the instance switch (session state, `PUBLIC_PROFILES_ENABLED`) and the
+ *  account-level suppression the audit reports. They used to be re-derived per
+ *  component, which is how the status badge came to say "live" on a grant the
+ *  paragraph underneath it described as reaching nobody.
+ *
+ *  `instance_off` wins when both apply: it is the outermost reason and the
+ *  only one no setting of the owner's can clear. Below it the server's own
+ *  ordering stands - `publishing_blocked`, then `system_private`, then
+ *  `account_state` - because it is `suppression_reason` that picked one. */
+type GrantSuppression =
+  | "instance_off"
+  | "publishing_blocked"
+  | "system_private"
+  | "account_state";
+
+const ACCOUNT_SUPPRESSIONS = [
+  "publishing_blocked",
+  "system_private",
+  "account_state",
+] as const;
+
+/** Reads the two sources itself rather than taking props: the badge that needs
+ *  this sits several components deep, and both sources are already-cached
+ *  queries, so asking for them where they are used costs no request and cannot
+ *  drift from the copy beside it. An unrecognised reason from a newer server
+ *  reads as "not suppressed" rather than as an unexplained dormant badge. */
+function useGrantSuppression(): GrantSuppression | null {
+  const off = useSharingOff();
+  const { data: audit } = useShareAudit();
+  if (off) return "instance_off";
+  const reason = audit?.profile_suppressed ?? null;
+  return ACCOUNT_SUPPRESSIONS.find((r) => r === reason) ?? null;
 }
+
+/** The audit lists what each grant WOULD serve. When something is suppressing
+ *  the lot, none of it is reachable right now, so the list needs a line above
+ *  it saying so - otherwise it reads as a page that is live. */
+const SUPPRESSION_NOTICE: Record<GrantSuppression, string> = {
+  instance_off:
+    "None of this is reachable right now: public profiles and share links " +
+    "are turned off on this instance. Every grant below is retained as it " +
+    "was and starts serving again if that setting is turned back on.",
+  publishing_blocked:
+    "None of this is being served right now: an operator on this instance " +
+    "has disabled publishing on your system. Nothing below has been " +
+    "deleted, and it serves again if they lift it.",
+  system_private:
+    "None of this is reachable right now: your system's privacy is not set " +
+    "to Public, and that is the master switch over everything you share. " +
+    "Change it under Settings - system profile to serve these again.",
+  account_state:
+    "None of this is being served right now because of the state of your " +
+    "account. Nothing has been deleted and everything below is still set up " +
+    "exactly as you left it; it comes back when your account does.",
+};
+
+/** The same notice for a reason that arrived as a bare string from the server
+ *  - the preview's `suppressed`, which is account-level only and never carries
+ *  the instance switch. An unrecognised value gets no notice rather than an
+ *  invented one. */
+function accountSuppressionNotice(reason: string | null): string | null {
+  const match = ACCOUNT_SUPPRESSIONS.find((r) => r === reason);
+  return match ? SUPPRESSION_NOTICE[match] : null;
+}
+
+/** The tooltip on a dormant badge. Says the same thing as the notice above the
+ *  list, in the one sentence a badge can carry: it is retained, it is not
+ *  being served, and here is which switch did it. The "retained" half is the
+ *  load-bearing one - dormant must not read as "gone", or an owner stops
+ *  looking for the grant they actually wanted to revoke. */
+const DORMANT_TITLE: Record<GrantSuppression, string> = {
+  instance_off:
+    "Retained but not served: sharing is off on this instance. Nothing was " +
+    "revoked, and this serves again if an operator turns it back on.",
+  publishing_blocked:
+    "Retained but not served: an operator has disabled publishing on your " +
+    "system. Nothing was revoked, and this serves again if they lift it.",
+  system_private:
+    "Retained but not served: your system is private. Nothing was revoked, " +
+    "and this serves again the moment you set your system to Public.",
+  account_state:
+    "Retained but not served: your account is not in good standing. Nothing " +
+    "was revoked, and this serves again when your account does.",
+};
 
 /** The member half of one audit line.
  *
@@ -402,23 +461,21 @@ function SharingManager() {
     return m;
   }, [grants]);
 
-  // The instance switch is the outermost reason nothing below is reachable, so
-  // it wins the one notice slot: an owner reading a list of live-looking grants
-  // on an instance with sharing off needs to know both that they are serving
-  // nobody and that they have not been revoked.
-  const suppressedNotice = off
-    ? "None of this is reachable right now: public profiles and share links " +
-      "are turned off on this instance. Every grant below is retained as it " +
-      "was and starts serving again if that setting is turned back on."
-    : suppressionNotice(audit?.profile_suppressed ?? null);
+  // One derivation, shared with every grant badge below, so the badge and the
+  // paragraph beside it can never describe the same grant differently. The
+  // instance switch is the outermost reason and wins the one notice slot: an
+  // owner reading a list of grants on an instance with sharing off needs to
+  // know both that they are serving nobody and that they have not been revoked.
+  const suppression = useGrantSuppression();
+  const suppressedNotice = suppression ? SUPPRESSION_NOTICE[suppression] : null;
 
   // The master-switch banner rides at the very top, above "How sharing works",
   // so an owner sees WHY nothing serves before they read how any of it works.
   // Suppressed when the instance switch is off: that card already sits above
   // this manager and is the outermost reason, so showing both would just be two
-  // "nothing serves" cards competing for the same point.
-  const systemPrivate =
-    !off && audit?.profile_suppressed === "system_private";
+  // "nothing serves" cards competing for the same point - which the shared
+  // derivation above already settles by returning `instance_off` for it.
+  const systemPrivate = suppression === "system_private";
 
   // The operator takedown latch. Read straight off the system read, and shown
   // above every other banner: it is the one state on this page the owner cannot
@@ -551,8 +608,25 @@ function isExpired(expiresAt: string): boolean {
   return new Date(expiresAt).getTime() <= Date.now();
 }
 
+/** The only place a grant is turned into a badge, used by the publish section
+ *  and by the audit alike, so the two cannot label the same grant differently.
+ *
+ *  "live" is a claim about what a visitor is getting, not about the row in the
+ *  database, and it is only made when something is actually being served. With
+ *  the instance switch off or the account suppressed, an active grant reads
+ *  "dormant" instead: retained, revocable, and reaching nobody. That is what
+ *  the banner at the top of the page and the notice above the audit have
+ *  always said, while this badge sat next to them saying "live".
+ *
+ *  Order matters. Expiry is checked before suppression because it is the more
+ *  specific fact and it is permanent - a lapsed grant does not come back when
+ *  the switch does, so "dormant" would be the more hopeful of the two lies.
+ *  Pending is checked before both: it is already a "not serving yet" state
+ *  with its own date, and re-labelling it dormant would drop that date for a
+ *  grant that was never going to be serving today anyway. */
 function GrantStatusBadge({ grant }: { grant: ShareGrant }) {
   const { formatDate } = useDateFormatters();
+  const suppression = useGrantSuppression();
   if (grant.status === "pending") {
     return (
       <Badge variant="outline" className="text-[10px]">
@@ -560,14 +634,33 @@ function GrantStatusBadge({ grant }: { grant: ShareGrant }) {
       </Badge>
     );
   }
+  if (grant.expires_at && isExpired(grant.expires_at)) {
+    return (
+      <Badge variant="outline" className="text-[10px] text-muted-foreground">
+        expired {formatDate(grant.expires_at)}
+      </Badge>
+    );
+  }
+  if (suppression) {
+    return (
+      <Badge
+        variant="outline"
+        // The expiry is carried into the tooltip rather than dropped: it is
+        // still ticking while the grant is dormant, so an owner counting on it
+        // to lapse should not have to turn the instance back on to see when.
+        title={
+          DORMANT_TITLE[suppression] +
+          (grant.expires_at
+            ? ` It still expires ${formatDate(grant.expires_at)}.`
+            : "")
+        }
+        className="text-[10px] border-amber-500/50 text-amber-600 dark:text-amber-500"
+      >
+        dormant
+      </Badge>
+    );
+  }
   if (grant.expires_at) {
-    if (isExpired(grant.expires_at)) {
-      return (
-        <Badge variant="outline" className="text-[10px] text-muted-foreground">
-          expired {formatDate(grant.expires_at)}
-        </Badge>
-      );
-    }
     return (
       <Badge variant="outline" className="text-[10px]">
         expires {formatDate(grant.expires_at)}
@@ -847,9 +940,23 @@ function ViewCard({
  */
 function PreviewDialog({ view, onClose }: { view: ShareView; onClose: () => void }) {
   const { data, isLoading, isError } = useSharePreview(view.id, true);
-  const suppressed = data?.suppressed
-    ? suppressionNotice(data.suppressed)
-    : null;
+  // The preview's own `suppressed` comes from `suppression_reason`, which is
+  // account-level and knows nothing about the instance switch - so on an
+  // instance with sharing turned off this banner had nothing to say and the
+  // owner got a complete, healthy-looking page for something no visitor can
+  // reach. The instance switch outranks the account reasons here exactly as it
+  // does on the status badge, and for the same reason: it is the outermost
+  // reason nothing serves. The page underneath still renders, because "what
+  // would a visitor see" and "is anyone getting it" are two questions and this
+  // dialog exists to answer the first.
+  const suppression = useGrantSuppression();
+  const suppressed =
+    suppression === "instance_off"
+      ? SUPPRESSION_NOTICE.instance_off
+      : // Not the audit's copy of the account reason: this payload's own is the
+        // one that describes THIS response, and the two are the same helper
+        // server-side anyway.
+        accountSuppressionNotice(data?.suppressed ?? null);
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
