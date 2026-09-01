@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -20,8 +20,10 @@ from sheaf.models.relationship import (
     RelationshipSymmetry,
     RelationshipType,
 )
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.request import client_ip
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.relationship import (
     RelationshipEdgeCreate,
@@ -41,6 +43,7 @@ from sheaf.services.relationships import (
     endpoint_labels,
     resolve_label,
 )
+from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     reject_mixed_exposure_directions,
     relationship_raise_exposes,
@@ -311,6 +314,7 @@ async def _create_edge(
     system: System,
     db: AsyncSession,
     user: User,
+    request: Request | None = None,
 ):
     if body.source_id == body.target_id:
         raise HTTPException(
@@ -349,6 +353,12 @@ async def _create_edge(
     # nothing projects them, so there is no exposure to defer.
     extra: dict = {}
     visibility = body.visibility
+    # Creating an edge straight to public exposes exactly what raising an
+    # existing one does, so it takes the same audit trail: `staged` when a grace
+    # window parks it PENDING, `immediate` when it is born public and lands live
+    # at once. Only the gated raise-to-public path records - group edges
+    # (gated=False) project nowhere, so there is no exposure to log.
+    raise_outcome: str | None = None
     if (
         gated
         and visibility == PrivacyLevel.PUBLIC
@@ -368,6 +378,9 @@ async def _create_edge(
                 "visibility_activates_at": datetime.now(UTC)
                 + timedelta(days=grace),
             }
+            raise_outcome = "staged"
+        else:
+            raise_outcome = "immediate"
 
     edge = edge_model(
         system_id=system.id,
@@ -388,6 +401,19 @@ async def _create_edge(
             detail="That relationship already exists",
         ) from e
     await db.refresh(edge)
+    if raise_outcome is not None and request is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "relationship_privacy",
+                "edge_id": str(edge.id),
+                "created": True,
+            },
+        )
     return edge
 
 
@@ -585,6 +611,7 @@ async def list_member_relationships(
 )
 async def create_member_relationship(
     body: RelationshipEdgeCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -598,6 +625,7 @@ async def create_member_relationship(
         system=system,
         db=db,
         user=user,
+        request=request,
     )
 
 
@@ -609,6 +637,7 @@ async def create_member_relationship(
 async def update_member_relationship(
     edge_id: uuid.UUID,
     body: RelationshipEdgeUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -683,6 +712,12 @@ async def update_member_relationship(
     # today; it is here so a second axis added later inherits the rule.
     reject_mixed_exposure_directions(raises=exposes, lowers=False)
 
+    # Raising an edge to public exposes that relationship wherever the chain
+    # that draws it is already served, so the raise leaves an IP/UA-stamped
+    # trail whether it lands live (`immediate`) or parks behind the grace window
+    # (`staged`). Only the raise-to-public direction is recorded; lowering
+    # un-exposes and stays silent. Recorded after the commit, best-effort.
+    raise_outcome: str | None = None
     if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
         grace = visibility_grace_days(system)
@@ -691,10 +726,12 @@ async def update_member_relationship(
             edge.visibility_activates_at = datetime.now(UTC) + timedelta(
                 days=grace
             )
+            raise_outcome = "staged"
         else:
             edge.visibility = PrivacyLevel.PUBLIC
             edge.pending_visibility = None
             edge.visibility_activates_at = None
+            raise_outcome = "immediate"
     else:
         edge.visibility = requested
         edge.pending_visibility = None
@@ -702,6 +739,15 @@ async def update_member_relationship(
 
     await db.commit()
     await db.refresh(edge)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "relationship_privacy", "edge_id": str(edge.id)},
+        )
     return edge
 
 

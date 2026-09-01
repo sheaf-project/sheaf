@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,9 +11,11 @@ from sheaf.database import get_db
 from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.observability.metrics import custom_fields_created_total
+from sheaf.request import client_ip
 from sheaf.schemas.custom_field import (
     MAX_CUSTOM_FIELD_VALUE_CHARS,
     CustomFieldCreate,
@@ -30,6 +32,7 @@ from sheaf.services.custom_fields import (
     decrypt_field_value,
     encrypt_field_value,
 )
+from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     field_privacy_raise_exposes,
     reject_mixed_exposure_directions,
@@ -171,6 +174,7 @@ async def get_field(
 async def update_field(
     field_id: uuid.UUID,
     body: CustomFieldUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -240,16 +244,24 @@ async def update_field(
     # inherits the rule rather than rediscovering the bug.
     reject_mixed_exposure_directions(raises=exposes, lowers=False)
 
+    # Raising a definition's ceiling to public exposes that field for every
+    # member a live grant already serves, so the raise leaves an IP/UA-stamped
+    # trail whether it lands live (`immediate`) or parks behind the grace window
+    # (`staged`). Only the raise-to-public direction is recorded; lowering
+    # un-exposes and stays silent. Recorded after the commit, best-effort.
+    raise_outcome: str | None = None
     if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
         grace = visibility_grace_days(system)
         if grace > 0:
             field.pending_privacy = PrivacyLevel.PUBLIC
             field.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+            raise_outcome = "staged"
         else:
             field.privacy = PrivacyLevel.PUBLIC
             field.pending_privacy = None
             field.privacy_activates_at = None
+            raise_outcome = "immediate"
     elif requested_privacy is not None:
         field.privacy = requested_privacy
         field.pending_privacy = None
@@ -269,6 +281,15 @@ async def update_field(
         setattr(field, key, value)
     await db.commit()
     await db.refresh(field)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "field_privacy", "field_id": str(field.id)},
+        )
     return field
 
 

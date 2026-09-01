@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,9 +12,12 @@ from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.encrypted_fields import system_note_aad, user_totp_secret_aad
 from sheaf.files import owned_avatar_url, owned_description_urls
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.request import client_ip
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
+from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     reject_mixed_exposure_directions,
     system_privacy_raise_exposes,
@@ -64,6 +67,7 @@ async def get_own_system(
 )
 async def update_own_system(
     body: SystemUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -128,17 +132,35 @@ async def update_own_system(
     # rule instead of rediscovering the bug.
     reject_mixed_exposure_directions(raises=exposes, lowers=False)
 
+    # The master switch to public is the broadest exposure an owner can make, so
+    # a hijacked session flipping it leaves an IP/UA-stamped trail whether it
+    # parks behind the grace window (`staged`) or lands live at once
+    # (`immediate`) - and both branches below flip it, so both record. The
+    # `elif` is the immediate, ungated case: no grant would serve yet (or the
+    # category is not armed), so there is nothing to stage, but a non-public ->
+    # public transition is still the #1 raise and is logged. A staged flip
+    # correlates with its later activation in the finalize sweep. Only the
+    # raise-to-public direction is recorded; lowering to friends/private
+    # un-exposes and stays silent. Recorded after the commit, best-effort.
+    raise_outcome: str | None = None
     if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
         grace = visibility_grace_days(system)
         if grace > 0:
             system.pending_privacy = PrivacyLevel.PUBLIC
             system.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+            raise_outcome = "staged"
         else:
             system.privacy = PrivacyLevel.PUBLIC
             system.pending_privacy = None
             system.privacy_activates_at = None
+            raise_outcome = "immediate"
     elif requested_privacy is not None:
+        if (
+            requested_privacy == PrivacyLevel.PUBLIC
+            and system.privacy != PrivacyLevel.PUBLIC
+        ):
+            raise_outcome = "immediate"
         system.privacy = requested_privacy
         system.pending_privacy = None
         system.privacy_activates_at = None
@@ -163,6 +185,15 @@ async def update_own_system(
             setattr(system, key, value)
     await db.commit()
     await db.refresh(system)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "system_privacy", "system_id": str(system.id)},
+        )
     return _system_to_read(system)
 
 

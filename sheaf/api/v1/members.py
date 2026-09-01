@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,11 +21,13 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.share import ShareViewMember
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
 from sheaf.observability.metrics import tier_label, tier_limit_hits_total
+from sheaf.request import client_ip
 from sheaf.schemas.journal import (
     ContentRevisionRead,
     PinRevisionRequest,
@@ -54,6 +56,7 @@ from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
+from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     exposure_activates_at,
     fronting_guard_release_exposes,
@@ -372,6 +375,7 @@ async def get_member(
 async def update_member(
     member_id: uuid.UUID,
     body: MemberUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -476,6 +480,12 @@ async def update_member(
     raises_exposure = bool(
         exposing_rows or fronting_release_exposes or never_shareable_release_exposes
     )
+    # Capture which axes raised before the setattr loop below can touch them
+    # (marking never_shareable True clears the membership rows). All three are
+    # exposure raises on this endpoint, so the invariant - every raise leaves a
+    # queryable record - covers each. Recorded as one event with a boolean per
+    # axis; no member content, only the member id and the flags.
+    privacy_raise = bool(exposing_rows)
     # A body that also takes something DOWN must not ride on the raise's gate:
     # if the step-up below failed, the lowering would fail with it. Checked
     # before that step-up runs, and refused outright - see the helper.
@@ -590,6 +600,26 @@ async def update_member(
 
     await db.commit()
     await db.refresh(member)
+    # A member raise widens who a live grant serves, so it leaves an IP/UA
+    # trail. `staged` when the membership rows were parked behind the grace
+    # window, `immediate` when the raise applied at once (grace 0, or a guard
+    # release that has nowhere to be staged). Only raises record; lowering a
+    # ceiling or re-arming a guard un-exposes and stays silent.
+    if raises_exposure:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if visibility_activates_at is not None else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "member_privacy",
+                "member_id": str(member.id),
+                "privacy_raise": privacy_raise,
+                "fronting_release": fronting_release_exposes,
+                "never_shareable_release": never_shareable_release_exposes,
+            },
+        )
     return decrypt_member_for_read(
         member,
         user.id,
@@ -688,6 +718,7 @@ async def archive_member(
 )
 async def unarchive_member(
     member_id: uuid.UUID,
+    request: Request,
     body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -754,6 +785,23 @@ async def unarchive_member(
     stage_membership_exposure(exposing_rows, activates_at)
     await db.commit()
     await db.refresh(member)
+    # Unarchiving a member who still sits in a live view puts them back in front
+    # of strangers, which is a raise like flipping them to public, so it leaves
+    # the same IP/UA trail. Gated to the exposing path (nothing points at them
+    # means nothing to record); `staged` vs `immediate` follows the grace window.
+    if exposing_rows:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if activates_at is not None else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "member_privacy",
+                "member_id": str(member.id),
+                "unarchive": True,
+            },
+        )
     result = decrypt_member_for_read(
         member,
         user.id,

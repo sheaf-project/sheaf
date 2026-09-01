@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,12 +13,15 @@ from sheaf.files import owned_description_urls
 from sheaf.models.group import Group
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.observability.metrics import groups_created_total
+from sheaf.request import client_ip
 from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
+from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     group_raise_exposes,
     reject_mixed_exposure_directions,
@@ -208,6 +211,7 @@ async def get_group(
 async def update_group(
     group_id: uuid.UUID,
     body: GroupUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -268,16 +272,24 @@ async def update_group(
     # exists to prevent.
     reject_mixed_exposure_directions(raises=exposes, lowers=False)
 
+    # Raising a group's ceiling to public widens who a live grant can serve it
+    # to, so the raise leaves an IP/UA-stamped trail whether it lands live
+    # (`immediate`) or parks behind the grace window (`staged`). Only the
+    # raise-to-public direction is recorded; lowering un-exposes and stays
+    # silent. Recorded after the commit, best-effort, never raises.
+    raise_outcome: str | None = None
     if exposes:
         await verify_destructive_auth(user, system, password, totp_code, db)
         grace = visibility_grace_days(system)
         if grace > 0:
             group.pending_privacy = PrivacyLevel.PUBLIC
             group.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+            raise_outcome = "staged"
         else:
             group.privacy = PrivacyLevel.PUBLIC
             group.pending_privacy = None
             group.privacy_activates_at = None
+            raise_outcome = "immediate"
     elif requested_privacy is not None:
         group.privacy = requested_privacy
         group.pending_privacy = None
@@ -323,6 +335,15 @@ async def update_group(
         setattr(group, key, value)
     await db.commit()
     await db.refresh(group)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "group_privacy", "group_id": str(group.id)},
+        )
     return group
 
 

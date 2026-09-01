@@ -74,6 +74,20 @@ class SecurityEventType(enum.StrEnum):
     SHARE_GRANT_CREATED = "share_grant_created"
     SHARE_GRANT_ROTATED = "share_grant_rotated"
     SHARE_GRANT_REVOKED = "share_grant_revoked"
+    # Every act that RAISES an exposure on the public-profiles surface - the
+    # system-privacy master switch to public, turning a shared view's exposure
+    # flag on, adding a member/field/group to an already-shared view, and raising
+    # a member/group/relationship-edge/custom-field to public. One value for all
+    # of them: `outcome` is `staged` (parked behind the grace window),
+    # `immediate` (landed live at once), or `activated` (the finalize sweep
+    # promoted a staged raise), and `detail.source` names which surface, so the
+    # master switch stays filterable and a staged raise correlates with its
+    # activation. Un-exposing acts (revoke/rotate/remove/tighten/make private)
+    # record nothing here - they are immediate and ungated by design. Same
+    # migration rule as the block above. `detail` NEVER carries member content
+    # (name/description/note/bio), an email, or a token - ids, flags and
+    # timestamps only.
+    EXPOSURE_RAISED = "exposure_raised"
 
 
 class SecurityEvent(UUIDMixin, Base):
