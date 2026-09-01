@@ -52,6 +52,7 @@ from sheaf.models.custom_field import CustomFieldDefinition
 from sheaf.models.group import Group
 from sheaf.models.member import Member, group_members
 from sheaf.models.relationship import MemberRelationship
+from sheaf.models.security_event import SecurityEventType
 from sheaf.models.share import (
     ShareGrant,
     ShareGrantStatus,
@@ -64,6 +65,7 @@ from sheaf.models.share import (
 )
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import AccountStatus, User
+from sheaf.services.security_events import record_security_events
 
 # Length of the raw link token. 32 bytes of urlsafe base64 is ~43 chars and
 # comfortably beyond guessing, which matters because the token IS the
@@ -1309,6 +1311,16 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     now = datetime.now(UTC)
     promoted = 0
 
+    # Each promotion below is a staged raise going live after the owner has
+    # logged off, so the sweep records the same EXPOSURE_RAISED trail the
+    # request-time raise did, with `outcome="activated"` so the two correlate.
+    # There is no request here, so events carry the owning system's user_id and
+    # no ip/ua. `_raised` accumulates (source, system_id-or-view_id, detail)
+    # tuples; the owner's user_id is resolved in one pass at the end so the batch
+    # costs two extra SELECTs and one isolated insert, not one per row.
+    raised_direct: list[tuple[str, uuid.UUID, dict]] = []
+    raised_via_view: list[tuple[str, uuid.UUID, dict]] = []
+
     grants = await db.execute(
         select(ShareGrant).where(
             ShareGrant.status == ShareGrantStatus.PENDING.value,
@@ -1320,6 +1332,9 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     for grant in grants.scalars().all():
         grant.status = ShareGrantStatus.ACTIVE.value
         promoted += 1
+        raised_direct.append(
+            ("grant", grant.system_id, {"grant_id": str(grant.id)})
+        )
 
     # Promote membership and field rows in one conditional UPDATE each, not a
     # SELECT-then-mutate ORM loop. The loop flushed `status = ACTIVE` keyed only
@@ -1330,18 +1345,39 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     # the statement closes that window, exactly as the flag/guard/edge/group
     # passes below do: a concurrent re-stage either fails the predicate or writes
     # last.
-    for model in (ShareViewMember, ShareViewField):
-        rows = await db.execute(
-            update(model)
-            .where(
-                model.status == ShareItemStatus.PENDING.value,
-                model.activates_at.is_not(None),
-                model.activates_at <= now,
-            )
-            .values(status=ShareItemStatus.ACTIVE.value)
-            .execution_options(synchronize_session=False)
+    member_rows = await db.execute(
+        update(ShareViewMember)
+        .where(
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+            ShareViewMember.activates_at <= now,
         )
-        promoted += rows.rowcount or 0
+        .values(status=ShareItemStatus.ACTIVE.value)
+        .returning(ShareViewMember.view_id, ShareViewMember.member_id)
+        .execution_options(synchronize_session=False)
+    )
+    for view_id, member_id in member_rows.all():
+        promoted += 1
+        raised_via_view.append(
+            ("view_member", view_id, {"member_id": str(member_id)})
+        )
+
+    field_rows = await db.execute(
+        update(ShareViewField)
+        .where(
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+            ShareViewField.activates_at <= now,
+        )
+        .values(status=ShareItemStatus.ACTIVE.value)
+        .returning(ShareViewField.view_id, ShareViewField.field_id)
+        .execution_options(synchronize_session=False)
+    )
+    for view_id, field_id in field_rows.all():
+        promoted += 1
+        raised_via_view.append(
+            ("view_field", view_id, {"field_id": str(field_id)})
+        )
 
     # Promote flags in one conditional UPDATE. If the owner cancels before
     # this statement, a NULL pending value preserves the live flag; if they
@@ -1392,9 +1428,14 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             pending_include_groups=None,
             flags_activate_at=None,
         )
+        .returning(ShareView.id, ShareView.system_id)
         .execution_options(synchronize_session=False)
     )
-    promoted += views.rowcount or 0
+    for view_id, system_id in views.all():
+        promoted += 1
+        raised_direct.append(
+            ("view_flags", system_id, {"view_id": str(view_id)})
+        )
 
     # The same atomic shape makes restoring the guard race-safe: a concurrent
     # tightening clears the timestamp and either wins the predicate or lands
@@ -1407,9 +1448,18 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             Member.fronting_private_activates_at <= now,
         )
         .values(fronting_private=False, fronting_private_activates_at=None)
+        .returning(Member.id, Member.system_id)
         .execution_options(synchronize_session=False)
     )
-    promoted += member_guards.rowcount or 0
+    for member_id, system_id in member_guards.all():
+        promoted += 1
+        raised_direct.append(
+            (
+                "member_privacy",
+                system_id,
+                {"member_id": str(member_id), "fronting_release": True},
+            )
+        )
 
     # Staged relationship-edge raises, same atomic shape for the same reason:
     # a lowering that lands mid-sweep clears `visibility_activates_at` and so
@@ -1431,9 +1481,14 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             pending_visibility=None,
             visibility_activates_at=None,
         )
+        .returning(MemberRelationship.id, MemberRelationship.system_id)
         .execution_options(synchronize_session=False)
     )
-    promoted += edge_raises.rowcount or 0
+    for edge_id, system_id in edge_raises.all():
+        promoted += 1
+        raised_direct.append(
+            ("relationship_privacy", system_id, {"edge_id": str(edge_id)})
+        )
 
     # Staged group raises, same atomic shape and the same reasoning as the
     # edges above: a lowering that lands mid-sweep clears
@@ -1454,9 +1509,14 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             pending_privacy=None,
             privacy_activates_at=None,
         )
+        .returning(Group.id, Group.system_id)
         .execution_options(synchronize_session=False)
     )
-    promoted += group_raises.rowcount or 0
+    for group_id, system_id in group_raises.all():
+        promoted += 1
+        raised_direct.append(
+            ("group_privacy", system_id, {"group_id": str(group_id)})
+        )
 
     # Staged custom-field definition raises. Same atomic shape and the same
     # reasoning once more: a lowering that lands mid-sweep clears
@@ -1480,9 +1540,14 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             pending_privacy=None,
             privacy_activates_at=None,
         )
+        .returning(CustomFieldDefinition.id, CustomFieldDefinition.system_id)
         .execution_options(synchronize_session=False)
     )
-    promoted += field_raises.rowcount or 0
+    for field_id, system_id in field_raises.all():
+        promoted += 1
+        raised_direct.append(
+            ("field_privacy", system_id, {"field_id": str(field_id)})
+        )
 
     # Staged system-privacy raises - the master switch itself. Same atomic
     # shape and the same reasoning as every raise above: a lowering (setting
@@ -1503,9 +1568,75 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             pending_privacy=None,
             privacy_activates_at=None,
         )
+        .returning(System.id, System.user_id)
         .execution_options(synchronize_session=False)
     )
-    promoted += system_raises.rowcount or 0
+    # The master switch carries its owner directly (System.user_id), so its
+    # events are built here rather than through the system_id -> user_id pass.
+    events: list[dict] = []
+    for system_id, user_id in system_raises.all():
+        promoted += 1
+        events.append(
+            {
+                "event_type": SecurityEventType.EXPOSURE_RAISED,
+                "outcome": "activated",
+                "user_id": user_id,
+                "detail": {"source": "system_privacy", "system_id": str(system_id)},
+            }
+        )
+
+    # Resolve every other promotion to its owning system's user_id. Member and
+    # field rows only know their view, so walk view -> system first, then fold
+    # those system_ids into the single system -> user_id lookup.
+    view_ids = {view_id for _, view_id, _ in raised_via_view}
+    view_to_system: dict[uuid.UUID, uuid.UUID] = {}
+    if view_ids:
+        view_map = await db.execute(
+            select(ShareView.id, ShareView.system_id).where(
+                ShareView.id.in_(view_ids)
+            )
+        )
+        view_to_system = {vid: sid for vid, sid in view_map.all()}
+
+    system_ids = {sid for _, sid, _ in raised_direct}
+    system_ids.update(view_to_system.values())
+    system_to_user: dict[uuid.UUID, uuid.UUID] = {}
+    if system_ids:
+        user_map = await db.execute(
+            select(System.id, System.user_id).where(System.id.in_(system_ids))
+        )
+        system_to_user = {sid: uid for sid, uid in user_map.all()}
+
+    for source, system_id, detail in raised_direct:
+        user_id = system_to_user.get(system_id)
+        if user_id is None:
+            continue
+        events.append(
+            {
+                "event_type": SecurityEventType.EXPOSURE_RAISED,
+                "outcome": "activated",
+                "user_id": user_id,
+                "detail": {"source": source, **detail},
+            }
+        )
+    for source, view_id, detail in raised_via_view:
+        system_id = view_to_system.get(view_id)
+        user_id = system_to_user.get(system_id) if system_id else None
+        if user_id is None:
+            continue
+        events.append(
+            {
+                "event_type": SecurityEventType.EXPOSURE_RAISED,
+                "outcome": "activated",
+                "user_id": user_id,
+                "detail": {"source": source, "view_id": str(view_id), **detail},
+            }
+        )
+
+    # Isolated best-effort insert on its own session, so a failure here (or a
+    # database that has not yet run the enum migration) cannot roll back the
+    # promotions this sweep just made. Same contract as record_security_event.
+    await record_security_events(events)
 
     return promoted
 

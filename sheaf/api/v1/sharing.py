@@ -431,6 +431,7 @@ async def get_share_view(
 async def update_share_view(
     view_id: uuid.UUID,
     body: ShareViewUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
@@ -553,6 +554,24 @@ async def update_share_view(
             detail="A share view with that name already exists.",
         ) from None
     await db.refresh(view, ["members", "fields", "groups"])
+    # A flag turned on while the view already serves readers widens what a
+    # stranger sees, so the loosening is recorded with IP/UA whether it landed
+    # live (`immediate`) or parked behind the grace window (`staged`). Only the
+    # loosening is recorded; turning a flag off un-exposes and stays silent. The
+    # flag NAMES are booleans, not member content. Best-effort, never raises.
+    if exposing:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if stage else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "view_flags",
+                "view_id": str(view.id),
+                "flags": sorted(loosening),
+            },
+        )
     return await _view_to_read(db, view, is_shared=shared)
 
 
@@ -675,6 +694,7 @@ async def preview_share_view(
 async def add_view_member(
     view_id: uuid.UUID,
     body: ShareViewMemberAdd,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
@@ -717,11 +737,29 @@ async def add_view_member(
         totp_code=body.totp_code,
     )
     # Raises 400 for a never_shareable member.
-    await add_member_to_view(
+    row = await add_member_to_view(
         db=db, system=system, view=view, member=member, already_shared=shared
     )
     await db.commit()
     await db.refresh(view, ["members", "fields", "groups"])
+    # Adding a member to a view that ALREADY serves readers exposes them, so it
+    # is recorded with IP/UA. Gated to that path: a `None` row means the member
+    # was already in the view (nothing new), and an unshared view is private
+    # curation that publishes nobody. `staged` vs `immediate` follows the grace
+    # window, matching the row the service just staged.
+    if shared and row is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if visibility_grace_days(system) > 0 else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "view_member",
+                "view_id": str(view.id),
+                "member_id": str(member.id),
+            },
+        )
     return await _view_to_read(db, view, is_shared=shared)
 
 
@@ -763,6 +801,7 @@ async def remove_view_member(
 async def add_view_group(
     view_id: uuid.UUID,
     body: ShareViewGroupAdd,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewGroupAddResult:
@@ -809,6 +848,26 @@ async def add_view_group(
         db=db, system=system, view=view, group_id=group.id
     )
     await db.commit()
+    # Expanding a group into a view that ALREADY serves readers exposes the
+    # members it actually adds, so the raise is recorded with IP/UA. Gated to
+    # that path and to a non-empty expansion: a shared view with nothing newly
+    # added (everyone already present or skipped by the privacy ceiling) exposes
+    # nobody, and an unshared view is private curation. `added` carries the
+    # count only - no member is named.
+    if shared and added:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if visibility_grace_days(system) > 0 else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "view_group",
+                "view_id": str(view.id),
+                "group_id": str(group.id),
+                "added": len(added),
+            },
+        )
     return ShareViewGroupAddResult(
         added=len(added),
         skipped_never_shareable=skipped_secret,
@@ -897,6 +956,7 @@ async def remove_view_group(
 async def add_view_field(
     view_id: uuid.UUID,
     body: ShareViewFieldAdd,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ShareViewRead:
@@ -936,9 +996,27 @@ async def add_view_field(
         password=body.password,
         totp_code=body.totp_code,
     )
-    await add_field_to_view(db=db, system=system, view=view, field_id=field.id)
+    row = await add_field_to_view(db=db, system=system, view=view, field_id=field.id)
     await db.commit()
     await db.refresh(view, ["members", "fields", "groups"])
+    # Selecting a field into a view that ALREADY serves readers exposes that
+    # field for every member on the roster, so it is recorded with IP/UA. Gated
+    # like the member add: a `None` row means the field was already selected
+    # (nothing new), and an unshared view publishes nobody. Only the definition
+    # id travels - never the field's contents.
+    if shared and row is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if visibility_grace_days(system) > 0 else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "view_field",
+                "view_id": str(view.id),
+                "field_id": str(field.id),
+            },
+        )
     return await _view_to_read(db, view, is_shared=shared)
 
 

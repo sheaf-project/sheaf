@@ -1995,6 +1995,275 @@ def test_pending_deletion_still_allows_rotating_a_link():
 
 
 # ---------------------------------------------------------------------------
+# Exposure-audit trail: every RAISE leaves a queryable SecurityEvent, every
+# un-exposing act leaves none, and the event detail never carries member content
+# ---------------------------------------------------------------------------
+
+
+def _logged_client() -> tuple[httpx.Client, str]:
+    """A fresh authed client whose email we keep, so its security-event rows
+    can be read back by user_id."""
+    c = httpx.Client(base_url=BASE_URL)
+    email = f"explog-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    r = c.post(
+        "/v1/auth/register", json={"email": email, "password": "testpassword123"}
+    )
+    assert r.status_code == 201, r.text
+    c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return c, email
+
+
+def _exposure_events(email: str) -> list[dict]:
+    """Every EXPOSURE_RAISED event for this account, newest first, as
+    {outcome, detail} dicts. Read straight from the table - the owner API does
+    not surface security events, and the row is committed inline before the
+    request that raised it returns."""
+    out: list[dict] = []
+
+    async def _work(db) -> None:
+        from sqlalchemy import select
+
+        from sheaf.crypto import blind_index
+        from sheaf.models.security_event import SecurityEvent, SecurityEventType
+        from sheaf.models.user import User
+
+        user = (
+            await db.execute(
+                select(User).where(User.email_hash == blind_index(email))
+            )
+        ).scalar_one()
+        rows = (
+            (
+                await db.execute(
+                    select(SecurityEvent)
+                    .where(
+                        SecurityEvent.user_id == user.id,
+                        SecurityEvent.event_type
+                        == SecurityEventType.EXPOSURE_RAISED,
+                    )
+                    .order_by(SecurityEvent.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for r in rows:
+            out.append({"outcome": r.outcome, "detail": r.detail})
+
+    _in_db(_work)
+    return out
+
+
+def _events_of(email: str, source: str) -> list[dict]:
+    """EXPOSURE_RAISED events for one `detail.source`, newest first. Lets a test
+    ignore the system_privacy event that `_go_public` emits as a side effect."""
+    return [e for e in _exposure_events(email) if e["detail"]["source"] == source]
+
+
+def _backdate_view_members(view_id: str) -> None:
+    """Make a view's staged (PENDING) membership rows due for the finalize job."""
+
+    async def _work(db) -> None:
+        from sqlalchemy import select
+
+        from sheaf.models.share import ShareViewMember
+
+        rows = (
+            (
+                await db.execute(
+                    select(ShareViewMember).where(
+                        ShareViewMember.view_id == uuid.UUID(view_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            if row.activates_at is not None:
+                row.activates_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
+def test_system_privacy_flip_to_public_is_logged_immediate():
+    """The master switch to public is the #1 exposure, so it records an
+    EXPOSURE_RAISED. With no grace window it lands live: outcome `immediate`."""
+    c, email = _logged_client()
+    _go_public(c)
+
+    events = _exposure_events(email)
+    assert len(events) == 1, events
+    assert events[0]["outcome"] == "immediate"
+    assert events[0]["detail"]["source"] == "system_privacy"
+    c.close()
+
+
+def test_lowering_system_privacy_records_nothing():
+    """Going back to private un-exposes, and un-exposing is never audited here."""
+    c, email = _logged_client()
+    _go_public(c)
+    before = len(_exposure_events(email))
+
+    r = c.patch("/v1/systems/me", json={"privacy": "private"})
+    assert r.status_code == 200, r.text
+    assert len(_exposure_events(email)) == before
+    c.close()
+
+
+def test_staged_system_privacy_flip_is_logged_staged():
+    """A raise that would actually serve a grant parks pending behind the grace
+    window; the event says `staged`. Needs a live grant to exist, so publish
+    once, drop back to private (the grant goes dormant, not revoked), then raise
+    again with the window armed."""
+    c, email = _logged_client()
+    _shared_view(c)  # go public + a live public grant
+
+    assert (
+        c.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
+    )
+    _arm_visibility_safety(c)
+
+    r = c.patch(
+        "/v1/systems/me",
+        json={"privacy": "public", "password": "testpassword123"},
+    )
+    assert r.status_code == 200, r.text
+
+    # Newest event is the staged raise (an earlier immediate one came from the
+    # first publish).
+    events = _exposure_events(email)
+    assert events[0]["outcome"] == "staged"
+    assert events[0]["detail"]["source"] == "system_privacy"
+    c.close()
+
+
+def test_view_flag_loosening_is_logged_and_turning_it_off_is_not():
+    """Turning an exposure flag on for a shared view is a raise; turning it back
+    off is a tightening and records nothing."""
+    c, email = _logged_client()
+    vid = _shared_view(c)
+    _arm_visibility_safety(c)
+
+    on = c.patch(
+        f"/v1/share-views/{vid}",
+        json={"include_bio": True, "password": "testpassword123"},
+    )
+    assert on.status_code == 200, on.text
+
+    flag_events = _events_of(email, "view_flags")
+    assert [e["outcome"] for e in flag_events] == ["staged"]
+    assert "include_bio" in flag_events[0]["detail"]["flags"]
+
+    # Turning it back off (a tightening) is ungated and adds no new event.
+    off = c.patch(f"/v1/share-views/{vid}", json={"include_bio": False})
+    assert off.status_code == 200, off.text
+    assert len(_events_of(email, "view_flags")) == 1
+    c.close()
+
+
+def test_adding_a_member_logs_only_when_the_view_is_shared():
+    """Adding a member to an already-shared view exposes them; curating an
+    unshared view publishes nobody and stays silent."""
+    c, email = _logged_client()
+
+    # Unshared view: no grant -> no event.
+    quiet_vid = _view(c, "Unshared")
+    m1 = _member(c, "Curated", privacy="public")
+    r = c.post(f"/v1/share-views/{quiet_vid}/members", json={"member_id": m1})
+    assert r.status_code == 200, r.text
+    assert _events_of(email, "view_member") == []
+
+    # Shared view: the add is a raise.
+    shared_vid = _shared_view(c)
+    m2 = _member(c, "Exposed", privacy="public")
+    r = c.post(f"/v1/share-views/{shared_vid}/members", json={"member_id": m2})
+    assert r.status_code == 200, r.text
+
+    member_events = _events_of(email, "view_member")
+    assert [e["outcome"] for e in member_events] == ["immediate"]
+    assert member_events[0]["detail"]["member_id"] == m2
+    c.close()
+
+
+def test_finalize_sweep_logs_an_activation_that_correlates_with_the_stage(
+    admin_client: httpx.Client,
+):
+    """A staged member add records `staged` at request time and `activated` when
+    the finalize sweep promotes it, both under the same source and member id."""
+    c, email = _logged_client()
+    shared_vid = _shared_view(c)
+    _arm_visibility_safety(c)
+    member_id = _member(c, "LaterPublic", privacy="public")
+
+    staged = c.post(
+        f"/v1/share-views/{shared_vid}/members",
+        json={"member_id": member_id, "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+    member_events = _events_of(email, "view_member")
+    assert [e["outcome"] for e in member_events] == ["staged"]
+
+    _backdate_view_members(shared_vid)
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+    assert run.json()["status"] == "success"
+
+    member_events = _events_of(email, "view_member")
+    outcomes = [e["outcome"] for e in member_events]
+    assert "activated" in outcomes and "staged" in outcomes, member_events
+    activated = next(e for e in member_events if e["outcome"] == "activated")
+    assert activated["detail"]["member_id"] == member_id
+    c.close()
+
+
+def test_exposure_event_detail_carries_no_member_content():
+    """The detail JSON is ids/flags/booleans only - never a decrypted name."""
+    c, email = _logged_client()
+    secret_name = f"SecretName-{uuid.uuid4().hex[:8]}"
+    shared_vid = _shared_view(c)
+    member_id = _member(c, secret_name, privacy="public")
+
+    r = c.post(
+        f"/v1/share-views/{shared_vid}/members", json={"member_id": member_id}
+    )
+    assert r.status_code == 200, r.text
+
+    events = _exposure_events(email)
+    assert events, "expected an exposure event to inspect"
+    for e in events:
+        assert secret_name not in str(e["detail"])
+    c.close()
+
+
+def test_raising_a_member_to_public_logs_but_lowering_does_not():
+    """A member ceiling raise records; dropping it back to private does not."""
+    c, email = _logged_client()
+    shared_vid = _shared_view(c)
+    member_id = _member(c, "Ceiling", privacy="private")
+    # Put them in the shared view first (private, so not yet served).
+    assert (
+        c.post(
+            f"/v1/share-views/{shared_vid}/members", json={"member_id": member_id}
+        ).status_code
+        == 200
+    )
+    before = len(_exposure_events(email))
+
+    raised = c.patch(f"/v1/members/{member_id}", json={"privacy": "public"})
+    assert raised.status_code == 200, raised.text
+    after_raise = _exposure_events(email)
+    assert len(after_raise) == before + 1
+    assert after_raise[0]["detail"]["source"] == "member_privacy"
+    assert after_raise[0]["detail"]["privacy_raise"] is True
+
+    lowered = c.patch(f"/v1/members/{member_id}", json={"privacy": "private"})
+    assert lowered.status_code == 200, lowered.text
+    assert len(_exposure_events(email)) == len(after_raise)
+    c.close()
+
+
+# ---------------------------------------------------------------------------
 # The instance's public surface switched off
 #
 # All marked `public_profiles_off` and therefore run on the one config that
