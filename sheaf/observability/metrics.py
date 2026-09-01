@@ -637,6 +637,53 @@ users_pending_delete = _G(
     "sheaf_users_pending_delete",
     "User accounts with status=pending_deletion.",
 )
+signups_total = _C(
+    "sheaf_signups_total",
+    "Accounts created via registration. New-account velocity (the flow signal); "
+    "users_total is the stock. No labels, and it counts account creation only "
+    "after the registration transaction commits, so an abandoned/failed signup "
+    "does not move it.",
+)
+
+# ---------------------------------------------------------------------------
+# Aggregate usage (DAU / MAU) - id-free HyperLogLog cardinality.
+#
+# The hard invariant: these are aggregate CARDINALITY ONLY, never attributable
+# to an account. Account/system ids are folded one-way into a per-day Redis HLL
+# sketch and only the estimated COUNT is ever published here. There is NEVER a
+# per-account series, label, or stored id - hence NO LABELS on any of these.
+# Monthly = cardinality of the UNION of the trailing 30 daily sketches (a
+# PFMERGE), not a sum of daily counts. See sheaf/observability/usage.py.
+# ---------------------------------------------------------------------------
+
+active_accounts_daily = _G(
+    "sheaf_active_accounts_daily",
+    "Estimated distinct accounts active today (DAU), from an id-free HLL sketch "
+    "PFCOUNT. Aggregate cardinality only; no per-account series exists.",
+)
+active_systems_daily = _G(
+    "sheaf_active_systems_daily",
+    "Estimated distinct systems active today (DAU), from an id-free HLL sketch "
+    "PFCOUNT.",
+)
+active_accounts_monthly = _G(
+    "sheaf_active_accounts_monthly",
+    "Estimated distinct accounts active over the trailing 30 days (MAU), the "
+    "cardinality of the UNION of 30 daily HLL sketches (PFMERGE + PFCOUNT). Not "
+    "a sum of daily counts - that would double-count returning users.",
+)
+active_systems_monthly = _G(
+    "sheaf_active_systems_monthly",
+    "Estimated distinct systems active over the trailing 30 days (MAU), the "
+    "cardinality of the UNION of 30 daily HLL sketches.",
+)
+systems_with_public_profile = _G(
+    "sheaf_systems_with_public_profile",
+    "Systems with at least one live public or unlisted-link share grant right "
+    "now (the public-profiles adoption signal). Counts distinct systems against "
+    "the same grant_live_clause the resolver serves, so it matches what the "
+    "public surface can serve. No labels.",
+)
 
 # ---------------------------------------------------------------------------
 # Data shape (slow gauges)
@@ -1093,6 +1140,7 @@ def prewarm_metrics() -> None:
 
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)
+    signups_total.inc(0)
 
     for reason in (
         "client_closed", "auth_revoked", "auth_expired", "backpressure",

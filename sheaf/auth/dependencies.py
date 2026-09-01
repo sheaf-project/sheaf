@@ -13,6 +13,7 @@ from sheaf.auth.jwt import TokenType, decode_token
 from sheaf.auth.sessions import check_admin_step_up, get_session_user_id, touch_session
 from sheaf.database import get_db
 from sheaf.models.user import AccountStatus, User
+from sheaf.observability.usage import record_active_account
 from sheaf.request import client_ip
 from sheaf.request_context import set_request_origin
 
@@ -236,6 +237,14 @@ async def get_current_user(
 
     # Expose user ID on request state for rate limiting and logging
     request.state.user_id = str(user.id)
+
+    # Aggregate usage metrics (DAU/MAU). Best-effort and non-blocking: this only
+    # schedules a fire-and-forget task, so Redis latency or an outage can never
+    # delay or fail auth. This is the single choke point that sees every auth
+    # method (API key, JWT, session cookie) with the account resolved. Only the
+    # id-free aggregate cardinality is ever published; the id is folded one-way
+    # into a Redis HLL sketch and never stored.
+    record_active_account(user.id)
 
     return user
 

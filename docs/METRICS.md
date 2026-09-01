@@ -522,6 +522,50 @@ concurrent-open-poll cap and the import clamp bound, so
 signal. The `*_total` gauges refresh on the 60s gauge pass; the per-system
 distributions ride the hourly distribution job.
 
+### Usage (DAU / MAU)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_signups_total` | counter | - |
+| `sheaf_active_accounts_daily` | gauge | - |
+| `sheaf_active_systems_daily` | gauge | - |
+| `sheaf_active_accounts_monthly` | gauge | - |
+| `sheaf_active_systems_monthly` | gauge | - |
+| `sheaf_systems_with_public_profile` | gauge | - |
+
+`sheaf_signups_total` is new-account velocity (the flow signal), incremented
+once per registration after the transaction commits. `sheaf_users_total` is the
+stock; this is the flow. No labels.
+
+The four `active_*` gauges are aggregate active-cardinality (DAU/MAU), and the
+privacy invariant is strict: they are **aggregate counts only, never
+attributable to an account**. On each authenticated request the account id and
+its system id are PFADDed into a per-day Redis HyperLogLog sketch
+(`sheaf:hll:acct:<day>` / `sheaf:hll:sys:<day>`, ~31-day TTL) at the auth choke
+point, best-effort and fire-and-forget so Redis latency or an outage never
+delays or fails a request. HLL is one-way: a sketch can estimate a distinct
+count but cannot enumerate members or answer "was account X active on day Y".
+There is NO per-account series, label, or stored id anywhere - only the PFCOUNT
+is ever published, which is why these gauges carry no labels.
+
+`daily` is the PFCOUNT of today's sketch. `monthly` (MAU) is the cardinality of
+the UNION of the trailing 30 daily sketches (PFMERGE + PFCOUNT) - **not** a sum
+of daily counts, which would double-count returning users. For durability the
+per-day sketch BYTES (not a scalar count - a scalar cannot be unioned) are
+flushed to the `usage_daily_sketches` Postgres table every 10 minutes by the
+`flush_usage_sketches` job; Redis survives an in-place upgrade but not an
+instance replace, so after a replace the monthly union RESTOREs any missing
+day-key from Postgres before merging. That table is aggregate ops data (the ids
+are irreversibly folded into HLL registers) and is deliberately excluded from
+the user-data export. If Redis is down the gauges hold their last value rather
+than zeroing (a blip is not "activity dropped to zero"); `sheaf_redis_up` covers
+visibility.
+
+`sheaf_systems_with_public_profile` is the public-profiles adoption signal:
+distinct systems with at least one live public or unlisted-link share grant
+right now, counted against the same `grant_live_clause` the resolver serves. No
+labels.
+
 ### Infra
 
 | Metric | Type | Labels |
