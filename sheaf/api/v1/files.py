@@ -29,7 +29,11 @@ from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
-from sheaf.observability.metrics import tier_label, tier_limit_hits_total
+from sheaf.observability.metrics import (
+    public_media_serves_total,
+    tier_label,
+    tier_limit_hits_total,
+)
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.file_cleanup import (
     cleanup_orphaned_files,
@@ -558,15 +562,19 @@ async def serve_public_file(
     # has deliberately taken its public surface down. Same uniform 404 as every
     # other refusal here, so flipping the flag is not observable from outside.
     if not settings.public_profiles_enabled:
+        public_media_serves_total.labels(outcome="feature_off").inc()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     if ".." in path or path.startswith("/"):
+        public_media_serves_total.labels(outcome="invalid_path").inc()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     if not path.startswith(_SERVE_KEY_PREFIXES):
+        public_media_serves_total.labels(outcome="invalid_path").inc()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if not _canonical_public_file_request(
         request, token, expires
     ) or not verify_public_file_token(path, token, expires):
+        public_media_serves_total.labels(outcome="invalid_token").inc()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or expired public file URL",
@@ -586,14 +594,21 @@ async def serve_public_file(
     # named residual.
     owner_id = internal_key_owner(path)
     if owner_id is None or not await account_serving_public_media(db, owner_id):
+        public_media_serves_total.labels(outcome="dark_account").inc()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     storage = get_storage()
     try:
         data = await storage.get(path)
     except ValueError as exc:
+        # A key the storage backend rejects as malformed - a path-shape
+        # failure, so it lands under invalid_path alongside the earlier
+        # path guards rather than missing_blob (which means "valid key,
+        # no object").
+        public_media_serves_total.labels(outcome="invalid_path").inc()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST) from exc
     if data is None:
+        public_media_serves_total.labels(outcome="missing_blob").inc()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # 60s, not the capability's full remaining window, and NOT immutable: the
@@ -603,6 +618,7 @@ async def serve_public_file(
     # public JSON surface's own max-age, so the served-media tail is no longer
     # than the profile-data tail. The origin now gates every fetch, so a short
     # cache is a performance smoothing, not a correctness dependency.
+    public_media_serves_total.labels(outcome="served").inc()
     return _media_response(
         path,
         data,

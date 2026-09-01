@@ -303,6 +303,61 @@ def test_capped_entity_distributions_populate(admin_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Public profiles / sharing
+# ---------------------------------------------------------------------------
+
+def test_sharing_counters_prewarmed():
+    """The bounded-label sharing counters are pre-warmed at startup so
+    absent-series alerts work from the first scrape. Spot-check one label
+    value per counter."""
+    body = _scrape()
+    checks = [
+        ("sheaf_share_grants_created_total", {"subject_type": "public"}),
+        ("sheaf_share_grants_created_total", {"subject_type": "link"}),
+        ("sheaf_share_grants_revoked_total", {"subject_type": "link"}),
+        ("sheaf_share_grants_rotated_total", None),
+        ("sheaf_share_grants_finalized_total", {"kind": "member_guard"}),
+        ("sheaf_share_grants_finalized_total", {"kind": "system_privacy"}),
+        ("sheaf_public_media_serves_total", {"outcome": "dark_account"}),
+        ("sheaf_public_media_serves_total", {"outcome": "served"}),
+        ("sheaf_share_publish_blocked_total", {"reason": "grant_cap"}),
+        ("sheaf_adult_attestations_total", None),
+        (
+            "sheaf_watch_redemptions_total",
+            {"destination_type": "mobile_push", "outcome": "auth_required"},
+        ),
+        (
+            "sheaf_watch_redemptions_total",
+            {"destination_type": "unknown", "outcome": "invalid_code"},
+        ),
+    ]
+    for name, labels in checks:
+        val = _series_value(body, name, labels)
+        assert val is not None, f"missing prewarmed series: {name} {labels}"
+
+
+def test_sharing_gauges_populate(admin_client: httpx.Client):
+    """The point-in-time sharing gauges are DB-sourced, so they materialise
+    once the slow gauge pass runs. Triggering it exposes the live-grant gauge
+    (per subject type) and the oldest-pending-exposure gauge from a known
+    state."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+
+    body = _scrape()
+    for subject_type in ("public", "link"):
+        val = _series_value(
+            body, "sheaf_share_grants_live", {"subject_type": subject_type}
+        )
+        assert val is not None, f"missing sheaf_share_grants_live {subject_type}"
+    assert (
+        _series_value(body, "sheaf_share_pending_exposure_oldest_seconds")
+        is not None
+    )
+
+
+# ---------------------------------------------------------------------------
 # Leader election
 # ---------------------------------------------------------------------------
 

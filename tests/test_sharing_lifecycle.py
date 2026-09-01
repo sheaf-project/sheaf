@@ -8,6 +8,7 @@ are covered by the behavioural suite.
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -250,6 +251,57 @@ def test_rotate_rejects_a_public_grant():
     with pytest.raises(HTTPException) as exc:
         rotate_grant_token(grant)
     assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Metric increments on the pure-function grant lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _sample(name: str, labels: dict[str, str] | None = None) -> float | None:
+    from sheaf.observability.registry import get_registry
+
+    return get_registry().get_sample_value(name, labels or {})
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("PROMETHEUS_MULTIPROC_DIR")),
+    reason="counter read needs the single-process registry",
+)
+def test_revoke_counts_the_transition_once_and_only_once():
+    """The revoked counter tracks the real not-revoked -> revoked edge, keyed
+    by subject type, and an idempotent re-revoke must not move it."""
+    grant = _link_grant()
+    before = _sample(
+        "sheaf_share_grants_revoked_total", {"subject_type": "link"}
+    ) or 0.0
+
+    revoke_grant(grant)
+    after_first = _sample(
+        "sheaf_share_grants_revoked_total", {"subject_type": "link"}
+    ) or 0.0
+    assert after_first == before + 1
+
+    # Re-revoke: no transition, so no second increment.
+    revoke_grant(grant)
+    after_second = _sample(
+        "sheaf_share_grants_revoked_total", {"subject_type": "link"}
+    ) or 0.0
+    assert after_second == after_first
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("PROMETHEUS_MULTIPROC_DIR")),
+    reason="counter read needs the single-process registry",
+)
+def test_rotate_counts_each_token_rotation():
+    grant = _link_grant()
+    before = _sample("sheaf_share_grants_rotated_total") or 0.0
+
+    rotate_grant_token(grant)
+
+    after = _sample("sheaf_share_grants_rotated_total") or 0.0
+    assert after == before + 1
 
 
 # ---------------------------------------------------------------------------

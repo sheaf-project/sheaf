@@ -31,6 +31,7 @@ CPU-bound pass (decrypt, markdown resolve, card assembly, sort). See
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import NamedTuple
 
@@ -57,6 +58,7 @@ from sheaf.models.share import (
     ShareViewMember,
 )
 from sheaf.models.system import PrivacyLevel, System
+from sheaf.observability.metrics import share_projection_duration_seconds
 from sheaf.schemas.public_profile import (
     PublicFrontingMember,
     PublicFrontingView,
@@ -536,26 +538,38 @@ async def project_members(
     served, no more, and the way to guarantee that is for there to be only one
     place that builds it.
     """
+    # The disabled-roster fast path does no work (no query, no decrypt), so it
+    # stays outside the timer - folding its ~0s samples in would drag the
+    # histogram's percentiles down and hide the real cost of the work path.
     if not view.include_members:
         return []
-    members = await _active_members(db, view)
-    if only_id is not None:
-        members = [m for m in members if m.id == only_id]
-    field_names = await _exposed_fields(db, view)
-    values_by_member = await _field_values_by_member(
-        db, [m.id for m in members], set(field_names)
-    )
-    # Queries done; the decrypt-and-render pass goes to a thread. The permalink
-    # route lands here too (`only_id`), so a single hostile card is bounded the
-    # same way the whole roster is.
-    return await asyncio.to_thread(
-        _build_member_views,
-        members,
-        include_bio=view.include_bio,
-        field_names=field_names,
-        values_by_member=values_by_member,
-        owner_id=owner_id,
-    )
+    # Times the privacy-ceiling roster query plus the decrypt-and-render pass -
+    # the one expensive projection. The other project_* surfaces are near-
+    # duplicates of HTTP RED and are left to it.
+    start = time.perf_counter()
+    try:
+        members = await _active_members(db, view)
+        if only_id is not None:
+            members = [m for m in members if m.id == only_id]
+        field_names = await _exposed_fields(db, view)
+        values_by_member = await _field_values_by_member(
+            db, [m.id for m in members], set(field_names)
+        )
+        # Queries done; the decrypt-and-render pass goes to a thread. The
+        # permalink route lands here too (`only_id`), so a single hostile card
+        # is bounded the same way the whole roster is.
+        return await asyncio.to_thread(
+            _build_member_views,
+            members,
+            include_bio=view.include_bio,
+            field_names=field_names,
+            values_by_member=values_by_member,
+            owner_id=owner_id,
+        )
+    finally:
+        share_projection_duration_seconds.labels(projection="members").observe(
+            time.perf_counter() - start
+        )
 
 
 async def projectable_relationships(

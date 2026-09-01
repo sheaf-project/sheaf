@@ -48,6 +48,9 @@ from sheaf.observability.metrics import (
     reminders_total,
     requests_per_account_per_minute,
     requests_per_ip_per_minute,
+    share_grants_live,
+    share_pending_exposure_oldest_seconds,
+    share_pending_exposures,
     system_custom_field_count_max,
     system_front_count_max,
     system_group_count_max,
@@ -99,6 +102,8 @@ async def refresh_gauges(db: AsyncSession) -> dict:
     await _refresh_pending_actions(db)
     await _refresh_imports_in_progress(db)
     await _refresh_subscriptions(db)
+    await _refresh_share_exposures(db)
+    await _refresh_live_grants(db)
 
     # Per-IP / per-account rate-distribution sampling — slow because it
     # walks every rate-limit counter in Redis.
@@ -519,6 +524,132 @@ async def _refresh_subscriptions(db: AsyncSession) -> None:
     ):
         notifications_subscriptions_active.labels(channel_type=channel_type).set(
             int(by_type.get(channel_type, 0))
+        )
+
+
+async def _refresh_share_exposures(db: AsyncSession) -> None:
+    """Point-in-time staging depth for the public surface, by kind, plus the
+    oldest staged activation across every kind.
+
+    The operator-side mirror of the owner's exposure banner
+    (`sharing.pending_exposures`): one COUNT per staged-raise column, aggregated
+    instance-wide rather than scoped to one system. The member and field kinds
+    collapse per entity (DISTINCT), matching the banner's "one raise counts
+    once" rule. The oldest-activation gauge takes the MIN activation across all
+    kinds and reports its age; it stays 0 while every staged row is still ahead
+    of its window and only climbs once the finalize sweep falls behind, exactly
+    like imports_oldest_pending_seconds.
+    """
+    from sheaf.models.custom_field import CustomFieldDefinition
+    from sheaf.models.group import Group
+    from sheaf.models.member import Member
+    from sheaf.models.relationship import MemberRelationship
+    from sheaf.models.share import (
+        ShareGrant,
+        ShareGrantStatus,
+        ShareItemStatus,
+        ShareView,
+        ShareViewField,
+        ShareViewMember,
+    )
+    from sheaf.models.system import System
+
+    now = datetime.now(UTC)
+    oldest: list[datetime] = []
+
+    async def _count_min(kind: str, column, *extra) -> None:
+        row = (
+            await db.execute(
+                select(func.count(), func.min(column)).where(
+                    column.is_not(None), *extra
+                )
+            )
+        ).one()
+        share_pending_exposures.labels(kind=kind).set(int(row[0] or 0))
+        if row[1] is not None:
+            oldest.append(row[1])
+
+    # Columns that stage a raise directly (one row = one pending exposure).
+    await _count_min("system_privacy", System.privacy_activates_at)
+    await _count_min("member_guard", Member.fronting_private_activates_at)
+    await _count_min("group_raise", Group.privacy_activates_at)
+    await _count_min("field_raise", CustomFieldDefinition.privacy_activates_at)
+    await _count_min("edge_raise", MemberRelationship.visibility_activates_at)
+    await _count_min("view_flags", ShareView.flags_activate_at)
+
+    # A whole view going public for the first time - a pending grant.
+    grant_row = (
+        await db.execute(
+            select(func.count(), func.min(ShareGrant.activates_at)).where(
+                ShareGrant.status == ShareGrantStatus.PENDING.value,
+                ShareGrant.activates_at.is_not(None),
+            )
+        )
+    ).one()
+    share_pending_exposures.labels(kind="grant").set(int(grant_row[0] or 0))
+    if grant_row[1] is not None:
+        oldest.append(grant_row[1])
+
+    # Members re-exposed by a privacy raise / unarchive stage by demoting their
+    # ShareViewMember rows to PENDING. Collapse per member so one raise counts
+    # once, whichever/however many views the member sits in.
+    member_row = (
+        await db.execute(
+            select(
+                func.count(func.distinct(ShareViewMember.member_id)),
+                func.min(ShareViewMember.activates_at),
+            ).where(
+                ShareViewMember.status == ShareItemStatus.PENDING.value,
+                ShareViewMember.activates_at.is_not(None),
+            )
+        )
+    ).one()
+    share_pending_exposures.labels(kind="view_member").set(int(member_row[0] or 0))
+    if member_row[1] is not None:
+        oldest.append(member_row[1])
+
+    # A field added to an already-shared view stages the same way; collapse per
+    # field definition.
+    field_row = (
+        await db.execute(
+            select(
+                func.count(func.distinct(ShareViewField.field_id)),
+                func.min(ShareViewField.activates_at),
+            ).where(
+                ShareViewField.status == ShareItemStatus.PENDING.value,
+                ShareViewField.activates_at.is_not(None),
+            )
+        )
+    ).one()
+    share_pending_exposures.labels(kind="view_field").set(int(field_row[0] or 0))
+    if field_row[1] is not None:
+        oldest.append(field_row[1])
+
+    if oldest:
+        age = (now - min(oldest)).total_seconds()
+        share_pending_exposure_oldest_seconds.set(max(age, 0))
+    else:
+        share_pending_exposure_oldest_seconds.set(0)
+
+
+async def _refresh_live_grants(db: AsyncSession) -> None:
+    """Live-or-pending share grants right now, by subject type.
+
+    Uses the same `grant_live_clause` the resolver serves against, so this
+    point-in-time count matches what the public surface can serve.
+    """
+    from sheaf.models.share import ShareGrant
+    from sheaf.services.sharing import grant_live_clause
+
+    result = await db.execute(
+        select(ShareGrant.subject_type, func.count(ShareGrant.id))
+        .where(grant_live_clause())
+        .group_by(ShareGrant.subject_type)
+    )
+    by_type = dict(result.all())
+    for subject_type in ("public", "link"):
+        share_grants_live.labels(subject_type=subject_type).set(
+            int(by_type.get(subject_type, 0))
         )
 
 
