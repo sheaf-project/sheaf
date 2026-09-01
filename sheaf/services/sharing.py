@@ -65,6 +65,13 @@ from sheaf.models.share import (
 )
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import AccountStatus, User
+from sheaf.observability.metrics import (
+    share_grants_created_total,
+    share_grants_finalized_total,
+    share_grants_revoked_total,
+    share_grants_rotated_total,
+    share_publish_blocked_total,
+)
 from sheaf.services.security_events import record_security_events
 
 # Length of the raw link token. 32 bytes of urlsafe base64 is ~43 chars and
@@ -87,6 +94,7 @@ def require_adult_attestation(user: User) -> None:
     tradeoff, gating the highest-risk surface and nothing else.
     """
     if user.adult_attested_at is None:
+        share_publish_blocked_total.labels(reason="adult_attestation").inc()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -908,6 +916,7 @@ async def create_grant(
     # is not something they can fix, and the block is deliberately visible
     # rather than a silent refusal.
     if system.publishing_blocked:
+        share_publish_blocked_total.labels(reason="publishing_blocked").inc()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -928,6 +937,7 @@ async def create_grant(
     # window in front. Nothing gets published by accident here, so nothing gets
     # STAGED by accident either.
     if system.privacy != PrivacyLevel.PUBLIC:
+        share_publish_blocked_total.labels(reason="system_not_public").inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -947,6 +957,7 @@ async def create_grant(
         )
     ).scalar_one()
     if live >= settings.share_grants_max:
+        share_publish_blocked_total.labels(reason="grant_cap").inc()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -972,6 +983,7 @@ async def create_grant(
             )
         )
         if existing.scalar_one_or_none() is not None:
+            share_publish_blocked_total.labels(reason="duplicate_public").inc()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -1010,6 +1022,7 @@ async def create_grant(
         created_by_user_id=user.id,
     )
     db.add(grant)
+    share_grants_created_total.labels(subject_type=subject_type.value).inc()
     return grant, raw_token
 
 
@@ -1017,6 +1030,12 @@ def revoke_grant(grant: ShareGrant) -> None:
     """Kill a grant. Immediate, ungated, idempotent - the panic button."""
     if grant.revoked_at is None:
         grant.revoked_at = datetime.now(UTC)
+        # Count the real transition only, inside the was-not-already-revoked
+        # branch, so an idempotent re-revoke (panic button twice, admin
+        # revoke-all over a dead grant) does not double-count.
+        share_grants_revoked_total.labels(
+            subject_type=grant.subject_type
+        ).inc()
     grant.status = ShareGrantStatus.REVOKED.value
 
 
@@ -1034,6 +1053,7 @@ def rotate_grant_token(grant: ShareGrant) -> str:
         )
     raw_token = secrets.token_urlsafe(_TOKEN_BYTES)
     grant.token_hash = hash_share_token(raw_token)
+    share_grants_rotated_total.inc()
     return raw_token
 
 
@@ -1332,6 +1352,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     for grant in grants.scalars().all():
         grant.status = ShareGrantStatus.ACTIVE.value
         promoted += 1
+        share_grants_finalized_total.labels(kind="grant").inc()
         raised_direct.append(
             ("grant", grant.system_id, {"grant_id": str(grant.id)})
         )
@@ -1358,6 +1379,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for view_id, member_id in member_rows.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="view_member").inc()
         raised_via_view.append(
             ("view_member", view_id, {"member_id": str(member_id)})
         )
@@ -1375,6 +1397,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for view_id, field_id in field_rows.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="view_field").inc()
         raised_via_view.append(
             ("view_field", view_id, {"field_id": str(field_id)})
         )
@@ -1433,6 +1456,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for view_id, system_id in views.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="view_flags").inc()
         raised_direct.append(
             ("view_flags", system_id, {"view_id": str(view_id)})
         )
@@ -1453,6 +1477,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for member_id, system_id in member_guards.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="member_guard").inc()
         raised_direct.append(
             (
                 "member_privacy",
@@ -1486,6 +1511,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for edge_id, system_id in edge_raises.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="edge_raise").inc()
         raised_direct.append(
             ("relationship_privacy", system_id, {"edge_id": str(edge_id)})
         )
@@ -1514,6 +1540,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for group_id, system_id in group_raises.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="group_raise").inc()
         raised_direct.append(
             ("group_privacy", system_id, {"group_id": str(group_id)})
         )
@@ -1545,6 +1572,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     )
     for field_id, system_id in field_raises.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="field_raise").inc()
         raised_direct.append(
             ("field_privacy", system_id, {"field_id": str(field_id)})
         )
@@ -1576,6 +1604,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
     events: list[dict] = []
     for system_id, user_id in system_raises.all():
         promoted += 1
+        share_grants_finalized_total.labels(kind="system_privacy").inc()
         events.append(
             {
                 "event_type": SecurityEventType.EXPOSURE_RAISED,

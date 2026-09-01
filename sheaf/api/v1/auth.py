@@ -80,6 +80,7 @@ from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.observability.metrics import (
+    adult_attestations_total,
     auth_logins_total,
     auth_password_reset_total,
     auth_recovery_codes_used_total,
@@ -1835,6 +1836,9 @@ async def attest_adult(
         user.adult_attested_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(user)
+        # Count the one-way transition only; a no-op re-declaration below is
+        # not a state change and must not increment.
+        adult_attestations_total.inc()
         # Durable trail: the attestation is irreversible and gates publishing,
         # so the account needs a record of when and from where it was set.
         # Best-effort, never raises. Only the transition is recorded - a
