@@ -70,6 +70,7 @@ from sheaf.observability.metrics import (
     systems_by_reminder_count,
     systems_by_tag_count,
     systems_total,
+    systems_with_public_profile,
     tags_total,
     target_revision_count_max,
     targets_by_revision_count,
@@ -104,6 +105,14 @@ async def refresh_gauges(db: AsyncSession) -> dict:
     await _refresh_subscriptions(db)
     await _refresh_share_exposures(db)
     await _refresh_live_grants(db)
+    await _refresh_public_profile_adoption(db)
+
+    # Aggregate usage cardinality (DAU/MAU) from the id-free HLL sketches, plus
+    # the monthly union with restore-from-Postgres. Best-effort inside; a Redis
+    # outage leaves the gauges at their last value rather than raising.
+    from sheaf.observability.usage import refresh_usage_gauges
+
+    await refresh_usage_gauges(db)
 
     # Per-IP / per-account rate-distribution sampling — slow because it
     # walks every rate-limit counter in Redis.
@@ -651,6 +660,25 @@ async def _refresh_live_grants(db: AsyncSession) -> None:
         share_grants_live.labels(subject_type=subject_type).set(
             int(by_type.get(subject_type, 0))
         )
+
+
+async def _refresh_public_profile_adoption(db: AsyncSession) -> None:
+    """Distinct systems with at least one live share grant right now.
+
+    The public-profiles adoption signal: how many systems are actually
+    published, not how many grants exist. Counts distinct system_id against the
+    same grant_live_clause the resolver serves, so it matches what the public
+    surface can serve. No labels - a single id-free count.
+    """
+    from sheaf.models.share import ShareGrant
+    from sheaf.services.sharing import grant_live_clause
+
+    count = await db.scalar(
+        select(func.count(func.distinct(ShareGrant.system_id))).where(
+            grant_live_clause()
+        )
+    )
+    systems_with_public_profile.set(int(count or 0))
 
 
 async def _refresh_redis_up_only() -> None:

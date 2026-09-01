@@ -85,6 +85,7 @@ from sheaf.observability.metrics import (
     auth_password_reset_total,
     auth_recovery_codes_used_total,
     auth_sessions_invalidated_total,
+    signups_total,
 )
 from sheaf.redact import redact_email
 from sheaf.request import client_ip
@@ -450,6 +451,10 @@ async def register(
     )
 
     await db.commit()
+
+    # New-account velocity. Incremented only after the registration commit, so a
+    # rolled-back / abandoned signup never moves it. No labels (no id/email/IP).
+    signups_total.inc()
 
     await record_security_event(
         event_type=SecurityEventType.REGISTER,
