@@ -543,11 +543,13 @@ attributable to an account**. On each authenticated request the account id and
 its system id are PFADDed into a per-day Redis HyperLogLog sketch
 (`sheaf:hll:<scope>:<auth_kind>:<day>`, e.g. `sheaf:hll:acct:client:<day>`,
 ~31-day TTL) at the auth choke point, best-effort and fire-and-forget so Redis
-latency or an outage never delays or fails a request. HLL is one-way: a sketch
-can estimate a distinct count but cannot enumerate members or answer "was
-account X active on day Y". There is NO per-account series or stored id anywhere;
-the only label is the bounded `auth_kind`, and only the PFCOUNT is ever
-published.
+latency or an outage never delays or fails a request. The id is not added raw: it
+goes through a keyed HMAC under the server encryption key first, so a sketch can
+estimate a distinct count but a holder of the bytes can neither enumerate members
+nor test whether a known account was active without the key (a plain HLL alone is
+membership-testable by re-adding a candidate id, which is why the HMAC is there).
+There is NO per-account series or stored id anywhere; the only label is the
+bounded `auth_kind`, and only the PFCOUNT is ever published.
 
 The `auth_kind` label splits interactive client use (`client`: session cookie or
 JWT bearer, i.e. web and native apps) from automation (`api`: API key), kept in

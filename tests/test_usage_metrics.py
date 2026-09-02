@@ -243,3 +243,36 @@ def test_day_key_scheme_is_id_free_and_dated():
     assert key == "sheaf:hll:acct:client:2026-09-01"
     key_api = day_key(usage.SCOPE_SYSTEM, usage.KIND_API, date(2026, 9, 1))
     assert key_api == "sheaf:hll:sys:api:2026-09-01"
+
+
+def test_active_token_is_keyed_deterministic_and_cardinality_preserving():
+    """What lands in a sketch is a keyed HMAC, not the raw id: not reconstructable
+    without the server key, deterministic (so the count is unchanged), and
+    distinct-per-id (so cardinality is preserved). This is what makes a leaked
+    sketch resistant to membership testing."""
+    a = usage._active_token(usage.SCOPE_ACCOUNT, "user-1")
+    again = usage._active_token(usage.SCOPE_ACCOUNT, "user-1")
+    other = usage._active_token(usage.SCOPE_ACCOUNT, "user-2")
+    assert a == again, "must be deterministic or the cardinality drifts"
+    assert a != other, "distinct ids must map to distinct tokens"
+    assert a != "user-1" and "user-1" not in a, "the raw id must not survive"
+    assert len(a) == 64, "sha256 hex digest"
+    # Scope is bound in, so the same id in a different scope is a different token.
+    assert usage._active_token(usage.SCOPE_SYSTEM, "user-1") != a
+
+
+def test_record_active_account_drops_when_inflight_cap_reached(monkeypatch):
+    """A stalled Redis must not let the fire-and-forget task set grow without
+    bound: at the cap, new samples are dropped rather than scheduled."""
+    from sheaf.config import settings
+
+    monkeypatch.setattr(settings, "metrics_enabled", True, raising=False)
+    # Pre-fill the in-flight set to the cap (sizes only; the cap is a len check).
+    monkeypatch.setattr(usage, "_bg_tasks", set(range(usage._MAX_INFLIGHT_TASKS)))
+
+    async def _run():
+        usage.record_active_account(uuid.uuid4(), usage.KIND_CLIENT)
+        # Nothing scheduled: the set is unchanged, no new task added.
+        assert len(usage._bg_tasks) == usage._MAX_INFLIGHT_TASKS
+
+    asyncio.run(_run())
