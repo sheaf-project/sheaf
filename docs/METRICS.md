@@ -527,10 +527,10 @@ distributions ride the hourly distribution job.
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_signups_total` | counter | - |
-| `sheaf_active_accounts_daily` | gauge | - |
-| `sheaf_active_systems_daily` | gauge | - |
-| `sheaf_active_accounts_monthly` | gauge | - |
-| `sheaf_active_systems_monthly` | gauge | - |
+| `sheaf_active_accounts_daily` | gauge | `auth_kind` |
+| `sheaf_active_systems_daily` | gauge | `auth_kind` |
+| `sheaf_active_accounts_monthly` | gauge | `auth_kind` |
+| `sheaf_active_systems_monthly` | gauge | `auth_kind` |
 | `sheaf_systems_with_public_profile` | gauge | - |
 
 `sheaf_signups_total` is new-account velocity (the flow signal), incremented
@@ -541,16 +541,25 @@ The four `active_*` gauges are aggregate active-cardinality (DAU/MAU), and the
 privacy invariant is strict: they are **aggregate counts only, never
 attributable to an account**. On each authenticated request the account id and
 its system id are PFADDed into a per-day Redis HyperLogLog sketch
-(`sheaf:hll:acct:<day>` / `sheaf:hll:sys:<day>`, ~31-day TTL) at the auth choke
-point, best-effort and fire-and-forget so Redis latency or an outage never
-delays or fails a request. HLL is one-way: a sketch can estimate a distinct
-count but cannot enumerate members or answer "was account X active on day Y".
-There is NO per-account series, label, or stored id anywhere - only the PFCOUNT
-is ever published, which is why these gauges carry no labels.
+(`sheaf:hll:<scope>:<auth_kind>:<day>`, e.g. `sheaf:hll:acct:client:<day>`,
+~31-day TTL) at the auth choke point, best-effort and fire-and-forget so Redis
+latency or an outage never delays or fails a request. HLL is one-way: a sketch
+can estimate a distinct count but cannot enumerate members or answer "was
+account X active on day Y". There is NO per-account series or stored id anywhere;
+the only label is the bounded `auth_kind`, and only the PFCOUNT is ever
+published.
 
-`daily` is the PFCOUNT of today's sketch. `monthly` (MAU) is the cardinality of
-the UNION of the trailing 30 daily sketches (PFMERGE + PFCOUNT) - **not** a sum
-of daily counts, which would double-count returning users. For durability the
+The `auth_kind` label splits interactive client use (`client`: session cookie or
+JWT bearer, i.e. web and native apps) from automation (`api`: API key), kept in
+separate sketches because a distinct count cannot be sliced out of a merged
+sketch after the fact. `any` is the read-time deduped UNION of client and api
+(PFMERGE), so an account active both ways in a window counts once - it is a true
+total, not `client + api`.
+
+`daily` is the PFCOUNT of today's sketch (for `any`, the merge of today's client
+and api sketches). `monthly` (MAU) is the cardinality of the UNION of the
+trailing 30 daily sketches (PFMERGE + PFCOUNT) - **not** a sum of daily counts,
+which would double-count returning users. For durability the
 per-day sketch BYTES (not a scalar count - a scalar cannot be unioned) are
 flushed to the `usage_daily_sketches` Postgres table every 10 minutes by the
 `flush_usage_sketches` job; Redis survives an in-place upgrade but not an

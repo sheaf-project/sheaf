@@ -8,6 +8,8 @@ The load-bearing correctness properties:
   monthly union RESTOREs its persisted sketch from Postgres, so MAU stays
   accurate across a Redis replace. This is the entire reason the sketch BYTES
   are persisted rather than a scalar count.
+* The published `any` kind is the DEDUPED union of the client and api sketches,
+  not their sum - an id active both ways in a window counts once.
 
 These run host-side against the test stack's Redis (SHEAF_TEST_REDIS_URL) and
 Postgres (SHEAF_TEST_DB_URL). Each test uses a unique throwaway `scope` string
@@ -27,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from sheaf.observability import usage
-from sheaf.observability.usage import day_key, monthly_count
+from sheaf.observability.usage import daily_count, day_key, monthly_count
 
 REDIS_URL = os.environ.get("SHEAF_TEST_REDIS_URL", "redis://localhost:6380/0")
 
@@ -61,20 +63,24 @@ async def _session() -> tuple:
     return engine, maker
 
 
-def test_mau_is_the_union_not_the_sum(monkeypatch):
-    """Two overlapping daily sketches must union to the deduped cardinality, not
-    the sum of the two daily counts."""
+def _scope() -> str:
     # Throwaway scope, distinct from the real "acct"/"sys" and unique per run.
     # Must fit the scope column (String(8)), which is deliberately tight because
     # production only ever stores "acct" / "sys".
-    scope = f"t{uuid.uuid4().hex[:7]}"
+    return f"t{uuid.uuid4().hex[:7]}"
+
+
+def test_mau_is_the_union_not_the_sum(monkeypatch):
+    """Two overlapping daily sketches must union to the deduped cardinality, not
+    the sum of the two daily counts."""
+    scope = _scope()
     rb = _bytes_client()
     _patch_redis_bytes(monkeypatch, rb)
 
     today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
-    k_today = day_key(scope, today)
-    k_yesterday = day_key(scope, yesterday)
+    k_today = day_key(scope, usage.KIND_CLIENT, today)
+    k_yesterday = day_key(scope, usage.KIND_CLIENT, yesterday)
 
     # Day A: ids 0..799. Day B: ids 400..1199. Overlap 400..799 (400 shared).
     # Distinct union = 1200; naive sum of daily counts = 800 + 800 = 1600.
@@ -90,7 +96,7 @@ def test_mau_is_the_union_not_the_sum(monkeypatch):
             daily_a = int(await rb.pfcount(k_today))
             daily_b = int(await rb.pfcount(k_yesterday))
             async with maker() as db:
-                mau = await monthly_count(db, scope)
+                mau = await monthly_count(db, scope, usage.KIND_CLIENT)
             # Both daily counts should be ~800; the naive sum ~1600.
             assert 760 <= daily_a <= 840, daily_a
             assert 760 <= daily_b <= 840, daily_b
@@ -111,17 +117,14 @@ def test_mau_restores_a_missing_day_from_postgres(monkeypatch):
     """Simulate a Redis instance replace: a day's sketch survives only in
     Postgres (its Redis key is gone). The monthly union must RESTORE it and
     still reflect those ids, otherwise a replace silently drops history."""
-    # Throwaway scope, distinct from the real "acct"/"sys" and unique per run.
-    # Must fit the scope column (String(8)), which is deliberately tight because
-    # production only ever stores "acct" / "sys".
-    scope = f"t{uuid.uuid4().hex[:7]}"
+    scope = _scope()
     rb = _bytes_client()
     _patch_redis_bytes(monkeypatch, rb)
 
     today = datetime.now(UTC).date()
     lost_day = today - timedelta(days=5)
-    k_today = day_key(scope, today)
-    k_lost = day_key(scope, lost_day)
+    k_today = day_key(scope, usage.KIND_CLIENT, today)
+    k_lost = day_key(scope, usage.KIND_CLIENT, lost_day)
 
     ids_today = [f"t-{i}" for i in range(0, 300)]
     ids_lost = [f"l-{i}" for i in range(0, 500)]  # disjoint from today's set
@@ -153,6 +156,7 @@ def test_mau_restores_a_missing_day_from_postgres(monkeypatch):
                     UsageDailySketch(
                         day=lost_day,
                         scope=scope,
+                        auth_kind=usage.KIND_CLIENT,
                         sketch=lost_bytes,
                         updated_at=datetime.now(UTC),
                     )
@@ -161,7 +165,7 @@ def test_mau_restores_a_missing_day_from_postgres(monkeypatch):
 
                 # Without restore this would be ~300 (today only). With restore
                 # it must be ~800 (today's 300 + the lost day's 500, disjoint).
-                mau = await monthly_count(db, scope)
+                mau = await monthly_count(db, scope, usage.KIND_CLIENT)
 
                 # And a control: with the persisted row removed, the same union
                 # sees only today's live key.
@@ -169,7 +173,7 @@ def test_mau_restores_a_missing_day_from_postgres(monkeypatch):
                     delete(UsageDailySketch).where(UsageDailySketch.scope == scope)
                 )
                 await db.commit()
-                mau_without = await monthly_count(db, scope)
+                mau_without = await monthly_count(db, scope, usage.KIND_CLIENT)
 
             return mau, mau_without
         finally:
@@ -193,11 +197,49 @@ def test_mau_restores_a_missing_day_from_postgres(monkeypatch):
     )
 
 
+def test_any_is_the_deduped_union_of_client_and_api(monkeypatch):
+    """`any` unions the client and api sketches (deduped), it is not their sum.
+    client and api are each counted on their own key."""
+    scope = _scope()
+    rb = _bytes_client()
+    _patch_redis_bytes(monkeypatch, rb)
+
+    today = datetime.now(UTC).date()
+    k_client = day_key(scope, usage.KIND_CLIENT, today)
+    k_api = day_key(scope, usage.KIND_API, today)
+
+    # client: ids 0..499. api: ids 300..799. Overlap 300..499 (200 shared).
+    # Distinct union = 800; naive sum = 500 + 500 = 1000.
+    ids_client = [f"u-{i}" for i in range(0, 500)]
+    ids_api = [f"u-{i}" for i in range(300, 800)]
+
+    async def body() -> tuple[int, int, int]:
+        try:
+            await rb.delete(k_client, k_api)
+            await rb.execute_command("PFADD", k_client, *ids_client)
+            await rb.execute_command("PFADD", k_api, *ids_api)
+            c = await daily_count(scope, usage.KIND_CLIENT)
+            a = await daily_count(scope, usage.KIND_API)
+            any_ = await daily_count(scope, usage.KIND_ANY)
+            return c, a, any_
+        finally:
+            await rb.delete(k_client, k_api)
+            await rb.aclose()
+
+    c, a, any_ = asyncio.run(body())
+    assert c is not None and a is not None and any_ is not None
+    assert 470 <= c <= 530, f"client daily off: {c}"
+    assert 470 <= a <= 530, f"api daily off: {a}"
+    # Union of the two ~800, unmistakably below the 1000 sum.
+    assert 760 <= any_ <= 840, f"any union off: {any_}"
+    assert any_ < c + a - 100, f"any looks like a SUM ({any_}), not a union"
+
+
 def test_day_key_scheme_is_id_free_and_dated():
-    """The key scheme is scope + ISO day only; never an account/system id."""
+    """The key scheme is scope + auth kind + ISO day only; never an id."""
     from datetime import date
 
-    key = day_key(usage.SCOPE_ACCOUNT, date(2026, 9, 1))
-    assert key == "sheaf:hll:acct:2026-09-01"
-    key_sys = day_key(usage.SCOPE_SYSTEM, date(2026, 9, 1))
-    assert key_sys == "sheaf:hll:sys:2026-09-01"
+    key = day_key(usage.SCOPE_ACCOUNT, usage.KIND_CLIENT, date(2026, 9, 1))
+    assert key == "sheaf:hll:acct:client:2026-09-01"
+    key_api = day_key(usage.SCOPE_SYSTEM, usage.KIND_API, date(2026, 9, 1))
+    assert key_api == "sheaf:hll:sys:api:2026-09-01"

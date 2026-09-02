@@ -10,12 +10,17 @@ class UsageDailySketch(Base):
     """Durable backing store for the per-day active-cardinality HLL sketches.
 
     This is aggregate OPERATIONS data, not user data. Each row holds the raw
-    HyperLogLog register bytes for one (day, scope) - the account ids / system
-    ids that were active that day are irreversibly folded into the registers,
-    so a sketch can answer "roughly how many distinct ids" but can never
-    enumerate them or answer "was id X active on day Y". Nothing per-account is
-    stored, which is why this table is deliberately excluded from the Article 20
-    export (there is nothing user-attributable to hand back).
+    HyperLogLog register bytes for one (day, scope, auth_kind) - the account ids
+    / system ids that were active that day are irreversibly folded into the
+    registers, so a sketch can answer "roughly how many distinct ids" but can
+    never enumerate them or answer "was id X active on day Y". Nothing
+    per-account is stored, which is why this table is deliberately excluded from
+    the Article 20 export (there is nothing user-attributable to hand back).
+
+    scope is "acct" or "sys". auth_kind is "client" (session cookie or JWT
+    bearer) or "api" (API key) - the two are kept in separate sketches because a
+    distinct count cannot be sliced out of a merged sketch after the fact; the
+    published "any" total is their read-time union and is never stored.
 
     Why persist the SKETCH BYTES and not just a daily count: a 30-day MAU is the
     cardinality of the UNION of 30 daily sketches, which cannot be reconstructed
@@ -27,11 +32,11 @@ class UsageDailySketch(Base):
 
     __tablename__ = "usage_daily_sketches"
 
-    # Composite natural key: one sketch per (day, scope). scope is "acct" or
-    # "sys". No surrogate UUID - the (day, scope) pair IS the identity, and the
-    # flush job UPSERTs on it.
+    # Composite natural key: one sketch per (day, scope, auth_kind). No surrogate
+    # UUID - the triple IS the identity, and the flush job UPSERTs on it.
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     scope: Mapped[str] = mapped_column(String(8), primary_key=True)
+    auth_kind: Mapped[str] = mapped_column(String(8), primary_key=True)
 
     # Raw HLL register bytes as GET off the Redis day-key. Round-trips through
     # SET back into Redis to become a mergeable sketch again after a replace.

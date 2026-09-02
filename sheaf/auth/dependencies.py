@@ -241,10 +241,17 @@ async def get_current_user(
     # Aggregate usage metrics (DAU/MAU). Best-effort and non-blocking: this only
     # schedules a fire-and-forget task, so Redis latency or an outage can never
     # delay or fail auth. This is the single choke point that sees every auth
-    # method (API key, JWT, session cookie) with the account resolved. Only the
-    # id-free aggregate cardinality is ever published; the id is folded one-way
-    # into a Redis HLL sketch and never stored.
-    record_active_account(user.id)
+    # method (API key, JWT, session cookie) with the account resolved. The kind
+    # splits interactive client use (session cookie or JWT bearer) from
+    # automation (API key) into separate sketches. Only the id-free aggregate
+    # cardinality is ever published; the id is folded one-way into a Redis HLL
+    # sketch and never stored.
+    _usage_kind = (
+        "api"
+        if getattr(request.state, "auth_method", None) == "api_key"
+        else "client"
+    )
+    record_active_account(user.id, _usage_kind)
 
     return user
 

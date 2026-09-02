@@ -656,26 +656,37 @@ signups_total = _C(
 # PFMERGE), not a sum of daily counts. See sheaf/observability/usage.py.
 # ---------------------------------------------------------------------------
 
+# Aggregate usage. `auth_kind` splits interactive client use (session cookie or
+# JWT bearer) from automation (API key); `any` is the read-time deduped union of
+# the two, so an account active both ways in a window counts once.
+UsageAuthKind = Literal["client", "api", "any"]
+
 active_accounts_daily = _G(
     "sheaf_active_accounts_daily",
-    "Estimated distinct accounts active today (DAU), from an id-free HLL sketch "
-    "PFCOUNT. Aggregate cardinality only; no per-account series exists.",
+    "Estimated distinct accounts active today (DAU), by auth kind (client / api "
+    "/ any), from an id-free HLL sketch PFCOUNT. Aggregate cardinality only; no "
+    "per-account series exists.",
+    ["auth_kind"],
 )
 active_systems_daily = _G(
     "sheaf_active_systems_daily",
-    "Estimated distinct systems active today (DAU), from an id-free HLL sketch "
-    "PFCOUNT.",
+    "Estimated distinct systems active today (DAU), by auth kind, from an "
+    "id-free HLL sketch PFCOUNT.",
+    ["auth_kind"],
 )
 active_accounts_monthly = _G(
     "sheaf_active_accounts_monthly",
-    "Estimated distinct accounts active over the trailing 30 days (MAU), the "
-    "cardinality of the UNION of 30 daily HLL sketches (PFMERGE + PFCOUNT). Not "
-    "a sum of daily counts - that would double-count returning users.",
+    "Estimated distinct accounts active over the trailing 30 days (MAU), by auth "
+    "kind, the cardinality of the UNION of 30 daily HLL sketches (PFMERGE + "
+    "PFCOUNT). Not a sum of daily counts - that would double-count returning "
+    "users; `any` is the deduped union of client and api, not their sum.",
+    ["auth_kind"],
 )
 active_systems_monthly = _G(
     "sheaf_active_systems_monthly",
-    "Estimated distinct systems active over the trailing 30 days (MAU), the "
-    "cardinality of the UNION of 30 daily HLL sketches.",
+    "Estimated distinct systems active over the trailing 30 days (MAU), by auth "
+    "kind, the cardinality of the UNION of 30 daily HLL sketches.",
+    ["auth_kind"],
 )
 systems_with_public_profile = _G(
     "sheaf_systems_with_public_profile",

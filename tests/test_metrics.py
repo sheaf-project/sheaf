@@ -333,8 +333,9 @@ def test_signups_total_increments_on_registration():
 def test_usage_gauges_populate(admin_client: httpx.Client):
     """The DAU/MAU cardinality gauges are Redis-sourced (id-free HLL sketches),
     so they materialise once the slow gauge pass runs. Triggering it exposes all
-    four active-* gauges plus the public-profile adoption gauge. They are
-    label-less by design (aggregate cardinality only, never per-account)."""
+    four active-* gauges (one series per auth kind: client / api / any) plus the
+    public-profile adoption gauge. The only label is the bounded auth_kind; there
+    is never a per-account series."""
     # The admin registration itself authenticated, so today's acct/sys sketches
     # have at least one member.
     resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
@@ -342,22 +343,29 @@ def test_usage_gauges_populate(admin_client: httpx.Client):
     assert resp.json()["status"] == "success"
 
     body = _scrape()
+    # The four active-* gauges carry auth_kind; "any" is the deduped total and
+    # is the series that must reflect any authenticated activity.
     for name in (
         "sheaf_active_accounts_daily",
         "sheaf_active_systems_daily",
         "sheaf_active_accounts_monthly",
         "sheaf_active_systems_monthly",
-        "sheaf_systems_with_public_profile",
     ):
-        val = _series_value(body, name)
+        val = _series_value(body, name, {"auth_kind": "any"})
         assert val is not None, f"missing usage gauge: {name}"
-        # These are all counts, so never negative.
         assert val >= 0, f"{name} negative: {val}"
 
-    # DAU must be at least 1 (the admin client just authenticated), and MAU is
-    # the union over the trailing window, so it can never be below today's DAU.
-    dau = _series_value(body, "sheaf_active_accounts_daily") or 0.0
-    mau = _series_value(body, "sheaf_active_accounts_monthly") or 0.0
+    adoption = _series_value(body, "sheaf_systems_with_public_profile")
+    assert adoption is not None and adoption >= 0
+
+    # DAU must be at least 1 (the admin client just authenticated via a client
+    # method), and MAU is the union over the trailing window, so it can never be
+    # below today's DAU.
+    dau = _series_value(body, "sheaf_active_accounts_daily", {"auth_kind": "any"}) or 0.0
+    mau = (
+        _series_value(body, "sheaf_active_accounts_monthly", {"auth_kind": "any"})
+        or 0.0
+    )
     assert dau >= 1, dau
     assert mau >= dau, f"MAU ({mau}) below DAU ({dau}) - union is broken"
 
