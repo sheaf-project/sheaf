@@ -62,6 +62,42 @@ async def record_security_event(
         )
 
 
+async def record_security_events(events: list[dict]) -> None:
+    """Append many security events in one isolated session. Best-effort.
+
+    Same contract as `record_security_event` - its own short-lived session, and
+    it never raises - but batched, for callers that promote a whole sweep of
+    rows at once (the finalize job) and would otherwise pay one session per row.
+    Each dict is the keyword payload `record_security_event` takes
+    (`event_type`, `outcome`, optional `user_id`/`ip`/`user_agent`/`detail`).
+    An empty list is a no-op.
+    """
+    if not events:
+        return
+    try:
+        async with async_session_factory() as session:
+            for e in events:
+                session.add(
+                    SecurityEvent(
+                        id=uuid.uuid4(),
+                        created_at=datetime.now(UTC),
+                        event_type=e["event_type"],
+                        outcome=e["outcome"],
+                        user_id=e.get("user_id"),
+                        ip=e.get("ip"),
+                        user_agent=(e.get("user_agent") or None),
+                        detail=e.get("detail"),
+                    )
+                )
+            await session.commit()
+    except Exception:
+        logger.warning(
+            "security event batch write failed (%d events)",
+            len(events),
+            exc_info=True,
+        )
+
+
 def _is_cidr(value: str) -> bool:
     return "/" in value
 

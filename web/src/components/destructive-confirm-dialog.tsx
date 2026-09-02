@@ -51,8 +51,15 @@ export function DestructiveConfirmDialog({
     onOpenChange(next);
   }
 
-  const needsPassword = tier === "password" || tier === "both";
-  const needsTotp = (tier === "totp" || tier === "both") && !!user?.totp_enabled;
+  // Mirror the server's misconfiguration fail-safe (`verify_destructive_auth`):
+  // a TOTP tier on an account with no TOTP enrolled is verified by PASSWORD
+  // instead. Without the same fallback here the dialog would show no field at
+  // all, confirm with nothing attached, and collect a 400 the user has nowhere
+  // to answer. Legacy data only - both settings paths now refuse to create it.
+  const totpByTier = tier === "totp" || tier === "both";
+  const needsTotp = totpByTier && !!user?.totp_enabled;
+  const needsPassword =
+    tier === "password" || tier === "both" || (totpByTier && !needsTotp);
 
   function handleConfirm() {
     const confirm: DestructiveConfirm = {};

@@ -27,11 +27,25 @@ Strategies:
 - UPDATE: an existing match's importable fields are overwritten from the
   candidate.
 
-The caller is responsible for two things based on the disposition:
+One field UPDATE cannot overwrite freely is `privacy`. Raising an
+existing member to `public` PUBLISHES them if they already sit in a share
+view a grant points at, and the members API only allows that flip behind
+step-up re-auth plus a grace window. A job has no step-up channel, so an
+import must not do what the API refuses: the raise is applied only when
+it exposes nothing, and otherwise the existing value stands and the
+member is referenced (by id, never by decrypted name) in the job report
+(`Resolution.privacy_held_member_id`). The hold does NOT consult the
+profile_visibility safety category - see `_privacy_raise_exposes` for why
+a gate the same file can switch off is no gate.
+Lowering is the un-exposing direction and stays ungated, and a CREATE is
+in no view yet, so neither is gated.
+
+The caller is responsible for three things based on the disposition:
   * db.add() the candidate ONLY when disposition == "created";
   * use the returned member in its source-id -> member map either way,
     so downstream sections (fronts, groups, custom fields) link to the
-    right row whether it was created, skipped, or updated.
+    right row whether it was created, skipped, or updated;
+  * count and report `privacy_held_member_id` when it is set.
 """
 
 from __future__ import annotations
@@ -50,6 +64,8 @@ from sheaf.encrypted_fields import (
     member_note_aad,
 )
 from sheaf.models.member import Member
+from sheaf.models.system import PrivacyLevel, System
+from sheaf.services.sharing import shared_view_memberships
 
 
 class ImportConflictStrategy(enum.StrEnum):
@@ -65,8 +81,10 @@ class ImportConflictStrategy(enum.StrEnum):
 # leave it None on the candidate (relying on the column server-default),
 # which would null out the existing row's NOT NULL column. The encrypted
 # `name` is handled separately (see `_ENCRYPTED_ALWAYS`); `name_hash` is a
-# blind index (not encrypted) and is copied verbatim.
-_ALWAYS_OVERWRITE = ("name_hash", "privacy")
+# blind index (not encrypted) and is copied verbatim. `privacy` is handled
+# separately too, because raising it can publish the member (see
+# `_privacy_raise_exposes`).
+_ALWAYS_OVERWRITE = ("name_hash",)
 # Optional plaintext fields: UPDATE overwrites only when the candidate
 # carries a value, so a re-import never nulls a field the source format
 # doesn't model (e.g. PluralKit has no emoji, so a PK update must not wipe
@@ -146,6 +164,31 @@ async def load_member_match_index(
 class Resolution:
     member: Member
     disposition: str  # "created" | "skipped" | "updated"
+    # The matched member's id when UPDATE declined to raise their privacy to
+    # public, else None. Callers count it and reference the member in the job
+    # report so a withheld flip is never silent. Deliberately the id and NOT the
+    # decrypted name: job events are stored as plaintext JSONB, while member
+    # names live in encrypted columns, so a report must not downgrade a name
+    # into the clear. The id is the user's own roster member and resolves to a
+    # current name client-side (the same discipline the archive importer's
+    # image-reference report already follows).
+    privacy_held_member_id: uuid.UUID | None = None
+
+
+def privacy_hold_warning(member_id: uuid.UUID) -> str:
+    """The report line for a privacy raise an import declined to apply.
+
+    References the member by id, not by name: this string lands in the job's
+    plaintext event log, and the member's name is an encrypted column. The web
+    report resolves the id to the member's current name from the user's own
+    roster; the id also drops straight into the members-page URL.
+    """
+    return (
+        f"Kept a member (id {member_id}) at their current privacy setting - the "
+        "file makes them public and they are already in a shared view, so "
+        "publishing them needs re-authentication. Change it from the members "
+        "page if that is what you want."
+    )
 
 
 def _rebind(ciphertext: str, src_aad: bytes, dst_aad: bytes) -> str:
@@ -156,9 +199,52 @@ def _rebind(ciphertext: str, src_aad: bytes, dst_aad: bytes) -> str:
     return encrypt(decrypt(ciphertext, aad=src_aad), aad=dst_aad)
 
 
-def _apply_update(existing: Member, candidate: Member) -> None:
+async def _privacy_raise_exposes(
+    db: AsyncSession, system: System, existing: Member, candidate: Member
+) -> bool:
+    """Whether taking the candidate's privacy would publish the existing row.
+
+    Only the raise to `public` can expose: lowering takes the member off the
+    public surface and an equal value moves nothing. A raise on a member no live
+    or pending grant can reach exposes nobody and stays ungated - the same
+    "would this actually reveal somebody" question PATCH /v1/members asks before
+    it demands step-up re-auth, and the same place the parked friends tier will
+    need an audience-aware test.
+
+    Deliberately NOT keyed on the profile_visibility safety category, and that
+    is the difference from the API. Two reasons, either of which is sufficient:
+
+    - An import is non-interactive. Where the API would demand a step-up it can
+      neither perform one nor stage a pending raise, so the only honest answers
+      are "publish from a file with no gate at all" or "hold". It holds.
+    - The category flag is itself importable (it rides in `system.safety` in the
+      very same payload), so a hold that consulted it could be switched off by
+      the file that wants the raise. A gate an attacker's input can disarm is
+      not a gate.
+
+    So the hold applies whenever the file raises a member who is already sitting
+    in a view a live-or-pending grant points at: keep the existing lower level
+    and report it, rather than silently publishing somebody from a file. That is
+    the conservative reading, and the worst an import can do to visibility is
+    leave it where it was.
+    """
+    if (
+        candidate.privacy != PrivacyLevel.PUBLIC
+        or existing.privacy == PrivacyLevel.PUBLIC
+    ):
+        return False
+    return bool(await shared_view_memberships(db, system, existing.id))
+
+
+def _apply_update(
+    existing: Member, candidate: Member, *, apply_privacy: bool
+) -> None:
     for fld in _ALWAYS_OVERWRITE:
         setattr(existing, fld, getattr(candidate, fld))
+    # Not every source format models privacy, so a candidate that carries no
+    # value leaves the existing setting alone rather than nulling the column.
+    if apply_privacy and candidate.privacy is not None:
+        existing.privacy = candidate.privacy
     for fld in _OVERWRITE_IF_SET:
         val = getattr(candidate, fld, None)
         if val is not None:
@@ -185,16 +271,20 @@ def _apply_update(existing: Member, candidate: Member) -> None:
             )
 
 
-def resolve_member(
+async def resolve_member(
     candidate: Member,
     *,
     index: MemberMatchIndex,
     strategy: ImportConflictStrategy,
+    db: AsyncSession,
+    system: System,
 ) -> Resolution:
     """Decide how a freshly-built candidate relates to existing members.
 
     On "created" the candidate is registered in the index so a later
-    intra-import row with the same key dedups against it too.
+    intra-import row with the same key dedups against it too. UPDATE hits the
+    DB only when the file would raise a matched member to public, which is the
+    one overwrite that can publish somebody.
     """
     if strategy == ImportConflictStrategy.CREATE:
         return Resolution(candidate, "created")
@@ -208,8 +298,30 @@ def resolve_member(
         return Resolution(candidate, "created")
     if strategy == ImportConflictStrategy.SKIP:
         return Resolution(existing, "skipped")
-    _apply_update(existing, candidate)
-    return Resolution(existing, "updated")
+    # Lock and re-read the matched row before evaluating (and possibly applying)
+    # a privacy raise. The match index is a snapshot taken at job start; between
+    # then and now the owner may have taken this member private in a concurrent
+    # request. Without the row lock we would evaluate exposure against - and then
+    # overwrite - a stale privacy value, silently undoing that concurrent change.
+    # Only a raise to public can expose, so the lock is scoped to exactly that
+    # case (the same conditions _privacy_raise_exposes needs its DB read for);
+    # other dispositions keep the no-extra-query fast path. FOR UPDATE both
+    # refreshes existing.privacy and serialises us against the writer for the
+    # rest of the transaction, so the subsequent _apply_update is safe.
+    if (
+        candidate.privacy == PrivacyLevel.PUBLIC
+        and existing.privacy != PrivacyLevel.PUBLIC
+    ):
+        await db.refresh(existing, ["privacy"], with_for_update=True)
+    exposes = await _privacy_raise_exposes(db, system, existing, candidate)
+    _apply_update(existing, candidate, apply_privacy=not exposes)
+    return Resolution(
+        existing,
+        "updated",
+        # Reference the held member by id, never by decrypted name: this reaches
+        # the plaintext job event log (see Resolution.privacy_held_member_id).
+        privacy_held_member_id=existing.id if exposes else None,
+    )
 
 
 def candidate_key(member: Member) -> tuple[str, str | None, bool]:

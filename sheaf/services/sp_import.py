@@ -34,6 +34,7 @@ from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
 from sheaf.models.message import BoardKind, Message
 from sheaf.models.system import System
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.schemas.sp_import import (
     SPImportOptions,
     SPImportResult,
@@ -61,11 +62,13 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
 from sheaf.services.import_limits import ClampReport, clamp_str
 from sheaf.services.import_parsing import sanitize_external_avatar_url
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 
 logger = logging.getLogger("sheaf.import")
@@ -424,8 +427,15 @@ async def run_import(
         # SimplyPlural file can legitimately point at Sheaf storage, so all
         # internal refs are dropped and external images plus the surrounding
         # prose survive unchanged.
+        # Clamp before the strip/parse so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         sp_desc = strip_internal_image_refs_md_to_none(
-            _coerce_str(sp_user.get("desc")) or _coerce_str(sp_settings.get("desc"))
+            clamp_str(
+                _coerce_str(sp_user.get("desc"))
+                or _coerce_str(sp_settings.get("desc")),
+                il.SYS_DESCRIPTION,
+                report=report,
+            )
         )
         if sp_desc:
             system.description = sp_desc
@@ -455,9 +465,9 @@ async def run_import(
         )
         if sp_id:
             sp_id_to_name[sp_id] = plaintext_name
-        # Same reason as the system description above.
+        # Same reason as the system description above (strip + length cap).
         plaintext_description = strip_internal_image_refs_md_to_none(
-            _coerce_str(sp_m.get("desc"))
+            clamp_str(_coerce_str(sp_m.get("desc")), il.M_DESCRIPTION, report=report)
         )
         member_id = uuid.uuid4()
         member = Member(
@@ -522,6 +532,10 @@ async def run_import(
                 avatar_url=_sp_avatar_url(sp_cf, sp_owner_id),
                 privacy=_map_privacy(sp_cf.get("private", True)),
                 is_custom_front=True,
+                # SP has no per-front-status share guard to carry, so this
+                # takes the server default: guarded, because "Asleep" is a
+                # state nobody published by publishing a roster.
+                fronting_private=default_fronting_private(is_custom_front=True),
             )
             custom_front_candidates.append((member, sp_id))
 
@@ -568,9 +582,16 @@ async def run_import(
     # later sections (fronts, custom fields, groups) link correctly.
     sp_id_to_member: dict[str, Member] = {}
     for member, sp_id in member_candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=options.conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=options.conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_member_id:
+            result.members_privacy_skipped += 1
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1
@@ -582,9 +603,16 @@ async def run_import(
 
     sp_id_to_custom_front: dict[str, Member] = {}
     for member, sp_id in custom_front_candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=options.conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=options.conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_member_id:
+            result.members_privacy_skipped += 1
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.custom_fronts_imported += 1
@@ -647,6 +675,7 @@ async def run_import(
         value_guard = await load_field_value_guard(db, system.id)
         sp_member_by_id = {m.get("_id"): m for m in sp_members if m.get("_id")}
         unknown_field_refs = 0
+        oversized_values = 0
         for sp_id, member in sp_id_to_member.items():
             sp_m = sp_member_by_id.get(sp_id)
             if not sp_m:
@@ -663,14 +692,21 @@ async def run_import(
                     continue
                 if not value_guard.add((field_def.id, member.id)):
                     continue
+                text = str(raw_value)
+                # Stored at full length; the editor's cap does not retroactively
+                # edit an import. Counted for the report instead.
+                if value_over_text_cap(text):
+                    oversized_values += 1
                 cfv_id = uuid.uuid4()
                 cfv = CustomFieldValue(
                     id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value({"v": str(raw_value)}, cfv_id),
+                    value=encrypt_field_value({"v": text}, cfv_id),
                 )
                 db.add(cfv)
+        if oversized_values:
+            warnings.append(il.oversized_field_values_warning(oversized_values))
         if unknown_field_refs:
             warnings.append(
                 f"Dropped {unknown_field_refs} custom-field values whose "
@@ -702,11 +738,16 @@ async def run_import(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
-                # Same reason as the system description above. The _coerce_str
-                # matches `name` just above it: without it a non-string `desc`
-                # (a dict, a number, a list) would reach a Text column as-is.
+                # Same reason as the system description above (strip + length
+                # cap). The _coerce_str matches `name` just above it: without it
+                # a non-string `desc` (a dict, a number, a list) would reach a
+                # Text column as-is.
                 description=strip_internal_image_refs_md_to_none(
-                    _coerce_str(sp_g.get("desc"))
+                    clamp_str(
+                        _coerce_str(sp_g.get("desc")),
+                        il.GROUP_DESCRIPTION,
+                        report=report,
+                    )
                 ),
                 color=_normalize_color(sp_g.get("color")),
             )
@@ -976,6 +1017,14 @@ async def _import_messages(
         author = all_sp_to_member.get(sender) if sender else None
         if sender and author is None:
             missing_authors += 1
+        # Same internal-image strip the descriptions and journal bodies get: a
+        # message body is markdown too, so an embed naming this instance's
+        # storage would otherwise re-sign into a live cross-tenant read on
+        # display. The length clamp is a silent storage backstop (the preview
+        # does not walk message bodies, so nothing to surface); the create path
+        # enforces the same MESSAGE_BODY cap.
+        body = strip_internal_image_refs_md_to_none(body) or ""
+        body = clamp_str(body, il.MESSAGE_BODY)
         message_id = uuid.uuid4()
         message = Message(
             id=message_id,

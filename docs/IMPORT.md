@@ -149,7 +149,11 @@ same preview-then-import flow as PK and covers:
 - Members with avatar, pronouns, color, description, birthday, privacy.
 - Custom fronts (imported as Members with `is_custom_front=true`, so they
   show up in the fronter list and groups but are excluded from member-count
-  statistics and listed separately on the Members page).
+  statistics and listed separately on the Members page). Every importer that
+  brings custom fronts across creates them with **keep fronting private** on,
+  so an imported "Asleep" never announces itself on a shared page until you
+  release the guard yourself; a Sheaf backup or an OpenPlural file that
+  records the setting restores what it recorded instead.
 - Custom field definitions and per-member values.
 - Groups with parent hierarchy and member memberships.
 - Front history (off by default; SP exports can be large).

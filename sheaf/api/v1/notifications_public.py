@@ -34,6 +34,7 @@ from sheaf.models.notification_channel import (
 from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.observability.metrics import watch_redemptions_total
 from sheaf.schemas.notifications import (
     ManageChannelView,
     RedeemPreview,
@@ -144,11 +145,32 @@ async def redeem_activation(
     if channel is None or not activation_code_matches(
         body.activation_code, channel.activation_code_hash or ""
     ):
+        # No channel resolved, so the destination type is unknowable here -
+        # the code gate is the first thing checked.
+        watch_redemptions_total.labels(
+            destination_type="unknown", outcome="invalid_code"
+        ).inc()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Invalid activation code"
         )
 
+    # Legacy fcm / apns_* rows kept defensively in case any survive the
+    # migration to mobile_push (they shouldn't, but the redemption path
+    # is the wrong place to fail loudly). Resolved up front so every exit
+    # below can label its metric with the normalised destination type.
+    mobile_push_types = {
+        DestinationType.MOBILE_PUSH.value,
+        DestinationType.FCM.value,
+        DestinationType.APNS_DEV.value,
+        DestinationType.APNS_PROD.value,
+    }
+    is_mobile = channel.destination_type in mobile_push_types
+    dest_label = "mobile_push" if is_mobile else "web_push"
+
     if channel.destination_state != DestinationState.PENDING_REGISTRATION.value:
+        watch_redemptions_total.labels(
+            destination_type=dest_label, outcome="not_pending"
+        ).inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Channel is no longer pending registration",
@@ -157,21 +179,13 @@ async def redeem_activation(
         channel.activation_code_expires_at is not None
         and channel.activation_code_expires_at < datetime.now(UTC)
     ):
+        watch_redemptions_total.labels(
+            destination_type=dest_label, outcome="expired"
+        ).inc()
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="Activation code has expired",
         )
-
-    # Legacy fcm / apns_* rows kept defensively in case any survive the
-    # migration to mobile_push (they shouldn't, but the redemption path
-    # is the wrong place to fail loudly).
-    mobile_push_types = {
-        DestinationType.MOBILE_PUSH.value,
-        DestinationType.FCM.value,
-        DestinationType.APNS_DEV.value,
-        DestinationType.APNS_PROD.value,
-    }
-    is_mobile = channel.destination_type in mobile_push_types
 
     if channel.destination_type == DestinationType.WEB_PUSH.value:
         if body.push_subscription is None:
@@ -191,6 +205,9 @@ async def redeem_activation(
         # transport (push token) lives on push_device_tokens, not the
         # channel. Refuse any push_subscription supplied by the client.
         if redeemer_account_id is None:
+            watch_redemptions_total.labels(
+                destination_type="mobile_push", outcome="auth_required"
+            ).inc()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="login required to redeem a mobile push channel",
@@ -224,6 +241,9 @@ async def redeem_activation(
     channel.redeemed_at = datetime.now(UTC)
     channel.destination_state = DestinationState.ACTIVE.value
     await db.commit()
+    watch_redemptions_total.labels(
+        destination_type=dest_label, outcome="redeemed"
+    ).inc()
 
     # Look up watch token + system for the response label.
     token_result = await db.execute(

@@ -1,6 +1,7 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,12 +13,21 @@ from sheaf.files import owned_description_urls
 from sheaf.models.group import Group
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.system import System
+from sheaf.models.security_event import SecurityEventType
+from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.observability.metrics import groups_created_total
+from sheaf.request import client_ip
 from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
+from sheaf.services.security_events import record_security_event
+from sheaf.services.sharing import (
+    group_raise_exposes,
+    reject_mixed_exposure_directions,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -64,10 +74,24 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
     return system
 
 
-async def _get_own_group(group_id: uuid.UUID, system: System, db: AsyncSession) -> Group:
-    result = await db.execute(
-        select(Group).where(Group.id == group_id, Group.system_id == system.id)
-    )
+async def _get_own_group(
+    group_id: uuid.UUID,
+    system: System,
+    db: AsyncSession,
+    *,
+    for_update: bool = False,
+) -> Group:
+    """Fetch one group of this system, 404ing if it is not.
+
+    `for_update` matches `update_member` and the relationship-edge PATCH: two
+    concurrent privacy writes on one group must not interleave into a state
+    where the live level and the staged level disagree about which way the
+    owner was going.
+    """
+    stmt = select(Group).where(Group.id == group_id, Group.system_id == system.id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await db.execute(stmt)
     group = result.scalar_one_or_none()
     if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
@@ -117,16 +141,43 @@ async def create_group(
             )
 
     fields = body.model_dump()
+    # Step-up credentials are not group columns; drop them before the row is
+    # built so they can never be persisted.
+    password = fields.pop("password", None)
+    totp_code = fields.pop("totp_code", None)
+
     # Drop embedded refs to another account's storage keys, exactly as the
     # member and system write handlers do. Groups were the gap: nothing here
     # ran an ownership pass, so a foreign /v1/files/{key} pasted into a group
-    # description was stored verbatim, ready for the day something renders it.
-    # Enforced at the handler because this is where the authenticated user
-    # exists; the schema validator that runs `normalize_description_urls` has
-    # no request context and cannot know whose keys these are.
+    # description was stored verbatim and re-signed into a live serve URL on
+    # every read - a cross-tenant read of somebody else's upload, and one that
+    # keeps working after they have deleted or un-shared the original. Enforced
+    # at the handler because this is where the authenticated user exists; the
+    # schema validator that runs `normalize_description_urls` has no request
+    # context and cannot know whose keys these are.
     fields["description"] = owned_description_urls(
         fields.get("description"), user.id
     )
+
+    # Creating a group straight to `public` exposes exactly what raising an
+    # existing one does, so it runs the SAME check and gets the same treatment:
+    # step-up now when the category is armed and it would actually serve, then a
+    # grace window (if set) stages the raise while the group is born private,
+    # else it is simply born public. Without this, "delete it and add it back
+    # public" would walk around the PATCH gate entirely.
+    if (
+        fields.get("privacy") == PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+        and await group_raise_exposes(db, system)
+    ):
+        await verify_destructive_auth(user, system, password, totp_code, db)
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            fields["privacy"] = PrivacyLevel.PRIVATE
+            fields["pending_privacy"] = PrivacyLevel.PUBLIC
+            fields["privacy_activates_at"] = datetime.now(UTC) + timedelta(
+                days=grace
+            )
 
     group = Group(system_id=system.id, **fields)
     db.add(group)
@@ -160,18 +211,89 @@ async def get_group(
 async def update_group(
     group_id: uuid.UUID,
     body: GroupUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Edit a group, including moving it up or down the privacy ladder.
+
+    Raising a group to `public` EXPOSES it, but only when something would
+    actually serve it - see `group_raise_exposes`. When it would, this behaves
+    exactly like raising a member or an edge to public: re-auth now, and the
+    raise itself waits out the grace window as `pending_privacy` +
+    `privacy_activates_at` while the live level stays where it was.
+
+    Every other direction is instant and ungated. Lowering is the un-exposing
+    direction and nothing may slow it down, and ANY such change lands on top of
+    whatever was staged rather than queueing behind it - setting private, or
+    friends, while a public raise is pending cancels that raise outright. The
+    last thing the owner asked for wins, and it wins at its own gate. private ->
+    friends is ungated for the same reason it is on members and edges: the
+    friends tier is parked and every grant that exists today is public-tier, so
+    it exposes nobody. When friends lands, this check and
+    `share_projection.projectable_groups` have to become audience-aware
+    together.
+
+    House rule shared with every other exposure PATCH: one body may not carry
+    both a raise and a lowering, because the raise's step-up would then be able
+    to fail the lowering with it. `privacy` is this endpoint's only exposure
+    axis, so the check cannot bite here yet - it is applied so a second axis
+    added later cannot land without it.
+    """
     system = await _get_user_system(user, db)
-    group = await _get_own_group(group_id, system, db)
+    group = await _get_own_group(group_id, system, db, for_update=True)
     update_data = body.model_dump(exclude_unset=True)
+    # Step-up credentials are not group columns; drop them before anything
+    # iterates the update so they can never be persisted.
+    password = update_data.pop("password", None)
+    totp_code = update_data.pop("totp_code", None)
 
     # Same ownership pass as create_group; see the note there.
     if "description" in update_data:
         update_data["description"] = owned_description_urls(
             update_data["description"], user.id
         )
+
+    requested_privacy = update_data.pop("privacy", None)
+    exposes = False
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and group.privacy != PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+    ):
+        exposes = await group_raise_exposes(db, system, group.id)
+
+    # The house rule that one request may not carry an exposure raise and an
+    # exposure lowering at once, applied here for uniformity rather than
+    # because it can fire: `privacy` is this endpoint's only exposure axis, and
+    # a single field cannot go both ways in one body. It is called anyway so a
+    # second axis added to groups later inherits the rule instead of quietly
+    # reintroducing the "failed step-up swallows a lowering" bug the helper
+    # exists to prevent.
+    reject_mixed_exposure_directions(raises=exposes, lowers=False)
+
+    # Raising a group's ceiling to public widens who a live grant can serve it
+    # to, so the raise leaves an IP/UA-stamped trail whether it lands live
+    # (`immediate`) or parks behind the grace window (`staged`). Only the
+    # raise-to-public direction is recorded; lowering un-exposes and stays
+    # silent. Recorded after the commit, best-effort, never raises.
+    raise_outcome: str | None = None
+    if exposes:
+        await verify_destructive_auth(user, system, password, totp_code, db)
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            group.pending_privacy = PrivacyLevel.PUBLIC
+            group.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+            raise_outcome = "staged"
+        else:
+            group.privacy = PrivacyLevel.PUBLIC
+            group.pending_privacy = None
+            group.privacy_activates_at = None
+            raise_outcome = "immediate"
+    elif requested_privacy is not None:
+        group.privacy = requested_privacy
+        group.pending_privacy = None
+        group.privacy_activates_at = None
 
     # Validate parent_id if being changed
     if "parent_id" in update_data:
@@ -213,6 +335,15 @@ async def update_group(
         setattr(group, key, value)
     await db.commit()
     await db.refresh(group)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "group_privacy", "group_id": str(group.id)},
+        )
     return group
 
 

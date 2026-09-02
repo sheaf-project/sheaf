@@ -42,6 +42,7 @@ from sheaf.models.safety_change_request import (
     SafetyChangeStatus,
 )
 from sheaf.models.security_event import SecurityEventType
+from sheaf.models.share import ShareGrant, ShareView
 from sheaf.models.system import System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import User
@@ -113,9 +114,10 @@ async def get_account_data(
     Distinct from `/v1/export`, which is Article 20 (data portability) and
     only includes plural-system content. This endpoint adds account
     identity, sessions, IPs, API key audit metadata, email delivery
-    state, the security event log (auth attempts with IPs), and other
-    server-derived data that should NEVER ride along with a portable
-    export (info-leak hazard if shared or imported elsewhere).
+    state, the security event log (auth attempts with IPs), the sharing
+    grants that publish part of the system, and other server-derived
+    data that should NEVER ride along with a portable export (info-leak
+    hazard if shared or imported elsewhere).
 
     Always requires password (and TOTP if enrolled), regardless of the
     system's `delete_confirmation` setting — this is the highest-value
@@ -264,6 +266,7 @@ async def get_account_data(
 
     pending_actions: list = []
     pending_changes: list = []
+    share_grants: list = []
     if system is not None:
         actions_result = await db.execute(
             select(PendingAction)
@@ -284,6 +287,18 @@ async def get_account_data(
             .order_by(SafetyChangeRequest.requested_at.desc())
         )
         pending_changes = list(changes_result.scalars().all())
+
+        # Sharing exposure: every grant the system has, revoked ones
+        # included. The owner-facing audit view answers "what is exposed
+        # right now"; Article 15 is "everything held about you", so the
+        # history stays in.
+        grants_result = await db.execute(
+            select(ShareGrant, ShareView)
+            .join(ShareView, ShareView.id == ShareGrant.view_id)
+            .where(ShareGrant.system_id == system.id)
+            .order_by(ShareGrant.created_at.desc())
+        )
+        share_grants = list(grants_result.all())
 
     # Notification channels this user is the recipient of (across any
     # system). Owner-side channels live with their system data.
@@ -444,6 +459,32 @@ async def get_account_data(
                 "status": c.status,
             }
             for c in pending_changes
+        ],
+        # Sharing grants, each with what its view exposes. Enumerated
+        # field by field so token_hash can never be swept in: it is a
+        # keyed hash of a live bearer capability, and no part of a share
+        # token belongs in a bundle the user may hand to someone else.
+        "share_grants": [
+            {
+                "id": str(g.id),
+                "subject_type": g.subject_type,
+                "note": g.note,
+                "status": g.status,
+                "created_at": _iso(g.created_at),
+                "activates_at": _iso(g.activates_at),
+                "expires_at": _iso(g.expires_at),
+                "revoked_at": _iso(g.revoked_at),
+                "view_id": str(v.id),
+                "view_name": v.name,
+                "view_include_members": v.include_members,
+                "view_include_bio": v.include_bio,
+                "view_include_fronting": v.include_fronting,
+                "view_fronting_show_count": v.fronting_show_count,
+                "view_include_relationships": v.include_relationships,
+                "view_include_groups": v.include_groups,
+                "view_member_permalinks": v.member_permalinks,
+            }
+            for g, v in share_grants
         ],
         "receiving_notification_channels": [
             {

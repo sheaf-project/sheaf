@@ -3,7 +3,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +14,12 @@ from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.auth.sessions import get_redis
 from sheaf.config import settings
 from sheaf.database import get_db
-from sheaf.files import resolve_avatar_url, verify_file_token
+from sheaf.files import (
+    internal_key_owner,
+    resolve_avatar_url,
+    verify_file_token,
+    verify_public_file_token,
+)
 from sheaf.image_processing import (
     ImageNormalizationError,
     animation_allowed,
@@ -24,12 +29,17 @@ from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.uploaded_file import UploadedFile
 from sheaf.models.user import User, UserTier
-from sheaf.observability.metrics import tier_label, tier_limit_hits_total
+from sheaf.observability.metrics import (
+    public_media_serves_total,
+    tier_label,
+    tier_limit_hits_total,
+)
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.file_cleanup import (
     cleanup_orphaned_files,
     find_file_references,
 )
+from sheaf.services.sharing import account_serving_public_media
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -470,6 +480,155 @@ _CONTENT_TYPES = {
 }
 
 
+def _media_response(
+    path: str,
+    data: bytes,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> Response:
+    suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
+    headers = dict(extra_headers or {})
+    # Defence in depth: uploads are gated to image magic bytes so we should
+    # never land here with a non-image extension. If we do (e.g. a legacy
+    # file from before the validator was tightened), force a download.
+    if content_type == "application/octet-stream":
+        headers["Content-Disposition"] = "attachment"
+    return Response(content=data, media_type=content_type, headers=headers)
+
+
+public_serve_router = APIRouter(prefix="/public/files", tags=["public profiles"])
+
+# Per-IP throttle for the anonymous media route, in its own fixed bucket. The
+# fixed name means neither the key path nor the HMAC capability in the query
+# string can mint a fresh quota or end up inside a Redis key. The ceiling is
+# well above the public-profile page limit because images fan out: one profile
+# view can pull an avatar, a banner and every image embedded in a bio, and a
+# caching proxy re-fetches them all once its TTL lapses.
+#
+# fail_closed: this shares the public surface's threat model - the most
+# expensive anonymous traffic on the instance - so a Redis outage must not drop
+# its throttle. We 503 until the counter is back rather than serve unbounded,
+# matching the public_profiles bucket and the auth endpoints.
+_PUBLIC_FILE_RATE = rate_limit(300, 60, fail_closed=True, bucket="public_files")
+
+
+def _canonical_public_file_request(
+    request: Request,
+    token: str | None,
+    expires: str | None,
+) -> bool:
+    if token is None or expires is None:
+        return False
+    if len(token) != 64 or any(char not in "0123456789abcdef" for char in token):
+        return False
+    if not expires.isascii() or not expires.isdecimal() or expires.startswith("0"):
+        return False
+    # Proxies key caches on the raw URL. Requiring the exact spelling emitted
+    # by sign_public_file_url prevents extras, duplicates, reordering, and
+    # percent-encoding aliases from turning one capability into cache misses.
+    expected = f"token={token}&expires={expires}".encode()
+    if request.scope.get("query_string", b"") != expected:
+        return False
+    path = request.scope.get("path")
+    if not isinstance(path, str):
+        return False
+    try:
+        canonical_path = path.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return request.scope.get("raw_path") == canonical_path
+
+
+@public_serve_router.get("/{path:path}", dependencies=[_PUBLIC_FILE_RATE])
+async def serve_public_file(
+    path: str,
+    request: Request,
+    token: str | None = Query(default=None),
+    expires: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve uploaded public-profile media without leaving the app origin.
+
+    The ordinary file route may redirect to S3, and CDN mode normally emits a
+    CDN URL directly. Public profiles deliberately do neither: their strict
+    CSP permits only same-origin images. The bounded HMAC capability keeps the
+    route cacheable without making the underlying bucket public.
+    """
+
+    # Public profiles off means this media route is gone too. The projection
+    # routes 404 wholesale on this same flag; an anonymous image endpoint that
+    # kept serving would hand out avatars and bio images from an instance that
+    # has deliberately taken its public surface down. Same uniform 404 as every
+    # other refusal here, so flipping the flag is not observable from outside.
+    if not settings.public_profiles_enabled:
+        public_media_serves_total.labels(outcome="feature_off").inc()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    if ".." in path or path.startswith("/"):
+        public_media_serves_total.labels(outcome="invalid_path").inc()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+    if not path.startswith(_SERVE_KEY_PREFIXES):
+        public_media_serves_total.labels(outcome="invalid_path").inc()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not _canonical_public_file_request(
+        request, token, expires
+    ) or not verify_public_file_token(path, token, expires):
+        public_media_serves_total.labels(outcome="invalid_token").inc()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or expired public file URL",
+        )
+
+    # The HMAC only proves the URL was minted by us; it says nothing about
+    # whether the media is STILL exposed. Capabilities carry a one-to-two hour
+    # window, so a revoke / rotate / system-private / suspend / ban would leave
+    # the avatar/banner/bio image serving from the origin long after the JSON
+    # surface went dark. Re-check, per fetch, that the account behind the key is
+    # still serving something publicly. `internal_key_owner` reads the owner id
+    # out of the `{prefix}/{user_id}/{uuid}.{ext}` key layout the prefix check
+    # above already constrained; a key that does not carry one is not ours to
+    # serve. A dark account 404s exactly like every other refusal here, so
+    # flipping is not observable from outside. See
+    # `account_serving_public_media` for the (deliberately coarse) gate and its
+    # named residual.
+    owner_id = internal_key_owner(path)
+    if owner_id is None or not await account_serving_public_media(db, owner_id):
+        public_media_serves_total.labels(outcome="dark_account").inc()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    storage = get_storage()
+    try:
+        data = await storage.get(path)
+    except ValueError as exc:
+        # A key the storage backend rejects as malformed - a path-shape
+        # failure, so it lands under invalid_path alongside the earlier
+        # path guards rather than missing_blob (which means "valid key,
+        # no object").
+        public_media_serves_total.labels(outcome="invalid_path").inc()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST) from exc
+    if data is None:
+        public_media_serves_total.labels(outcome="missing_blob").inc()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # 60s, not the capability's full remaining window, and NOT immutable: the
+    # bytes can stop being authorized (revoke, rotate, going dark) before the
+    # URL's HMAC expires, so a long-lived or immutable cache entry would keep a
+    # CDN or browser serving media the origin has already cut off. Matches the
+    # public JSON surface's own max-age, so the served-media tail is no longer
+    # than the profile-data tail. The origin now gates every fetch, so a short
+    # cache is a performance smoothing, not a correctness dependency.
+    public_media_serves_total.labels(outcome="served").inc()
+    return _media_response(
+        path,
+        data,
+        extra_headers={
+            "Cache-Control": "public, max-age=60",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 def _s3_public_url(key: str) -> str:
     """Construct the direct public S3 URL for a key (unsigned mode, no CDN)."""
     if settings.s3_endpoint:
@@ -543,15 +702,4 @@ async def serve_file(
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
-    # Defence in depth: uploads are gated to image magic bytes so we should
-    # never land here with a non-image extension. If we do (e.g. a legacy
-    # file from before the validator was tightened), force a download
-    # instead of letting the browser render.
-    headers = (
-        {"Content-Disposition": "attachment"}
-        if content_type == "application/octet-stream"
-        else {}
-    )
-    return Response(content=data, media_type=content_type, headers=headers)
+    return _media_response(path, data)

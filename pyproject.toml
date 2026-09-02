@@ -36,6 +36,11 @@ dependencies = [
     # /usr/share/zoneinfo). Backs System.timezone validation + rendering.
     "tzdata>=2024.1",
     "markdown-it-py==4.0.0",
+    # Footnote parsing for the server-side image choke point. The web renderer
+    # uses remark-gfm, which renders footnote definitions; markdown-it-py's
+    # commonmark preset does not, so images hidden in footnotes would bypass
+    # the image rails without this plugin (see markdown_images.py).
+    "mdit-py-plugins>=0.4.0",
 ]
 
 [project.optional-dependencies]
@@ -74,4 +79,6 @@ markers = [
     "uploads_disabled: requires server running with ALLOW_IMAGE_UPLOADS=false",
     "bio_uploads_disabled: requires server running with ALLOW_BIO_IMAGES=false",
     "external_images_disabled: requires server running with ALLOW_EXTERNAL_IMAGES=false",
+    "public_profiles: requires server running with PUBLIC_PROFILES_ENABLED=true",
+    "public_profiles_off: requires server running with PUBLIC_PROFILES_ENABLED=false",
 ]

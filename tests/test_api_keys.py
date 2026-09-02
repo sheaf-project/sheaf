@@ -371,3 +371,17 @@ def test_api_key_can_use_polls_and_messages_scopes(auth_client: httpx.Client):
                                                  "body": "hi"})
         assert r.status_code == 403
 
+
+# ---------------------------------------------------------------------------
+# API keys cannot make one-way account declarations
+# ---------------------------------------------------------------------------
+
+def test_api_key_cannot_attest_adult(auth_client: httpx.Client):
+    """The 18+ attestation is one-way and gates creating share grants, so a
+    key of any scope setting it would clear that gate permanently."""
+    plaintext = _create_key(auth_client, scopes=["sharing:write"])["key"]
+    with _key_client(plaintext) as c:
+        resp = c.post("/v1/auth/me/attest-adult")
+    assert resp.status_code == 403
+    # Nothing was recorded: the account is still un-attested.
+    assert auth_client.get("/v1/auth/me").json()["adult_attested_at"] is None

@@ -31,6 +31,7 @@ import zipfile
 from dataclasses import dataclass
 
 from sheaf.services.import_parsing import ImportPayloadError, expect_dict, safe_json_loads
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.openplural_export import EXT_NS
 
 # Versions this importer understands. The spec mandates rejecting an
@@ -282,7 +283,19 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 # Protective share guards: default to False only when the key
                 # is genuinely absent (a foreign file that never had them).
                 "never_shareable": bool(ext.get("never_shareable", False)),
-                "fronting_private": bool(ext.get("fronting_private", False)),
+                # The fronting guard's default is not flat False: an absent
+                # key on a custom front means a foreign file that has no
+                # notion of the guard at all, and a custom front's state is
+                # exactly what must not start out published. A Sheaf-produced
+                # file carries the key and round-trips unchanged.
+                "fronting_private": default_fronting_private(
+                    is_custom_front=bool(m.get("is_custom_front")),
+                    requested=(
+                        bool(ext["fronting_private"])
+                        if ext.get("fronting_private") is not None
+                        else None
+                    ),
+                ),
                 "created_at": m.get("created_at"),
             }
         )
@@ -301,6 +314,11 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 "description": g.get("description"),
                 "color": g.get("color"),
                 "parent_id": g.get("parent_group_id"),
+                # v0.1 has no core group privacy, so it rides the sheaf
+                # extension. A foreign file that carries none leaves this
+                # absent and the native importer's coercer defaults it to
+                # private, which is the direction to be wrong in.
+                "privacy": _ext(g).get("privacy"),
                 "member_ids": group_members.get(g.get("id"), []),
             }
         )
@@ -439,6 +457,9 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
     native["relationship_types"] = file_ext.get("relationship_types") or []
     native["member_relationships"] = file_ext.get("member_relationships") or []
     native["group_relationships"] = file_ext.get("group_relationships") or []
+    # Share views only; grants are never written to a file, so a restored
+    # view comes back curated but exposed to nobody (see sheaf_import).
+    native["share_views"] = file_ext.get("share_views") or []
 
     return native
 

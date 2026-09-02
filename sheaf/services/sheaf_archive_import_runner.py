@@ -88,6 +88,7 @@ async def handle_sheaf_archive(job: ImportJob, db: AsyncSession) -> None:
         members_imported=base.members_imported,
         members_skipped=base.members_skipped,
         members_updated=base.members_updated,
+        members_privacy_skipped=base.members_privacy_skipped,
         fronts_imported=base.fronts_imported,
         fronts_skipped=base.fronts_skipped,
         groups_imported=base.groups_imported,
@@ -114,6 +115,8 @@ async def handle_sheaf_archive(job: ImportJob, db: AsyncSession) -> None:
         member_relationships_skipped=base.member_relationships_skipped,
         group_relationships_imported=base.group_relationships_imported,
         group_relationships_skipped=base.group_relationships_skipped,
+        share_views_imported=base.share_views_imported,
+        share_views_skipped=base.share_views_skipped,
         images_imported=result.images_imported,
     )
     for warning in result.warnings:

@@ -16,6 +16,7 @@ from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
 from sheaf.middleware.origin_check import OriginCheckMiddleware
+from sheaf.middleware.public_headers import PublicShareHeadersMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
 from sheaf.observability import (
     MetricsMiddleware,
@@ -23,12 +24,15 @@ from sheaf.observability import (
     setup_metrics_endpoint,
 )
 from sheaf.observability.metrics import build_info, prewarm_metrics
+from sheaf.observability.middleware import route_template
+from sheaf.redact import install_access_log_redaction
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("sheaf")
+install_access_log_redaction()
 
 
 async def _fast_gauges_loop() -> None:
@@ -86,6 +90,36 @@ async def _promote_admin_emails() -> None:
         await db.commit()
 
 
+async def _log_public_surface_state() -> None:
+    """Say at startup what the anonymous share surface is actually doing.
+
+    The setting and the grants it serves have independent lifetimes: turning
+    PUBLIC_PROFILES_ENABLED off stops the router without touching a single
+    grant, so an instance can sit for months with dormant grants that resume
+    the moment somebody turns it back on. That is worth one line in the log an
+    operator already reads, on both sides of the switch.
+
+    One count, and never fatal: this is an informational line, so a database
+    that is not ready yet must not be the reason a replica fails to start.
+    """
+    try:
+        from sheaf.database import async_session_factory
+        from sheaf.services.sharing import (
+            count_live_grants,
+            public_surface_startup_message,
+        )
+
+        async with async_session_factory() as db:
+            live = await count_live_grants(db)
+        message = public_surface_startup_message(
+            enabled=settings.public_profiles_enabled, live_grants=live
+        )
+        if message:
+            logger.info("%s", message)
+    except Exception:
+        logger.warning("Could not count share grants at startup", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_settings()
@@ -104,6 +138,7 @@ async def lifespan(app: FastAPI):
     setup_metrics_endpoint(app, settings)
 
     await _promote_admin_emails()
+    await _log_public_surface_state()
 
     # Dev-only startup tasks (sheaf_dev not installed in production)
     try:
@@ -206,12 +241,12 @@ async def http_exception_handler(
     if exc.status_code >= 500:
         logger.warning(
             "%s %s -> %d: %s",
-            request.method, request.url.path, exc.status_code, exc.detail,
+            request.method, route_template(request), exc.status_code, exc.detail,
         )
     elif exc.status_code >= 400:
         logger.info(
             "%s %s -> %d: %s",
-            request.method, request.url.path, exc.status_code, exc.detail,
+            request.method, route_template(request), exc.status_code, exc.detail,
         )
     return JSONResponse(
         status_code=exc.status_code,
@@ -234,7 +269,7 @@ async def validation_exception_handler(
         for e in exc.errors()
     ]
     logger.info(
-        "%s %s -> 422 validation: %s", request.method, request.url.path, safe
+        "%s %s -> 422 validation: %s", request.method, route_template(request), safe
     )
     return JSONResponse(
         status_code=422, content={"detail": jsonable_encoder(exc.errors())}
@@ -244,7 +279,7 @@ async def validation_exception_handler(
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception(
-        "Unhandled exception on %s %s", request.method, request.url.path
+        "Unhandled exception on %s %s", request.method, route_template(request)
     )
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
@@ -287,6 +322,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(OriginCheckMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
+# Outside the rate limiter so its 429 is stamped too, and outside the
+# exception handlers (which live at the router end of the stack) so their
+# freshly built error responses are as well.
+app.add_middleware(PublicShareHeadersMiddleware)
 app.add_middleware(
     MaxBodySizeMiddleware,
     max_bytes=settings.max_request_body_size_mb * 1024 * 1024,

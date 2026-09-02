@@ -16,17 +16,26 @@ export function getGroup(id: string) {
   return apiFetch<Group>(`/v1/groups/${id}`);
 }
 
-export function createGroup(data: GroupCreate) {
+/** Creating a group already public runs the same step-up gate a raise does,
+ *  so it can come back with the same 400 - hence the same `skipErrorToast`
+ *  escape the update below takes. */
+export function createGroup(data: GroupCreate, skipErrorToast = false) {
   return apiFetch<Group>("/v1/groups", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
-export function updateGroup(id: string, data: GroupUpdate) {
+/** A privacy raise that would actually expose the group is answered with a
+ *  400 asking for step-up credentials, so callers pass `skipErrorToast` and
+ *  re-prompt instead of firing a toast at something the user can still
+ *  complete. */
+export function updateGroup(id: string, data: GroupUpdate, skipErrorToast = false) {
   return apiFetch<Group>(`/v1/groups/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 

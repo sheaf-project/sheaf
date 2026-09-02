@@ -1,17 +1,11 @@
-import {
-  forceCenter,
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceSimulation,
-  type Simulation,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
-} from "d3-force";
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ColorDot } from "@/components/color-dot";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -31,423 +25,315 @@ import {
 import {
   useCreateGroupRelationship,
   useCreateMemberRelationship,
+  useDeleteGroupRelationship,
+  useDeleteMemberRelationship,
+  useGroupRelationships,
+  useMemberRelationships,
   useRelationshipGraph,
   useRelationshipTypes,
+  useUpdateGroupRelationship,
+  useUpdateMemberRelationship,
 } from "@/hooks/use-relationships";
-import type { RelationshipEdgeCreate, RelationshipGraph } from "@/types/api";
+import { RelationshipGraphCanvas } from "@/components/relationship-graph";
+import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { RelationshipPrivacyControl } from "@/components/relationship-privacy-control";
+import {
+  DeleteTypeDialog,
+  EditTypeDialog,
+  RelationshipTypeDialog,
+} from "@/components/relationship-type-dialog";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
+import { summariseType } from "@/lib/relationship-types";
+import type { GraphEdge } from "@/lib/relationship-graph";
+import {
+  EDGE_VISIBILITY_HELP,
+  EDGE_VISIBILITY_LEVELS,
+} from "@/lib/relationship-privacy";
+import { getSystemSafety } from "@/lib/system-safety";
+import { getMySystem } from "@/lib/systems";
+import { cn } from "@/lib/utils";
+import type {
+  DeleteConfirmation,
+  DestructiveConfirm,
+  PrivacyLevel,
+  RelationshipEdgeCreate,
+  RelationshipGraph,
+  RelationshipGraphEdge,
+  RelationshipType,
+} from "@/types/api";
 
-const NODE_R = 22;
-
-interface SimNode extends SimulationNodeDatum {
-  id: string;
-  name: string;
-  avatar_url: string | null;
-  color: string | null;
-}
-
-interface SimLink extends SimulationLinkDatum<SimNode> {
-  id: string;
-  label: string;
-  directed: boolean;
-}
-
-interface Transform {
-  k: number;
-  tx: number;
-  ty: number;
-}
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.min(hi, Math.max(lo, v));
-}
-
-/** d3-force layout rendered as React-controlled SVG, with hand-rolled pan
- *  (drag the background), zoom (wheel), and node drag (which nudges the
- *  simulation and then lets the node settle back into the organic layout). */
+/**
+ * The owner's view of the graph: the shared renderer, plus everything only an
+ * owner gets. The picture itself (layout, pan, zoom, hit testing) lives in
+ * `RelationshipGraphCanvas`, which knows nothing about edit modes or dialogs;
+ * this holds the modes and the dialogs and hands the renderer two arrays and
+ * two callbacks.
+ */
 function GraphCanvas({
   graph,
   scope,
+  editMode,
 }: {
   graph: RelationshipGraph;
   scope: "members" | "groups";
+  /** Off: the graph is something to read, and an edge opens read-only. On:
+   *  relationships can be added, reoriented, republished and removed. */
+  editMode: boolean;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [size, setSize] = useState({ w: 800, h: 560 });
-  const [transform, setTransform] = useState<Transform>({ k: 1, tx: 0, ty: 0 });
   // "Add relationship" mode: click a source node then a target node.
   const [addMode, setAddMode] = useState(false);
-  const [pending, setPending] = useState<SimNode | null>(null);
-  const [target, setTarget] = useState<SimNode | null>(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [targetId, setTargetId] = useState<string | null>(null);
+  // The edge whose dialog is open.
+  const [openEdgeId, setOpenEdgeId] = useState<string | null>(null);
   const nodeNoun = scope === "members" ? "member" : "group";
+  const { data: types } = useRelationshipTypes();
 
-  // d3 mutates node x/y in place; each tick publishes fresh array wrappers to
-  // state so the SVG re-renders (reading live refs during render is disallowed
-  // by the react-hooks/refs rule). The node objects are shared with the running
-  // simulation, so drag handlers can set fx/fy on them directly.
-  const [sim, setSim] = useState<{ nodes: SimNode[]; links: SimLink[] }>({
-    nodes: [],
-    links: [],
-  });
-  const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
-  // Preserve positions across refetches so the graph doesn't jump when an edge
-  // is added/removed elsewhere.
-  const posRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // Add mode is derived, not stored twice: leaving edit mode suspends it
+  // rather than needing an effect to go and switch it off.
+  const adding = editMode && addMode;
 
-  // Interaction bookkeeping (kept in a ref so the pointer handlers are stable).
-  const drag = useRef<
-    | { mode: "node"; node: SimNode }
-    | { mode: "pan"; startX: number; startY: number; startTx: number; startTy: number }
-    | null
-  >(null);
-
-  // Track container size.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      setSize({ w: el.clientWidth, h: Math.max(360, el.clientHeight) });
-    });
-    ro.observe(el);
-    setSize({ w: el.clientWidth, h: Math.max(360, el.clientHeight) });
-    return () => ro.disconnect();
-  }, []);
-
-  // (Re)build the simulation when the data or canvas size changes.
-  useEffect(() => {
-    const { w, h } = size;
-    const nodes: SimNode[] = graph.nodes.map((n) => {
-      const prior = posRef.current.get(n.id);
-      return {
-        id: n.id,
-        name: n.name,
-        avatar_url: n.avatar_url,
-        color: n.color,
-        x: prior?.x ?? w / 2 + (Math.random() - 0.5) * 200,
-        y: prior?.y ?? h / 2 + (Math.random() - 0.5) * 200,
-      };
-    });
-    const links: SimLink[] = graph.edges.map((e) => ({
-      id: e.id,
-      source: e.source_id,
-      target: e.target_id,
-      label: e.source_label,
-      directed: e.directed,
+  // Edge colour is a client-side join: the graph payload carries the type id,
+  // the type carries the colour. The renderer only relays the graph out when
+  // its shape changes, so recolouring a type repaints without disturbing it.
+  const edges = useMemo<GraphEdge[]>(() => {
+    const colorByType = new Map((types ?? []).map((t) => [t.id, t.color] as const));
+    return graph.edges.map((e) => ({
+      ...e,
+      color: colorByType.get(e.relationship_type_id) ?? null,
     }));
-    const simulation = forceSimulation<SimNode>(nodes)
-      .force(
-        "link",
-        forceLink<SimNode, SimLink>(links)
-          .id((d) => d.id)
-          .distance(130)
-          .strength(0.35),
-      )
-      .force("charge", forceManyBody().strength(-320))
-      .force("center", forceCenter(w / 2, h / 2))
-      .force("collide", forceCollide(NODE_R + 14))
-      .on("tick", () => {
-        for (const n of nodes) {
-          if (n.x != null && n.y != null) posRef.current.set(n.id, { x: n.x, y: n.y });
-        }
-        setSim({ nodes: nodes.slice(), links: links.slice() });
-      });
-    simRef.current = simulation;
-    setSim({ nodes, links });
-    return () => {
-      simulation.stop();
-    };
-  }, [graph, size]);
-
-  function toGraphCoords(clientX: number, clientY: number) {
-    const rect = svgRef.current!.getBoundingClientRect();
-    const localX = clientX - rect.left;
-    const localY = clientY - rect.top;
-    return {
-      x: (localX - transform.tx) / transform.k,
-      y: (localY - transform.ty) / transform.k,
-      localX,
-      localY,
-    };
-  }
-
-  function onNodePointerDown(e: React.PointerEvent, node: SimNode) {
-    e.stopPropagation();
-    if (addMode) {
-      // Pick source, then a distinct target opens the add dialog.
-      if (!pending) setPending(node);
-      else if (pending.id === node.id) setPending(null);
-      else setTarget(node);
-      return;
-    }
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    drag.current = { mode: "node", node };
-    simRef.current?.alphaTarget(0.3).restart();
-  }
+  }, [graph, types]);
 
   function toggleAddMode() {
     setAddMode((m) => !m);
-    setPending(null);
-    setTarget(null);
+    setPendingId(null);
+    setTargetId(null);
   }
 
-  function onBackgroundPointerDown(e: React.PointerEvent) {
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
-    drag.current = {
-      mode: "pan",
-      startX: e.clientX,
-      startY: e.clientY,
-      startTx: transform.tx,
-      startTy: transform.ty,
-    };
+  /** Add mode's two-node pick: source, then a distinct target opens the
+   *  dialog. Clicking the picked node again puts it back. */
+  function onNodePicked(id: string) {
+    if (!pendingId) setPendingId(id);
+    else if (pendingId === id) setPendingId(null);
+    else setTargetId(id);
   }
 
-  function onPointerMove(e: React.PointerEvent) {
-    const d = drag.current;
-    if (!d) return;
-    if (d.mode === "node") {
-      const { x, y } = toGraphCoords(e.clientX, e.clientY);
-      d.node.fx = x;
-      d.node.fy = y;
-    } else {
-      setTransform((t) => ({
-        ...t,
-        tx: d.startTx + (e.clientX - d.startX),
-        ty: d.startTy + (e.clientY - d.startY),
-      }));
-    }
-  }
+  const nodeName = (id: string) =>
+    graph.nodes.find((n) => n.id === id)?.name ?? id.slice(0, 8);
 
-  function onPointerUp() {
-    const d = drag.current;
-    if (d?.mode === "node") {
-      // Release the pin so the node relaxes back into the organic layout.
-      d.node.fx = null;
-      d.node.fy = null;
-      simRef.current?.alphaTarget(0);
-    }
-    drag.current = null;
-  }
-
-  function onWheel(e: React.WheelEvent) {
-    const rect = svgRef.current!.getBoundingClientRect();
-    const localX = e.clientX - rect.left;
-    const localY = e.clientY - rect.top;
-    setTransform((t) => {
-      const newK = clamp(t.k * (e.deltaY < 0 ? 1.1 : 0.9), 0.25, 4);
-      return {
-        k: newK,
-        tx: localX - (localX - t.tx) * (newK / t.k),
-        ty: localY - (localY - t.ty) * (newK / t.k),
-      };
-    });
-  }
-
-  function resetView() {
-    setTransform({ k: 1, tx: 0, ty: 0 });
-    simRef.current?.alpha(0.6).restart();
-  }
-
-  const { nodes, links } = sim;
-
-  // Fan out multiple relationships between the same pair: group by unordered
-  // node pair and give each edge a slot so it draws as its own curve instead of
-  // overlapping (which otherwise hid all but one).
-  const edgeSlot = new Map<string, { slot: number; count: number }>();
-  {
-    const counts = new Map<string, number>();
-    const pairKey = (l: SimLink) =>
-      [(l.source as SimNode).id, (l.target as SimNode).id].sort().join("|");
-    for (const l of links) counts.set(pairKey(l), (counts.get(pairKey(l)) ?? 0) + 1);
-    const seen = new Map<string, number>();
-    for (const l of links) {
-      const key = pairKey(l);
-      const slot = seen.get(key) ?? 0;
-      seen.set(key, slot + 1);
-      edgeSlot.set(l.id, { slot, count: counts.get(key) ?? 1 });
-    }
-  }
+  // The edge dialog reads the payload edge, not the renderer's copy: the raw
+  // edge keeps the labels, mutual flag and type id a drawing has no use for. An
+  // edge that disappears (removed here or elsewhere) simply closes the dialog.
+  const openEdge = graph.edges.find((e) => e.id === openEdgeId) ?? null;
+  const pending = pendingId ? graph.nodes.find((n) => n.id === pendingId) : null;
+  const target = targetId ? graph.nodes.find((n) => n.id === targetId) : null;
 
   return (
-    <div
-      ref={containerRef}
-      className="relative h-[70vh] w-full overflow-hidden rounded-lg border bg-muted/10"
-    >
-      <div className="absolute right-2 top-2 z-10 flex gap-2">
-        <Button
-          variant={addMode ? "default" : "outline"}
-          size="sm"
-          onClick={toggleAddMode}
-        >
-          {addMode ? "Adding relationships" : "Add relationship"}
-        </Button>
-        <Button variant="outline" size="sm" onClick={resetView}>
-          Reset view
-        </Button>
-      </div>
-      {addMode && (
-        <div className="absolute left-2 top-2 z-10 rounded-md border bg-background/90 px-2 py-1 text-xs text-muted-foreground">
-          {pending
-            ? `${pending.name} selected. Click another ${nodeNoun} to connect them.`
-            : `Click a ${nodeNoun} to start.`}
-        </div>
-      )}
-      <svg
-        ref={svgRef}
-        width={size.w}
-        height={size.h}
-        className="touch-none select-none"
-        onPointerDown={onBackgroundPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={onPointerUp}
-        onWheel={onWheel}
-      >
-        <defs>
-          <marker
-            id="rel-arrow"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" className="fill-muted-foreground" />
-          </marker>
-          {nodes.map((n) => (
-            <clipPath id={`rel-clip-${n.id}`} key={n.id}>
-              <circle r={NODE_R} />
-            </clipPath>
-          ))}
-        </defs>
-        <g transform={`translate(${transform.tx} ${transform.ty}) scale(${transform.k})`}>
-          {links.map((l) => {
-            const s = l.source as SimNode;
-            const t = l.target as SimNode;
-            if (s.x == null || s.y == null || t.x == null || t.y == null) return null;
-            const { slot, count } = edgeSlot.get(l.id) ?? { slot: 0, count: 1 };
-            const offset = (slot - (count - 1) / 2) * 26;
-
-            // Trim the ends to the node boundary along the straight chord.
-            const sdx = t.x - s.x;
-            const sdy = t.y - s.y;
-            const sdist = Math.hypot(sdx, sdy) || 1;
-            const sux = sdx / sdist;
-            const suy = sdy / sdist;
-            const x1 = s.x + sux * NODE_R;
-            const y1 = s.y + suy * NODE_R;
-            const x2 = t.x - sux * NODE_R;
-            const y2 = t.y - suy * NODE_R;
-
-            // Curve control + label apex, offset perpendicular from a canonical
-            // orientation (min id -> max id) so every edge in the pair fans to a
-            // consistent side. offset 0 (a lone edge) yields a straight line.
-            const [a, b] = s.id < t.id ? [s, t] : [t, s];
-            const cdx = (b.x ?? 0) - (a.x ?? 0);
-            const cdy = (b.y ?? 0) - (a.y ?? 0);
-            const cdist = Math.hypot(cdx, cdy) || 1;
-            const perpX = -cdy / cdist;
-            const perpY = cdx / cdist;
-            const mx = (x1 + x2) / 2;
-            const my = (y1 + y2) / 2;
-            const cx = mx + perpX * offset * 2;
-            const cy = my + perpY * offset * 2;
-            const apexX = mx + perpX * offset;
-            const apexY = my + perpY * offset;
-
-            return (
-              <g key={l.id}>
-                <path
-                  d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
-                  fill="none"
-                  className="stroke-muted-foreground/40"
-                  strokeWidth={1.5}
-                  markerEnd={l.directed ? "url(#rel-arrow)" : undefined}
-                />
-                <text
-                  x={apexX}
-                  y={apexY}
-                  dy={-3}
-                  textAnchor="middle"
-                  className="fill-muted-foreground text-[10px]"
-                  stroke="var(--background)"
-                  strokeWidth={3}
-                  paintOrder="stroke"
-                >
-                  {l.label}
-                </text>
-              </g>
-            );
-          })}
-          {nodes.map((n) => {
-            if (n.x == null || n.y == null) return null;
-            return (
-              <g
-                key={n.id}
-                transform={`translate(${n.x} ${n.y})`}
-                className={addMode ? "cursor-pointer" : "cursor-grab"}
-                onPointerDown={(e) => onNodePointerDown(e, n)}
-              >
-                {pending?.id === n.id && (
-                  <circle
-                    r={NODE_R + 4}
-                    fill="none"
-                    className="stroke-primary"
-                    strokeWidth={2}
-                  />
-                )}
-                <circle
-                  r={NODE_R}
-                  fill={n.color ?? "var(--muted)"}
-                  className="stroke-background"
-                  strokeWidth={2}
-                />
-                {n.avatar_url ? (
-                  <image
-                    href={n.avatar_url}
-                    x={-NODE_R}
-                    y={-NODE_R}
-                    width={NODE_R * 2}
-                    height={NODE_R * 2}
-                    clipPath={`url(#rel-clip-${n.id})`}
-                    preserveAspectRatio="xMidYMid slice"
-                  />
-                ) : (
-                  <text
-                    textAnchor="middle"
-                    dy="0.35em"
-                    className="fill-background text-sm font-medium"
-                  >
-                    {n.name.slice(0, 1).toUpperCase()}
-                  </text>
-                )}
-                <text
-                  y={NODE_R + 12}
-                  textAnchor="middle"
-                  className="fill-foreground text-[11px]"
-                  stroke="var(--background)"
-                  strokeWidth={3}
-                  paintOrder="stroke"
-                >
-                  {n.name}
-                </text>
-              </g>
-            );
-          })}
-        </g>
-      </svg>
-      {addMode && pending && target && (
+    <>
+      <RelationshipGraphCanvas
+        nodes={graph.nodes}
+        edges={edges}
+        // Picking an edge is picking a relationship, which is a thing you can
+        // do while just reading the graph; only what the dialog then offers
+        // depends on edit mode. Add mode is the exception: there, every click
+        // is part of "pick two nodes".
+        onEdgeClick={adding ? undefined : setOpenEdgeId}
+        onNodeClick={adding ? onNodePicked : undefined}
+        nodePress={adding ? "pick" : "drag"}
+        highlightNodeId={pendingId}
+        activeEdgeId={openEdgeId}
+        toolbar={
+          editMode && (
+            <Button
+              variant={adding ? "default" : "outline"}
+              size="sm"
+              onClick={toggleAddMode}
+            >
+              {adding ? "Adding relationships" : "Add relationship"}
+            </Button>
+          )
+        }
+        overlay={
+          adding && (
+            <div className="absolute left-2 top-2 z-10 rounded-md border bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+              {pending
+                ? `${pending.name} selected. Click another ${nodeNoun} to connect them.`
+                : `Click a ${nodeNoun} to start.`}
+            </div>
+          )
+        }
+      />
+      {adding && pending && target && (
         <AddEdgeDialog
           scope={scope}
           source={{ id: pending.id, name: pending.name }}
           target={{ id: target.id, name: target.name }}
           onClose={() => {
-            setTarget(null);
-            setPending(null);
+            setTargetId(null);
+            setPendingId(null);
           }}
         />
       )}
-    </div>
+      {openEdge && (
+        <EdgeDialog
+          scope={scope}
+          edge={openEdge}
+          sourceName={nodeName(openEdge.source_id)}
+          targetName={nodeName(openEdge.target_id)}
+          editable={editMode}
+          onClose={() => setOpenEdgeId(null)}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * One existing edge, opened by clicking it on the graph. The graph is where
+ * relationships are actually looked at, so it is also where they are managed:
+ * this is the edge's whole management surface (privacy, direction, mutual,
+ * removal), the same set of things the per-member editor offers, on the same
+ * shared privacy control.
+ *
+ * One component, two presentations. Without edit mode it states what the edge
+ * is and stops there - no select, no buttons, nothing that can change anything
+ * by being clicked at.
+ */
+function EdgeDialog({
+  scope,
+  edge,
+  sourceName,
+  targetName,
+  editable,
+  onClose,
+}: {
+  scope: "members" | "groups";
+  edge: RelationshipGraphEdge;
+  sourceName: string;
+  targetName: string;
+  editable: boolean;
+  onClose: () => void;
+}) {
+  const isMember = scope === "members";
+  const nodeNoun = isMember ? "member" : "group";
+  const { data: types } = useRelationshipTypes();
+  const type = types?.find((t) => t.id === edge.relationship_type_id);
+
+  // The graph payload carries no privacy fields, and that is fine: the
+  // per-endpoint relationship list does, it is already a cached query, and the
+  // same key prefix invalidates it whenever anything about an edge changes.
+  // Either endpoint's list holds this edge, so one fetch answers it - cheaper
+  // and less to keep in step than widening the graph response.
+  const memberRows = useMemberRelationships(isMember ? edge.source_id : null);
+  const groupRows = useGroupRelationships(isMember ? null : edge.source_id);
+  const rows = isMember ? memberRows.data : groupRows.data;
+  const row = rows?.find((e) => e.id === edge.id);
+
+  const updateMember = useUpdateMemberRelationship();
+  const updateGroup = useUpdateGroupRelationship();
+  const update = isMember ? updateMember : updateGroup;
+  const deleteMember = useDeleteMemberRelationship();
+  const deleteGroup = useDeleteGroupRelationship();
+  const remove = isMember ? deleteMember : deleteGroup;
+
+  // A symmetric type has no direction to reverse, and a mutual either-edge
+  // reads the same label at both ends, so neither offers a flip.
+  const canFlip = !!type && type.symmetry !== "symmetric" && !edge.mutual;
+  const canBeMutual = type?.symmetry === "either";
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Relationship</DialogTitle>
+          <DialogDescription>
+            {editable
+              ? `Between these two ${nodeNoun}s. Changes save as you make them.`
+              : `Between these two ${nodeNoun}s. Turn on Edit to change it.`}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-1.5 text-sm">
+            <ColorDot color={type?.color ?? null} />
+            <span className="font-medium">{edge.type_name}</span>
+            {edge.mutual && (
+              <Badge variant="outline" className="text-[10px]">
+                mutual
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {sourceName} is the {edge.source_label}. {targetName} is the{" "}
+            {edge.target_label}.
+          </p>
+
+          {row ? (
+            <RelationshipPrivacyControl
+              scope={isMember ? "member" : "group"}
+              edge={row}
+              layout="stacked"
+              label="Visibility"
+              readOnly={!editable}
+            />
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {rows ? "This relationship is gone." : "Loading visibility..."}
+            </p>
+          )}
+
+          {editable && canBeMutual && type && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={edge.mutual}
+                disabled={update.isPending}
+                onCheckedChange={(v) =>
+                  update.mutate({
+                    edgeId: edge.id,
+                    data: { mutual: v === true },
+                  })
+                }
+              />
+              Mutual (both are {type.forward_label})
+            </label>
+          )}
+
+          {editable && canFlip && (
+            <div className="space-y-1">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={update.isPending}
+                onClick={() =>
+                  update.mutate({ edgeId: edge.id, data: { flip: true } })
+                }
+              >
+                Reverse direction
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                Makes {targetName} the {edge.source_label} and {sourceName} the{" "}
+                {edge.target_label}.
+              </p>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          {editable ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate(edge.id, { onSuccess: onClose })}
+            >
+              {remove.isPending ? "Removing..." : "Remove relationship"}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -473,6 +359,25 @@ function AddEdgeDialog({
   const [typeId, setTypeId] = useState("");
   const [role, setRole] = useState<"forward" | "reverse">("forward");
   const [mutual, setMutual] = useState(false);
+  // Private until said otherwise, same as the per-member editor.
+  const [visibility, setVisibility] = useState<PrivacyLevel>("private");
+  const [showNewType, setShowNewType] = useState(false);
+  // The bounced add, held so the step-up dialog can retry the exact same edge
+  // with credentials attached rather than rebuilding it from the form.
+  const [stepUp, setStepUp] = useState<RelationshipEdgeCreate | null>(null);
+
+  // Read only to pick the re-auth tier for a gated add; both are cached queries
+  // the rest of the app already keeps warm.
+  const { data: safety } = useQuery({
+    queryKey: ["system-safety"],
+    queryFn: getSystemSafety,
+  });
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
+  const stepUpTier: DeleteConfirmation =
+    safety?.settings.auth_tier ?? system?.delete_confirmation ?? "password";
 
   const type = types?.find((t) => t.id === typeId);
   const symmetry = type?.symmetry;
@@ -486,8 +391,9 @@ function AddEdgeDialog({
     setMutual(false);
   }
 
-  function submit() {
-    if (!type) return;
+  /** The edge the form currently describes, or null while it is incomplete. */
+  function buildPayload(): RelationshipEdgeCreate | null {
+    if (!type) return null;
     let payload: RelationshipEdgeCreate;
     if (symmetry === "symmetric") {
       payload = { source_id: source.id, target_id: target.id, relationship_type_id: type.id };
@@ -498,7 +404,33 @@ function AddEdgeDialog({
     } else {
       payload = { source_id: target.id, target_id: source.id, relationship_type_id: type.id };
     }
-    create.mutate(payload, { onSuccess: onClose });
+    return { ...payload, visibility };
+  }
+
+  /** Add the edge.
+   *
+   * Sent without credentials first, exactly as the per-edge privacy select
+   * does: an edge born `public` is the same exposure as raising an existing one
+   * to public, and the server answers it with the same 400 asking for step-up.
+   */
+  function submit() {
+    const payload = buildPayload();
+    if (!payload) return;
+    create.mutate(
+      { data: payload, skipErrorToast: true },
+      {
+        onSuccess: onClose,
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setStepUp(payload);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't add this relationship.", {
+            force: true,
+          });
+        },
+      },
+    );
   }
 
   return (
@@ -525,11 +457,14 @@ function AddEdgeDialog({
                 ))}
               </SelectContent>
             </Select>
-            {types && types.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                Define a relationship type in Settings &gt; Relationships first.
-              </p>
-            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setShowNewType(true)}
+            >
+              New relationship type
+            </Button>
           </div>
           {showRole && !roleHidden && type && (
             <div className="space-y-1">
@@ -558,6 +493,27 @@ function AddEdgeDialog({
               Mutual (both are {type.forward_label})
             </label>
           )}
+          <div className="space-y-1">
+            <Label className="text-xs">Visibility</Label>
+            <Select
+              value={visibility}
+              onValueChange={(v) => setVisibility(v as PrivacyLevel)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDGE_VISIBILITY_LEVELS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>
+                    {l.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {EDGE_VISIBILITY_HELP}
+            </p>
+          </div>
         </div>
         <DialogFooter>
           <Button onClick={submit} disabled={!typeId || create.isPending}>
@@ -565,12 +521,157 @@ function AddEdgeDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      {showNewType && (
+        <RelationshipTypeDialog
+          onOpenChange={(open) => !open && setShowNewType(false)}
+          onCreated={(created) => onTypeChange(created.id)}
+        />
+      )}
+      {/* Step-up for a new edge the server would not accept as public without
+          re-auth. Same prompt, same words as raising an existing edge, because
+          it is the same exposure. */}
+      <DestructiveConfirmDialog
+        open={!!stepUp}
+        onOpenChange={(open) => !open && setStepUp(null)}
+        title="Confirm public visibility change"
+        description="Publishing this relationship can reveal it through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
+        tier={stepUpTier}
+        actionLabel="Confirm change"
+        actionLabelLoading="Adding..."
+        loading={create.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!stepUp) return;
+          create.mutate(
+            { data: { ...stepUp, ...confirm } },
+            {
+              onSuccess: () => {
+                setStepUp(null);
+                onClose();
+              },
+            },
+          );
+        }}
+      />
+    </Dialog>
+  );
+}
+
+/**
+ * The type vocabulary, editable right where the graph is looked at. The same
+ * list the Settings page shows, built from the same shared edit/delete/create
+ * components, so neither surface can drift from the other - this is a shortcut,
+ * not a second implementation.
+ */
+function ManageTypesDialog({ onClose }: { onClose: () => void }) {
+  const { data: types } = useRelationshipTypes();
+  const [editing, setEditing] = useState<RelationshipType | null>(null);
+  const [deleting, setDeleting] = useState<RelationshipType | null>(null);
+  const [showNewType, setShowNewType] = useState(false);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Relationship types</DialogTitle>
+          <DialogDescription>
+            The vocabulary your relationships are drawn with. Changing a label
+            re-reads every relationship of that type, everywhere.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          {(types ?? []).map((t) => (
+            <div
+              key={t.id}
+              className={cn(
+                "flex items-center justify-between rounded-md border px-3 py-2 text-sm",
+                t.pending_delete_at && "opacity-60",
+              )}
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <ColorDot color={t.color} />
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p className="truncate font-medium">{t.name}</p>
+                    <PendingDeleteBadge
+                      finalizeAt={t.pending_delete_at}
+                      className="shrink-0"
+                    />
+                  </div>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {summariseType(t)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setEditing(t)}
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-destructive hover:text-destructive"
+                  onClick={() => setDeleting(t)}
+                  disabled={!!t.pending_delete_at}
+                  title={
+                    t.pending_delete_at
+                      ? "Already queued for deletion. Cancel from Settings -> Safety."
+                      : undefined
+                  }
+                >
+                  Delete
+                </Button>
+              </div>
+            </div>
+          ))}
+          {types && types.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No relationship types yet.
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowNewType(true)}
+          >
+            New relationship type
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+      {editing && (
+        <EditTypeDialog
+          type={editing}
+          onOpenChange={(open) => !open && setEditing(null)}
+        />
+      )}
+      {deleting && (
+        <DeleteTypeDialog
+          type={deleting}
+          onOpenChange={(open) => !open && setDeleting(null)}
+        />
+      )}
+      {showNewType && (
+        <RelationshipTypeDialog
+          onOpenChange={(open) => !open && setShowNewType(false)}
+        />
+      )}
     </Dialog>
   );
 }
 
 export function RelationshipsPage() {
   const [scope, setScope] = useState<"members" | "groups">("members");
+  // Off by default: this page is mostly something you look at, and a graph you
+  // are dragging around is not a place to be one stray click from changing
+  // who is whose anything.
+  const [editMode, setEditMode] = useState(false);
+  const [manageTypes, setManageTypes] = useState(false);
   const { data: graph, isLoading } = useRelationshipGraph(scope);
 
   return (
@@ -579,22 +680,41 @@ export function RelationshipsPage() {
         <div>
           <h1 className="text-xl font-semibold">Relationships</h1>
           <p className="text-sm text-muted-foreground">
-            Drag to pan, scroll to zoom, drag a node to nudge it. Manage
-            relationships from each member or group; define types in Settings.
+            Drag to pan, scroll to zoom, drag a node to nudge it. Click a line
+            between two to see the relationship it draws. Turn on Edit to add,
+            reverse, republish or remove them; Manage types edits the
+            vocabulary they are drawn with.
           </p>
         </div>
-        <div className="flex gap-1 rounded-md border p-1">
-          {(["members", "groups"] as const).map((s) => (
-            <Button
-              key={s}
-              variant={scope === s ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setScope(s)}
-              className="capitalize"
-            >
-              {s}
-            </Button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setManageTypes(true)}
+          >
+            Manage types
+          </Button>
+          <Button
+            variant={editMode ? "default" : "outline"}
+            size="sm"
+            onClick={() => setEditMode((m) => !m)}
+            aria-pressed={editMode}
+          >
+            {editMode ? "Editing" : "Edit"}
+          </Button>
+          <div className="flex gap-1 rounded-md border p-1">
+            {(["members", "groups"] as const).map((s) => (
+              <Button
+                key={s}
+                variant={scope === s ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setScope(s)}
+                className="capitalize"
+              >
+                {s}
+              </Button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -607,7 +727,10 @@ export function RelationshipsPage() {
           they will map out here.
         </div>
       ) : (
-        <GraphCanvas graph={graph} scope={scope} />
+        <GraphCanvas graph={graph} scope={scope} editMode={editMode} />
+      )}
+      {manageTypes && (
+        <ManageTypesDialog onClose={() => setManageTypes(false)} />
       )}
     </div>
   );

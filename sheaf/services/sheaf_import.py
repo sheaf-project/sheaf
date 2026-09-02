@@ -30,7 +30,7 @@ append-everything behaviour.
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,13 +83,24 @@ from sheaf.models.relationship import (
     MemberRelationship,
     RelationshipSymmetry,
     RelationshipType,
-    RelationshipVisibility,
 )
 from sheaf.models.reminder import Reminder, reminder_scope_members
+from sheaf.models.safety_change_request import (
+    SafetyChangeRequest,
+    SafetyChangeStatus,
+)
+from sheaf.models.share import (
+    ShareItemStatus,
+    ShareView,
+    ShareViewField,
+    ShareViewGroup,
+    ShareViewMember,
+)
 from sheaf.models.system import DateFormat, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.services import import_limits as il
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
@@ -123,6 +134,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_image_strip import (
@@ -132,6 +144,7 @@ from sheaf.services.import_image_strip import (
     rewrite_internal_image_refs_md_to_none,
 )
 from sheaf.services.import_limits import ClampReport, clamp_list, clamp_str
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.messages import encrypt_body
 from sheaf.services.polls import (
@@ -141,6 +154,12 @@ from sheaf.services.polls import (
 )
 from sheaf.services.relationships import canonicalize_pair
 from sheaf.services.reminders import encrypt_title_body
+from sheaf.services.sharing import (
+    group_raise_exposes,
+    relationship_exposed_member_ids,
+    system_privacy_raise_exposes,
+)
+from sheaf.services.system_safety import split_safety_changes
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -167,7 +186,6 @@ def _field_type(val: object) -> FieldType:
 
 
 _VALID_SYMMETRY = {e.value for e in RelationshipSymmetry}
-_VALID_REL_VISIBILITY = {e.value for e in RelationshipVisibility}
 
 
 def _symmetry(val: object) -> RelationshipSymmetry:
@@ -178,10 +196,96 @@ def _symmetry(val: object) -> RelationshipSymmetry:
     return RelationshipSymmetry.SYMMETRIC
 
 
-def _rel_visibility(val: object) -> RelationshipVisibility:
-    if isinstance(val, str) and val in _VALID_REL_VISIBILITY:
-        return RelationshipVisibility(val)
-    return RelationshipVisibility.PRIVATE
+def _group_privacy(
+    val: object, *, would_show: bool
+) -> tuple[PrivacyLevel, bool]:
+    """Coerce a group's privacy out of an import file. Returns (level, held).
+
+    The coercion half matches `_rel_visibility`: same three-level vocabulary,
+    and anything unrecognised lands PRIVATE rather than raising, because the
+    failure mode of a garbled file must be "too private", never "published".
+
+    The second half is the one that matters. `would_show` says whether any view
+    with `include_groups` and a live-or-pending grant exists right now (see
+    `sharing.group_raise_exposes`). If it does, a group arriving already
+    `public` is stored PRIVATE and flagged: the owner-side raise has step-up
+    re-auth and a grace window in front of it, an import job has neither, so
+    honouring the file here would publish a group as a side effect of restoring
+    a backup - the accidental-outing failure the whole feature exists to
+    prevent. Demoting is recoverable in one click, through the proper gate;
+    publishing is not.
+
+    One answer for the whole file rather than one per group, and that is the
+    honest granularity rather than a shortcut: a group's exposure does not
+    depend on which group it is, only on whether anything is serving groups at
+    all. Where it IS coarse is in not asking whether the group would look like
+    much once projected (a group whose whole roster sits outside the view still
+    counts). That direction of imprecision keeps a group private that might
+    have been safe to publish, which is the only direction worth being wrong in.
+    """
+    level = (
+        PrivacyLevel(val)
+        if isinstance(val, str) and val in _VALID_PRIVACY
+        else PrivacyLevel.PRIVATE
+    )
+    if level == PrivacyLevel.PUBLIC and would_show:
+        return PrivacyLevel.PRIVATE, True
+    return level, False
+
+
+def system_privacy_hold_warning(current: object, *, blocked: bool) -> str:
+    """The report line for a system-privacy raise an import declined to apply.
+
+    Two shapes because there are two reasons and they need different things
+    from the reader: a blocked system cannot be raised at all until an operator
+    lifts the latch, so pointing the owner at the settings screen would send
+    them to a control that refuses them. Carries no member, group or account
+    names - the level is one of three fixed words - so it is safe in the job's
+    plaintext event log.
+    """
+    if blocked:
+        return (
+            "Your system was marked public in the file, but was left at "
+            f"{current}: an operator on this instance has disabled publishing "
+            "on your system, so it cannot be set to public until they lift "
+            "that. Contact the instance operator."
+        )
+    return (
+        "Your system was marked public in the file, but was left at "
+        f"{current}: system privacy is the master switch over everything you "
+        "share, and there is already a share link or public profile waiting "
+        "behind it. Set it to public under Settings, system profile if that is "
+        "what you want, where the change goes through re-authentication and "
+        "the grace window - a restore can do neither of those for you."
+    )
+
+
+def safety_deferred_warning(fields: list[str]) -> str:
+    """The report line for imported System Safety settings that loosen.
+
+    Named settings only (no user content), so this is safe in the plaintext
+    job event log. The caller passes the external names the settings surface
+    uses wherever one exists, so the owner can find the row the warning is
+    talking about; the retention caps have no external alias and appear under
+    their own column names.
+    """
+    return (
+        "These System Safety settings would have loosened your protections, so "
+        "they were queued behind your grace window instead of being applied: "
+        f"{', '.join(fields)}. They take effect when the window elapses; "
+        "review or cancel them under Settings, System Safety."
+    )
+
+
+def _rel_visibility(val: object) -> PrivacyLevel:
+    # Same three-level vocabulary as member privacy (it is the same question),
+    # so it shares `_VALID_PRIVACY`. Untrusted enum string from the import
+    # file: anything unrecognised lands PRIVATE rather than raising, because an
+    # edge names two people at once and the failure mode of a garbled file must
+    # be "too private", never "published".
+    if isinstance(val, str) and val in _VALID_PRIVACY:
+        return PrivacyLevel(val)
+    return PrivacyLevel.PRIVATE
 
 
 _VALID_DATE_FORMAT = {e.value for e in DateFormat}
@@ -205,6 +309,7 @@ _SAFETY_APPLIES_KEYS = (
     "applies_to_reminders",
     "applies_to_polls",
     "applies_to_messages",
+    "applies_to_relationships",
     "applies_to_archive",
     "applies_to_profile_visibility",
 )
@@ -523,6 +628,7 @@ class SheafImportResult:
         self.members_imported: int = 0
         self.members_skipped: int = 0
         self.members_updated: int = 0
+        self.members_privacy_skipped: int = 0
         self.fronts_imported: int = 0
         self.fronts_skipped: int = 0
         self.groups_imported: int = 0
@@ -549,7 +655,15 @@ class SheafImportResult:
         self.member_relationships_skipped: int = 0
         self.group_relationships_imported: int = 0
         self.group_relationships_skipped: int = 0
+        self.share_views_imported: int = 0
+        self.share_views_skipped: int = 0
         self.warnings: list[str] = []
+
+
+# Bounds on the share-view section of an untrusted payload. Views are cheap
+# rows, but an import must not be a way to make the DB do unbounded work.
+_MAX_SHARE_VIEWS = 100
+_MAX_SHARE_VIEW_ROWS = 1000
 
 
 def _as_list(val: object) -> list:
@@ -649,6 +763,11 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
             s(rt.get("name"), il.REL_TYPE_NAME)
             s(rt.get("forward_label"), il.REL_TYPE_LABEL)
             s(rt.get("reverse_label"), il.REL_TYPE_LABEL)
+            s(rt.get("color"), il.REL_TYPE_COLOR)
+
+    for v in _as_list(data.get("share_views")):
+        if isinstance(v, dict):
+            s(v.get("name"), il.SHARE_VIEW_NAME)
 
 
 def preview(data: dict) -> SheafPreviewSummary:
@@ -659,28 +778,37 @@ def preview(data: dict) -> SheafPreviewSummary:
     if system:
         summary.system_name = system.get("name")
 
-    members = data.get("members", [])
+    # Every count runs through _as_list so a malformed upload that puts a
+    # non-list under one of these keys (e.g. {"members": 5}) yields a clean 0
+    # here - and a clean 400 upstream - instead of a 500 from len()/iteration
+    # over a scalar. measure_native_payload already guards the same way.
+    members = _as_list(data.get("members"))
     summary.member_count = len(members)
     summary.members = [
         {"id": m.get("id", ""), "name": m.get("name", "unnamed")}
         for m in members
+        if isinstance(m, dict)
     ]
 
-    summary.front_count = len(data.get("fronts", []))
-    summary.group_count = len(data.get("groups", []))
-    summary.tag_count = len(data.get("tags", []))
-    summary.custom_field_count = len(data.get("custom_fields", []))
-    summary.journal_count = len(data.get("journals", []))
-    summary.message_count = len(data.get("messages", []))
-    summary.poll_count = len(data.get("polls", []))
-    summary.open_poll_count = count_incoming_open_polls(data.get("polls", []))
-    summary.reminder_count = len(data.get("reminders", []))
+    summary.front_count = len(_as_list(data.get("fronts")))
+    summary.group_count = len(_as_list(data.get("groups")))
+    summary.tag_count = len(_as_list(data.get("tags")))
+    summary.custom_field_count = len(_as_list(data.get("custom_fields")))
+    summary.journal_count = len(_as_list(data.get("journals")))
+    summary.message_count = len(_as_list(data.get("messages")))
+    summary.poll_count = len(_as_list(data.get("polls")))
+    summary.open_poll_count = count_incoming_open_polls(_as_list(data.get("polls")))
+    summary.reminder_count = len(_as_list(data.get("reminders")))
     summary.channel_count = sum(
-        len(t.get("channels", [])) for t in data.get("watch_tokens", [])
+        len(_as_list(t.get("channels")))
+        for t in _as_list(data.get("watch_tokens"))
+        if isinstance(t, dict)
     )
-    summary.relationship_type_count = len(data.get("relationship_types", []))
-    summary.member_relationship_count = len(data.get("member_relationships", []))
-    summary.group_relationship_count = len(data.get("group_relationships", []))
+    summary.relationship_type_count = len(_as_list(data.get("relationship_types")))
+    summary.member_relationship_count = len(
+        _as_list(data.get("member_relationships"))
+    )
+    summary.group_relationship_count = len(_as_list(data.get("group_relationships")))
 
     report = ClampReport()
     measure_native_payload(data, report)
@@ -689,7 +817,7 @@ def preview(data: dict) -> SheafPreviewSummary:
             "fronts": summary.front_count,
             "journal_entries": summary.journal_count,
             "messages": summary.message_count,
-            "revisions": len(data.get("revisions", [])),
+            "revisions": len(_as_list(data.get("revisions"))),
             "polls": summary.poll_count,
             "groups": summary.group_count,
             "tags": summary.tag_count,
@@ -851,9 +979,13 @@ async def run_import(
                 system.name = clamp_str(sys_data["name"], il.SYS_NAME, report=report)
             if sys_data.get("description") is not None:
                 # Strip any /v1/files/... image embeds - those keys belong
-                # to the exporting account, not this one.
+                # to the exporting account, not this one. Clamp before the
+                # markdown rewrite so the length bound also caps the superlinear
+                # image parse, not just the stored bytes.
                 system.description = _resolve_md(
-                    sys_data["description"]
+                    clamp_str(
+                        sys_data["description"], il.SYS_DESCRIPTION, report=report
+                    )
                 )
             if sys_data.get("tag") is not None:
                 system.tag = (
@@ -868,7 +1000,43 @@ async def run_import(
                     else None
                 )
             if sys_data.get("privacy"):
-                system.privacy = _privacy(sys_data["privacy"])
+                # The master switch over the entire public surface
+                # (`profile_serving_clause`), so a file must not flip it on in
+                # a way PATCH /v1/systems/me would refuse. Two holds, matching
+                # that endpoint's two refusals: an operator takedown latch
+                # (403 there), and a raise with a live-or-pending grant behind
+                # it, which there demands step-up re-auth and then stages
+                # behind the grace window. An import job can offer neither, so
+                # the raise is HELD: the current level stands and nothing is
+                # written to `pending_privacy` / `privacy_activates_at`, because
+                # staging is what the re-authed owner path earns and a restore
+                # has not re-authed. Lowering, and a raise with no grant behind
+                # it, apply immediately exactly as before - the same shape as
+                # the member, group and edge holds below.
+                file_privacy = _privacy(sys_data["privacy"])
+                is_raise = (
+                    file_privacy == PrivacyLevel.PUBLIC
+                    and system.privacy != PrivacyLevel.PUBLIC
+                )
+                blocked = is_raise and bool(system.publishing_blocked)
+                held = is_raise and (
+                    blocked or await system_privacy_raise_exposes(db, system)
+                )
+                if held:
+                    warnings.append(
+                        system_privacy_hold_warning(
+                            system.privacy, blocked=blocked
+                        )
+                    )
+                else:
+                    system.privacy = file_privacy
+                    # Any applied write settles the staged pair, exactly as
+                    # the PATCH path does. The case that matters is a
+                    # lowering: going dark must not leave a pending public
+                    # flip behind for the sweep to promote after the owner
+                    # thought they had gone private.
+                    system.pending_privacy = None
+                    system.privacy_activates_at = None
             # Notes are encrypted at rest. Empty-string clears (matches the
             # PATCH /systems/me semantics).
             if "note" in sys_data:
@@ -912,28 +1080,42 @@ async def run_import(
             if "timezone" in sys_data:
                 system.timezone = _timezone(sys_data.get("timezone"))
 
-            # System Safety toggles + grace period + auto-pin. delete_confirmation
-            # is deliberately NOT restored: importing a TOTP-requiring tier onto
+            # System Safety toggles + grace period + auto-pin, and the
+            # revision-retention caps alongside them. delete_confirmation is
+            # deliberately NOT restored: importing a TOTP-requiring tier onto
             # an account without TOTP enrolled would lock destructive actions.
+            #
+            # Collected into one update dict and routed through the API's own
+            # `split_safety_changes` rather than written with setattr. Every
+            # one of these is a setting PATCH /v1/system/safety splits into
+            # "tightening, apply now" and "loosening, wait out the grace
+            # window", so writing them directly made a file a way to disarm the
+            # safety net instantly - including
+            # `safety_applies_to_profile_visibility`, which the member section
+            # further down reads off this same in-memory System. Deferred
+            # loosenings are therefore NOT set on the object; they go in a
+            # SafetyChangeRequest and the finalize sweep applies them.
+            #
+            # No step-up is demanded, unlike the API: an import runs as the
+            # backend with no channel to ask for one, and the grace window is
+            # the protection here.
+            safety_updates: dict[str, object] = {}
             safety = sys_data.get("safety") or {}
             if isinstance(safety, dict):
                 if "grace_period_days" in safety:
-                    system.safety_grace_period_days = _coerce_int(
+                    safety_updates["safety_grace_period_days"] = _coerce_int(
                         safety["grace_period_days"], default=0, minimum=0
                     )
                 for key in _SAFETY_APPLIES_KEYS:
                     if key in safety:
-                        setattr(
-                            system,
-                            f"safety_{key}",
-                            bool(safety[key]),
-                        )
+                        safety_updates[f"safety_{key}"] = bool(safety[key])
                 if "auto_pin_first_revision" in safety:
-                    system.auto_pin_first_revision = bool(
+                    safety_updates["auto_pin_first_revision"] = bool(
                         safety["auto_pin_first_revision"]
                     )
 
-            # Revision-retention caps.
+            # Revision-retention caps. Same treatment: a smaller cap deletes
+            # more, so `split_safety_changes` guards the shrinking direction.
             retention = sys_data.get("retention") or {}
             if isinstance(retention, dict):
                 for key in (
@@ -942,10 +1124,54 @@ async def run_import(
                     "pinned_revision_max_per_target",
                 ):
                     if key in retention and retention[key] is not None:
-                        setattr(
-                            system,
-                            key,
-                            _coerce_int(retention[key], default=0, minimum=0),
+                        safety_updates[key] = _coerce_int(
+                            retention[key], default=0, minimum=0
+                        )
+
+            if safety_updates:
+                split = split_safety_changes(system, safety_updates)
+                for fld, value in split.applied.items():
+                    setattr(system, fld, value)
+                if split.deferred:
+                    if system.safety_grace_period_days <= 0:
+                        # Mirrors the API exactly: with the window off there is
+                        # nothing to wait out, so a loosening lands at once
+                        # rather than queueing a request that would finalize on
+                        # the sweep's next pass anyway.
+                        for fld, value in split.deferred.items():
+                            setattr(system, fld, value)
+                    else:
+                        # One request for the whole file, not one per setting:
+                        # the owner cancels a restore's loosening as a single
+                        # decision, the same way the settings screen queues one
+                        # request per PATCH. Attributed to the system's owner -
+                        # an import only ever runs against the importing user's
+                        # own system.
+                        from sheaf.api.v1.system_safety import (
+                            _INTERNAL_TO_EXTERNAL,
+                        )
+
+                        now = datetime.now(UTC)
+                        db.add(
+                            SafetyChangeRequest(
+                                system_id=system.id,
+                                requested_at=now,
+                                requested_by_user_id=system.user_id,
+                                finalize_after=now
+                                + timedelta(
+                                    days=system.safety_grace_period_days
+                                ),
+                                changes=split.deferred,
+                                status=SafetyChangeStatus.PENDING,
+                            )
+                        )
+                        warnings.append(
+                            safety_deferred_warning(
+                                sorted(
+                                    _INTERNAL_TO_EXTERNAL.get(f, f)
+                                    for f in split.deferred
+                                )
+                            )
                         )
 
             # OpenPlural import residual: a native export carries it as a
@@ -998,8 +1224,12 @@ async def run_import(
         # persists, so its keys must not count as used or the archive
         # importer would keep blobs nothing references.
         member_used: set[str] = set()
+        # Clamp before the markdown rewrite so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         plaintext_description = rewrite_internal_image_refs_md(
-            m_data.get("description"), _ikm, member_used
+            clamp_str(m_data.get("description"), il.M_DESCRIPTION, report=report),
+            _ikm,
+            member_used,
         )
         plaintext_note = clamp_str(
             rewrite_internal_image_refs_md_to_none(
@@ -1009,6 +1239,7 @@ async def run_import(
             report=report,
         )
         member_id = uuid.uuid4()
+        is_cf = bool(m_data.get("is_custom_front", False))
         member = Member(
             id=member_id,
             system_id=system.id,
@@ -1055,12 +1286,23 @@ async def run_import(
                 m_data.get("pluralkit_id"), il.M_PLURALKIT_ID, report=report
             ),
             emoji=clamp_str(m_data.get("emoji"), il.M_EMOJI, report=report),
-            is_custom_front=bool(m_data.get("is_custom_front", False)),
+            is_custom_front=is_cf,
             privacy=_privacy(m_data.get("privacy")),
             # Default False only when the key is absent (an older export).
             # A member marked never-shareable stays never-shareable.
             never_shareable=bool(m_data.get("never_shareable", False)),
-            fronting_private=bool(m_data.get("fronting_private", False)),
+            # The file wins whenever it carries the column, so a native export
+            # round-trips a guard the owner deliberately released rather than
+            # silently re-arming it. Only an export old enough to predate the
+            # column takes the server default, which is ON for a custom front.
+            fronting_private=default_fronting_private(
+                is_custom_front=is_cf,
+                requested=(
+                    bool(m_data["fronting_private"])
+                    if m_data.get("fronting_private") is not None
+                    else None
+                ),
+            ),
             quick_switch_pin=_coerce_pin(m_data.get("quick_switch_pin")),
             notify_on_front_global=bool(
                 m_data.get("notify_on_front_global", False)
@@ -1117,9 +1359,12 @@ async def run_import(
     old_id_to_member: dict[str, Member] = {}
     written_old_ids: set[str] = set()
     for member, old_id, member_used in candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=conflict_strategy
+        resolution = await resolve_member(
+            member, index=index, strategy=conflict_strategy, db=db, system=system
         )
+        if resolution.privacy_held_member_id:
+            result.members_privacy_skipped += 1
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1
@@ -1212,6 +1457,18 @@ async def run_import(
         # duplicating them just litters the field list with a second
         # "Pronouns" etc. The system's own config (privacy/order/options)
         # on a reused field is left untouched.
+        #
+        # That last sentence is now load-bearing rather than incidental, since
+        # `privacy` became this field's exposure ceiling. There is no UPDATE
+        # path here for a file's level to ride in on: a match is skipped
+        # wholesale, so an import can neither publish an existing definition
+        # nor un-publish one, and there is nothing to hold back or warn about.
+        # A definition this run CREATES takes the file's level as-is, which is
+        # safe for the reason a new group is not: a brand-new definition is in
+        # no view, so no grant can be serving it, and selecting it into one
+        # later is its own deliberate act with its own gate. Compare the group
+        # and member paths, which DO hold a public level back, because there
+        # the imported row can be served the moment the import commits.
         field_index = await load_field_def_index(db, system.id)
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
@@ -1243,6 +1500,7 @@ async def run_import(
         # otherwise trip the UNIQUE constraint, a hard error rather than
         # a preference. Pre-seeded with the system's existing pairs.
         value_guard = await load_field_value_guard(db, system.id)
+        oversized_values = 0
         for fd_data in data.get("custom_fields", []):
             old_fid = fd_data.get("id", "")
             field_def = old_field_to_def.get(old_fid)
@@ -1255,14 +1513,25 @@ async def run_import(
                     continue
                 if not value_guard.add((field_def.id, member.id)):
                     continue
+                value = v_data.get("value")
+                # Stored at full length whatever its size. This is a restore of
+                # the owner's own data, so the cap the editor applies to new
+                # text does not get to shorten or drop what they already had -
+                # a backup that comes back altered is not a backup. Counted for
+                # the report instead.
+                if value_over_text_cap(value):
+                    oversized_values += 1
                 cfv_id = uuid.uuid4()
                 cfv = CustomFieldValue(
                     id=cfv_id,
                     field_id=field_def.id,
                     member_id=member.id,
-                    value=encrypt_field_value(v_data.get("value"), cfv_id),
+                    value=encrypt_field_value(value, cfv_id),
                 )
                 db.add(cfv)
+
+        if oversized_values:
+            warnings.append(il.oversized_field_values_warning(oversized_values))
 
     # --- Groups ---
     if groups:
@@ -1271,24 +1540,46 @@ async def run_import(
             await load_group_index(db, system.id) if dedupe else ContentMatchIndex()
         )
         created_group_ids: set[uuid.UUID] = set()
+        # Resolved once for the whole file rather than per group: it is a
+        # single query, the answer cannot change mid-import, and unlike members
+        # it does not vary by group - a view either serves this system's public
+        # groups right now or it does not.
+        groups_would_show = await group_raise_exposes(db, system)
+        groups_held = 0
 
         # First pass: create groups without parent links
         for g_data in export_groups:
             old_gid = g_data.get("id", "")
             name = clamp_str(g_data.get("name") or "unnamed", il.GROUP_NAME, report=report)
+            privacy, held = _group_privacy(
+                g_data.get("privacy"), would_show=groups_would_show
+            )
             existing_group = group_index.get(name) if dedupe else None
             if existing_group is not None:
                 # Reuse the existing same-named group so membership and
-                # channel group-rules land on it.
+                # channel group-rules land on it. Its own columns - privacy
+                # included - are left exactly as they are: content dedup skips
+                # a matching group wholesale rather than merging into it (the
+                # same rule the parent-link pass states below), so there is no
+                # UPDATE path here for a file's privacy level to ride in on.
+                # That is the conservative direction anyway: a file can neither
+                # publish an existing group nor un-publish one.
                 old_gid_to_group[old_gid] = existing_group
                 result.groups_skipped += 1
                 continue
+            if held:
+                groups_held += 1
             group = Group(
                 id=uuid.uuid4(),
                 system_id=system.id,
                 name=name,
-                description=_resolve_md(g_data.get("description")),
+                description=_resolve_md(
+                    clamp_str(
+                        g_data.get("description"), il.GROUP_DESCRIPTION, report=report
+                    )
+                ),
                 color=clamp_str(g_data.get("color"), il.GROUP_COLOR, report=report),
+                privacy=privacy,
             )
             db.add(group)
             group_index.register(name, group)
@@ -1373,6 +1664,15 @@ async def run_import(
                     "were moved to the top level."
                 )
 
+        if groups_held:
+            warnings.append(
+                f"{groups_held} imported group(s) were marked public in the "
+                "file, and this system has a shared view set to show groups. "
+                "They were imported as private so restoring a backup could not "
+                "publish them without you asking. Set them back to public from "
+                "the groups screen if you want them shown."
+            )
+
     # --- Relationships (types + member/group edges) ---
     # Types dedupe by name (like tags/groups). Edges resolve their endpoints
     # and type through the old->new id maps built above (members always, groups
@@ -1414,6 +1714,9 @@ async def run_import(
                 reverse_label=clamp_str(
                     rt_data.get("reverse_label"), il.REL_TYPE_LABEL, report=report
                 ),
+                color=clamp_str(
+                    rt_data.get("color"), il.REL_TYPE_COLOR, report=report
+                ),
             )
             db.add(rtype)
             rel_type_index.register(name, rtype)
@@ -1427,7 +1730,10 @@ async def run_import(
             if dedupe
             else PairGuard()
         )
-        m_imp, m_skip = _import_relationship_edges(
+        # Resolved once for the whole file rather than per edge: it is a single
+        # query and the answer cannot change mid-import.
+        exposed_ids = await relationship_exposed_member_ids(db, system)
+        m_imp, m_skip, m_demoted = _import_relationship_edges(
             db,
             system,
             data.get("member_relationships", []),
@@ -1435,16 +1741,28 @@ async def run_import(
             type_map=old_rtid_to_type,
             model=MemberRelationship,
             guard=member_rel_guard,
+            exposed_ids=exposed_ids,
         )
         result.member_relationships_imported += m_imp
         result.member_relationships_skipped += m_skip
+        if m_demoted:
+            warnings.append(
+                f"{m_demoted} imported relationship(s) were marked public in "
+                "the file and join members who are currently shown on a shared "
+                "view that includes relationships. They were imported as "
+                "private so restoring a backup could not publish them without "
+                "you asking. Set them back to public from the relationships "
+                "screen if you want them shown."
+            )
 
         group_rel_guard = (
             await load_group_relationship_guard(db, system.id)
             if dedupe
             else PairGuard()
         )
-        g_imp, g_skip = _import_relationship_edges(
+        # No `exposed_ids`: nothing projects group edges, so there is nothing
+        # an imported one could publish.
+        g_imp, g_skip, _ = _import_relationship_edges(
             db,
             system,
             data.get("group_relationships", []),
@@ -1457,6 +1775,178 @@ async def run_import(
         result.group_relationships_skipped += g_skip
 
         await db.flush()
+
+    # --- Share views ---
+    # The curated projections round-trip; share GRANTS never do, so an
+    # imported view is exposed to nobody until the user deliberately
+    # publishes it. Rows land ACTIVE for the same reason: with no grant
+    # pointing at the view, "active" exposes nothing.
+    #
+    # A view whose name already exists is SKIPPED WHOLESALE rather than
+    # merged. Merging would let an import add members to a view that already
+    # has a live grant - i.e. publish somebody as a side effect of restoring
+    # a backup. Refusing to merge is the only safe behaviour here.
+    existing_view_names = set(
+        (
+            await db.execute(
+                select(ShareView.name).where(ShareView.system_id == system.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    # _MAX_SHARE_VIEWS bounds the work one job can force; this bounds the total
+    # a system may hold, the same per-tenant ceiling create_share_view enforces.
+    # existing_view_names starts as the live view set and grows as we add, so its
+    # length is the current count. Without this, repeated imports would stack
+    # views past the product limit that the create API refuses to cross.
+    from sheaf.config import settings
+
+    views_max = settings.share_views_max
+    share_view_cap_warned = False
+    malformed_views = 0
+    for v_data in _as_list(data.get("share_views"))[:_MAX_SHARE_VIEWS]:
+        if not isinstance(v_data, dict):
+            malformed_views += 1
+            continue
+        name = clamp_str(
+            str(v_data.get("name") or "Shared view").strip() or "Shared view",
+            il.SHARE_VIEW_NAME,
+            report=report,
+        )
+        if name in existing_view_names:
+            result.share_views_skipped += 1
+            warnings.append(
+                f"Skipped share view '{name}' - a view with that name already "
+                "exists and merging into it could publish members that view "
+                "is already shared with"
+            )
+            continue
+        if len(existing_view_names) >= views_max:
+            result.share_views_skipped += 1
+            if not share_view_cap_warned:
+                warnings.append(
+                    f"Skipped one or more share views - this system is at its "
+                    f"limit of {views_max} share views. Delete some you no "
+                    "longer need and re-import if you still want them."
+                )
+                share_view_cap_warned = True
+            continue
+        existing_view_names.add(name)
+
+        view = ShareView(
+            id=uuid.uuid4(),
+            system_id=system.id,
+            name=name,
+            # Defaults match the columns': the roster on, everything that
+            # widens the page beyond it off. A file written before these flags
+            # existed therefore restores a view that shows what it always
+            # showed.
+            include_members=bool(v_data.get("include_members", True)),
+            include_bio=bool(v_data.get("include_bio", False)),
+            include_fronting=bool(v_data.get("include_fronting", False)),
+            fronting_show_count=bool(v_data.get("fronting_show_count", True)),
+            include_relationships=bool(
+                v_data.get("include_relationships", False)
+            ),
+            include_groups=bool(v_data.get("include_groups", False)),
+            member_permalinks=bool(v_data.get("member_permalinks", False)),
+        )
+        db.add(view)
+
+        # Group-expansion provenance, old member uuid -> old group uuid. Remapped
+        # through the same old->new group map the `group_ids` loop below uses, so
+        # a restored view detaches groups correctly instead of behaving as though
+        # every member had been picked by hand. Absent (or malformed, or naming a
+        # group that did not import) means exactly what it means everywhere else:
+        # manual, which never over-removes.
+        raw_sources = v_data.get("member_sources")
+        member_sources = raw_sources if isinstance(raw_sources, dict) else {}
+
+        seen_members: set[uuid.UUID] = set()
+        for old_mid in _as_list(v_data.get("member_ids"))[:_MAX_SHARE_VIEW_ROWS]:
+            member = old_id_to_member.get(str(old_mid))
+            # Drop references whose target did not import, and re-apply the
+            # never-shareable guard rather than trusting the file.
+            if member is None or member.never_shareable or member.id in seen_members:
+                continue
+            seen_members.add(member.id)
+            old_source = member_sources.get(str(old_mid))
+            source_group = (
+                old_gid_to_group.get(str(old_source))
+                if isinstance(old_source, str)
+                else None
+            )
+            db.add(
+                ShareViewMember(
+                    id=uuid.uuid4(),
+                    view_id=view.id,
+                    member_id=member.id,
+                    added_via_group_id=(
+                        source_group.id if source_group is not None else None
+                    ),
+                    status=ShareItemStatus.ACTIVE.value,
+                    activates_at=None,
+                    created_at=now,
+                )
+            )
+
+        seen_fields: set[uuid.UUID] = set()
+        for old_fid in _as_list(v_data.get("field_ids"))[:_MAX_SHARE_VIEW_ROWS]:
+            field_def = old_field_to_def.get(str(old_fid))
+            if field_def is None or field_def.id in seen_fields:
+                continue
+            seen_fields.add(field_def.id)
+            db.add(
+                ShareViewField(
+                    id=uuid.uuid4(),
+                    view_id=view.id,
+                    field_id=field_def.id,
+                    status=ShareItemStatus.ACTIVE.value,
+                    activates_at=None,
+                    created_at=now,
+                )
+            )
+
+        seen_groups: set[uuid.UUID] = set()
+        for old_gid in _as_list(v_data.get("group_ids"))[:_MAX_SHARE_VIEW_ROWS]:
+            group = old_gid_to_group.get(str(old_gid))
+            if group is None or group.id in seen_groups:
+                continue
+            seen_groups.add(group.id)
+            db.add(
+                ShareViewGroup(
+                    id=uuid.uuid4(),
+                    view_id=view.id,
+                    group_id=group.id,
+                    synced_at=now,
+                    created_at=now,
+                )
+            )
+
+        result.share_views_imported += 1
+
+    if malformed_views:
+        # Aggregated rather than one line per entry: a hostile file can carry
+        # up to _MAX_SHARE_VIEWS of these and the per-entry detail is nil.
+        warnings.append(
+            f"{malformed_views} share view(s) were not JSON objects and were "
+            "skipped."
+        )
+
+    # Views restore whatever the instance switch says, and that is correct: no
+    # grant round-trips, so a restored view points at nobody and nothing serves
+    # it. Say so anyway. Without this line the import reports "3 share views"
+    # on an instance that will not show them to a soul, and the owner is left
+    # to work out for themselves whether their curation survived.
+    if result.share_views_imported and not settings.public_profiles_enabled:
+        warnings.append(
+            f"{result.share_views_imported} share view(s) were restored, but "
+            "public profiles and share links are turned off on this instance, "
+            "so none of them are published; they can be published if the "
+            "operator turns sharing on."
+        )
 
     await db.flush()
 
@@ -2217,8 +2707,11 @@ def _import_relationship_edges(
     type_map: dict,
     model: type,
     guard: PairGuard,
-) -> tuple[int, int]:
-    """Build member/group relationship edges, returning (imported, skipped).
+    exposed_ids: set[uuid.UUID] | None = None,
+) -> tuple[int, int, int]:
+    """Build member/group relationship edges.
+
+    Returns (imported, skipped, demoted).
 
     Shared by both edge tables (they differ only in the endpoint map and ORM
     model). For each edge: resolve the type and both endpoints through the
@@ -2228,9 +2721,21 @@ def _import_relationship_edges(
     re-import or in-file inverse duplicate is skipped rather than raising.
     ``db.add`` only; the caller flushes. Not a coroutine - it enqueues rows
     on the session without awaiting.
+
+    `exposed_ids` is the set from `relationship_exposed_member_ids`: members an
+    edge could be published through right now. An incoming edge marked `public`
+    whose BOTH endpoints are in that set is stored `private` instead and
+    counted in `demoted`. The owner-side raise path has step-up re-auth and a
+    grace window in front of it; an import has neither, so honouring the file's
+    level here would publish a relationship as a side effect of restoring a
+    backup - the accidental-outing failure this whole feature exists to
+    prevent. Demoting is recoverable in one click (raising the edge afterwards
+    goes through the proper gate); publishing is not. Group edges pass None,
+    because nothing projects them.
     """
     imported = 0
     skipped = 0
+    demoted = 0
     for e_data in _as_list(edges):
         if not isinstance(e_data, dict):
             continue
@@ -2247,6 +2752,15 @@ def _import_relationship_edges(
         if not guard.add(relationship_pair_key(rtype.id, src_id, tgt_id)):
             skipped += 1
             continue
+        visibility = _rel_visibility(e_data.get("visibility"))
+        if (
+            visibility == PrivacyLevel.PUBLIC
+            and exposed_ids
+            and src_id in exposed_ids
+            and tgt_id in exposed_ids
+        ):
+            visibility = PrivacyLevel.PRIVATE
+            demoted += 1
         edge = model(
             id=uuid.uuid4(),
             system_id=system.id,
@@ -2254,14 +2768,14 @@ def _import_relationship_edges(
             target_id=tgt_id,
             relationship_type_id=rtype.id,
             mutual=bool(e_data.get("mutual", False)),
-            visibility=_rel_visibility(e_data.get("visibility")),
+            visibility=visibility,
         )
         created = _parse_iso(e_data.get("created_at"))
         if created:
             edge.created_at = created
         db.add(edge)
         imported += 1
-    return imported, skipped
+    return imported, skipped, demoted
 
 
 def _trunc(val: str | None, max_len: int) -> str | None:

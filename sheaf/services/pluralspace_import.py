@@ -102,6 +102,7 @@ from sheaf.models.poll import (
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.schemas.pluralspace_import import (
     PluralspaceImportResult,
     PluralspacePreviewMember,
@@ -125,6 +126,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
@@ -139,6 +141,7 @@ from sheaf.services.import_parsing import (
     safe_json_loads,
     sanitize_external_avatar_url,
 )
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import enforce_import_member_cap
 from sheaf.services.polls import max_concurrent_open_for_tier
 from sheaf.services.sheaf_import import (
@@ -548,8 +551,14 @@ async def run_import(
         # importing user's own profile, indefinitely and past a delete. A
         # PluralSpace export has no legitimate internal Sheaf ref to keep, so
         # all of them are dropped; external images and prose are untouched.
+        # Clamp before the strip/parse so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         plaintext_description = strip_internal_image_refs_md_to_none(
-            _clean_str(m_data.get("description"))
+            clamp_str(
+                _clean_str(m_data.get("description")),
+                il.M_DESCRIPTION,
+                report=report,
+            )
         )
         member_id = uuid.uuid4()
         member = Member(
@@ -573,6 +582,9 @@ async def run_import(
             color=_normalize_color(m_data.get("color")),
             is_custom_front=is_cf,
             privacy=PrivacyLevel.PRIVATE,
+            # PluralSpace carries no share guard of its own, so this takes the
+            # server default: a custom front lands guarded.
+            fronting_private=default_fronting_private(is_custom_front=is_cf),
         )
         candidates.append((member, ps_id, plaintext_name, is_cf))
 
@@ -626,9 +638,18 @@ async def run_import(
     ps_id_to_member: dict[str, Member] = {}
     member_name_to_member: dict[str, Member] = {}
     for member, ps_id, plaintext_name, is_cf in candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_member_id:
+            result.members_privacy_skipped += 1
+            result.warnings.append(
+                privacy_hold_warning(resolution.privacy_held_member_id)
+            )
         if resolution.disposition == "created":
             db.add(resolution.member)
             if is_cf:
@@ -803,14 +824,18 @@ def _apply_system_profile(data: dict, system: System, report: ClampReport) -> No
     name = _clean_str(sys_data.get("name"))
     if name and not system.name:
         system.name = clamp_str(name, il.SYS_NAME, report=report)
-    # Same reason as the member description above.
+    # Same reason as the member description above (strip + length cap). The long
+    # bio is now bounded to SYS_DESCRIPTION, matching the create API, so an
+    # oversized import can neither over-run storage nor feed the superlinear
+    # markdown parse an unbounded body.
     description = strip_internal_image_refs_md_to_none(
-        _clean_str(sys_data.get("description"))
+        clamp_str(
+            _clean_str(sys_data.get("description")),
+            il.SYS_DESCRIPTION,
+            report=report,
+        )
     )
     if description and not system.description:
-        # System description (the long bio) is intentionally uncapped, like the
-        # create API; only `note` carries the SYS_NOTE business cap and
-        # PluralSpace has no note-equivalent to map here.
         system.description = description
     color = _normalize_color(sys_data.get("color"))
     if color and not system.color:
@@ -922,9 +947,13 @@ async def _import_groups(
                 id=uuid.uuid4(),
                 system_id=system_id,
                 name=clamp_str(name, il.GROUP_NAME, report=report),
-                # Same reason as the member description above.
+                # Same reason as the member description above (strip + length cap).
                 description=strip_internal_image_refs_md_to_none(
-                    _clean_str(g_data.get("description"))
+                    clamp_str(
+                        _clean_str(g_data.get("description")),
+                        il.GROUP_DESCRIPTION,
+                        report=report,
+                    )
                 ),
                 color=_normalize_color(g_data.get("color")),
             )
@@ -1097,10 +1126,16 @@ async def _import_custom_fields(
     # otherwise trip the UNIQUE(field_id, member_id) constraint - a hard
     # error on every re-import that carries custom field values.
     value_guard = await load_field_value_guard(db, system_id)
+    oversized_values = 0
     for (field_id, member_id), values in pairs.items():
         if not value_guard.add((field_id, member_id)):
             continue
         joined = "\n".join(values)
+        # Stored at full length; the editor's cap does not retroactively edit
+        # an import. Counted for the report instead. Worth noting the join is
+        # what can push a member over here even when no single value does.
+        if value_over_text_cap(joined):
+            oversized_values += 1
         cfv_id = uuid.uuid4()
         cfv = CustomFieldValue(
             id=cfv_id,
@@ -1109,6 +1144,9 @@ async def _import_custom_fields(
             value=encrypt_field_value(joined, cfv_id),
         )
         db.add(cfv)
+
+    if oversized_values:
+        warnings.append(il.oversized_field_values_warning(oversized_values))
 
     if flat_collapsed:
         warnings.append(
@@ -1366,6 +1404,10 @@ async def _import_chat(
             body = _clean_str(msg.get("content")) or ""
             if multi_channel:
                 body = f"[{channel_name}] {body}".rstrip()
+            # A message body is markdown, so strip embeds pointing at this
+            # instance's storage before storing - otherwise they re-sign into a
+            # live cross-tenant read on display, exactly as for descriptions.
+            body = strip_internal_image_refs_md_to_none(body) or ""
             body = clamp_str(body, il.MESSAGE_BODY, report=report)
             author_name = _clean_str(msg.get("member_name"))
             author = member_name_to_member.get(author_name) if author_name else None

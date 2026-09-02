@@ -38,6 +38,8 @@ ALL_CONFIGS=(
     selfhosted/bio_uploads_disabled
     selfhosted/external_images_disabled
     selfhosted/metrics
+    selfhosted/public_profiles
+    selfhosted/public_profiles_off
 )
 CONFIG_INDEX=0
 
@@ -364,6 +366,70 @@ if should_run "selfhosted/metrics"; then
     else
         echo "FAILED: selfhosted/metrics"
         FAILED+=("selfhosted/metrics")
+    fi
+fi
+
+# 10. Public profiles enabled - the anonymous read surface. The stack now
+# defaults this on (see docker-compose.test.yml for why), so this row is about
+# running the anonymous-surface tests rather than about flipping the setting;
+# it sets the value explicitly anyway so the row stands on its own.
+if should_run "selfhosted/public_profiles"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/public_profiles"
+    echo "================================================================"
+
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted PUBLIC_PROFILES_ENABLED=true \
+        $COMPOSE up -d app
+
+    wait_for_app
+
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_PUBLIC_PROFILES=true \
+       uv run --extra dev pytest -q -m "public_profiles"; then
+        echo "PASSED: selfhosted/public_profiles"
+    else
+        echo "FAILED: selfhosted/public_profiles"
+        FAILED+=("selfhosted/public_profiles")
+    fi
+fi
+
+# 11. Public profiles disabled - the other side of the same switch, and the
+# production default. Pins that the anonymous router 404s wholesale, and that
+# the owner-side sharing API splits the way it promises with the surface off:
+# revoking, rotating, removing and narrowing still work and the audit still
+# lists the dormant grants, while EVERY loosening is refused - creating a view,
+# adding a member/field/group, re-syncing a group, turning a flag on, and
+# publishing. Also pins that a row staged before the switch went off still
+# promotes on its own schedule.
+if should_run "selfhosted/public_profiles_off"; then
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
+    echo ""
+    echo "================================================================"
+    echo "[${CONFIG_INDEX}/${TOTAL_CONFIGS}] Config: selfhosted/public_profiles_off"
+    echo "================================================================"
+
+    ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted PUBLIC_PROFILES_ENABLED=false \
+        $COMPOSE up -d app
+
+    wait_for_app
+
+    if SHEAF_TEST_URL="$TEST_URL" \
+       SHEAF_TEST_DB_URL="$TEST_DB_URL" \
+       SHEAF_TEST_REDIS_URL="$TEST_REDIS_URL" \
+       SHEAF_TEST_ADMIN_AUTH_LEVEL=none \
+       SHEAF_TEST_MODE=selfhosted \
+       SHEAF_TEST_PUBLIC_PROFILES_OFF=true \
+       uv run --extra dev pytest -q -m "public_profiles_off"; then
+        echo "PASSED: selfhosted/public_profiles_off"
+    else
+        echo "FAILED: selfhosted/public_profiles_off"
+        FAILED+=("selfhosted/public_profiles_off")
     fi
 fi
 

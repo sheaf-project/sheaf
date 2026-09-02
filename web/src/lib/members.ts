@@ -45,10 +45,15 @@ export function createMember(data: MemberCreate) {
   });
 }
 
-export function updateMember(id: string, data: MemberUpdate) {
+export function updateMember(
+  id: string,
+  data: MemberUpdate,
+  skipErrorToast = false,
+) {
   return apiFetch<Member>(`/v1/members/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
@@ -69,10 +74,25 @@ export function archiveMember(id: string, confirm?: DestructiveConfirm) {
   });
 }
 
-/** Restore an archived member. Ungated; no body. */
-export function unarchiveMember(id: string) {
+/** Restore an archived member.
+ *
+ *  Gated when it would put them back on a published profile: the server asks
+ *  for re-auth (400/403) while the profile_visibility category is armed, and
+ *  with a grace window set it stages their return, reporting the date in
+ *  `share_exposure_activates_at`. The member themselves comes back at once
+ *  either way. Ungated with no body when nothing publishes them.
+ *
+ *  `skipErrorToast` so the caller can catch the step-up refusal and re-ask
+ *  with credentials instead of showing an error for a normal prompt. */
+export function unarchiveMember(
+  id: string,
+  confirm?: DestructiveConfirm,
+  skipErrorToast = false,
+) {
   return apiFetch<Member>(`/v1/members/${id}/unarchive`, {
     method: "POST",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+    skipErrorToast,
   });
 }
 

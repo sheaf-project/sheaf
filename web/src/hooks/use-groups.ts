@@ -51,7 +51,13 @@ export function useAllGroupMembers(): Map<string, Set<string>> {
 export function useCreateGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: GroupCreate) => api.createGroup(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: GroupCreate;
+      skipErrorToast?: boolean;
+    }) => api.createGroup(data, skipErrorToast),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: groupKeys.all });
       toast.success("Group created");
@@ -62,11 +68,25 @@ export function useCreateGroup() {
 export function useUpdateGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: GroupUpdate }) =>
-      api.updateGroup(id, data),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      data,
+      skipErrorToast = false,
+    }: {
+      id: string;
+      data: GroupUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateGroup(id, data, skipErrorToast),
+    onSuccess: (group, { data }) => {
       qc.invalidateQueries({ queryKey: groupKeys.all });
-      toast.success("Group updated");
+      // A raise that would actually expose the group is staged, not applied,
+      // so the toast must not claim the new level is live yet. Only a request
+      // that touched privacy can be the one that staged it.
+      toast.success(
+        data.privacy && group.privacy_activates_at
+          ? "Change confirmed - it goes live after your grace period."
+          : "Group updated",
+      );
     },
   });
 }

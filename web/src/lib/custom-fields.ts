@@ -20,10 +20,19 @@ export function createField(data: CustomFieldCreate) {
   });
 }
 
-export function updateField(id: string, data: CustomFieldUpdate) {
+/** A privacy raise that would actually expose the field is answered with a
+ *  400 asking for step-up credentials, so callers pass `skipErrorToast` and
+ *  re-prompt instead of firing a toast at something the user can still
+ *  complete. */
+export function updateField(
+  id: string,
+  data: CustomFieldUpdate,
+  skipErrorToast = false,
+) {
   return apiFetch<CustomField>(`/v1/fields/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 

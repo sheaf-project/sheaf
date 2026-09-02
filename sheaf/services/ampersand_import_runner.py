@@ -112,6 +112,7 @@ async def handle_ampersand_file(job: ImportJob, db: AsyncSession) -> None:
         custom_fronts_imported=result.custom_fronts_imported,
         members_skipped=result.members_skipped,
         members_updated=result.members_updated,
+        members_privacy_skipped=result.members_privacy_skipped,
         groups_imported=result.groups_imported,
         groups_skipped=result.groups_skipped,
         tags_imported=result.tags_imported,

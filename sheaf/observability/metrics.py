@@ -130,6 +130,50 @@ RealtimeCloseReason = Literal[
 RealtimeHandshakeFailure = Literal["missing_scope", "connection_cap", "disabled"]
 RealtimeDropReason = Literal["backpressure"]
 
+# Public profiles / sharing. `ShareGrantSubject` mirrors ShareSubjectType's
+# values (public|link) as label strings; the model enum stays out of this
+# module so a metric label can never drag a model import into the registry.
+ShareGrantSubject = Literal["public", "link"]
+# The staged-exposure vocabulary, shared by the finalize counter and the
+# pending gauge so the "how many are waiting" and "how many just promoted"
+# series read against one another. One value per promotion category the
+# finalize sweep handles; the pending gauge maps its own row shapes onto the
+# same names.
+ShareExposureKind = Literal[
+    "grant",
+    "view_member",
+    "view_field",
+    "view_flags",
+    "member_guard",
+    "edge_raise",
+    "group_raise",
+    "field_raise",
+    "system_privacy",
+]
+PublicMediaOutcome = Literal[
+    "served",
+    "feature_off",
+    "invalid_path",
+    "invalid_token",
+    "dark_account",
+    "missing_blob",
+]
+SharePublishBlockedReason = Literal[
+    "adult_attestation",
+    "publishing_blocked",
+    "system_not_public",
+    "grant_cap",
+    "duplicate_public",
+]
+# Recipient activation. `unknown` covers the invalid-code exit, where no
+# channel resolved so the destination type cannot be known - the code gate
+# is the first thing checked and fails before a channel is in hand.
+WatchRedemptionDestination = Literal["web_push", "mobile_push", "unknown"]
+WatchRedemptionOutcome = Literal[
+    "redeemed", "invalid_code", "not_pending", "expired", "auth_required"
+]
+ShareProjection = Literal["members"]
+
 
 # ---------------------------------------------------------------------------
 # Wrappers binding every metric to the metric-object registry. NOTE:
@@ -593,6 +637,64 @@ users_pending_delete = _G(
     "sheaf_users_pending_delete",
     "User accounts with status=pending_deletion.",
 )
+signups_total = _C(
+    "sheaf_signups_total",
+    "Accounts created via registration. New-account velocity (the flow signal); "
+    "users_total is the stock. No labels, and it counts account creation only "
+    "after the registration transaction commits, so an abandoned/failed signup "
+    "does not move it.",
+)
+
+# ---------------------------------------------------------------------------
+# Aggregate usage (DAU / MAU) - id-free HyperLogLog cardinality.
+#
+# The hard invariant: these are aggregate CARDINALITY ONLY, never attributable
+# to an account. Account/system ids are folded one-way into a per-day Redis HLL
+# sketch and only the estimated COUNT is ever published here. There is NEVER a
+# per-account series, label, or stored id - hence NO LABELS on any of these.
+# Monthly = cardinality of the UNION of the trailing 30 daily sketches (a
+# PFMERGE), not a sum of daily counts. See sheaf/observability/usage.py.
+# ---------------------------------------------------------------------------
+
+# Aggregate usage. `auth_kind` splits interactive client use (session cookie or
+# JWT bearer) from automation (API key); `any` is the read-time deduped union of
+# the two, so an account active both ways in a window counts once.
+UsageAuthKind = Literal["client", "api", "any"]
+
+active_accounts_daily = _G(
+    "sheaf_active_accounts_daily",
+    "Estimated distinct accounts active today (DAU), by auth kind (client / api "
+    "/ any), from an id-free HLL sketch PFCOUNT. Aggregate cardinality only; no "
+    "per-account series exists.",
+    ["auth_kind"],
+)
+active_systems_daily = _G(
+    "sheaf_active_systems_daily",
+    "Estimated distinct systems active today (DAU), by auth kind, from an "
+    "id-free HLL sketch PFCOUNT.",
+    ["auth_kind"],
+)
+active_accounts_monthly = _G(
+    "sheaf_active_accounts_monthly",
+    "Estimated distinct accounts active over the trailing 30 days (MAU), by auth "
+    "kind, the cardinality of the UNION of 30 daily HLL sketches (PFMERGE + "
+    "PFCOUNT). Not a sum of daily counts - that would double-count returning "
+    "users; `any` is the deduped union of client and api, not their sum.",
+    ["auth_kind"],
+)
+active_systems_monthly = _G(
+    "sheaf_active_systems_monthly",
+    "Estimated distinct systems active over the trailing 30 days (MAU), by auth "
+    "kind, the cardinality of the UNION of 30 daily HLL sketches.",
+    ["auth_kind"],
+)
+systems_with_public_profile = _G(
+    "sheaf_systems_with_public_profile",
+    "Systems with at least one live public or unlisted-link share grant right "
+    "now (the public-profiles adoption signal). Counts distinct systems against "
+    "the same grant_live_clause the resolver serves, so it matches what the "
+    "public surface can serve. No labels.",
+)
 
 # ---------------------------------------------------------------------------
 # Data shape (slow gauges)
@@ -873,6 +975,104 @@ s3_operation_duration_seconds = _H(
 )
 
 # ---------------------------------------------------------------------------
+# Public profiles / sharing
+# ---------------------------------------------------------------------------
+
+share_grants_created_total = _C(
+    "sheaf_share_grants_created_total",
+    "Share grants minted, by subject type (public profile or unlisted link). "
+    "Counted only after every refusal gate in create_grant has passed, so it "
+    "tracks grants that actually came into being, not attempts.",
+    ["subject_type"],
+)
+share_grants_revoked_total = _C(
+    "sheaf_share_grants_revoked_total",
+    "Share grants revoked, by subject type. Counts the real not-yet-revoked "
+    "-> revoked transition only, so an idempotent re-revoke (owner panic "
+    "button pressed twice, admin revoke-all over an already-dead grant) does "
+    "not double-count.",
+    ["subject_type"],
+)
+share_grants_rotated_total = _C(
+    "sheaf_share_grants_rotated_total",
+    "Link-grant tokens rotated. Link-only (public grants carry no token), so "
+    "no subject_type label. Rotation cuts off a link that spread further than "
+    "intended; a sustained rate is worth an operator glance.",
+)
+share_grants_finalized_total = _C(
+    "sheaf_share_grants_finalized_total",
+    "Staged exposures promoted live by the finalize sweep, by kind. One "
+    "increment per promoted row, alongside the audit-event loop the sweep "
+    "already runs. The delayed-exposure cousin of the pending gauge: what was "
+    "waiting out a grace window and has now gone public.",
+    ["kind"],
+)
+share_pending_exposures = _G(
+    "sheaf_share_pending_exposures",
+    "Staged flip-to-public raises still sitting behind their grace window, by "
+    "kind - point-in-time staging depth across the whole instance. The "
+    "operator-side mirror of the owner's exposure banner: the finalize sweep "
+    "should be draining these, so a kind that only climbs means the sweep is "
+    "wedged. Member and field kinds collapse per entity, matching the banner.",
+    ["kind"],
+)
+share_pending_exposure_oldest_seconds = _G(
+    "sheaf_share_pending_exposure_oldest_seconds",
+    "Age of the oldest staged exposure's activation time across all kinds, in "
+    "seconds; 0 when nothing is staged or everything is still ahead of its "
+    "window. Goes positive only once an activation time has passed while the "
+    "row is still pending, i.e. the finalize sweep is behind. Mirrors "
+    "imports_oldest_pending_seconds / outbox_oldest_pending_seconds.",
+)
+share_grants_live = _G(
+    "sheaf_share_grants_live",
+    "Share grants live or pending on their own window right now, by subject "
+    "type (the same grant_live_clause the resolver serves against). "
+    "Point-in-time count of what the public surface can serve.",
+    ["subject_type"],
+)
+public_media_serves_total = _C(
+    "sheaf_public_media_serves_total",
+    "Anonymous public-profile media fetches, by outcome. The headline is "
+    "`dark_account`: a signed media capability presented after the profile "
+    "behind it went dark (revoke / rotate / system-private / suspend / ban) - "
+    "a sustained rate means capabilities are outliving their profiles, or "
+    "someone is replaying old URLs. Raw serve volume and latency stay in HTTP "
+    "RED; this is only the outcome breakdown.",
+    ["outcome"],
+)
+share_publish_blocked_total = _C(
+    "sheaf_share_publish_blocked_total",
+    "Publish attempts refused, by reason: missing 18+ attestation, operator "
+    "publishing latch, system not public, per-system grant cap, or a second "
+    "public profile. Sustained `publishing_blocked` means an owner is "
+    "repeatedly hitting an operator takedown.",
+    ["reason"],
+)
+adult_attestations_total = _C(
+    "sheaf_adult_attestations_total",
+    "Accounts recording the 18+ self-declaration for the first time. Counts "
+    "the one-way transition only; an idempotent re-declaration is not a state "
+    "change and is not counted.",
+)
+watch_redemptions_total = _C(
+    "sheaf_watch_redemptions_total",
+    "Recipient activation-code redemptions, by destination type and outcome. "
+    "`invalid_code` carries destination_type=unknown because no channel "
+    "resolved. Tracks the recipient-side of the watch/notify handoff funnel.",
+    ["destination_type", "outcome"],
+)
+share_projection_duration_seconds = _H(
+    "sheaf_share_projection_duration_seconds",
+    "Time to build a public projection, by projection. Scoped to `members` - "
+    "the privacy-ceiling roster query plus the decrypt-and-render pass, the "
+    "one expensive projection. The other project_* surfaces are near-"
+    "duplicates of HTTP RED and are deliberately not instrumented here.",
+    ["projection"],
+    buckets=HTTP_LATENCY_BUCKETS,
+)
+
+# ---------------------------------------------------------------------------
 # Build info
 # ---------------------------------------------------------------------------
 
@@ -951,6 +1151,7 @@ def prewarm_metrics() -> None:
 
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)
+    signups_total.inc(0)
 
     for reason in (
         "client_closed", "auth_revoked", "auth_expired", "backpressure",
@@ -971,6 +1172,47 @@ def prewarm_metrics() -> None:
     ):
         for tier in ("free", "plus", "self_hosted"):
             tier_limit_hits_total.labels(limit=limit_name, tier=tier).inc(0)
+
+    # Public profiles / sharing.
+    for subject_type in ("public", "link"):
+        share_grants_created_total.labels(subject_type=subject_type).inc(0)
+        share_grants_revoked_total.labels(subject_type=subject_type).inc(0)
+    share_grants_rotated_total.inc(0)
+    adult_attestations_total.inc(0)
+
+    for kind in (
+        "grant", "view_member", "view_field", "view_flags", "member_guard",
+        "edge_raise", "group_raise", "field_raise", "system_privacy",
+    ):
+        share_grants_finalized_total.labels(kind=kind).inc(0)
+
+    for outcome in (
+        "served", "feature_off", "invalid_path", "invalid_token",
+        "dark_account", "missing_blob",
+    ):
+        public_media_serves_total.labels(outcome=outcome).inc(0)
+
+    for reason in (
+        "adult_attestation", "publishing_blocked", "system_not_public",
+        "grant_cap", "duplicate_public",
+    ):
+        share_publish_blocked_total.labels(reason=reason).inc(0)
+
+    # Only the reachable destination/outcome combinations: web push never
+    # demands auth, mobile push always does, and invalid_code has no channel
+    # to type. Prewarming impossible pairs would light up absent-series alerts
+    # on series that can never move.
+    for outcome in ("redeemed", "not_pending", "expired"):
+        watch_redemptions_total.labels(
+            destination_type="web_push", outcome=outcome
+        ).inc(0)
+    for outcome in ("redeemed", "not_pending", "expired", "auth_required"):
+        watch_redemptions_total.labels(
+            destination_type="mobile_push", outcome=outcome
+        ).inc(0)
+    watch_redemptions_total.labels(
+        destination_type="unknown", outcome="invalid_code"
+    ).inc(0)
 
 
 async def observe_s3(op: str, awaitable):

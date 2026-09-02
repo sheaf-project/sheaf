@@ -31,3 +31,4 @@ certs/
 
 # internal project notes
 notes/
+data/jwt_secret

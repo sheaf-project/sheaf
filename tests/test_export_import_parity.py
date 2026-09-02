@@ -74,11 +74,50 @@ _SURROGATE_PK = "surrogate UUID PK, re-minted on import (old->new id maps handle
 _TENANT_FK = "tenant scope FK, set from the importing system, not from file data"
 _ROW_CREATED = "row-creation timestamp, server state not portable content"
 _ROW_UPDATED = "row-mutation timestamp, server state not portable content"
-# The share tables are dormant: they carry no rows because nothing writes
-# them, and the portable export has no share section at all.
-_SHARE_DORMANT = (
-    "dormant table; nothing writes it and the portable export carries no "
-    "share section, so no column round-trips"
+# Share rows land active on import because no grant is ever imported, so an
+# imported view is exposed to nobody until the user deliberately publishes it.
+_SHARE_LIFECYCLE = (
+    "grace-window lifecycle state; imported rows land active because grants "
+    "are never imported, so an imported view exposes nothing"
+)
+# A staged flag flip is mid-grace-window state, not curation: the export
+# carries the view's LIVE flags, so an import never restores a half-applied
+# loosening (and, with no grants imported, could not act on one anyway).
+_SHARE_FLAG_STAGING = (
+    "staged flag flip waiting out the grace window; the export carries the "
+    "view's live flags, so an import never restores a half-applied loosening"
+)
+# A staged edge raise is the same kind of mid-grace-window state as a staged
+# view flag: the export carries the edge's LIVE visibility, so an import never
+# restores a half-applied raise (and, with no grants imported, could not act on
+# one anyway).
+_EDGE_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "edge's live visibility, so an import never restores a half-applied raise"
+)
+# Same kind of mid-grace-window state as a staged edge raise, for the same
+# reason: the export carries the group's LIVE privacy, so an import never
+# restores a half-applied publish.
+_GROUP_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "group's live privacy, so an import never restores a half-applied raise"
+)
+# And once more for a custom-field definition, for the same reason: the export
+# carries the definition's LIVE privacy, so an import never restores a
+# half-applied raise.
+_FIELD_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "definition's live privacy, so an import never restores a half-applied raise"
+)
+# And for the system-level master switch, same reason: the export carries the
+# system's LIVE privacy, so an import never restores a half-applied raise.
+_SYSTEM_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "system's live privacy, so an import never restores a half-applied raise"
+)
+_NO_GRANT_IMPORT = (
+    "grants are deliberately never exported or imported: a grant is a live "
+    "capability, so restoring one would republish a system from a backup"
 )
 # The Article 20 export is system content restored INTO an already-existing
 # account, so no column of the account row itself round-trips.
@@ -166,9 +205,11 @@ CLASSIFICATION: dict[type, dict] = {
             "email_soft_bounce_count": _ACCOUNT_SERVER_STATE,
             "email_revalidation_required": _ACCOUNT_SERVER_STATE,
             "adult_attested_at": (
-                "a legal self-declaration made to one instance by one account; "
-                "importing it would carry that declaration across accounts and "
-                "instances on a file's say-so"
+                "the age attestation that gates publishing. Grants never "
+                "round-trip, so a restored account is exposing nothing and "
+                "must deliberately re-attest before it can publish again - "
+                "importing the attestation would carry a legal declaration "
+                "across accounts and instances on a file's say-so"
             ),
             "disable_cdn_during_ddos": (
                 "shield-mode opt-out, meaningful only on an instance with a "
@@ -191,6 +232,7 @@ CLASSIFICATION: dict[type, dict] = {
             "safety_applies_to_images", "safety_applies_to_revisions",
             "safety_applies_to_notifications", "safety_applies_to_reminders",
             "safety_applies_to_polls", "safety_applies_to_messages",
+            "safety_applies_to_relationships",
             "safety_applies_to_archive", "safety_applies_to_profile_visibility",
             "journal_max_revisions", "journal_max_revision_days",
             "pinned_revision_max_per_target", "openplural_archive",
@@ -204,6 +246,13 @@ CLASSIFICATION: dict[type, dict] = {
                 "opt-in privacy setting that arms deletion; deliberately not "
                 "round-tripped so a restore never silently arms a deletion "
                 "policy - the user re-enables it through the guarded flow"
+            ),
+            "pending_privacy": _SYSTEM_RAISE_STAGING,
+            "privacy_activates_at": _SYSTEM_RAISE_STAGING,
+            "publishing_blocked": (
+                "operator-imposed takedown latch, set and cleared only by an "
+                "admin on this instance; carrying it across a restore would let "
+                "a file re-impose or lift a moderation action"
             ),
         },
     },
@@ -224,6 +273,10 @@ CLASSIFICATION: dict[type, dict] = {
             "system_id": _TENANT_FK,
             "name_hash": "derived blind index of name, recomputed on import",
             "updated_at": _ROW_UPDATED,
+            "fronting_private_activates_at": (
+                "live System Safety staging state; imports restore the guard "
+                "itself but never resume an in-flight release"
+            ),
         },
     },
     Front: {
@@ -239,12 +292,14 @@ CLASSIFICATION: dict[type, dict] = {
         },
     },
     Group: {
-        "exported": {"name", "description", "color", "parent_id"},
+        "exported": {"name", "description", "color", "parent_id", "privacy"},
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "pending_privacy": _GROUP_RAISE_STAGING,
+            "privacy_activates_at": _GROUP_RAISE_STAGING,
         },
     },
     Tag: {
@@ -256,72 +311,93 @@ CLASSIFICATION: dict[type, dict] = {
             "updated_at": _ROW_UPDATED,
         },
     },
-    # Nothing on the share tables round-trips: they are dormant, so there is
-    # no curation to carry and no capability to restore.
+    # Share views round-trip (they are real curation work the user did).
+    # Share GRANTS deliberately do not - see the ShareGrant entry below.
     ShareView: {
-        "exported": set(),
+        "exported": {
+            "name", "include_members", "include_bio", "include_fronting",
+            "fronting_show_count", "include_relationships", "include_groups",
+            # Not a staged flag (it exposes nothing new, so it never waits),
+            # but it IS the owner's setting, so it round-trips like the rest.
+            "member_permalinks",
+        },
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
-            "name": _SHARE_DORMANT,
-            "include_bio": _SHARE_DORMANT,
-            "include_fronting": _SHARE_DORMANT,
-            "fronting_show_count": _SHARE_DORMANT,
-            "pending_include_bio": _SHARE_DORMANT,
-            "pending_include_fronting": _SHARE_DORMANT,
-            "pending_fronting_show_count": _SHARE_DORMANT,
-            "flags_activate_at": _SHARE_DORMANT,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "pending_include_bio": _SHARE_FLAG_STAGING,
+            "pending_include_fronting": _SHARE_FLAG_STAGING,
+            "pending_fronting_show_count": _SHARE_FLAG_STAGING,
+            "pending_include_relationships": _SHARE_FLAG_STAGING,
+            "pending_include_members": _SHARE_FLAG_STAGING,
+            "pending_include_groups": _SHARE_FLAG_STAGING,
+            "flags_activate_at": _SHARE_FLAG_STAGING,
         },
     },
     ShareViewMember: {
-        "exported": set(),
+        # `added_via_group_id` rides along as the view's `member_sources` map
+        # (old member uuid -> old group uuid), remapped on import through the
+        # same old->new group map the view's `group_ids` use. It is what makes
+        # detaching a group remove the members that group added rather than its
+        # current roster, so a restored backup that lost it would detach the
+        # wrong people - a live privacy behaviour, not bookkeeping.
+        "exported": {"member_id", "added_via_group_id"},
         "excluded": {
             "id": _SURROGATE_PK,
-            "view_id": _SHARE_DORMANT,
-            "member_id": _SHARE_DORMANT,
-            "status": _SHARE_DORMANT,
-            "activates_at": _SHARE_DORMANT,
+            "view_id": "parent view FK, re-pointed via the old->new view map",
+            "status": _SHARE_LIFECYCLE,
+            "activates_at": _SHARE_LIFECYCLE,
             "created_at": _ROW_CREATED,
         },
     },
     ShareViewField: {
-        "exported": set(),
+        "exported": {"field_id"},
         "excluded": {
             "id": _SURROGATE_PK,
-            "view_id": _SHARE_DORMANT,
-            "field_id": _SHARE_DORMANT,
-            "status": _SHARE_DORMANT,
-            "activates_at": _SHARE_DORMANT,
+            "view_id": "parent view FK, re-pointed via the old->new view map",
+            "status": _SHARE_LIFECYCLE,
+            "activates_at": _SHARE_LIFECYCLE,
             "created_at": _ROW_CREATED,
         },
     },
     ShareViewGroup: {
-        "exported": set(),
+        "exported": {"group_id"},
         "excluded": {
             "id": _SURROGATE_PK,
-            "view_id": _SHARE_DORMANT,
-            "group_id": _SHARE_DORMANT,
-            "synced_at": _SHARE_DORMANT,
+            "view_id": "parent view FK, re-pointed via the old->new view map",
+            "synced_at": (
+                "provenance bookkeeping for the last group expansion, not "
+                "portable content"
+            ),
             "created_at": _ROW_CREATED,
         },
     },
     ShareGrant: {
+        # Nothing here round-trips, on purpose. A grant is a LIVE CAPABILITY:
+        # re-creating one on import would republish a system straight out of a
+        # restored backup, which is the worst possible outcome for a feature
+        # whose threat model is accidental outing. Link tokens could not be
+        # restored anyway (only a keyed hash is ever stored). After a restore
+        # the user's views are intact and nothing is published until they
+        # deliberately publish it again.
         "exported": set(),
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
-            "view_id": _SHARE_DORMANT,
-            "subject_type": _SHARE_DORMANT,
-            "token_hash": _SHARE_DORMANT,
-            "note": _SHARE_DORMANT,
-            "status": _SHARE_DORMANT,
-            "activates_at": _SHARE_DORMANT,
-            "expires_at": _SHARE_DORMANT,
-            "revoked_at": _SHARE_DORMANT,
+            "view_id": _NO_GRANT_IMPORT,
+            "subject_type": _NO_GRANT_IMPORT,
+            "token_hash": (
+                "keyed HMAC of a bearer capability; never exported, and the "
+                "raw token exists only at creation time"
+            ),
+            "note": _NO_GRANT_IMPORT,
+            "status": _NO_GRANT_IMPORT,
+            "activates_at": _NO_GRANT_IMPORT,
+            "expires_at": _NO_GRANT_IMPORT,
+            "revoked_at": _NO_GRANT_IMPORT,
             "created_at": _ROW_CREATED,
-            "created_by_user_id": _SHARE_DORMANT,
+            "created_by_user_id": _NO_GRANT_IMPORT,
         },
     },
     CustomFieldDefinition: {
@@ -331,6 +407,8 @@ CLASSIFICATION: dict[type, dict] = {
             "system_id": _TENANT_FK,
             "created_at": _ROW_CREATED,
             "updated_at": _ROW_UPDATED,
+            "pending_privacy": _FIELD_RAISE_STAGING,
+            "privacy_activates_at": _FIELD_RAISE_STAGING,
         },
     },
     CustomFieldValue: {
@@ -500,7 +578,9 @@ CLASSIFICATION: dict[type, dict] = {
         },
     },
     RelationshipType: {
-        "exported": {"name", "symmetry", "forward_label", "reverse_label"},
+        "exported": {
+            "name", "symmetry", "forward_label", "reverse_label", "color",
+        },
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
@@ -519,6 +599,8 @@ CLASSIFICATION: dict[type, dict] = {
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,
+            "pending_visibility": _EDGE_RAISE_STAGING,
+            "visibility_activates_at": _EDGE_RAISE_STAGING,
         },
     },
     GroupRelationship: {

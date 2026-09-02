@@ -828,7 +828,34 @@ async def _finalize_safety_changes(db: AsyncSession) -> dict:
     return {"items_processed": len(changes)}
 
 
+async def _finalize_share_activations(db: AsyncSession) -> dict:
+    """Promote share grants and view rows whose grace window has elapsed.
+
+    The exposing half of System Safety: creating a grant, or adding someone to
+    an already-shared view, lands PENDING and only becomes visible here. A row
+    revoked during the window is skipped, so the exposure simply never happens.
+    """
+    from sheaf.services.sharing import finalize_share_activations
+
+    promoted = await finalize_share_activations(db)
+    return {"items_processed": promoted}
+
+
 # ---------------------------------------------------------------------------
+async def _flush_usage_sketches(db: AsyncSession) -> dict:
+    """Persist the per-day usage HLL sketch bytes to Postgres and prune old rows.
+
+    Durability backstop for DAU/MAU: Redis survives an in-place upgrade but not
+    an instance replace, so the mergeable day-sketches are flushed here and
+    restored from here when a Redis day-key is missing. Aggregate ops data only
+    (the ids are irreversibly folded into HLL registers), so it is deliberately
+    excluded from the user-data export.
+    """
+    from sheaf.observability.usage import flush_day_sketches
+
+    return await flush_day_sketches(db)
+
+
 async def _build_export_jobs(db: AsyncSession) -> dict:
     """Pick up one pending export job per tick and assemble its zip.
 
@@ -1201,6 +1228,16 @@ def _register_all_jobs() -> None:
     )
 
     register_job(
+        name="finalize_share_activations",
+        description=(
+            "Make share grants and view additions live once their grace "
+            "period has elapsed"
+        ),
+        func=_finalize_share_activations,
+        interval_seconds=lambda: settings.job_check_interval_minutes * 60,
+    )
+
+    register_job(
         name="process_ses_events",
         description="Process SES bounce/complaint events from the SQS queue",
         func=_process_ses_events,
@@ -1285,6 +1322,20 @@ def _register_all_jobs() -> None:
         description="Refresh DB- and Redis-sourced Prometheus gauges",
         func=_refresh_metrics_gauges,
         interval_seconds=lambda: settings.metrics_gauge_refresh_seconds,
+        enabled=lambda: settings.metrics_enabled,
+    )
+
+    # Durability flush for the aggregate usage (DAU/MAU) HLL sketches. Reads
+    # each live day-key's raw sketch bytes from Redis and UPSERTs them into
+    # Postgres so MAU survives a Redis instance replace (the sketch bytes are
+    # required for the 30-day union; a scalar count could not be unioned). Runs
+    # every 10 minutes, so a replace loses at most that much recent activity.
+    # Gated on metrics_enabled like the gauge refreshers.
+    register_job(
+        name="flush_usage_sketches",
+        description="Persist per-day usage HLL sketches to Postgres for durability",
+        func=_flush_usage_sketches,
+        interval_seconds=lambda: 600,  # every 10 minutes
         enabled=lambda: settings.metrics_enabled,
     )
 

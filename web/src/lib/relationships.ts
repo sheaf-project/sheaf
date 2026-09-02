@@ -1,6 +1,9 @@
 import type {
+  DeleteResult,
+  DestructiveConfirm,
   RelationshipEdge,
   RelationshipEdgeCreate,
+  RelationshipEdgeUpdate,
   RelationshipFromViewpoint,
   RelationshipGraph,
   RelationshipType,
@@ -30,8 +33,17 @@ export function updateRelationshipType(id: string, data: RelationshipTypeUpdate)
   });
 }
 
-export function deleteRelationshipType(id: string) {
-  return apiFetch<void>(`/v1/relationship-types/${id}`, { method: "DELETE" });
+/** Delete a relationship type and every edge drawn with it.
+ *
+ *  Safeguarded: with the System Safety "relationships" category armed and a
+ *  grace window set the server answers 202 with a pending action instead of
+ *  deleting, so the result is `DeleteResult` (void or queued), not void. The
+ *  optional confirm body carries the re-auth the current tier asks for. */
+export function deleteRelationshipType(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<DeleteResult>(`/v1/relationship-types/${id}`, {
+    method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
 }
 
 // --- Member edges ---
@@ -42,10 +54,33 @@ export function listMemberRelationships(memberId: string) {
   );
 }
 
-export function createMemberRelationship(data: RelationshipEdgeCreate) {
+/** Creating an edge straight to `public` runs the same step-up gate raising an
+ *  existing one does, so it can come back with the same 400 asking for
+ *  credentials - hence the same `skipErrorToast` escape the PATCH takes. */
+export function createMemberRelationship(
+  data: RelationshipEdgeCreate,
+  skipErrorToast = false,
+) {
   return apiFetch<RelationshipEdge>("/v1/member-relationships", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
+  });
+}
+
+/** Move one member edge up or down the privacy ladder. A raise that would
+ *  actually expose the edge is answered with a 400 asking for step-up
+ *  credentials, so callers pass `skipErrorToast` and re-prompt instead of
+ *  letting a toast fire for something the user can still complete. */
+export function updateMemberRelationship(
+  edgeId: string,
+  data: RelationshipEdgeUpdate,
+  skipErrorToast = false,
+) {
+  return apiFetch<RelationshipEdge>(`/v1/member-relationships/${edgeId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
@@ -63,10 +98,30 @@ export function listGroupRelationships(groupId: string) {
   );
 }
 
-export function createGroupRelationship(data: RelationshipEdgeCreate) {
+/** The group twin. Never gated server-side (no share view reaches a group
+ *  edge), but it takes the same option so both scopes call the same shape. */
+export function createGroupRelationship(
+  data: RelationshipEdgeCreate,
+  skipErrorToast = false,
+) {
   return apiFetch<RelationshipEdge>("/v1/group-relationships", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
+  });
+}
+
+/** The group twin. Never deferred server-side (no share view reaches a group
+ *  edge), but it takes the same option so both scopes call the same shape. */
+export function updateGroupRelationship(
+  edgeId: string,
+  data: RelationshipEdgeUpdate,
+  skipErrorToast = false,
+) {
+  return apiFetch<RelationshipEdge>(`/v1/group-relationships/${edgeId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 

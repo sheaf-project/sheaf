@@ -15,7 +15,11 @@ from sheaf.timezones import is_valid_timezone
 
 class SystemCreate(BaseModel):
     name: str = Field(max_length=100)
-    description: str | None = None
+    # Long-form markdown, capped for the same reason a member bio is: the
+    # image/footnote parse is superlinear and runs on the event loop (write path
+    # and public projection), so an unbounded description is a cheap DoS lever.
+    # 20k chars is generous for a real system description. See schemas/member.py.
+    description: str | None = Field(default=None, max_length=20000)
     note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
@@ -35,7 +39,8 @@ class SystemCreate(BaseModel):
 
 class SystemUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # See SystemCreate.description for the cap rationale.
+    description: str | None = Field(default=None, max_length=20000)
     note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
@@ -50,6 +55,14 @@ class SystemUpdate(BaseModel):
     replace_fronts_default: bool | None = None
     coalesce_contiguous_fronts: bool | None = None
     show_member_created_date: bool | None = None
+
+    # Step-up credentials, only consulted when raising system privacy to
+    # `public` is a deferred exposure (the profile_visibility safety category is
+    # armed and a grant would actually serve). Never stored on the system.
+    password: str | None = Field(
+        default=None, description="Required when the privacy raise is deferred"
+    )
+    totp_code: str | None = None
 
     @field_validator("avatar_url", mode="before")
     @classmethod
@@ -102,6 +115,16 @@ class SystemRead(BaseModel):
     avatar_url: str | None
     color: str | None
     privacy: PrivacyLevel
+    # A raise of the master switch waiting out the grace window: `privacy` above
+    # is still the truth, and this says what it will become when
+    # `privacy_activates_at` passes. Null = nothing staged.
+    pending_privacy: PrivacyLevel | None = None
+    privacy_activates_at: datetime | None = None
+    # Operator takedown latch. Read-only to the owner (there is no
+    # SystemUpdate field for it): the owner sees WHY publishing is refused and
+    # that they cannot lift it themselves, but only an admin can clear it. The
+    # sharing screen turns this into a prominent banner.
+    publishing_blocked: bool = False
     delete_confirmation: DeleteConfirmation
     date_format: DateFormat
     timezone: str | None

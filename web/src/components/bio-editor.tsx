@@ -29,6 +29,7 @@ import {
   Tags,
 } from "lucide-react";
 import { type AuthConfig, getAuthConfig } from "@/lib/auth";
+import { isHostedImage, isPublicImageAllowed } from "@/lib/image-sources";
 
 const HLJS_LINK_ID = "hljs-theme-stylesheet";
 
@@ -51,29 +52,34 @@ function useHljsTheme() {
   }, [effectiveMode]);
 }
 
-function isHostedImage(src: string, cdnBase: string | null) {
-  if (src.startsWith("/v1/files/")) return true;
-  if (cdnBase && src.startsWith(cdnBase + "/")) return true;
-  return false;
-}
+/** What the server substitutes for an external image URL on public profiles,
+ *  so a visitor's browser never fetches from an owner-chosen host. Kept in
+ *  sync with EXTERNAL_IMAGE_HIDDEN in sheaf/files.py. */
+const HIDDEN_IMAGE_SRC = "#external-image-hidden";
 
 function MarkdownPreview({
   content,
   showBadgesOverride,
+  publicSurface,
 }: {
   content: string;
   showBadgesOverride?: boolean;
+  /** Rendering a public profile: show the hidden-image sentinel as a chip. */
+  publicSurface?: boolean;
 }) {
   const [defaultBadges] = useShowImageBadges();
-  const showBadges = showBadgesOverride ?? defaultBadges;
+  // Never on a public surface: the badges are an editing aid, and a visitor
+  // reading somebody else's profile is not editing it.
+  const showBadges = publicSurface ? false : (showBadgesOverride ?? defaultBadges);
   const [cdnBase, setCdnBase] = useState<string | null>(null);
   useHljsTheme();
 
   useEffect(() => {
+    if (publicSurface) return;
     getAuthConfig()
-      .then((c: AuthConfig) => setCdnBase(c.file_cdn_base))
+      .then((config: AuthConfig) => setCdnBase(config.file_cdn_base))
       .catch(() => {});
-  }, []);
+  }, [publicSurface]);
 
   if (!content) {
     return <p className="text-sm text-muted-foreground italic">Nothing here yet.</p>;
@@ -92,8 +98,41 @@ function MarkdownPreview({
           [rehypeHighlight, { detect: true, ignoreMissing: true }],
         ]}
         components={{
+          // On a public surface every link out of the bio carries
+          // rel="noreferrer noopener". A share link's URL is its secret and a
+          // public profile's URL names the system, so neither may be handed to
+          // whatever host an owner linked to - and the owner writes these
+          // links, while the person clicking them is a stranger who agreed to
+          // nothing. The page-level `referrer` meta covers this too; both are
+          // here because they fail independently (an extension or a browser
+          // that ignores one still honours the other), and `noopener` closes
+          // the separate window.opener handle. No `target` change: where the
+          // link opens is the visitor's business.
+          a: ({ href, children, ...props }) => (
+            <a
+              href={href}
+              {...props}
+              rel={publicSurface ? "noreferrer noopener" : props.rel}
+            >
+              {children}
+            </a>
+          ),
           img: ({ src, alt, ...props }) => {
-            const hosted = src ? isHostedImage(src, cdnBase) : false;
+            const hosted = src
+              ? publicSurface
+                ? isPublicImageAllowed(src)
+                : isHostedImage(src, cdnBase)
+              : false;
+            const publicBlocked = Boolean(
+              publicSurface && src && !isPublicImageAllowed(src, true),
+            );
+            if (publicSurface && (src === HIDDEN_IMAGE_SRC || publicBlocked)) {
+              return (
+                <span className="inline-flex items-center rounded border border-dashed px-1.5 py-0.5 align-middle text-[11px] text-muted-foreground">
+                  external image
+                </span>
+              );
+            }
             return (
               <span className="relative inline-block">
                 <img

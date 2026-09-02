@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
@@ -44,6 +45,7 @@ from sheaf.models.pending_action import (
     PendingActionType,
 )
 from sheaf.models.poll import Poll
+from sheaf.models.relationship import RelationshipType
 from sheaf.models.reminder import Reminder
 from sheaf.models.safety_change_request import (
     SafetyChangeRequest,
@@ -72,15 +74,21 @@ SAFETY_CATEGORIES: tuple[str, ...] = (
     "reminders",
     "polls",
     "messages",
+    # Deleting a relationship TYPE, which takes every edge drawn with it. The
+    # per-edge visibility controls live elsewhere; this is the category for
+    # destroying the vocabulary itself.
+    "relationships",
     # Unlike the others, "archive" has no grace-able PendingAction; it only
     # gates whether archiving a member requires re-auth (checked directly in
     # the archive endpoint). Listed here so the settings surface treats it
     # like any other toggle (and loosening it routes through the asymmetric
     # delay via split_safety_changes).
     "archive",
-    # Also has no PendingAction, and nothing currently gates on it. Listed so
-    # the stored preference stays settable and keeps round-tripping through
-    # export and import.
+    # Also has no PendingAction, and is the only category that gates an
+    # EXPOSING action rather than a destructive one: creating a share grant,
+    # or adding a member/field to a view that is already shared. The grace
+    # window is served by the pending lifecycle on the share_* rows
+    # themselves (see sheaf/services/sharing.py), not by PendingAction.
     "profile_visibility",
 )
 
@@ -102,6 +110,7 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     # System Safety v2 future-work entry.
     PendingActionType.MESSAGE_DELETE: "messages",
     PendingActionType.MESSAGE_THREAD_DELETE: "messages",
+    PendingActionType.RELATIONSHIP_TYPE_DELETE: "relationships",
 }
 
 _MODEL_BY_ACTION: dict[str, type] = {
@@ -122,6 +131,9 @@ _MODEL_BY_ACTION: dict[str, type] = {
     # `finalize_pending_action`.
     PendingActionType.MESSAGE_DELETE: Message,
     PendingActionType.MESSAGE_THREAD_DELETE: Message,
+    # The edges go with the type by DB cascade, so finalize deletes the one
+    # row and the FK does the rest - see `finalize_pending_action`.
+    PendingActionType.RELATIONSHIP_TYPE_DELETE: RelationshipType,
 }
 
 
@@ -345,6 +357,70 @@ def is_safeguarded(system: System, action_type: str) -> bool:
     return bool(getattr(system, f"safety_applies_to_{category}"))
 
 
+# Partial unique index behind the one-action-per-target rule (see the model
+# and the a9b0c1d2e3f4 migration). Named here so the race path can tell its
+# own constraint violation from anything else.
+_PENDING_TARGET_INDEX = "uq_pending_actions_pending_target"
+
+# Noun and verb for the 409 a repeat request gets, per action type. Kept in
+# one map so every safeguarded surface answers a double-submit with the same
+# sentence, and only the entity changes.
+_QUEUED_SUBJECT: dict[str, tuple[str, str]] = {
+    PendingActionType.MEMBER_DELETE: ("member", "deletion"),
+    PendingActionType.GROUP_DELETE: ("group", "deletion"),
+    PendingActionType.TAG_DELETE: ("tag", "deletion"),
+    PendingActionType.FIELD_DELETE: ("custom field", "deletion"),
+    PendingActionType.FRONT_DELETE: ("front", "deletion"),
+    PendingActionType.JOURNAL_DELETE: ("journal entry", "deletion"),
+    PendingActionType.IMAGE_DELETE: ("file", "deletion"),
+    PendingActionType.REVISION_UNPIN: ("revision", "unpinning"),
+    PendingActionType.WATCH_TOKEN_REVOKE: ("watcher", "revocation"),
+    PendingActionType.CHANNEL_DELETE: ("notification channel", "deletion"),
+    PendingActionType.REMINDER_DELETE: ("reminder", "deletion"),
+    PendingActionType.POLL_DELETE: ("poll", "deletion"),
+    PendingActionType.MESSAGE_DELETE: ("message", "deletion"),
+    PendingActionType.MESSAGE_THREAD_DELETE: ("thread", "deletion"),
+    PendingActionType.RELATIONSHIP_TYPE_DELETE: ("relationship type", "deletion"),
+}
+
+
+def already_queued_error(action_type: str) -> HTTPException:
+    """The 409 for queueing the same action on the same target twice.
+
+    One shape everywhere; only the noun and the verb come from the action
+    type. An unmapped type falls back to a generic noun rather than leaking
+    the raw action_type string at the user.
+    """
+    noun, verb = _QUEUED_SUBJECT.get(str(action_type), ("item", "deletion"))
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"This {noun} is already queued for {verb}; "
+            "cancel it in Settings > Safety first"
+        ),
+    )
+
+
+async def _has_open_action(
+    db: AsyncSession,
+    system_id: uuid.UUID,
+    action_type: str,
+    target_id: uuid.UUID,
+) -> bool:
+    """True if this target already has a still-pending action of this type."""
+    result = await db.execute(
+        select(PendingAction.id)
+        .where(
+            PendingAction.system_id == system_id,
+            PendingAction.action_type == str(action_type),
+            PendingAction.target_id == target_id,
+            PendingAction.status == PendingActionStatus.PENDING.value,
+        )
+        .limit(1)
+    )
+    return result.first() is not None
+
+
 async def queue_pending_action(
     *,
     db: AsyncSession,
@@ -354,7 +430,20 @@ async def queue_pending_action(
     target_id: uuid.UUID,
     target_label: str,
 ) -> PendingAction:
-    """Create a PendingAction row with a fronting snapshot. Caller commits."""
+    """Create a PendingAction row with a fronting snapshot. Caller commits.
+
+    One pending action per (system, action_type, target): a second request
+    while one is already queued raises 409 instead of writing a second
+    identical row. Duplicates put two entries on the Safety page for one
+    thing, and cancelling either left the target still on its way out, so the
+    cancel appeared to do nothing at all. The check lives here rather than in
+    each endpoint so every safeguarded action gets it for free, and the
+    partial unique index (uq_pending_actions_pending_target) backs it at the
+    DB level for the concurrent case a read-then-write check cannot see.
+    """
+    if await _has_open_action(db, system.id, action_type, target_id):
+        raise already_queued_error(action_type)
+
     fronting_ids, fronting_names = await snapshot_current_fronts(system.id, db)
     now = datetime.now(UTC)
     # target_label and fronting_member_names hold decrypted user content, so
@@ -379,20 +468,25 @@ async def queue_pending_action(
         ),
         status=PendingActionStatus.PENDING,
     )
-    db.add(pending)
+    # Insert inside a SAVEPOINT: two requests firing at once (a double-click,
+    # a client retry) can both pass the check above, and the unique index
+    # rejects the loser. Turning that into the same 409 keeps the promise the
+    # index makes rather than surfacing a 500. A savepoint, not the
+    # session-wide rollback this pattern uses elsewhere, because the caller
+    # owns the transaction and commits it afterwards - only the failed insert
+    # is undone.
+    try:
+        async with db.begin_nested():
+            db.add(pending)
+            await db.flush()
+    except IntegrityError as exc:
+        # Only OUR index means "already queued". Anything else (a target or
+        # user row vanishing under us, say) is a real integrity failure and
+        # must not be dressed up as a conflict the owner can act on.
+        if _PENDING_TARGET_INDEX not in str(exc.orig):
+            raise
+        raise already_queued_error(action_type) from exc
     return pending
-
-
-def has_pending_action_for_target(
-    db_actions: list[PendingAction], target_id: uuid.UUID, action_type: str
-) -> bool:
-    """Check a preloaded list for an existing pending action on this target."""
-    return any(
-        p.target_id == target_id
-        and p.action_type == action_type
-        and p.status == PendingActionStatus.PENDING
-        for p in db_actions
-    )
 
 
 async def pending_finalize_after_by_target(

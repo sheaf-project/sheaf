@@ -56,6 +56,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
@@ -175,9 +176,16 @@ async def run_import(
     id_to_member: dict[str, Member] = {}
     tuppers_no_id = 0
     for member, tid in candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=options.conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=options.conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_member_id:
+            result.members_privacy_skipped += 1
+            warnings.append(privacy_hold_warning(resolution.privacy_held_member_id))
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1
@@ -253,8 +261,10 @@ def _build_member(
     # Nothing in a Tupperbox export can legitimately point at Sheaf storage,
     # so all internal refs are dropped; external images and the prose around
     # them are untouched.
+    # Clamp before the strip/parse so the length bound also caps the
+    # superlinear image parse, not just the stored bytes.
     plaintext_description = strip_internal_image_refs_md_to_none(
-        _clean_str(tupper.get("description"))
+        clamp_str(_clean_str(tupper.get("description")), il.M_DESCRIPTION, report=report)
     )
 
     member_id = uuid.uuid4()
@@ -332,9 +342,13 @@ async def _import_groups(
             id=uuid.uuid4(),
             system_id=system_id,
             name=name,
-            # Same reason as the member description above.
+            # Same reason as the member description above (strip + length cap).
             description=strip_internal_image_refs_md_to_none(
-                _clean_str(tb_g.get("description"))
+                clamp_str(
+                    _clean_str(tb_g.get("description")),
+                    il.GROUP_DESCRIPTION,
+                    report=report,
+                )
             ),
         )
         db.add(group)

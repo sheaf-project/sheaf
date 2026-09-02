@@ -65,6 +65,21 @@ Batch 2 close-out:
         the capped Redis history the limiter records on blocked
         checks. Pure read; no audit row written (same posture as
         /explain and the session list).
+
+Public-profile takedown:
+
+  - POST /admin/systems/{id}/share-grants/revoke-all
+        Revoke every live share grant on one system: the operator's
+        response to an abuse report about a published profile.
+        Immediate and idempotent, through the same `revoke_grant` the
+        owner's own panic button uses. Also latches publishing_blocked
+        so the owner cannot immediately republish. Reason required; logged.
+
+  - POST /admin/systems/{id}/publishing/unblock
+        Clear the publishing_blocked latch the takedown set, letting the
+        owner publish again from scratch. Admin-only (an owner can never
+        clear it themselves); does not republish anything. Reason
+        required; logged.
 """
 
 from __future__ import annotations
@@ -95,10 +110,12 @@ from sheaf.models.admin_audit_event import (
 )
 from sheaf.models.api_key import ApiKey
 from sheaf.models.member import Member
+from sheaf.models.share import ShareGrant
 from sheaf.models.system import System
 from sheaf.models.user import AccountStatus, User
 from sheaf.services.admin_audit import log_admin_action
 from sheaf.services.security_events import events_for_user
+from sheaf.services.sharing import revoke_grant
 
 logger = logging.getLogger(__name__)
 
@@ -855,6 +872,154 @@ async def unban_user(
 
 
 # ---------------------------------------------------------------------------
+# Revoke every share grant on a system (abuse-report takedown)
+# ---------------------------------------------------------------------------
+
+
+class RevokeAllGrantsResponse(BaseModel):
+    revoked_count: int
+
+
+@router.post(
+    "/systems/{system_id}/share-grants/revoke-all",
+    response_model=RevokeAllGrantsResponse,
+)
+async def revoke_all_share_grants(
+    system_id: uuid.UUID,
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Take one system's public surface down, now.
+
+    The operator's answer to an abuse report about a published profile. It goes
+    through `revoke_grant`, the same function the owner's own panic button
+    calls, so revocation means exactly one thing in this codebase and there is
+    no second, weaker admin path that leaves a grant half-alive.
+
+    Deliberately REVOCATION and not suspension, and that is the difference from
+    `profile_serving_clause`: suspending an account pauses its public surface
+    and gives it back when the account comes back, because suspension is
+    temporary. A takedown is a judgement about the content itself, so it has to
+    outlive whatever else happens to the account - and it has to be visible.
+    Revoked grants show up in the owner's own sharing screen as revoked, which
+    is the honest outcome: they are entitled to know their page was taken down
+    rather than discover a silent 404 and spend a week debugging it.
+
+    Idempotent, and it writes an audit row either way. `revoke_grant` no-ops on
+    an already-revoked grant, and a system that had nothing published still
+    records the operator's attempt - an admin action nobody can see happening is
+    an admin action nobody can review.
+
+    Revocation alone is not a takedown: the owner can POST a fresh grant a
+    second later and be back up, with nothing tying the republish to the report.
+    So this ALSO latches `publishing_blocked`, which refuses every new grant and
+    the master-switch raise-to-public until an admin clears it (the sibling
+    /unblock action). The owner can still take MORE down while blocked.
+
+    Does NOT touch the views, the curation, or the member privacy levels. The
+    lever is aimed at what is being served, not at the owner's data.
+    """
+    system = await db.get(System, system_id)
+    if system is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="System not found",
+        )
+
+    rows = await db.execute(
+        select(ShareGrant).where(
+            ShareGrant.system_id == system_id,
+            ShareGrant.revoked_at.is_(None),
+        )
+    )
+    grants = list(rows.scalars().all())
+    snapshot = [
+        {
+            "id": str(g.id),
+            "view_id": str(g.view_id),
+            "subject_type": g.subject_type,
+            "status": g.status,
+        }
+        for g in grants
+    ]
+    for grant in grants:
+        revoke_grant(grant)
+
+    publishing_blocked_before = system.publishing_blocked
+    system.publishing_blocked = True
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.SYSTEM_SHARE_GRANTS_REVOKE_ALL,
+        target_type=AdminAuditTargetType.SYSTEM,
+        target_id=system_id,
+        target_user_id=system.user_id,
+        reason=body.reason,
+        before={
+            "publishing_blocked": publishing_blocked_before,
+            **({"grants": snapshot} if snapshot else {}),
+        },
+        after={"revoked_count": len(grants), "publishing_blocked": True},
+    )
+    await db.commit()
+    return RevokeAllGrantsResponse(revoked_count=len(grants))
+
+
+class UnblockPublishingResponse(BaseModel):
+    publishing_blocked: bool
+
+
+@router.post(
+    "/systems/{system_id}/publishing/unblock",
+    response_model=UnblockPublishingResponse,
+)
+async def unblock_system_publishing(
+    system_id: uuid.UUID,
+    body: AdminReasonBody,
+    admin: User = Depends(get_admin_write_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lift the publishing_blocked latch a takedown set.
+
+    The only way back from a revoke-all takedown, and admin-only on purpose:
+    the whole point of the latch is that the OWNER cannot clear it by
+    republishing, so it does not appear anywhere in their own API. Clearing it
+    does NOT republish anything - every grant the takedown revoked stays
+    revoked - it only lets the owner publish again from scratch, which is the
+    honest shape of "the report was resolved, you may use the surface again".
+
+    Reason required and audited like its sibling. Idempotent: a system that was
+    not blocked records the operator's attempt and reports the unchanged state,
+    the same posture revoke-all takes on a system with nothing to revoke.
+    """
+    system = await db.get(System, system_id)
+    if system is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="System not found",
+        )
+
+    before = system.publishing_blocked
+    system.publishing_blocked = False
+
+    await log_admin_action(
+        db,
+        admin=admin,
+        action=AdminAuditAction.SYSTEM_PUBLISHING_UNBLOCK,
+        target_type=AdminAuditTargetType.SYSTEM,
+        target_id=system_id,
+        target_user_id=system.user_id,
+        reason=body.reason,
+        before={"publishing_blocked": before},
+        after={"publishing_blocked": False},
+    )
+    await db.commit()
+    return UnblockPublishingResponse(publishing_blocked=False)
+
+
+# ---------------------------------------------------------------------------
 # Dossier export (GDPR Article 15 metadata bundle)
 # ---------------------------------------------------------------------------
 
@@ -897,6 +1062,7 @@ async def export_user_dossier(
     from sheaf.models.message import Message
     from sheaf.models.poll import Poll
     from sheaf.models.reminder import Reminder
+    from sheaf.models.share import ShareGrant, ShareView
     from sheaf.models.tag import Tag
     from sheaf.models.trusted_device import TrustedDevice
     from sheaf.models.uploaded_file import UploadedFile
@@ -945,6 +1111,16 @@ async def export_user_dossier(
             ),
             "watch_tokens": await _count(
                 WatchToken, WatchToken.system_id == system.id,
+            ),
+            # Counts only: a grant's note and its view's name are labels the
+            # owner wrote, and the dossier keeps owner-authored content out
+            # of admin hands. The user's own Article 15 bundle has the full
+            # grant metadata.
+            "share_views": await _count(
+                ShareView, ShareView.system_id == system.id,
+            ),
+            "share_grants": await _count(
+                ShareGrant, ShareGrant.system_id == system.id,
             ),
             "uploaded_files": await _count(
                 UploadedFile, UploadedFile.user_id == user_id,

@@ -82,7 +82,7 @@ export function OnboardingPrompt() {
           <OptionRow
             icon={<Shield className="h-4 w-4" />}
             title="Configure System Safety"
-            desc="Optional grace periods and re-auth prompts before members, groups, tags, fields, or front entries can be deleted."
+            desc="Grace periods and re-auth prompts for destructive or public-facing actions - deleting a member, group, field or front, or publishing a profile. Profile-visibility protection is on by default; the rest is opt-in."
             enabled
             onClick={() => goTo("/settings/safety")}
           />
