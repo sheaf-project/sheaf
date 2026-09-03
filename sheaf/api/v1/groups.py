@@ -24,6 +24,7 @@ from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     group_raise_exposes,
+    refuse_raise_when_publishing_unavailable,
     reject_mixed_exposure_directions,
     visibility_grace_days,
     visibility_step_up_required,
@@ -255,6 +256,17 @@ async def update_group(
         )
 
     requested_privacy = update_data.pop("privacy", None)
+
+    # Raising to public is refused for the same reasons `create_grant` is: not
+    # while the account is pending deletion, and not while the instance's public
+    # surface is switched off. Publishing availability, not step-up, so it fires
+    # whatever the safety category is set to. Lowering stays open.
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and group.privacy != PrivacyLevel.PUBLIC
+    ):
+        refuse_raise_when_publishing_unavailable(user)
+
     exposes = False
     if (
         requested_privacy == PrivacyLevel.PUBLIC
@@ -291,6 +303,16 @@ async def update_group(
             group.privacy_activates_at = None
             raise_outcome = "immediate"
     elif requested_privacy is not None:
+        # The immediate, ungated case: no grant would serve this yet, or the
+        # category is not armed, so there is nothing to stage - but a
+        # non-public -> public transition is still a raise and is logged, so the
+        # audit trail does not go dark exactly when step-up is off. Lowering
+        # un-exposes and stays silent.
+        if (
+            requested_privacy == PrivacyLevel.PUBLIC
+            and group.privacy != PrivacyLevel.PUBLIC
+        ):
+            raise_outcome = "immediate"
         group.privacy = requested_privacy
         group.pending_privacy = None
         group.privacy_activates_at = None

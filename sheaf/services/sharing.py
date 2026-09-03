@@ -46,6 +46,7 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from sheaf.auth.dependencies import block_pending_deletion
 from sheaf.config import settings
 from sheaf.crypto import hash_share_token
 from sheaf.models.custom_field import CustomFieldDefinition
@@ -141,6 +142,45 @@ def visibility_step_up_required(system: System) -> bool:
     fresh account nothing until it picks a tier.
     """
     return system.safety_applies_to_profile_visibility
+
+
+def refuse_raise_when_publishing_unavailable(user: User) -> None:
+    """Refuse a raise-to-public when the instance cannot publish it.
+
+    The exposure-raise twin of `create_grant`'s own opening checks, factored out
+    so every ceiling that can be lifted to `public` - system privacy, a group, a
+    member, a custom field, a relationship edge - refuses in exactly the cases
+    minting a grant would, rather than each endpoint growing its own half of the
+    rule. Two conditions, both about whether anything may be published at all:
+
+    - The account is on its way out (`block_pending_deletion`): its owner has
+      said they will not be around to manage a new exposure, and the deletion
+      sweep is going to remove the data underneath it. 409, because the owner can
+      clear it themselves by cancelling the deletion.
+    - The instance's public surface is switched off (`public_profiles_enabled`
+      is False). The anonymous router 404s wholesale on that setting, so a
+      ceiling raised now serves nobody today and would quietly START serving the
+      moment an operator flips the setting back, months later, with nobody left
+      who remembers agreeing to it. 403, because only the operator can move it.
+
+    This is publishing availability, NOT step-up, so it is checked regardless of
+    whether the `profile_visibility` safety category is armed. Un-exposing
+    (lowering a ceiling to friends/private) is never routed through here: nothing
+    may slow down going dark. Mirrors `sharing._block_new_exposure`, which is the
+    same gate on the sharing router; the message is deliberately identical so an
+    owner meets one wording whichever axis they raised.
+    """
+    block_pending_deletion(user)
+    if not settings.public_profiles_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Public profiles and share links are turned off on this "
+                "instance, so nothing new can be published and nothing can be "
+                "set to show more. Anything already published is kept, and "
+                "unpublishing still works."
+            ),
+        )
 
 
 def visibility_grace_days(system: System) -> int:
@@ -908,6 +948,18 @@ async def create_grant(
     stored, so a database dump yields no working links.
     """
     require_adult_attestation(user)
+
+    # Serialize against a concurrent admin revoke-all-and-block. Take the row
+    # lock on this system and re-read `publishing_blocked` fresh under it, in the
+    # same transaction that inserts the grant below, so the two actions cannot
+    # interleave: either this grant fully precedes the sweep (and its revoke-all
+    # takes it down) or it blocks until the block commits and is then refused
+    # here. Without the lock a create that read `publishing_blocked` before the
+    # sweep set it could slip a grant past the sweep, sit suppressed, and go live
+    # on unblock - the exact thing the unblock contract promises never happens.
+    # Matches the `with_for_update` refresh idiom in import_dedup; the lock is
+    # held to the end of this transaction.
+    await db.refresh(system, ["publishing_blocked"], with_for_update=True)
 
     # Operator takedown latch. A blocked system can still take things DOWN, but
     # it cannot publish anything new - otherwise the admin revoke-all lever is

@@ -920,7 +920,17 @@ async def revoke_all_share_grants(
     Does NOT touch the views, the curation, or the member privacy levels. The
     lever is aimed at what is being served, not at the owner's data.
     """
-    system = await db.get(System, system_id)
+    # Row-lock this system before reading its grants and setting the latch, so a
+    # concurrent `create_grant` (which takes the same lock before its own
+    # publishing_blocked check) cannot interleave and slip a fresh grant past
+    # this sweep. The two serialize on the row: a racing create either lands
+    # fully before this - and is revoked below - or blocks until this commits and
+    # is then refused. Held to the end of this transaction.
+    system = (
+        await db.execute(
+            select(System).where(System.id == system_id).with_for_update()
+        )
+    ).scalar_one_or_none()
     if system is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

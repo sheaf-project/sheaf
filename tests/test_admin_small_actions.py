@@ -545,6 +545,35 @@ def test_revoke_all_share_grants_is_idempotent_and_still_audited(
     assert "first pass" in reasons and "second pass" in reasons
 
 
+def test_create_grant_is_refused_after_revoke_all_blocks_publishing(
+    admin_client: httpx.Client, auth_client: httpx.Client,
+):
+    """revoke-all latches `publishing_blocked`, and create_grant now takes the
+    system row lock and re-reads that latch before minting. So a grant POSTed
+    after the takedown is refused rather than slipping past the revoke sweep to
+    sit suppressed and wake up on unblock - the serialized outcome of the two
+    actions racing on the row."""
+    system_id, view = _publish(auth_client)
+
+    blocked = admin_client.post(
+        f"/v1/admin/systems/{system_id}/share-grants/revoke-all",
+        json={"reason": "abuse report 9012"},
+    )
+    assert blocked.status_code == 200, blocked.text
+
+    # A fresh grant on the same (still public) system is refused by the latch.
+    r = auth_client.post(
+        "/v1/share-grants", json={"view_id": view, "subject_type": "public"}
+    )
+    assert r.status_code == 403, r.text
+    assert "operator" in r.json()["detail"].lower()
+
+    # Nothing live slipped in: every grant on the system is a revoked row.
+    grants = auth_client.get("/v1/share-grants").json()
+    assert grants, "revoked rows remain"
+    assert all(g["revoked_at"] is not None for g in grants)
+
+
 def test_revoke_all_share_grants_unknown_system_404s(admin_client: httpx.Client):
     resp = admin_client.post(
         f"/v1/admin/systems/{uuid.uuid4()}/share-grants/revoke-all",

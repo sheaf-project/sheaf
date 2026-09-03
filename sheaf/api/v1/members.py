@@ -60,6 +60,7 @@ from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     exposure_activates_at,
     fronting_guard_release_exposes,
+    refuse_raise_when_publishing_unavailable,
     reject_mixed_exposure_directions,
     shared_view_memberships,
     stage_membership_exposure,
@@ -401,6 +402,37 @@ async def update_member(
     password = update_data.pop("password", None)
     totp_code = update_data.pop("totp_code", None)
 
+    # The three raise-to-public directions on this endpoint, captured before the
+    # setattr loop touches anything: raising privacy to public, releasing the
+    # fronting guard, and clearing never_shareable. Read off the requested body
+    # and the member's CURRENT value, so they are the owner's intent regardless
+    # of whether the profile_visibility category is armed or anything is actually
+    # served. Used both for the publishing-availability gate just below and for
+    # the audit record at the end.
+    privacy_raise_requested = (
+        update_data.get("privacy") == PrivacyLevel.PUBLIC
+        and member.privacy != PrivacyLevel.PUBLIC
+    )
+    fronting_release_requested = (
+        update_data.get("fronting_private") is False and member.fronting_private
+    )
+    never_shareable_release_requested = (
+        update_data.get("never_shareable") is False and member.never_shareable
+    )
+    any_raise_requested = (
+        privacy_raise_requested
+        or fronting_release_requested
+        or never_shareable_release_requested
+    )
+
+    # Any of the three raises is refused for the same reasons create_grant is:
+    # not while the account is pending deletion, and not while the instance's
+    # public surface is switched off. Publishing availability, not step-up, so it
+    # fires whatever the safety category is set to. Lowering (private/friends,
+    # re-arming a guard) stays open - going dark is never gated.
+    if any_raise_requested:
+        refuse_raise_when_publishing_unavailable(user)
+
     # Raising a member to `public` EXPOSES them: if they are already sitting in
     # a view something points at, the projection would start serving them the
     # moment this lands. Same rule as the sharing endpoints - when the category
@@ -477,15 +509,12 @@ async def update_member(
             member_is_public=member.privacy == PrivacyLevel.PUBLIC,
         )
 
+    # Whether any raise would ACTUALLY expose (category armed AND something to
+    # serve). This is the step-up trigger, distinct from `any_raise_requested`
+    # above, which is the owner's intent regardless of the category.
     raises_exposure = bool(
         exposing_rows or fronting_release_exposes or never_shareable_release_exposes
     )
-    # Capture which axes raised before the setattr loop below can touch them
-    # (marking never_shareable True clears the membership rows). All three are
-    # exposure raises on this endpoint, so the invariant - every raise leaves a
-    # queryable record - covers each. Recorded as one event with a boolean per
-    # axis; no member content, only the member id and the flags.
-    privacy_raise = bool(exposing_rows)
     # A body that also takes something DOWN must not ride on the raise's gate:
     # if the step-up below failed, the lowering would fail with it. Checked
     # before that step-up runs, and refused outright - see the helper.
@@ -601,11 +630,16 @@ async def update_member(
     await db.commit()
     await db.refresh(member)
     # A member raise widens who a live grant serves, so it leaves an IP/UA
-    # trail. `staged` when the membership rows were parked behind the grace
-    # window, `immediate` when the raise applied at once (grace 0, or a guard
-    # release that has nowhere to be staged). Only raises record; lowering a
-    # ceiling or re-arming a guard un-exposes and stays silent.
-    if raises_exposure:
+    # trail. Every raise-to-public direction records exactly one event, whether
+    # it was step-up'd and staged, applied at once, or landed immediately because
+    # the category is disarmed - so the audit does not go dark exactly when
+    # step-up is off. `staged` when the membership rows were parked behind the
+    # grace window, `immediate` otherwise (grace 0, a guard release with nowhere
+    # to stage, or the category off). One event with a boolean per axis, keyed on
+    # the owner's requested direction; no member content, only the id and flags.
+    # Only raises record; lowering a ceiling or re-arming a guard un-exposes and
+    # stays silent.
+    if any_raise_requested:
         await record_security_event(
             event_type=SecurityEventType.EXPOSURE_RAISED,
             outcome="staged" if visibility_activates_at is not None else "immediate",
@@ -615,9 +649,9 @@ async def update_member(
             detail={
                 "source": "member_privacy",
                 "member_id": str(member.id),
-                "privacy_raise": privacy_raise,
-                "fronting_release": fronting_release_exposes,
-                "never_shareable_release": never_shareable_release_exposes,
+                "privacy_raise": privacy_raise_requested,
+                "fronting_release": fronting_release_requested,
+                "never_shareable_release": never_shareable_release_requested,
             },
         )
     return decrypt_member_for_read(

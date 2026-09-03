@@ -564,8 +564,45 @@ def test_a_non_public_field_never_reaches_a_member_payload(
     with httpx.Client(base_url=BASE_URL) as anon:
         members = anon.get(f"/v1/public/systems/{system_id}/members").json()
     assert len(members) == 1, members
-    assert members[0]["fields"] == {"ShownField": "Protector"}
-    assert "HeldField" not in members[0]["fields"]
+    assert members[0]["fields"] == [{"name": "ShownField", "value": "Protector"}]
+    assert all(f["name"] != "HeldField" for f in members[0]["fields"])
+
+
+@pytest.mark.public_profiles
+def test_two_selected_fields_sharing_a_name_both_appear(auth_client: httpx.Client):
+    """Field names are not unique, so two definitions a view exposes that happen
+    to share a name must BOTH reach the member card. The projection used to key
+    the card's fields by name, which silently dropped the first of any such
+    pair; it now carries an ordered list, one entry per value."""
+    m = _member(auth_client, "TwinFields")
+    one = _field(auth_client, "Role")
+    two = _field(auth_client, "Role")
+    r = auth_client.put(
+        f"/v1/members/{m}/fields",
+        json=[
+            {"field_id": one, "value": "Cook"},
+            {"field_id": two, "value": "Cleaner"},
+        ],
+    )
+    assert r.status_code == 200, r.text
+
+    vid = _view(auth_client, members=[m], fields=[one, two])
+    _publish(auth_client, vid)
+    # Safety default-armed, but the none tier makes step-up a no-op and there is
+    # no grace window, so each raise lands immediately.
+    assert _raise(auth_client, one).json()["privacy"] == "public"
+    assert _raise(auth_client, two).json()["privacy"] == "public"
+
+    system_id = auth_client.get("/v1/systems/me").json()["id"]
+    with httpx.Client(base_url=BASE_URL) as anon:
+        members = anon.get(f"/v1/public/systems/{system_id}/members").json()
+    assert len(members) == 1, members
+    # Both same-named entries survive; neither overwrote the other.
+    fields = members[0]["fields"]
+    assert sorted((f["name"], f["value"]) for f in fields) == [
+        ("Role", "Cleaner"),
+        ("Role", "Cook"),
+    ]
 
 
 @pytest.mark.public_profiles
@@ -585,11 +622,11 @@ def test_lowering_a_field_takes_it_off_a_live_profile(auth_client: httpx.Client)
     system_id = auth_client.get("/v1/systems/me").json()["id"]
     with httpx.Client(base_url=BASE_URL) as anon:
         before = anon.get(f"/v1/public/systems/{system_id}/members").json()
-        assert before[0]["fields"] == {"LoweredField": "Protector"}
+        assert before[0]["fields"] == [{"name": "LoweredField", "value": "Protector"}]
 
         _arm_visibility_safety(auth_client)
         lowered = auth_client.patch(f"/v1/fields/{fid}", json={"privacy": "private"})
         assert lowered.status_code == 200, lowered.text
 
         after = anon.get(f"/v1/public/systems/{system_id}/members").json()
-    assert after[0]["fields"] == {}
+    assert after[0]["fields"] == []
