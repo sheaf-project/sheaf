@@ -76,6 +76,33 @@ def test_pk_member_description_keeps_external_image():
     assert member_description_plaintext(member) == _EXTERNAL
 
 
+def test_pk_member_description_clamped_to_cap():
+    # An import must not land a description longer than the write API accepts
+    # (and would then feed to the superlinear image parse). The clamp is a
+    # backstop that records into the report so the preview can warn.
+    report = ClampReport()
+    member = pk_build_member(
+        {"name": "Alpha", "description": "y" * 25000},
+        uuid.uuid4(),
+        report=report,
+    )
+
+    assert len(member_description_plaintext(member)) == 20000
+    assert not report.empty
+
+
+def test_tb_member_description_clamped_to_cap():
+    report = ClampReport()
+    member = tb_build_member(
+        {"id": 1, "name": "Beta", "description": "y" * 25000},
+        uuid.uuid4(),
+        report,
+    )
+
+    assert len(member_description_plaintext(member)) == 20000
+    assert not report.empty
+
+
 # --- Tupperbox -------------------------------------------------------------
 
 

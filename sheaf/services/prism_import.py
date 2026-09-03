@@ -106,6 +106,7 @@ from sheaf.models.poll import (
 )
 from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.schemas.prism_import import (
     PrismImportResult,
     PrismPreviewMember,
@@ -130,6 +131,7 @@ from sheaf.services.import_dedup import (
     candidate_key,
     count_new_members,
     load_member_match_index,
+    privacy_hold_warning,
     resolve_member,
 )
 from sheaf.services.import_image_strip import strip_internal_image_refs_md_to_none
@@ -431,8 +433,10 @@ async def run_import(
         # after the owner un-shares or deletes it. A Prism export has no
         # legitimate reason to reference Sheaf storage, so every internal ref
         # goes; external images and the surrounding prose are left as they are.
+        # Clamp before the strip/parse so the length bound also caps the
+        # superlinear image parse, not just the stored bytes.
         plaintext_description = strip_internal_image_refs_md_to_none(
-            _clean_str(m.get("notes"))
+            clamp_str(_clean_str(m.get("notes")), il.M_DESCRIPTION, report=report)
         )
         custom_color = _normalize_color(m.get("customColorHex")) if m.get(
             "customColorEnabled"
@@ -513,9 +517,18 @@ async def run_import(
     # updated) so every later section attributes to the right member.
     ps_id_to_handle: dict[str, _MemberHandle] = {}
     for member, ps_id, plaintext_name, source in candidates:
-        resolution = resolve_member(
-            member, index=index, strategy=conflict_strategy
+        resolution = await resolve_member(
+            member,
+            index=index,
+            strategy=conflict_strategy,
+            db=db,
+            system=system,
         )
+        if resolution.privacy_held_member_id:
+            result.members_privacy_skipped += 1
+            result.warnings.append(
+                privacy_hold_warning(resolution.privacy_held_member_id)
+            )
         if resolution.disposition == "created":
             db.add(resolution.member)
             result.members_imported += 1
@@ -727,9 +740,13 @@ def _apply_system_profile(
     name = _clean_str(block.get("systemName"))
     if name and not system.name:
         system.name = clamp_str(name, il.SYS_NAME, report=report)
-    # Same reason as the member notes above.
+    # Same reason as the member notes above (strip + length cap).
     description = strip_internal_image_refs_md_to_none(
-        _clean_str(block.get("systemDescription"))
+        clamp_str(
+            _clean_str(block.get("systemDescription")),
+            il.SYS_DESCRIPTION,
+            report=report,
+        )
     )
     if description and not system.description:
         system.description = description
@@ -771,9 +788,13 @@ async def _import_groups(
                 id=uuid.uuid4(),
                 system_id=system_id,
                 name=clamp_str(name, il.GROUP_NAME, report=report),
-                # Same reason as the member notes above.
+                # Same reason as the member notes above (strip + length cap).
                 description=strip_internal_image_refs_md_to_none(
-                    _clean_str(g.get("description"))
+                    clamp_str(
+                        _clean_str(g.get("description")),
+                        il.GROUP_DESCRIPTION,
+                        report=report,
+                    )
                 ),
                 color=_normalize_color(g.get("colorHex")),
             )
@@ -895,6 +916,7 @@ async def _import_custom_fields(
     await db.flush()
 
     values_imported = 0
+    oversized_values = 0
     # Pre-seeded with the system's existing pairs: a reused definition
     # plus a deduped (skipped) member would otherwise trip the
     # UNIQUE(field_id, member_id) constraint on every re-import.
@@ -913,6 +935,10 @@ async def _import_custom_fields(
             continue
         if not value_guard.add((field_def.id, handle.member.id)):
             continue
+        # Stored at full length; the editor's cap does not retroactively edit
+        # an import. Counted for the report instead.
+        if value_over_text_cap(raw_value):
+            oversized_values += 1
         cfv_id = uuid.uuid4()
         cfv = CustomFieldValue(
             id=cfv_id,
@@ -922,6 +948,9 @@ async def _import_custom_fields(
         )
         db.add(cfv)
         values_imported += 1
+
+    if oversized_values:
+        warnings.append(il.oversized_field_values_warning(oversized_values))
     return created, values_imported
 
 
@@ -1359,6 +1388,12 @@ async def _import_conversations(
         author_handle = ps_id_to_handle.get(author_id) if author_id else None
         if author_id and author_handle is None:
             missing_author += 1
+        # A chat message body is markdown, so strip embeds pointing at this
+        # instance's storage before storing (else they re-sign into a live
+        # cross-tenant read on display), and clamp as a silent storage backstop
+        # (the preview does not walk message bodies) matching the create cap.
+        body = strip_internal_image_refs_md_to_none(body) or ""
+        body = clamp_str(body, il.MESSAGE_BODY)
         message_id = uuid.uuid4()
         message = Message(
             id=message_id,
@@ -1432,6 +1467,10 @@ async def _import_member_board_posts(
             body = f"[audience: {audience}] {body}".rstrip()
         if title:
             body = f"**{title}**\n\n{body}"
+        # Strip internal-storage image embeds (cross-tenant read guard) and clamp
+        # as a silent storage backstop, same as the chat-message path above.
+        body = strip_internal_image_refs_md_to_none(body) or ""
+        body = clamp_str(body, il.MESSAGE_BODY)
         message_id = uuid.uuid4()
         message = Message(
             id=message_id,

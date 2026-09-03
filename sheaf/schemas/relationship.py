@@ -4,7 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from sheaf.models.relationship import RelationshipSymmetry, RelationshipVisibility
+from sheaf.models.relationship import RelationshipSymmetry
+from sheaf.models.system import PrivacyLevel
 
 
 class RelationshipTypeCreate(BaseModel):
@@ -12,6 +13,7 @@ class RelationshipTypeCreate(BaseModel):
     symmetry: RelationshipSymmetry
     forward_label: str = Field(max_length=100)
     reverse_label: str | None = Field(default=None, max_length=100)
+    color: str | None = Field(default=None, max_length=7)
 
     @model_validator(mode="after")
     def _reverse_label_rules(self) -> "RelationshipTypeCreate":
@@ -34,6 +36,8 @@ class RelationshipTypeUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     forward_label: str | None = Field(default=None, max_length=100)
     reverse_label: str | None = Field(default=None, max_length=100)
+    # Nullable column, so an explicit null here really does clear the colour.
+    color: str | None = Field(default=None, max_length=7)
 
     @field_validator("name", "forward_label")
     @classmethod
@@ -52,8 +56,13 @@ class RelationshipTypeRead(BaseModel):
     symmetry: RelationshipSymmetry
     forward_label: str
     reverse_label: str | None
+    color: str | None = None
     created_at: datetime
     updated_at: datetime
+    # finalize_after timestamp if this type is queued for delete in System
+    # Safety's grace window; null otherwise. Drives the pending-delete badge
+    # + dim styling in the type lists, same as tags, groups and fields.
+    pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -68,7 +77,46 @@ class RelationshipEdgeCreate(BaseModel):
     target_id: uuid.UUID
     relationship_type_id: uuid.UUID
     mutual: bool = False
-    visibility: RelationshipVisibility = RelationshipVisibility.PRIVATE
+    # Private by default: an edge says something about two people at once, so
+    # the safe answer to "did you mean to publish this?" is always "not yet".
+    visibility: PrivacyLevel = PrivacyLevel.PRIVATE
+    # Creating an edge already `public` is the same exposure as raising an
+    # existing one, so it goes through the same gate and carries the same
+    # step-up credentials. Without this, deleting an edge and adding it back
+    # public would be a way around the slower door.
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
+
+
+class RelationshipEdgeUpdate(BaseModel):
+    """Change one edge's privacy level, its direction, or its `mutual` flag.
+
+    Still deliberately narrow: the endpoints and the type define WHICH
+    relationship this row is, and changing those is deleting and re-adding.
+    What is editable is how the same two endpoints READ - which of them takes
+    the forward label (`flip`), and whether both do (`mutual`) - plus where the
+    row sits on the privacy ladder.
+
+    The step-up credentials ride along for the case where a privacy raise is
+    actually deferred, exactly like `ShareViewUpdate`. They are never needed for
+    `flip` or `mutual`: neither shows the edge to anybody new (see
+    `_apply_orientation`).
+    """
+
+    visibility: PrivacyLevel | None = None
+    # Swap source and target. Only meaningful for directional / either types;
+    # a symmetric type has no direction to reverse and is refused rather than
+    # silently ignored, because this is an instruction, not a state.
+    flip: bool | None = None
+    # Only meaningful for `either` types; normalised off for the others exactly
+    # as on create, because false is what the row would mean anyway.
+    mutual: bool | None = None
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
 
 
 class RelationshipEdgeRead(BaseModel):
@@ -77,7 +125,12 @@ class RelationshipEdgeRead(BaseModel):
     target_id: uuid.UUID
     relationship_type_id: uuid.UUID
     mutual: bool
-    visibility: RelationshipVisibility
+    visibility: PrivacyLevel
+    # A raise that is waiting out the grace window. `visibility` above is still
+    # the truth; these say what it becomes and when. Null = nothing staged.
+    # Group edges never stage anything, so both are always null there.
+    pending_visibility: PrivacyLevel | None = None
+    visibility_activates_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -100,7 +153,9 @@ class RelationshipFromViewpoint(BaseModel):
     label: str
     direction: Direction
     mutual: bool
-    visibility: RelationshipVisibility
+    visibility: PrivacyLevel
+    pending_visibility: PrivacyLevel | None = None
+    visibility_activates_at: datetime | None = None
 
 
 class RelationshipGraphNode(BaseModel):

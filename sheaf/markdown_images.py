@@ -1,10 +1,28 @@
-"""CommonMark-aware discovery and rewriting of Markdown image nodes.
+"""GFM-aware discovery and rewriting of Markdown image nodes.
 
 The API stores Markdown source, so rendering it to HTML just to enforce an
 image policy would destroy the user's formatting.  ``markdown-it-py`` gives us
-the same CommonMark image grammar used by the web renderer.  A small wrapper
-around its image rule records source spans, allowing targeted edits while
-leaving prose, links, code spans, and code blocks byte-for-byte unchanged.
+the image grammar the web renderer uses.  A small wrapper around its image rule
+records source spans, allowing targeted edits while leaving prose, links, code
+spans, and code blocks byte-for-byte unchanged.
+
+Superset invariant (why this parser must over-recognize):
+    This function is the single choke point every image rail funnels through -
+    validation, SSRF checks, and stripping all trust it to enumerate every
+    image a client could render.  The web renderer (``react-markdown`` +
+    ``remark-gfm``) accepts a GFM superset of CommonMark.  If the server parsed
+    a *narrower* grammar than the client, an image the client renders could
+    slip past every rail while still displaying to viewers - a bypass-the-rail
+    hole, not a cosmetic mismatch.  So the set of images this module extracts
+    MUST be a superset of what the client renders.  Concretely: the CommonMark
+    preset reads ``[^1]: ![a](/x.png)`` as a link reference definition and
+    swallows the image as a URL string, so remark-gfm would render an image the
+    server never saw.  Enabling the footnote plugin closes that gap.  The other
+    GFM block constructs (tables, task lists, strikethrough, autolinks) need no
+    plugin here: markdown-it-py's inline image rule already fires inside their
+    paragraph content, so their images are detected regardless of whether the
+    block wrapper is recognized.  Footnote definitions are the only construct
+    that block-consumes a line the client would still mine for an image.
 """
 
 from __future__ import annotations
@@ -15,6 +33,7 @@ from dataclasses import dataclass
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline.image import image as _parse_image
 from markdown_it.rules_inline.state_inline import StateInline
+from mdit_py_plugins.footnote import footnote_plugin
 
 
 @dataclass(frozen=True)
@@ -39,6 +58,12 @@ def _image_with_source_span(state: StateInline, silent: bool) -> bool:
 
 _MARKDOWN = MarkdownIt("commonmark", {"store_labels": True})
 _MARKDOWN.inline.ruler.at("image", _image_with_source_span)
+# Footnote definitions are the one GFM construct that would otherwise hide an
+# image from us (see the module docstring's superset invariant): CommonMark
+# eats ``[^1]: ![a](/x.png)`` as a link reference definition, but remark-gfm
+# renders the image.  Enabling the plugin keeps the server's image set a
+# superset of the client's.
+_MARKDOWN.use(footnote_plugin)
 
 
 def _line_offsets(text: str) -> list[int]:

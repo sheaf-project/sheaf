@@ -33,8 +33,10 @@ export function SystemSafetyBanner() {
 
   const actions = data?.pending_actions ?? [];
   const changes = data?.pending_changes ?? [];
+  const exposures = data?.pending_exposures ?? [];
 
-  if (actions.length === 0 && changes.length === 0) return null;
+  if (actions.length === 0 && changes.length === 0 && exposures.length === 0)
+    return null;
 
   return (
     <div className="flex flex-col">
@@ -55,6 +57,16 @@ export function SystemSafetyBanner() {
             changes.length === 1
               ? `Safety settings change pending — finalizes ${timeRemaining(changes[0].finalize_after)}.`
               : `${changes.length} safety settings changes pending — next finalizes ${timeRemaining(earliest(changes.map((c) => c.finalize_after)))}.`
+          }
+        />
+      )}
+      {exposures.length > 0 && (
+        <Banner
+          severity={earliestSeverity(exposures.map((e) => e.activates_at))}
+          message={
+            exposures.length === 1
+              ? `1 change that makes something public takes effect ${timeRemaining(exposures[0].activates_at)}.`
+              : `${exposures.length} changes that make something public - next takes effect ${timeRemaining(earliest(exposures.map((e) => e.activates_at)))}.`
           }
         />
       )}

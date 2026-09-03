@@ -12,6 +12,7 @@ import {
 import { useCustomFields, useMemberFieldValues, useSetMemberFieldValues } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
+import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
@@ -34,7 +35,11 @@ import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialo
 import { RelationshipsEditor } from "@/components/relationships-editor";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { apiErrorMessage, showApiErrorToast } from "@/lib/api-errors";
+import {
+  apiErrorMessage,
+  isStepUpRequiredError,
+  showApiErrorToast,
+} from "@/lib/api-errors";
 
 const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.BioEditor })));
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
@@ -66,6 +71,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type {
   CustomFieldValueSet,
   DeleteConfirmation,
+  DestructiveConfirm,
   FieldType,
   Member,
   MemberCreate,
@@ -79,7 +85,7 @@ function MemberForm({
   loading,
   submitLabel,
 }: {
-  initial?: Partial<MemberCreate> & { privacy?: PrivacyLevel };
+  initial?: Partial<Member> & { privacy?: PrivacyLevel };
   onSubmit: (data: MemberCreate | MemberUpdate) => void;
   loading: boolean;
   submitLabel: string;
@@ -103,12 +109,21 @@ function MemberForm({
     initial?.never_shareable ?? false,
   );
   const [frontingPrivate, setFrontingPrivate] = useState(
-    initial?.fronting_private ?? false,
+    initial?.fronting_private_activates_at
+      ? false
+      : (initial?.fronting_private ?? false),
   );
-  // A member already marked guarded still shows the control so it can be
-  // turned back off; otherwise the form doesn't imply a feature that isn't
-  // there.
-  const shareGuardsVisible = neverShareable || frontingPrivate;
+  const [frontingPrivateTouched, setFrontingPrivateTouched] = useState(false);
+  // The share guards only mean anything when the instance serves a public
+  // surface; hide them otherwise so the form doesn't imply a feature that
+  // isn't there. A member already marked guarded still shows the control so
+  // it can be turned back off.
+  const { user } = useAuth();
+  const shareGuardsVisible =
+    !!user?.public_profiles_enabled ||
+    neverShareable ||
+    frontingPrivate ||
+    !!initial?.fronting_private_activates_at;
   // Preserve an existing numeric pin priority when toggling stays on; a
   // freshly-pinned member gets priority 0.
   const initialPin = initial?.quick_switch_pin ?? null;
@@ -116,7 +131,7 @@ function MemberForm({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    onSubmit({
+    const data: MemberCreate | MemberUpdate = {
       name,
       display_name: displayName || null,
       avatar_url: avatarUrl,
@@ -133,7 +148,18 @@ function MemberForm({
       quick_switch_pin: pinned ? (initialPin ?? 0) : null,
       never_shareable: neverShareable,
       fronting_private: frontingPrivate,
-    });
+    };
+    // The API reports the live guard as true while a release is pending. The
+    // form displays the requested (unchecked) state; omit it on unrelated
+    // edits so saving a name does not restart the grace period. Checking it is
+    // an explicit cancellation and is sent normally.
+    if (
+      initial?.fronting_private_activates_at &&
+      !frontingPrivateTouched
+    ) {
+      delete (data as MemberUpdate).fronting_private;
+    }
+    onSubmit(data);
   }
 
   return (
@@ -291,7 +317,10 @@ function MemberForm({
             <input
               type="checkbox"
               checked={frontingPrivate}
-              onChange={(e) => setFrontingPrivate(e.target.checked)}
+              onChange={(e) => {
+                setFrontingPrivate(e.target.checked);
+                setFrontingPrivateTouched(true);
+              }}
               className="h-4 w-4 mt-0.5 rounded border-input"
             />
             <div>
@@ -300,6 +329,19 @@ function MemberForm({
                 This member may appear in a view, but their live front status is
                 never shown publicly - not even as an anonymous count.
               </p>
+              {isCustomFront && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Custom fronts keep their front state private by default so a
+                  status like Asleep is never broadcast; turn this off to show
+                  it on shared pages.
+                </p>
+              )}
+              {initial?.fronting_private_activates_at && (
+                <p className="text-xs text-amber-600 mt-1">
+                  A request to release this guard is waiting out the System
+                  Safety grace period.
+                </p>
+              )}
             </div>
           </label>
         </div>
@@ -308,7 +350,17 @@ function MemberForm({
         <input
           type="checkbox"
           checked={isCustomFront}
-          onChange={(e) => setIsCustomFront(e.target.checked)}
+          onChange={(e) => {
+            setIsCustomFront(e.target.checked);
+            // The form always sends `fronting_private`, so it has to mirror
+            // the server's create-time default or it would talk the API out
+            // of it: a new custom front lands with its front state private.
+            // Create only, and only while the owner has not set the guard
+            // themselves - on an existing member the stored value wins.
+            if (!initial && !frontingPrivateTouched) {
+              setFrontingPrivate(e.target.checked);
+            }
+          }}
           className="h-4 w-4 mt-0.5 rounded border-input"
         />
         <div>
@@ -367,6 +419,16 @@ function unwrapValue(raw: unknown): unknown {
   }
   return raw;
 }
+
+/**
+ * Server-side cap on a custom-field value's text (see
+ * sheaf/schemas/custom_field.py). Mirrored on the free-text inputs so new text
+ * stops at the keyboard rather than coming back as a rejected save the user has
+ * to guess the reason for. A value that is ALREADY longer - stored before the
+ * cap, or imported - is still shown in full and still saves unchanged, because
+ * maxLength bounds typing rather than truncating what is put in the field.
+ */
+const CUSTOM_FIELD_VALUE_MAX = 20000;
 
 /** Coerce a server-side stored value into the editor's per-type shape. */
 function valueForEditor(
@@ -527,6 +589,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
                 // matches mobile's current behaviour.
                 <Input
                   id={id}
+                  maxLength={CUSTOM_FIELD_VALUE_MAX}
                   value={String(effectiveValue(f.id, ""))}
                   onChange={(e) => updateField(f.id, e.target.value)}
                 />
@@ -565,6 +628,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
                 // parity with the freeform select pattern).
                 <Input
                   id={id}
+                  maxLength={CUSTOM_FIELD_VALUE_MAX}
                   placeholder="Comma-separated tags"
                   value={(() => {
                     const current = effectiveValue(f.id, []);
@@ -585,6 +649,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
               // text (default)
               <Input
                 id={id}
+                maxLength={CUSTOM_FIELD_VALUE_MAX}
                 value={String(effectiveValue(f.id, ""))}
                 onChange={(e) => updateField(f.id, e.target.value)}
               />
@@ -1181,6 +1246,46 @@ function MemberView({
   );
 }
 
+/** The three member settings that decide what strangers can see. Named once so
+ *  the raise/lowering tests below cannot drift apart from each other, and so a
+ *  fourth one added later is a single edit. */
+const EXPOSURE_KEYS = [
+  "privacy",
+  "fronting_private",
+  "never_shareable",
+] as const;
+
+type ExposureKey = (typeof EXPOSURE_KEYS)[number];
+
+/** Would this field, in this body, show a stranger MORE than it does now? */
+function isRaise(
+  member: Member,
+  data: MemberUpdate,
+  key: ExposureKey,
+): boolean {
+  if (key === "privacy") {
+    return data.privacy === "public" && member.privacy !== "public";
+  }
+  return data[key] === false && member[key] === true;
+}
+
+/** ...and would it show them LESS? Not simply the negation: a field the body
+ *  leaves alone, or sets to the value it already has, is neither. */
+function isLowering(
+  member: Member,
+  data: MemberUpdate,
+  key: ExposureKey,
+): boolean {
+  if (key === "privacy") {
+    return (
+      data.privacy !== undefined &&
+      data.privacy !== "public" &&
+      member.privacy === "public"
+    );
+  }
+  return data[key] === true && member[key] !== true;
+}
+
 export function MembersPage() {
   const { data: members, isLoading } = useMembers();
   const { data: system } = useQuery({ queryKey: ["system", "me"], queryFn: getMySystem });
@@ -1197,6 +1302,17 @@ export function MembersPage() {
   const [editing, setEditing] = useState<Member | null>(null);
   const [deleting, setDeleting] = useState<Member | null>(null);
   const [archiving, setArchiving] = useState<Member | null>(null);
+  const [pendingExposureEdit, setPendingExposureEdit] = useState<{
+    member: Member;
+    data: MemberUpdate;
+    tier: DeleteConfirmation;
+  } | null>(null);
+  // Unarchiving somebody who is still sitting in a published view is a raise,
+  // so it takes the same credential prompt as the edits above.
+  const [pendingUnarchive, setPendingUnarchive] = useState<{
+    member: Member;
+    tier: DeleteConfirmation;
+  } | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Archived members stay fetched (so historical surfaces can resolve their
@@ -1212,6 +1328,107 @@ export function MembersPage() {
   const archiveTier: DeleteConfirmation = safety?.settings.applies_to_archive
     ? system?.delete_confirmation ?? "none"
     : "none";
+
+  /**
+   * Save an edit, splitting it in two when it both shows more and shows less.
+   *
+   * The member form is one form with one save button, so a single body can
+   * carry a privacy raise and a fronting guard being switched on at the same
+   * time. The API refuses that outright (400), and rightly: the raise may
+   * demand a password, and if that password is wrong the whole request fails -
+   * taking the guard, the thing that HIDES something, down with it. Nothing is
+   * ever allowed to stand between somebody and going dark.
+   *
+   * So the client sends the un-exposing half first, on its own, where it is
+   * never gated and lands immediately. Only then does it send the raise, which
+   * takes the step-up dialog through the normal path below. If the step-up is
+   * abandoned or fails, the half that hides something has already been saved.
+   */
+  function saveMemberEdit(member: Member, data: MemberUpdate) {
+    const raising = EXPOSURE_KEYS.filter((k) => isRaise(member, data, k));
+    const lowering = EXPOSURE_KEYS.filter((k) => isLowering(member, data, k));
+    if (raising.length > 0 && lowering.length > 0) {
+      const withoutRaises = { ...data };
+      for (const key of raising) delete withoutRaises[key];
+      const raisesOnly: MemberUpdate = {};
+      for (const key of raising) {
+        // Narrowed one key at a time so the value keeps its own type.
+        if (key === "privacy") raisesOnly.privacy = data.privacy;
+        else raisesOnly[key] = data[key];
+      }
+      updateMember.mutate(
+        { id: member.id, data: withoutRaises, skipErrorToast: true },
+        {
+          onSuccess: () => doSaveMemberEdit(member, raisesOnly),
+          onError: (err) =>
+            showApiErrorToast(err, "Couldn't update member.", { force: true }),
+        },
+      );
+      return;
+    }
+    doSaveMemberEdit(member, data);
+  }
+
+  function doSaveMemberEdit(member: Member, data: MemberUpdate) {
+    updateMember.mutate(
+      { id: member.id, data, skipErrorToast: true },
+      {
+        onSuccess: (updated) => {
+          setEditing(null);
+          setViewing(updated);
+        },
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setPendingExposureEdit({
+              member,
+              data,
+              tier:
+                safety?.settings.auth_tier ??
+                system?.delete_confirmation ??
+                "password",
+            });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't update member.", { force: true });
+        },
+      },
+    );
+  }
+
+  /**
+   * Restore an archived member, retrying with credentials if the server asks.
+   *
+   * Coming back to a published profile is an exposing act, so the server
+   * refuses the first bare attempt with the step-up error whenever a grant
+   * still points at a view this member sits in. That refusal is a prompt, not
+   * a failure: swallow the toast, ask for the credential, and send it again.
+   * When nothing publishes them the first call simply succeeds.
+   */
+  function doUnarchive(member: Member, confirm?: DestructiveConfirm) {
+    unarchiveMember.mutate(
+      { id: member.id, confirm, skipErrorToast: !confirm },
+      {
+        onSuccess: (updated) => {
+          setPendingUnarchive(null);
+          setEditing(null);
+          setViewing(updated);
+        },
+        onError: (err) => {
+          if (!confirm && isStepUpRequiredError(err)) {
+            setPendingUnarchive({
+              member,
+              tier:
+                safety?.settings.auth_tier ??
+                system?.delete_confirmation ??
+                "password",
+            });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't unarchive member.", { force: true });
+        },
+      },
+    );
+  }
 
   // Deep link: /members?member=<id> opens that member's view dialog (used by
   // the uploaded-files "where is this used" links). Derived from the URL so it
@@ -1317,17 +1534,7 @@ export function MembersPage() {
             <>
               <MemberForm
                 initial={editing}
-                onSubmit={(data) =>
-                  updateMember.mutate(
-                    { id: editing.id, data },
-                    {
-                      onSuccess: (updated) => {
-                        setEditing(null);
-                        setViewing(updated);
-                      },
-                    },
-                  )
-                }
+                onSubmit={(data) => saveMemberEdit(editing, data as MemberUpdate)}
                 loading={updateMember.isPending}
                 submitLabel="Save"
               />
@@ -1362,14 +1569,7 @@ export function MembersPage() {
                     variant="outline"
                     size="sm"
                     disabled={unarchiveMember.isPending}
-                    onClick={() =>
-                      unarchiveMember.mutate(editing.id, {
-                        onSuccess: (updated) => {
-                          setEditing(null);
-                          setViewing(updated);
-                        },
-                      })
-                    }
+                    onClick={() => doUnarchive(editing)}
                   >
                     {unarchiveMember.isPending ? "Unarchiving..." : "Unarchive member"}
                   </Button>
@@ -1389,6 +1589,49 @@ export function MembersPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <DestructiveConfirmDialog
+        open={!!pendingExposureEdit}
+        onOpenChange={(open) => !open && setPendingExposureEdit(null)}
+        title="Confirm public visibility change"
+        description="This edit can reveal member information through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
+        tier={pendingExposureEdit?.tier ?? "none"}
+        actionLabel="Confirm change"
+        actionLabelLoading="Saving..."
+        loading={updateMember.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!pendingExposureEdit) return;
+          updateMember.mutate(
+            {
+              id: pendingExposureEdit.member.id,
+              data: { ...pendingExposureEdit.data, ...confirm },
+            },
+            {
+              onSuccess: (updated) => {
+                setPendingExposureEdit(null);
+                setEditing(null);
+                setViewing(updated);
+              },
+            },
+          );
+        }}
+      />
+
+      {/* Unarchive step-up: only ever shown after the server has said this
+          restore would put the member back in front of strangers. */}
+      <DestructiveConfirmDialog
+        open={!!pendingUnarchive}
+        onOpenChange={(open) => !open && setPendingUnarchive(null)}
+        title="Confirm restoring a shared member"
+        description="This member is still in a view you publish, so restoring them puts them back on a public profile or share link. Confirm now; with a grace period set they return to those pages after your System Safety window, and to your own lists straight away."
+        tier={pendingUnarchive?.tier ?? "none"}
+        actionLabel="Restore member"
+        actionLabelLoading="Restoring..."
+        loading={unarchiveMember.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) =>
+          pendingUnarchive && doUnarchive(pendingUnarchive.member, confirm ?? {})
+        }
+      />
 
       {/* Delete confirm */}
       {deleting && (

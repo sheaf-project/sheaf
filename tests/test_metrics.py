@@ -303,6 +303,137 @@ def test_capped_entity_distributions_populate(admin_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Usage (DAU / MAU) + signups
+# ---------------------------------------------------------------------------
+
+def test_signups_total_prewarmed():
+    """signups_total is a label-less counter pre-warmed to zero at startup so an
+    absent-series alert works from the first scrape."""
+    body = _scrape()
+    assert _series_value(body, "sheaf_signups_total") is not None
+
+
+def test_signups_total_increments_on_registration():
+    before = _scrape()
+    before_val = _series_value(before, "sheaf_signups_total") or 0.0
+
+    email = f"signup-metric-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    reg = httpx.post(
+        f"{BASE_URL}/v1/auth/register",
+        json={"email": email, "password": "correct-horse-battery"},
+        timeout=10,
+    )
+    assert reg.status_code in (200, 201), reg.text
+
+    after = _scrape()
+    after_val = _series_value(after, "sheaf_signups_total") or 0.0
+    assert after_val >= before_val + 1
+
+
+def test_usage_gauges_populate(admin_client: httpx.Client):
+    """The DAU/MAU cardinality gauges are Redis-sourced (id-free HLL sketches),
+    so they materialise once the slow gauge pass runs. Triggering it exposes all
+    four active-* gauges (one series per auth kind: client / api / any) plus the
+    public-profile adoption gauge. The only label is the bounded auth_kind; there
+    is never a per-account series."""
+    # The admin registration itself authenticated, so today's acct/sys sketches
+    # have at least one member.
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+
+    body = _scrape()
+    # The four active-* gauges carry auth_kind; "any" is the deduped total and
+    # is the series that must reflect any authenticated activity.
+    for name in (
+        "sheaf_active_accounts_daily",
+        "sheaf_active_systems_daily",
+        "sheaf_active_accounts_monthly",
+        "sheaf_active_systems_monthly",
+    ):
+        val = _series_value(body, name, {"auth_kind": "any"})
+        assert val is not None, f"missing usage gauge: {name}"
+        assert val >= 0, f"{name} negative: {val}"
+
+    adoption = _series_value(body, "sheaf_systems_with_public_profile")
+    assert adoption is not None and adoption >= 0
+
+    # DAU must be at least 1 (the admin client just authenticated via a client
+    # method), and MAU is the union over the trailing window, so it can never be
+    # below today's DAU.
+    dau = _series_value(body, "sheaf_active_accounts_daily", {"auth_kind": "any"}) or 0.0
+    mau = (
+        _series_value(body, "sheaf_active_accounts_monthly", {"auth_kind": "any"})
+        or 0.0
+    )
+    assert dau >= 1, dau
+    assert mau >= dau, f"MAU ({mau}) below DAU ({dau}) - union is broken"
+
+
+def test_flush_usage_sketches_job_runs(admin_client: httpx.Client):
+    """The durability flush job persists the day-sketch bytes and prunes old
+    rows; it must run green so MAU can survive a Redis replace."""
+    resp = admin_client.post("/v1/admin/jobs/flush_usage_sketches/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# Public profiles / sharing
+# ---------------------------------------------------------------------------
+
+def test_sharing_counters_prewarmed():
+    """The bounded-label sharing counters are pre-warmed at startup so
+    absent-series alerts work from the first scrape. Spot-check one label
+    value per counter."""
+    body = _scrape()
+    checks = [
+        ("sheaf_share_grants_created_total", {"subject_type": "public"}),
+        ("sheaf_share_grants_created_total", {"subject_type": "link"}),
+        ("sheaf_share_grants_revoked_total", {"subject_type": "link"}),
+        ("sheaf_share_grants_rotated_total", None),
+        ("sheaf_share_grants_finalized_total", {"kind": "member_guard"}),
+        ("sheaf_share_grants_finalized_total", {"kind": "system_privacy"}),
+        ("sheaf_public_media_serves_total", {"outcome": "dark_account"}),
+        ("sheaf_public_media_serves_total", {"outcome": "served"}),
+        ("sheaf_share_publish_blocked_total", {"reason": "grant_cap"}),
+        ("sheaf_adult_attestations_total", None),
+        (
+            "sheaf_watch_redemptions_total",
+            {"destination_type": "mobile_push", "outcome": "auth_required"},
+        ),
+        (
+            "sheaf_watch_redemptions_total",
+            {"destination_type": "unknown", "outcome": "invalid_code"},
+        ),
+    ]
+    for name, labels in checks:
+        val = _series_value(body, name, labels)
+        assert val is not None, f"missing prewarmed series: {name} {labels}"
+
+
+def test_sharing_gauges_populate(admin_client: httpx.Client):
+    """The point-in-time sharing gauges are DB-sourced, so they materialise
+    once the slow gauge pass runs. Triggering it exposes the live-grant gauge
+    (per subject type) and the oldest-pending-exposure gauge from a known
+    state."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+
+    body = _scrape()
+    for subject_type in ("public", "link"):
+        val = _series_value(
+            body, "sheaf_share_grants_live", {"subject_type": subject_type}
+        )
+        assert val is not None, f"missing sheaf_share_grants_live {subject_type}"
+    assert (
+        _series_value(body, "sheaf_share_pending_exposure_oldest_seconds")
+        is not None
+    )
+
+
+# ---------------------------------------------------------------------------
 # Leader election
 # ---------------------------------------------------------------------------
 

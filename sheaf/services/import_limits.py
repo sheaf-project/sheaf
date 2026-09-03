@@ -27,6 +27,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
+from sheaf.schemas.custom_field import MAX_CUSTOM_FIELD_VALUE_CHARS
 from sheaf.services.import_parsing import ImportPayloadError
 
 
@@ -45,6 +46,10 @@ M_NAME = Cap("member name", 100)
 M_DISPLAY_NAME = Cap("member display name", 100)
 M_PRONOUNS = Cap("member pronouns", 100)
 M_NOTE = Cap("member note", 5000)
+# Long-form markdown bio. Mirrors MemberCreate.description (20k); the cap is a
+# storage/parse backstop so an import can't land a description the write API
+# would reject and then feed an oversized body to the superlinear markdown parse.
+M_DESCRIPTION = Cap("member description", 20000)
 M_AVATAR_URL = Cap("member avatar URL", 500)
 M_BANNER_URL = Cap("member banner URL", 500)
 M_COLOR = Cap("member color", 7)
@@ -56,6 +61,8 @@ M_EMOJI = Cap("member emoji", 8)
 # Mirrors sheaf/schemas/system.py.
 SYS_NAME = Cap("system name", 100)
 SYS_NOTE = Cap("system note", 5000)
+# Mirrors SystemCreate.description (20k). See M_DESCRIPTION.
+SYS_DESCRIPTION = Cap("system description", 20000)
 SYS_TAG = Cap("system tag", 8)
 SYS_AVATAR_URL = Cap("system avatar URL", 500)
 SYS_COLOR = Cap("system color", 7)
@@ -64,6 +71,8 @@ SYS_COLOR = Cap("system color", 7)
 # Mirrors sheaf/schemas/group.py and sheaf/schemas/tag.py.
 GROUP_NAME = Cap("group name", 100)
 GROUP_COLOR = Cap("group color", 7)
+# Mirrors GroupCreate.description (20k). See M_DESCRIPTION.
+GROUP_DESCRIPTION = Cap("group description", 20000)
 TAG_NAME = Cap("tag name", 50)
 TAG_COLOR = Cap("tag color", 7)
 
@@ -73,6 +82,8 @@ TAG_COLOR = Cap("tag color", 7)
 CF_NAME = Cap("custom field name", 100)
 CF_CHOICE = Cap("custom field choice", 100)
 CF_CHOICES_COUNT = Cap("custom field's choice list", 100)
+# Field VALUES are deliberately absent from the Cap list: they are not clamped.
+# See `oversized_field_value_warning`.
 
 # --- Journal / message / poll / reminder ------------------------------------
 JOURNAL_TITLE = Cap("journal title", 200)
@@ -91,6 +102,11 @@ REMINDER_BODY = Cap("reminder body", 2000)
 # then these track the column widths so an import can't over-run them.
 REL_TYPE_NAME = Cap("relationship type name", 100)
 REL_TYPE_LABEL = Cap("relationship type label", 100)
+REL_TYPE_COLOR = Cap("relationship type color", 7)
+
+# --- Share views ------------------------------------------------------------
+# Mirrors sheaf/schemas/share.py (ShareViewCreate.name).
+SHARE_VIEW_NAME = Cap("share view name", 100)
 
 
 @dataclass
@@ -154,6 +170,31 @@ def clamp_str(
             report.record_str(cap)
         return value[: cap.limit]
     return value
+
+
+def oversized_field_values_warning(count: int) -> str:
+    """The report line for custom-field values that came in over the editor cap.
+
+    Values are the one piece of user content here that is neither clamped nor
+    refused. Every other over-cap string in this module is truncated and
+    tallied, because a 100-char name arriving at 140 is still recognisably the
+    same name; a field value is free-form text, and shortening it would drop
+    the end of something somebody wrote and hand it back as if it were what
+    they had. An import is a restore, so the value lands intact and the owner
+    is simply told: the cap bounds new text typed into the editor, it does not
+    get to quietly edit what they already had elsewhere.
+
+    One tallied line per run rather than one per value - a big export can carry
+    a lot of these, and a report that is mostly this message is a report nobody
+    reads. No names of any kind: this string lands in the job's plaintext event
+    log.
+    """
+    return (
+        f"{count} custom field value(s) were imported at full length; they "
+        f"are longer than the {MAX_CUSTOM_FIELD_VALUE_CHARS:,}-character "
+        "limit the editor accepts for new text. They are stored and shown as "
+        "they were; editing one down is the only thing the limit asks for."
+    )
 
 
 def clamp_list[T](

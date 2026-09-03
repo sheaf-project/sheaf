@@ -78,6 +78,18 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
+    # Whether the member roster is served at all. ON by default (and a
+    # server_default of true, so every view that existed before this column did
+    # keeps serving exactly the roster it served then). Turning it off does not
+    # empty the view's allowlist - the curation is still there, it is simply
+    # not published, so switching it back on restores the same roster rather
+    # than asking the owner to rebuild it. With it off the members endpoint
+    # 404s outright: an empty list would answer "does this profile have a
+    # roster?" for anyone who asked.
+    include_members: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+
     # Whether member bios are included for members in this view. Bios are
     # markdown and go through the usual image-ref resolution on render.
     include_bio: Mapped[bool] = mapped_column(
@@ -96,13 +108,44 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, default=True, server_default="true", nullable=False
     )
 
-    # Staged flag flips. Turning one of the three flags ON while the view is
-    # already shared exposes more, so the new value parks here and the finalize
-    # sweep copies it onto the live flag once `flags_activate_at` passes - the
-    # same PENDING lifecycle the member and field rows carry, expressed as
-    # columns because a flag has nowhere else to live. NULL means "nothing
-    # staged for this flag". Turning a flag OFF is immediate and clears its
-    # pending value: going dark always wins.
+    # Whether relationships between members in this view are shown. Off by
+    # default, and doubly gated: the flag only decides whether the endpoint
+    # exists at all, while each individual edge still has to be marked `public`
+    # AND have both of its endpoints projected by this view. Turning it on
+    # therefore publishes nothing on its own.
+    include_relationships: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Whether this view shows the system's public groups. Off by default, and
+    # gated twice over like relationships: the flag decides whether the
+    # endpoint exists, while each group still has to be marked `public`
+    # itself. A published group's roster is the intersection of its members
+    # with the members this view already shows, so turning this on can never
+    # name somebody the view was not already naming.
+    include_groups: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Whether each shown member also gets a stable public URL of their own.
+    # Deliberately NOT one of the EXPOSURE_FLAGS above, and deliberately
+    # without a pending twin: it publishes no data the roster does not already
+    # publish, it only gives that data an address. Both directions are
+    # therefore immediate and ungated - staging a change that exposes nothing
+    # would only teach people the grace window is theatre. It is still off by
+    # default, because a durable link is a different thing to hand out than a
+    # row in a list, and that choice should be made rather than inherited.
+    member_permalinks: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # Staged flag flips. Turning one of the six exposure flags ON while the
+    # view is already shared exposes more, so the new value parks here and the
+    # finalize sweep copies it onto the live flag once `flags_activate_at`
+    # passes - the same PENDING lifecycle the member and field rows carry,
+    # expressed as columns because a flag has nowhere else to live. NULL means
+    # "nothing staged for this flag". Turning a flag OFF is immediate and
+    # clears its pending value: going dark always wins.
     pending_include_bio: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True
     )
@@ -110,6 +153,15 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, nullable=True
     )
     pending_fronting_show_count: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_relationships: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_members: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    pending_include_groups: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True
     )
     # Shared activation time for whatever is staged above. NULL whenever no
@@ -156,6 +208,25 @@ class ShareViewMember(UUIDMixin, Base):
         index=True,
     )
 
+    # Which group expansion created this row. NULL means the owner added this
+    # member by hand - or the group has since been deleted, which deliberately
+    # degrades to treated-as-manual (see the FK's SET NULL) so deleting a group
+    # never silently detaches its members from a view.
+    #
+    # Attribution only, and only consulted when a group is DETACHED: the row
+    # itself is the sole authority on who is exposed, exactly as before, and
+    # nothing here is read at projection time. It exists because detaching a
+    # group used to remove that group's CURRENT roster from the view, which
+    # over-removed - a member the owner had also picked by hand, or one an
+    # overlapping group had brought in, got pulled out even though the detached
+    # group was not why they were there.
+    added_via_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
@@ -190,6 +261,11 @@ class ShareViewGroup(UUIDMixin, Base):
     window, which is exactly the accidental-outing failure this whole feature
     is built to prevent. Group membership changes therefore never move anyone
     into or out of a view on their own.
+
+    Detaching one of these rows can offer to take its members with it, and the
+    members it means are the ones stamped `ShareViewMember.added_via_group_id`
+    - what this expansion actually added - never the group's current roster,
+    which is a different set and includes people this group never put here.
     """
 
     __tablename__ = "share_view_groups"

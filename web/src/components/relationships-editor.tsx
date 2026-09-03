@@ -1,5 +1,6 @@
 import { ArrowLeft, ArrowLeftRight, ArrowRight } from "lucide-react";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   useRelationshipTypes,
@@ -9,15 +10,28 @@ import {
   useGroupRelationships,
   useCreateGroupRelationship,
   useDeleteGroupRelationship,
+  useUpdateMemberRelationship,
+  useUpdateGroupRelationship,
 } from "@/hooks/use-relationships";
 import type {
+  DeleteConfirmation,
+  DestructiveConfirm,
+  PrivacyLevel,
   RelationshipDirection,
   RelationshipEdgeCreate,
+  RelationshipFromViewpoint,
   RelationshipType,
 } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ColorDot } from "@/components/color-dot";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Label } from "@/components/ui/label";
+import {
+  RelationshipPrivacyControl,
+  RelationshipVisibilityBadge,
+} from "@/components/relationship-privacy-control";
+import { RelationshipTypeDialog } from "@/components/relationship-type-dialog";
 import {
   Select,
   SelectContent,
@@ -25,6 +39,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
+import {
+  EDGE_VISIBILITY_HELP,
+  EDGE_VISIBILITY_LEVELS,
+} from "@/lib/relationship-privacy";
+import { getSystemSafety } from "@/lib/system-safety";
+import { getMySystem } from "@/lib/systems";
 
 type Role = "forward" | "reverse";
 
@@ -85,8 +106,11 @@ export function RelationshipsEditor({
   const createGroupEdge = useCreateGroupRelationship();
   const deleteMemberEdge = useDeleteMemberRelationship();
   const deleteGroupEdge = useDeleteGroupRelationship();
+  const updateMemberEdge = useUpdateMemberRelationship();
+  const updateGroupEdge = useUpdateGroupRelationship();
   const createEdge = isMember ? createMemberEdge : createGroupEdge;
   const deleteEdge = isMember ? deleteMemberEdge : deleteGroupEdge;
+  const updateEdge = isMember ? updateMemberEdge : updateGroupEdge;
 
   // The full list resolves names in existing edges; the picker excludes
   // self and non-selectable nodes (e.g. custom fronts).
@@ -98,10 +122,32 @@ export function RelationshipsEditor({
   const [otherId, setOtherId] = useState("");
   const [role, setRole] = useState<Role>("forward");
   const [mutual, setMutual] = useState(false);
+  // An edge says something about two people at once, so a new one starts
+  // private no matter what either of them is set to.
+  const [visibility, setVisibility] = useState<PrivacyLevel>("private");
+  const [showNewType, setShowNewType] = useState(false);
+  // The bounced add, held so the step-up dialog can retry the exact same edge
+  // with credentials attached rather than rebuilding it from the form.
+  const [stepUp, setStepUp] = useState<RelationshipEdgeCreate | null>(null);
+
+  // Read only to pick the re-auth tier for a gated add; both are cached queries
+  // the rest of the app already keeps warm.
+  const { data: safety } = useQuery({
+    queryKey: ["system-safety"],
+    queryFn: getSystemSafety,
+  });
+  const { data: system } = useQuery({
+    queryKey: ["system", "me"],
+    queryFn: getMySystem,
+  });
+  const stepUpTier: DeleteConfirmation =
+    safety?.settings.auth_tier ?? system?.delete_confirmation ?? "password";
 
   const selectedType: RelationshipType | undefined = types?.find(
     (t) => t.id === typeId,
   );
+  const typeColor = (id: string) =>
+    types?.find((t) => t.id === id)?.color ?? null;
   const symmetry = selectedType?.symmetry;
   const showRole = symmetry === "directional" || symmetry === "either";
   const showMutual = symmetry === "either";
@@ -120,10 +166,12 @@ export function RelationshipsEditor({
     setOtherId("");
     setRole("forward");
     setMutual(false);
+    setVisibility("private");
   }
 
-  function handleAdd() {
-    if (!selectedType || !otherId) return;
+  /** The edge the form currently describes, or null while it is incomplete. */
+  function buildPayload(): RelationshipEdgeCreate | null {
+    if (!selectedType || !otherId) return null;
 
     let payload: RelationshipEdgeCreate;
     if (symmetry === "symmetric") {
@@ -157,7 +205,35 @@ export function RelationshipsEditor({
       };
     }
 
-    createEdge.mutate(payload, { onSuccess: reset });
+    return { ...payload, visibility };
+  }
+
+  /** Add the edge.
+   *
+   * Sent without credentials first, exactly as the per-edge privacy select
+   * does: an edge born `public` is the same exposure as raising an existing one
+   * to public, so the server answers it with the same 400 asking for step-up.
+   * Without this, picking Public on a brand new relationship would bounce with
+   * nowhere to type the password.
+   */
+  function handleAdd() {
+    const payload = buildPayload();
+    if (!payload) return;
+    createEdge.mutate(
+      { data: payload, skipErrorToast: true },
+      {
+        onSuccess: reset,
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setStepUp(payload);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't add this relationship.", {
+            force: true,
+          });
+        },
+      },
+    );
   }
 
   // On a profile (read-only) with no relationships, render nothing.
@@ -170,29 +246,20 @@ export function RelationshipsEditor({
       {edges.length > 0 ? (
         <div className="space-y-1">
           {edges.map((edge) => (
-            <div
+            <EdgeRow
               key={edge.id}
-              className="flex items-center justify-between gap-2 rounded-md border px-2 py-1 text-sm"
-            >
-              <span className="flex min-w-0 items-center gap-1.5 truncate">
-                <DirectionIcon direction={edge.direction} />
-                <span className="min-w-0 truncate">
-                  <span className="text-muted-foreground">{edge.label}:</span>{" "}
-                  {nodeName(edge.other_id)}
-                </span>
-              </span>
-              {!readOnly && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 shrink-0 text-xs text-destructive hover:text-destructive"
-                  onClick={() => deleteEdge.mutate(edge.id)}
-                  disabled={deleteEdge.isPending}
-                >
-                  Remove
-                </Button>
-              )}
-            </div>
+              edge={edge}
+              scope={scope}
+              color={typeColor(edge.relationship_type_id)}
+              otherName={nodeName(edge.other_id)}
+              readOnly={readOnly}
+              onFlip={() =>
+                updateEdge.mutate({ edgeId: edge.id, data: { flip: true } })
+              }
+              flipping={updateEdge.isPending}
+              onRemove={() => deleteEdge.mutate(edge.id)}
+              removing={deleteEdge.isPending}
+            />
           ))}
         </div>
       ) : (
@@ -200,9 +267,15 @@ export function RelationshipsEditor({
       )}
 
       {readOnly ? null : !types || types.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          Define a relationship type in Settings &gt; Relationships first.
-        </p>
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            No relationship types yet. A type is the vocabulary (partner,
+            parent/child, protector) an actual relationship is drawn with.
+          </p>
+          <Button size="sm" variant="outline" onClick={() => setShowNewType(true)}>
+            New relationship type
+          </Button>
+        </div>
       ) : others.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           No other {noun}s to link to yet.
@@ -270,15 +343,161 @@ export function RelationshipsEditor({
             </label>
           )}
 
-          <Button
-            size="sm"
-            onClick={handleAdd}
-            disabled={!typeId || !otherId || createEdge.isPending}
-          >
-            {createEdge.isPending ? "Adding..." : "Add relationship"}
-          </Button>
+          <div className="space-y-1">
+            <Label className="text-xs">Visibility</Label>
+            <Select
+              value={visibility}
+              onValueChange={(v) => setVisibility(v as PrivacyLevel)}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDGE_VISIBILITY_LEVELS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>
+                    {l.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {EDGE_VISIBILITY_HELP}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleAdd}
+              disabled={!typeId || !otherId || createEdge.isPending}
+            >
+              {createEdge.isPending ? "Adding..." : "Add relationship"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-xs"
+              onClick={() => setShowNewType(true)}
+            >
+              New relationship type
+            </Button>
+          </div>
         </div>
       )}
+
+      {showNewType && (
+        <RelationshipTypeDialog
+          onOpenChange={(open) => !open && setShowNewType(false)}
+          onCreated={(created) => onTypeChange(created.id)}
+        />
+      )}
+
+      {/* Step-up for a new edge the server would not accept as public without
+          re-auth. Same prompt, same words as raising an existing edge, because
+          it is the same exposure. */}
+      <DestructiveConfirmDialog
+        open={!!stepUp}
+        onOpenChange={(open) => !open && setStepUp(null)}
+        title="Confirm public visibility change"
+        description="Publishing this relationship can reveal it through an existing public profile or share link. Confirm now; if you have a grace period set, it takes effect after your System Safety window."
+        tier={stepUpTier}
+        actionLabel="Confirm change"
+        actionLabelLoading="Adding..."
+        loading={createEdge.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!stepUp) return;
+          createEdge.mutate(
+            { data: { ...stepUp, ...confirm } },
+            {
+              onSuccess: () => {
+                setStepUp(null);
+                reset();
+              },
+            },
+          );
+        }}
+      />
     </div>
+  );
+}
+
+/**
+ * One existing edge: what it is, and (unless this is a profile view) the
+ * controls for it. The privacy select, its step-up prompt and the staged-raise
+ * note all come from the shared control, so this row and the graph's edge
+ * dialog cannot drift apart about the same setting.
+ *
+ * The badge shows in both modes, including a read-only profile: somebody
+ * looking at a member should be able to see that a relationship is public
+ * without having to open the editor to find out.
+ */
+function EdgeRow({
+  edge,
+  scope,
+  color,
+  otherName,
+  readOnly,
+  onFlip,
+  flipping,
+  onRemove,
+  removing,
+}: {
+  edge: RelationshipFromViewpoint;
+  scope: "member" | "group";
+  color: string | null;
+  otherName: string;
+  readOnly: boolean;
+  onFlip: () => void;
+  flipping: boolean;
+  onRemove: () => void;
+  removing: boolean;
+}) {
+  // Directionless edges (symmetric type, or a mutual either-edge) have
+  // nothing to reverse - same rule as the graph's edge dialog.
+  const canFlip = edge.direction !== "none";
+  return (
+    <RelationshipPrivacyControl
+      scope={scope}
+      edge={edge}
+      readOnly={readOnly}
+      className="rounded-md border px-2 py-1 text-sm"
+      trailing={
+        readOnly ? null : (
+          <>
+            {canFlip && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs"
+                onClick={onFlip}
+                disabled={flipping}
+                title={`Reverse direction: ${otherName} becomes the ${edge.label}`}
+              >
+                Reverse
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs text-destructive hover:text-destructive"
+              onClick={onRemove}
+              disabled={removing}
+            >
+              Remove
+            </Button>
+          </>
+        )
+      }
+    >
+      <span className="flex min-w-0 items-center gap-1.5 truncate">
+        <ColorDot color={color} />
+        <DirectionIcon direction={edge.direction} />
+        <span className="min-w-0 truncate">
+          <span className="text-muted-foreground">{edge.label}:</span>{" "}
+          {otherName}
+        </span>
+        <RelationshipVisibilityBadge visibility={edge.visibility} />
+      </span>
+    </RelationshipPrivacyControl>
   );
 }

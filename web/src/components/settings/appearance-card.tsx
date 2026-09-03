@@ -183,7 +183,7 @@ function SyncToggle({
         <p className="text-xs text-muted-foreground">
           {synced
             ? "Your palette and mode follow your account. Changes here apply to every browser logged into this account."
-            : "This browser keeps its own palette and mode. Other browsers logged into this account use their own picks (or your last synced choice)."}
+            : "This browser keeps its own palette and mode. Other browsers logged into this account use their own picks (or your last synced choice). Using the light/dark toggle on a public profile page also switches a browser to its own pick."}
         </p>
       </div>
     </div>

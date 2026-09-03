@@ -79,6 +79,7 @@ async def handle_pluralspace_file(job: ImportJob, db: AsyncSession) -> None:
         custom_fronts_imported=result.custom_fronts_imported,
         members_skipped=result.members_skipped,
         members_updated=result.members_updated,
+        members_privacy_skipped=result.members_privacy_skipped,
         avatars_imported=result.avatars_imported,
         tags_imported=result.tags_imported,
         groups_imported=result.groups_imported,

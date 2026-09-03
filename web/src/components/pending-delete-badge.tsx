@@ -22,10 +22,18 @@ export function PendingDeleteBadge({
   // the render path) and more informative anyway for a grace window of
   // days. The Settings -> Safety page shows the exact countdown.
   const label = formatDate(finalizeAt);
+  // Deliberately NOT routed through `ReasonBadge` like the sharing badges: this
+  // one is a navigation link, and wrapping it in a popover trigger would have
+  // it announce itself as opening a dialog when it actually goes to a page. The
+  // half of the gap that applies here - the reason being invisible to a screen
+  // reader - is closed by naming the link with the same sentence the title
+  // carries, which needs no trigger at all.
+  const reason = `Pending delete - finalises ${formatDateTime(finalizeAt)}. Click to cancel.`;
   return (
     <Link
       to="/settings/safety"
-      title={`Pending delete - finalises ${formatDateTime(finalizeAt)}. Click to cancel.`}
+      title={reason}
+      aria-label={reason}
       className={cn(
         "inline-flex items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 hover:bg-amber-500/20 dark:text-amber-400",
         className,

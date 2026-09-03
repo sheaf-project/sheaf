@@ -35,6 +35,14 @@ export interface User {
   /** Whether this user may upload animated avatars (GIF / animated WebP).
    *  When false the cropper always flattens animated input to a still. */
   animated_uploads_allowed: boolean;
+  /** Instance policy: whether this deployment serves a public-profile /
+   *  share-link surface at all. When false the sharing UI is hidden and the
+   *  public router 404s wholesale. */
+  public_profiles_enabled: boolean;
+  /** When the account self-declared 18+, or null if it hasn't. Creating a
+   *  share grant is gated on this; the UI prompts for the declaration the
+   *  first time the user tries to publish. */
+  adult_attested_at: string | null;
 }
 
 /** Public payload from GET /v1/shield-mode/status. `feature_enabled`
@@ -69,6 +77,17 @@ export interface System {
   avatar_url: string | null;
   color: string | null;
   privacy: PrivacyLevel;
+  /** A raise of the master switch to public still waiting out the System
+   *  Safety grace window. `privacy` above is still the live truth; this is
+   *  what it becomes when `privacy_activates_at` passes. null = nothing
+   *  staged. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
+  /** Operator takedown latch. When true, an admin has disabled publishing on
+   *  this system: no new grant can be created and the system cannot be raised
+   *  to public until an admin clears it. Read-only to the owner; the sharing
+   *  screen surfaces it as a prominent banner. */
+  publishing_blocked: boolean;
   delete_confirmation: DeleteConfirmation;
   date_format: DateFormat;
   /** Account display timezone. null = "automatic" (each device renders in
@@ -97,6 +116,11 @@ export interface SystemUpdate {
   replace_fronts_default?: boolean;
   coalesce_contiguous_fronts?: boolean;
   show_member_created_date?: boolean;
+  /** Step-up credentials, only consulted when raising privacy to public is a
+   *  deferred exposure (the profile-visibility safety category is armed and a
+   *  grant would actually serve). Never stored. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface Member {
@@ -127,6 +151,9 @@ export interface Member {
   /** Hard share guard: this member may be in a view, but their front state
    *  never propagates to any public fronting projection. */
   fronting_private: boolean;
+  /** A requested release of the fronting guard is waiting out the System
+   *  Safety grace period until this timestamp. */
+  fronting_private_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** True iff at least one ContentRevision exists for this member's
@@ -144,6 +171,12 @@ export interface Member {
    *  default member list view but still resolve in historical surfaces
    *  (front history, journals). */
   archived_at: string | null;
+  /** Response-only, and only from the unarchive endpoint: when restoring
+   *  this member put them back on a published profile and the grace window
+   *  staged it, this is when they return to the shared pages. Null when the
+   *  restore was immediate (nothing published them, or no grace window is
+   *  set) and on every other member response. */
+  share_exposure_activates_at?: string | null;
 }
 
 export interface MemberCreate {
@@ -162,7 +195,9 @@ export interface MemberCreate {
   note?: string | null;
   quick_switch_pin?: number | null;
   never_shareable?: boolean;
-  fronting_private?: boolean;
+  /** Omit (or send null) to take the server default, which is on for a custom
+   *  front and off for an ordinary member. An explicit value is honoured. */
+  fronting_private?: boolean | null;
 }
 
 export interface MemberUpdate {
@@ -183,6 +218,8 @@ export interface MemberUpdate {
   quick_switch_pin?: number | null;
   never_shareable?: boolean;
   fronting_private?: boolean;
+  password?: string;
+  totp_code?: string;
 }
 
 export interface Front {
@@ -332,6 +369,15 @@ export interface Group {
   description: string | null;
   color: string | null;
   parent_id: string | null;
+  /** The same `PrivacyLevel` vocabulary a member carries, and the same
+   *  meaning: a ceiling, not a promise. A group still only appears where a
+   *  view was told to show groups. Private unless said otherwise. */
+  privacy: PrivacyLevel;
+  /** A raise still waiting out the safety grace window. `privacy` above is
+   *  the truth right now; these say what it becomes and when. Both null when
+   *  nothing is staged. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
@@ -343,6 +389,13 @@ export interface GroupCreate {
   description?: string | null;
   color?: string | null;
   parent_id?: string | null;
+  privacy?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them. Creating a group already public is the same exposure as raising an
+   *  existing one, so it goes through the same door - otherwise "delete it and
+   *  add it back public" would be the way around the slower one. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface GroupUpdate {
@@ -350,6 +403,12 @@ export interface GroupUpdate {
   description?: string | null;
   color?: string | null;
   parent_id?: string | null;
+  privacy?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them: a raise that would actually put this group in front of someone is
+   *  refused until it is confirmed. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface Tag {
@@ -382,7 +441,16 @@ export interface CustomField {
   field_type: FieldType;
   options: Record<string, unknown> | null;
   order: number;
+  /** The same `PrivacyLevel` vocabulary a member or a group carries, and the
+   *  same meaning: a ceiling, not a promise. The field still only appears on a
+   *  view that was told to show it. It applies to this field on EVERY member -
+   *  there is no per-member-per-field setting. Private unless said otherwise. */
   privacy: PrivacyLevel;
+  /** A raise still waiting out the safety grace window. `privacy` above is
+   *  the truth right now; these say what it becomes and when. Both null when
+   *  nothing is staged. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
@@ -402,6 +470,11 @@ export interface CustomFieldUpdate {
   options?: Record<string, unknown> | null;
   order?: number;
   privacy?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them: a raise that would actually put this field in front of someone is
+   *  refused until it is confirmed. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface CustomFieldValue {
@@ -429,7 +502,8 @@ export type PendingActionType =
   | "reminder_delete"
   | "poll_delete"
   | "message_delete"
-  | "message_thread_delete";
+  | "message_thread_delete"
+  | "relationship_type_delete";
 
 export type PendingActionStatus =
   | "pending"
@@ -478,6 +552,7 @@ export interface SystemSafetySettings {
   applies_to_reminders: boolean;
   applies_to_polls: boolean;
   applies_to_messages: boolean;
+  applies_to_relationships: boolean;
   applies_to_archive: boolean;
   applies_to_profile_visibility: boolean;
   auto_pin_first_revision: boolean;
@@ -498,6 +573,7 @@ export interface SystemSafetyUpdate {
   applies_to_reminders?: boolean;
   applies_to_polls?: boolean;
   applies_to_messages?: boolean;
+  applies_to_relationships?: boolean;
   applies_to_archive?: boolean;
   applies_to_profile_visibility?: boolean;
   auto_pin_first_revision?: boolean;
@@ -505,10 +581,16 @@ export interface SystemSafetyUpdate {
   totp_code?: string;
 }
 
+export interface PendingExposure {
+  kind: string;
+  activates_at: string;
+}
+
 export interface SystemSafetyResponse {
   settings: SystemSafetySettings;
   pending_actions: PendingAction[];
   pending_changes: SafetyChangeRequest[];
+  pending_exposures: PendingExposure[];
 }
 
 export interface SystemSafetyUpdateResponse {
@@ -1028,9 +1110,6 @@ export interface PollServerConfig {
  *  read the forward label (protector). */
 export type RelationshipSymmetry = "symmetric" | "directional" | "either";
 
-/** Reserved for the future access-control primitive; only `private` today. */
-export type RelationshipVisibility = "private";
-
 export interface RelationshipType {
   id: string;
   system_id: string;
@@ -1038,8 +1117,14 @@ export interface RelationshipType {
   symmetry: RelationshipSymmetry;
   forward_label: string;
   reverse_label: string | null;
+  /** Nullable, unlike a member's colour: a type may simply have none, and an
+   *  explicit null on update clears it back to that. */
+  color: string | null;
   created_at: string;
   updated_at: string;
+  /** finalize_after of a queued System Safety delete for this type, else null.
+   *  Drives the pending-delete badge and disables Delete while it is set. */
+  pending_delete_at: string | null;
 }
 
 export interface RelationshipTypeCreate {
@@ -1047,12 +1132,14 @@ export interface RelationshipTypeCreate {
   symmetry: RelationshipSymmetry;
   forward_label: string;
   reverse_label?: string | null;
+  color?: string | null;
 }
 
 export interface RelationshipTypeUpdate {
   name?: string;
   forward_label?: string;
   reverse_label?: string | null;
+  color?: string | null;
 }
 
 export interface RelationshipEdgeCreate {
@@ -1060,7 +1147,15 @@ export interface RelationshipEdgeCreate {
   target_id: string;
   relationship_type_id: string;
   mutual?: boolean;
-  visibility?: RelationshipVisibility;
+  /** Deliberately the same `PrivacyLevel` a member carries: "who may see this"
+   *  is one question, so it gets one vocabulary rather than a parallel set of
+   *  words that can drift apart. Private unless said otherwise. */
+  visibility?: PrivacyLevel;
+  /** Step-up credentials, sent only on the retry after the server asks for
+   *  them. Creating an edge straight to public is the same exposure as raising
+   *  an existing one, and runs the same gate. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface RelationshipEdge {
@@ -1069,8 +1164,24 @@ export interface RelationshipEdge {
   target_id: string;
   relationship_type_id: string;
   mutual: boolean;
-  visibility: RelationshipVisibility;
+  visibility: PrivacyLevel;
+  /** A raise still waiting out the safety grace window. `visibility` above is
+   *  the truth right now; these say what it becomes and when. Both null when
+   *  nothing is staged - and always null on group edges, which never stage. */
+  pending_visibility: PrivacyLevel | null;
+  visibility_activates_at: string | null;
   created_at: string;
+}
+
+export interface RelationshipEdgeUpdate {
+  visibility?: PrivacyLevel;
+  /** Swap the endpoints, so each reads the other's label. Directional and
+   *  either types only; a symmetric type answers 400. */
+  flip?: boolean;
+  /** `either` types only, normalised off elsewhere (as on create). */
+  mutual?: boolean;
+  password?: string;
+  totp_code?: string;
 }
 
 /** Direction of an edge as read from one node's viewpoint. */
@@ -1086,7 +1197,11 @@ export interface RelationshipFromViewpoint {
   label: string;
   direction: RelationshipDirection;
   mutual: boolean;
-  visibility: RelationshipVisibility;
+  visibility: PrivacyLevel;
+  /** As on RelationshipEdge: what the level becomes and when, while
+   *  `visibility` stays the truth until then. Always null for group edges. */
+  pending_visibility: PrivacyLevel | null;
+  visibility_activates_at: string | null;
 }
 
 export interface RelationshipGraphNode {
@@ -1122,14 +1237,360 @@ export interface RelationshipPreset {
   symmetry: RelationshipSymmetry;
   forward_label: string;
   reverse_label: string | null;
+  /** Suggested starting colour, editable (and clearable) like any other. */
+  color?: string;
 }
 
+/** The preset colours are deliberately muted mid-tones: each one has enough
+ *  contrast to read against both the light and the dark theme, and no two are
+ *  told apart by red-vs-green alone, so the graph still parses for someone who
+ *  can't separate those. They are a starting point, not a meaning - a colour
+ *  never carries information the label doesn't already say. */
 export const RELATIONSHIP_PRESETS: RelationshipPreset[] = [
-  { label: "Partner", name: "Partner", symmetry: "symmetric", forward_label: "partner", reverse_label: null },
-  { label: "Friend", name: "Friend", symmetry: "symmetric", forward_label: "friend", reverse_label: null },
-  { label: "Sibling", name: "Sibling", symmetry: "symmetric", forward_label: "sibling", reverse_label: null },
-  { label: "Parent / Child", name: "Parent", symmetry: "directional", forward_label: "parent", reverse_label: "child" },
-  { label: "Protector / Protectee", name: "Protector", symmetry: "either", forward_label: "protector", reverse_label: "protectee" },
-  { label: "Caretaker", name: "Caretaker", symmetry: "either", forward_label: "caretaker", reverse_label: "cared for" },
-  { label: "Split from", name: "Split", symmetry: "directional", forward_label: "split from", reverse_label: "split off" },
+  { label: "Partner", name: "Partner", symmetry: "symmetric", forward_label: "partner", reverse_label: null, color: "#c2708f" },
+  { label: "Friend", name: "Friend", symmetry: "symmetric", forward_label: "friend", reverse_label: null, color: "#6a9fb5" },
+  { label: "Sibling", name: "Sibling", symmetry: "symmetric", forward_label: "sibling", reverse_label: null, color: "#7f9c6c" },
+  { label: "Parent / Child", name: "Parent", symmetry: "directional", forward_label: "parent", reverse_label: "child", color: "#b5894a" },
+  { label: "Protector / Protectee", name: "Protector", symmetry: "either", forward_label: "protector", reverse_label: "protectee", color: "#7c6fa8" },
+  { label: "Caretaker", name: "Caretaker", symmetry: "either", forward_label: "caretaker", reverse_label: "cared for", color: "#4f9a92" },
+  { label: "Split from", name: "Split", symmetry: "directional", forward_label: "split from", reverse_label: "split off", color: "#9a7b6a" },
 ];
+
+// --- Share views + grants (public profiles) ---
+
+export type ShareSubjectType = "public" | "link";
+export type ShareGrantStatus = "pending" | "active" | "revoked";
+export type ShareItemStatus = "pending" | "active";
+
+/** Why a member sitting in a view is not actually being served. Mirrors
+ *  `share_projection.NOT_SERVED_REASONS`; the client renders these rather than
+ *  re-deriving any of them, which is what it used to do off member privacy
+ *  alone - quietly missing the archived and deletion-queued cases, both of
+ *  which drop a member from the public page at once. */
+export type ShareNotServedReason =
+  | "never_shareable"
+  | "deletion_queued"
+  | "archived"
+  | "private"
+  | "pending";
+
+export interface ShareViewMemberRow {
+  id: string;
+  member_id: string;
+  status: ShareItemStatus;
+  activates_at: string | null;
+  /** Whether this member is ACTUALLY on the page right now, answered by the
+   *  server through the projection's own filter. Optional so the UI still
+   *  works against a server that predates the field. */
+  served?: boolean;
+  /** Why not, when `served` is false. Null while served, and also in the case
+   *  where the server cannot name a reason - the row then reads as "won't
+   *  show" with no explanation rather than an invented one. */
+  not_served_reason?: ShareNotServedReason | null;
+  /** The group expansion that put this member in the view, or null when they
+   *  were picked by hand (also null once that group is deleted). This is the
+   *  set detaching that group removes - never the group's current roster, which
+   *  is a different set the moment anyone joins or leaves it. */
+  added_via_group_id?: string | null;
+}
+
+export interface ShareViewFieldRow {
+  id: string;
+  field_id: string;
+  status: ShareItemStatus;
+  activates_at: string | null;
+}
+
+export interface ShareViewGroupRow {
+  id: string;
+  group_id: string;
+  synced_at: string;
+}
+
+export interface ShareView {
+  id: string;
+  name: string;
+  /** Whether the view serves the member roster at all. With it off nothing
+   *  member-shaped is served, so the options that decorate a member (bios,
+   *  relationships, permalinks) have nothing to attach to. */
+  include_members: boolean;
+  include_bio: boolean;
+  include_fronting: boolean;
+  fronting_show_count: boolean;
+  include_relationships: boolean;
+  /** Whether the view serves the system's public groups. */
+  include_groups: boolean;
+  /** Stable per-member URLs for members this view already shows. Deliberately
+   *  NOT an exposure flag: it publishes no data that the roster doesn't
+   *  already publish, only an address for it. So it has no pending twin,
+   *  applies immediately in both directions, and never demands step-up. */
+  member_permalinks: boolean;
+  /** A loosening of one of the exposure flags above that is still waiting out
+   *  the grace period: null (or absent) when nothing is queued for that flag.
+   *  Optional so the UI works against a server that doesn't defer them. */
+  pending_include_members?: boolean | null;
+  pending_include_bio?: boolean | null;
+  pending_include_fronting?: boolean | null;
+  pending_fronting_show_count?: boolean | null;
+  pending_include_relationships?: boolean | null;
+  pending_include_groups?: boolean | null;
+  /** When the queued flag change above becomes live. */
+  flags_activate_at?: string | null;
+  created_at: string;
+  /** True when any non-revoked grant (live or still in its grace window)
+   *  points at this view. */
+  is_shared: boolean;
+  members: ShareViewMemberRow[];
+  fields: ShareViewFieldRow[];
+  groups: ShareViewGroupRow[];
+}
+
+export interface ShareViewCreate {
+  name: string;
+  include_members?: boolean;
+  include_bio?: boolean;
+  include_fronting?: boolean;
+  fronting_show_count?: boolean;
+  include_relationships?: boolean;
+  include_groups?: boolean;
+  member_permalinks?: boolean;
+}
+
+export interface ShareViewUpdate {
+  name?: string;
+  include_members?: boolean;
+  include_bio?: boolean;
+  include_fronting?: boolean;
+  fronting_show_count?: boolean;
+  include_relationships?: boolean;
+  include_groups?: boolean;
+  member_permalinks?: boolean;
+  password?: string;
+  totp_code?: string;
+}
+
+export interface ShareViewGroupAddResult {
+  added: number;
+  skipped_never_shareable: number;
+  /** Members whose privacy (private/friends) keeps them off the public tier,
+   *  so the bulk group-add left them out. */
+  skipped_not_public: number;
+}
+
+export interface ShareGrant {
+  id: string;
+  view_id: string;
+  subject_type: ShareSubjectType;
+  note: string | null;
+  status: ShareGrantStatus;
+  activates_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface ShareGrantCreate {
+  view_id: string;
+  subject_type: ShareSubjectType;
+  note?: string | null;
+  expires_at?: string | null;
+  password?: string;
+  totp_code?: string;
+}
+
+/** A newly created or rotated grant. `token` is the raw link token, present
+ *  ONLY for link grants and ONLY on the response that created/rotated it. */
+export interface ShareGrantCreated {
+  grant: ShareGrant;
+  token: string | null;
+}
+
+export interface ShareAuditEntry {
+  grant: ShareGrant;
+  view_id: string;
+  view_name: string;
+  /** The CURATED count: how many members the owner put in this view. Describes
+   *  their curation, not what a visitor gets. */
+  member_count: number;
+  /** The SERVED count: how many of those the projection would actually show
+   *  right now. Null when the roster is off entirely, matching
+   *  `PublicSystemView.member_count` - a roster the view refuses to serve must
+   *  not be countable, and zero would be a claim. Optional so the UI still
+   *  works against a server that predates the field; where it differs from
+   *  `member_count`, the audit line says "3 of 5". */
+  served_member_count?: number | null;
+  field_count: number;
+  /** False when the roster is off entirely - the counts above then describe
+   *  curation that is not being published, so an audit line has to say so
+   *  rather than quoting a number on its own. */
+  include_members: boolean;
+  include_bio: boolean;
+  include_fronting: boolean;
+  include_relationships: boolean;
+  include_groups: boolean;
+  member_permalinks: boolean;
+  /** Edges this view would actually serve right now, not what the flag
+   *  permits: zero when the flag is off, and zero when it is on but no edge
+   *  clears both its own `public` level and the member ceiling. */
+  relationship_count: number;
+  /** Groups this view would actually serve right now, on the same "what is
+   *  really served" basis as `relationship_count`: zero when the flag is off. */
+  group_count: number;
+}
+
+export interface ShareAudit {
+  entries: ShareAuditEntry[];
+  /** Null while the profile is actually served. Otherwise the reason nothing
+   *  below is reachable right now - `"publishing_blocked"` (an operator has
+   *  latched the system shut, and only they can lift it), `"system_private"`
+   *  (the system's own privacy gates every grant at once) or `"account_state"`.
+   *  Reported in that order when more than one applies. Account-level rather
+   *  than per-entry because it suppresses the lot: the grants and the counts
+   *  above stay accurate as curation, but every public URL 404s. */
+  profile_suppressed: string | null;
+}
+
+export interface AdultAttestation {
+  adult_attested_at: string | null;
+}
+
+// --- Public projection payloads (anonymous /v1/public/... surface) ---
+
+/** One custom-field entry on a member card. A list of these, not a name-keyed
+ *  map: field names are not unique, so two exposed definitions sharing a name
+ *  must both appear. */
+export interface PublicMemberField {
+  name: string;
+  value: unknown;
+}
+
+export interface PublicMemberView {
+  id: string;
+  /** The one name this surface has, and it is already the shown one: the
+   *  display name where there is one, the member's own name otherwise.
+   *  Publishing a canonical name alongside a display name would make the
+   *  display name cosmetic, since anyone reading the JSON gets both. */
+  name: string;
+  pronouns: string | null;
+  avatar_url: string | null;
+  banner_url: string | null;
+  color: string | null;
+  bio: string | null;
+  fields: PublicMemberField[];
+}
+
+export interface PublicSystemView {
+  /** The system's own id, and only on a public profile - the page whose URL
+   *  already contains it. Null behind a share link: the link is an opaque
+   *  token so the system it belongs to cannot be named from it, and an id in
+   *  the body would have let two links, or a link and a public profile, be
+   *  tied back to one system by anything reading the JSON. */
+  id: string | null;
+  name: string;
+  description: string | null;
+  avatar_url: string | null;
+  color: string | null;
+  tag: string | null;
+  /** Null when the view does not serve its member roster. A roster the view
+   *  refuses to show must not be countable either, and null says that where a
+   *  zero would be a claim. */
+  member_count: number | null;
+  /** Whether this view gives each member an address of its own. Presentation
+   *  configuration: the client uses it to decide whether a member card is a
+   *  link or opens in place. */
+  member_permalinks: boolean;
+}
+
+/** One member of a published group: id and name only, like a relationship
+ *  endpoint. Everyone listed is already published in full through /members. */
+export interface PublicGroupMember {
+  id: string;
+  name: string;
+}
+
+/** One group a view publishes. Its member list is an INTERSECTION with the
+ *  members the view already shows, never a second allowlist, so a published
+ *  group can never name somebody new. A public group whose intersection is
+ *  EMPTY is not in the payload at all: a name with nobody behind it still
+ *  tells a visitor such a group exists here, which is not something the owner
+ *  published by publishing a roster. */
+export interface PublicGroupView {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  members: PublicGroupMember[];
+}
+
+export interface PublicGroupsView {
+  groups: PublicGroupView[];
+}
+
+export interface PublicFrontingMember {
+  id: string;
+  /** Already the shown name, on the same single-name basis as
+   *  `PublicMemberView.name`. */
+  name: string;
+  pronouns: string | null;
+  avatar_url: string | null;
+  color: string | null;
+  since: string | null;
+}
+
+export interface PublicFrontingView {
+  members: PublicFrontingMember[];
+  hidden_count: number;
+}
+
+/** One end of a published edge: id and name only. The endpoint is always a
+ *  member the same view publishes in full through /members, so the client
+ *  joins on `id` for anything richer. */
+export interface PublicRelationshipEndpoint {
+  id: string;
+  name: string;
+}
+
+export interface PublicRelationship {
+  id: string;
+  type_name: string;
+  type_color: string | null;
+  source: PublicRelationshipEndpoint;
+  target: PublicRelationshipEndpoint;
+  /** How the edge reads from each end ("parent" / "child"). Both are the
+   *  forward label for symmetric types and for mutual either-edges. */
+  source_label: string;
+  target_label: string;
+  /** True only for an `either` edge the owner marked mutual. With the two
+   *  labels, this decides whether an arrow is drawn at all. */
+  mutual: boolean;
+}
+
+export interface PublicRelationshipsView {
+  relationships: PublicRelationship[];
+}
+
+/**
+ * One share view rendered exactly as a visitor would receive it, from
+ * `GET /v1/share-views/{id}/preview`.
+ *
+ * Every section is the SAME payload type the anonymous surface serves, because
+ * the server builds it with the same projection functions - which is what stops
+ * the preview and the real page from drifting apart.
+ *
+ * `null` on a section is the bundle's spelling of that endpoint's 404: the view
+ * does not serve it. Deliberately not an empty list, because empty is a real
+ * state a served section can be in ("nobody is fronting") and the owner needs
+ * to tell that apart from "visitors cannot see who is fronting".
+ */
+export interface SharePreview {
+  system: PublicSystemView;
+  members: PublicMemberView[] | null;
+  fronting: PublicFrontingView | null;
+  relationships: PublicRelationshipsView | null;
+  groups: PublicGroupsView | null;
+  /** Why none of this would reach anybody right now, or null. Same coarse
+   *  values as `ShareAudit.profile_suppressed`. The sections stay populated
+   *  when it is set - the preview answers "what would visitors see", and this
+   *  answers "is anyone getting it", which are different questions. */
+  suppressed: string | null;
+}

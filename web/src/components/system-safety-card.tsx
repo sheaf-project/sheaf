@@ -9,6 +9,7 @@ import {
   updateSystemSafety,
 } from "@/lib/system-safety";
 import { apiErrorMessage } from "@/lib/api-errors";
+import { invalidateForPendingAction } from "@/lib/pending-actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -65,9 +66,19 @@ const categoryLabels: {
     desc: "Deleting a board message or thread",
   },
   {
+    key: "applies_to_relationships",
+    label: "Relationships",
+    desc: "Deleting a relationship type, which takes every relationship drawn with it",
+  },
+  {
     key: "applies_to_archive",
     label: "Archive members",
     desc: "Re-auth to archive a member. No grace period - speed-bump only.",
+  },
+  {
+    key: "applies_to_profile_visibility",
+    label: "Profile visibility",
+    desc: "Publishing a share view, adding someone to an already-shared one, or raising anything to public. This one gates making things MORE visible, not deleting them, and is on by default. With no grace period it just asks for re-auth first; set one to also stage the change behind a window.",
   },
 ];
 
@@ -126,9 +137,9 @@ export function SystemSafetyCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Optional grace periods and re-auth for destructive actions. Tightening
-          applies immediately; loosening waits the current grace period before
-          taking effect.
+          Grace periods and re-auth for destructive or public-facing actions.
+          Tightening applies immediately; loosening waits the current grace
+          period before taking effect.
         </p>
         <SafetyForm settings={data.settings} />
         {data.pending_actions.length > 0 && (
@@ -347,8 +358,17 @@ function PendingActionsList({ actions }: { actions: PendingAction[] }) {
   const qc = useQueryClient();
   const cancel = useMutation({
     mutationFn: cancelPendingAction,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["system-safety"] });
+    onSuccess: (_data, id) => {
+      // Cancelling clears the pending badge (and re-enables Delete) on the
+      // entity's own lists, so refresh those too - invalidating only
+      // ["system-safety"] left the badge on the members / groups / fields /
+      // tags / types pages until something else refetched them.
+      const cancelled = actions.find((a) => a.id === id);
+      if (cancelled) {
+        invalidateForPendingAction(qc, cancelled.action_type);
+      } else {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+      }
       toast.success("Cancelled");
     },
   });
@@ -424,7 +444,9 @@ const CATEGORY_KEYS = [
   "applies_to_reminders",
   "applies_to_polls",
   "applies_to_messages",
+  "applies_to_relationships",
   "applies_to_archive",
+  "applies_to_profile_visibility",
 ] as const;
 
 function hasDiff(a: SystemSafetySettings, b: SystemSafetySettings): boolean {

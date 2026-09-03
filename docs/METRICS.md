@@ -322,6 +322,61 @@ tag_delete, field_delete, front_delete, journal_delete, image_delete,
 channel_delete, reminder_delete, poll_delete, message_delete,
 message_thread_delete, revision_unpin, watch_token_revoke).
 
+### Public profiles / sharing
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_share_grants_created_total` | counter | `subject_type` ∈ {public, link} |
+| `sheaf_share_grants_revoked_total` | counter | `subject_type` ∈ {public, link} |
+| `sheaf_share_grants_rotated_total` | counter | - |
+| `sheaf_share_grants_finalized_total` | counter | `kind` |
+| `sheaf_share_pending_exposures` | gauge | `kind` |
+| `sheaf_share_pending_exposure_oldest_seconds` | gauge | - |
+| `sheaf_share_grants_live` | gauge | `subject_type` ∈ {public, link} |
+| `sheaf_public_media_serves_total` | counter | `outcome` |
+| `sheaf_share_publish_blocked_total` | counter | `reason` |
+| `sheaf_adult_attestations_total` | counter | - |
+| `sheaf_watch_redemptions_total` | counter | `destination_type`, `outcome` |
+| `sheaf_share_projection_duration_seconds` | histogram | `projection` ∈ {members} |
+
+`kind` (both the finalize counter and the pending gauge) ∈ {grant,
+view_member, view_field, view_flags, member_guard, edge_raise, group_raise,
+field_raise, system_privacy} - one per promotion category the finalize sweep
+handles. `sheaf_share_grants_finalized_total` counts staged exposures the
+sweep has promoted live; `sheaf_share_pending_exposures` is the point-in-time
+depth still waiting behind a grace window (the operator mirror of the owner's
+exposure banner). member/field kinds collapse per entity, matching the banner.
+
+`sheaf_share_pending_exposure_oldest_seconds` is the age of the oldest staged
+activation across all kinds; it stays 0 while every staged row is still ahead
+of its window and only climbs once the finalize sweep falls behind. Mirrors
+`sheaf_imports_oldest_pending_seconds`.
+
+`sheaf_share_grants_live` counts grants live-or-pending on their own window
+right now (the same `grant_live_clause` the resolver serves against).
+
+`outcome` for `sheaf_public_media_serves_total` ∈ {served, feature_off,
+invalid_path, invalid_token, dark_account, missing_blob}. The headline is
+`dark_account`: a signed media capability presented after the profile behind
+it went dark (revoke / rotate / system-private / suspend / ban). Raw serve
+volume and latency stay in HTTP RED; this is only the outcome breakdown.
+
+`reason` for `sheaf_share_publish_blocked_total` ∈ {adult_attestation,
+publishing_blocked, system_not_public, grant_cap, duplicate_public}.
+`sheaf_adult_attestations_total` counts the one-way 18+ self-declaration
+transition only (a no-op re-declaration is not counted).
+
+`destination_type` for `sheaf_watch_redemptions_total` ∈ {web_push,
+mobile_push, unknown}; `outcome` ∈ {redeemed, invalid_code, not_pending,
+expired, auth_required}. `invalid_code` carries `destination_type=unknown`
+because no channel resolved. Only the reachable combinations are pre-warmed
+(web push never demands auth; mobile push always does).
+
+`sheaf_share_projection_duration_seconds` is scoped to the `members`
+projection - the privacy-ceiling roster query plus the decrypt-and-render
+pass. The other `project_*` surfaces are near-duplicates of HTTP RED and are
+left to it.
+
 ### cf-shield
 
 | Metric | Type | Labels |
@@ -466,6 +521,61 @@ concurrent-open-poll cap and the import clamp bound, so
 `sheaf_system_open_poll_count_max` read against the cap is the direct outlier
 signal. The `*_total` gauges refresh on the 60s gauge pass; the per-system
 distributions ride the hourly distribution job.
+
+### Usage (DAU / MAU)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_signups_total` | counter | - |
+| `sheaf_active_accounts_daily` | gauge | `auth_kind` |
+| `sheaf_active_systems_daily` | gauge | `auth_kind` |
+| `sheaf_active_accounts_monthly` | gauge | `auth_kind` |
+| `sheaf_active_systems_monthly` | gauge | `auth_kind` |
+| `sheaf_systems_with_public_profile` | gauge | - |
+
+`sheaf_signups_total` is new-account velocity (the flow signal), incremented
+once per registration after the transaction commits. `sheaf_users_total` is the
+stock; this is the flow. No labels.
+
+The four `active_*` gauges are aggregate active-cardinality (DAU/MAU), and the
+privacy invariant is strict: they are **aggregate counts only, never
+attributable to an account**. On each authenticated request the account id and
+its system id are PFADDed into a per-day Redis HyperLogLog sketch
+(`sheaf:hll:<scope>:<auth_kind>:<day>`, e.g. `sheaf:hll:acct:client:<day>`,
+~31-day TTL) at the auth choke point, best-effort and fire-and-forget so Redis
+latency or an outage never delays or fails a request. The id is not added raw: it
+goes through a keyed HMAC under the server encryption key first, so a sketch can
+estimate a distinct count but a holder of the bytes can neither enumerate members
+nor test whether a known account was active without the key (a plain HLL alone is
+membership-testable by re-adding a candidate id, which is why the HMAC is there).
+There is NO per-account series or stored id anywhere; the only label is the
+bounded `auth_kind`, and only the PFCOUNT is ever published.
+
+The `auth_kind` label splits interactive client use (`client`: session cookie or
+JWT bearer, i.e. web and native apps) from automation (`api`: API key), kept in
+separate sketches because a distinct count cannot be sliced out of a merged
+sketch after the fact. `any` is the read-time deduped UNION of client and api
+(PFMERGE), so an account active both ways in a window counts once - it is a true
+total, not `client + api`.
+
+`daily` is the PFCOUNT of today's sketch (for `any`, the merge of today's client
+and api sketches). `monthly` (MAU) is the cardinality of the UNION of the
+trailing 30 daily sketches (PFMERGE + PFCOUNT) - **not** a sum of daily counts,
+which would double-count returning users. For durability the
+per-day sketch BYTES (not a scalar count - a scalar cannot be unioned) are
+flushed to the `usage_daily_sketches` Postgres table every 10 minutes by the
+`flush_usage_sketches` job; Redis survives an in-place upgrade but not an
+instance replace, so after a replace the monthly union RESTOREs any missing
+day-key from Postgres before merging. That table is aggregate ops data (the ids
+are irreversibly folded into HLL registers) and is deliberately excluded from
+the user-data export. If Redis is down the gauges hold their last value rather
+than zeroing (a blip is not "activity dropped to zero"); `sheaf_redis_up` covers
+visibility.
+
+`sheaf_systems_with_public_profile` is the public-profiles adoption signal:
+distinct systems with at least one live public or unlisted-link share grant
+right now, counted against the same `grant_live_clause` the resolver serves. No
+labels.
 
 ### Infra
 

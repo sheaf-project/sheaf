@@ -59,6 +59,7 @@ from sheaf.models.relationship import (
     RelationshipType,
 )
 from sheaf.models.security_event import SecurityEventType
+from sheaf.models.share import ShareView
 from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.uploaded_file import UploadedFile
@@ -451,6 +452,19 @@ async def export_all(
     )
     member_relationships = list(member_rels_result.scalars().all())
 
+    # Share views. The curated projections round-trip; share GRANTS never do
+    # (see _share_view_dict), so a restored backup publishes nothing.
+    share_views_result = await db.execute(
+        select(ShareView)
+        .where(ShareView.system_id == system.id)
+        .options(
+            selectinload(ShareView.members),
+            selectinload(ShareView.fields),
+            selectinload(ShareView.groups),
+        )
+    )
+    share_views = list(share_views_result.scalars().all())
+
     group_rels_result = await db.execute(
         select(GroupRelationship).where(
             GroupRelationship.system_id == system.id
@@ -515,6 +529,10 @@ async def export_all(
                 "description": g.description,
                 "color": g.color,
                 "parent_id": str(g.parent_id) if g.parent_id else None,
+                # The group's own exposure ceiling. The LIVE level only: a
+                # staged raise is mid-grace-window state, not curation, so a
+                # restore never resurrects a half-applied publish.
+                "privacy": g.privacy.value,
                 "member_ids": [str(m.id) for m in g.members],
             }
             for g in groups
@@ -564,6 +582,7 @@ async def export_all(
                 "symmetry": rt.symmetry.value,
                 "forward_label": rt.forward_label,
                 "reverse_label": rt.reverse_label,
+                "color": rt.color,
             }
             for rt in relationship_types
         ],
@@ -573,6 +592,7 @@ async def export_all(
         "group_relationships": [
             _relationship_dict(r) for r in group_relationships
         ],
+        "share_views": [_share_view_dict(v) for v in share_views],
     }
     return _maybe_openplural(native, format)
 
@@ -611,6 +631,49 @@ def _empty_export() -> dict:
         "relationship_types": [],
         "member_relationships": [],
         "group_relationships": [],
+        "share_views": [],
+    }
+
+
+def _share_view_dict(view: ShareView) -> dict:
+    """One curated share view. Member/field/group references carry the OLD
+    uuids so the importer can remap them.
+
+    Note what is NOT here: the grants pointing at this view. A grant is a live
+    capability, so re-creating one on import would republish a system straight
+    out of a restored backup - the worst outcome for a feature whose threat
+    model is accidental outing. Link tokens could not be restored anyway (only
+    a keyed hash is ever stored). A restore therefore returns the user's
+    curation intact, exposed to nobody, until they deliberately publish again.
+
+    Pending (not-yet-live) rows are exported as ordinary members: since no
+    grant comes with them, an imported view exposes nothing regardless.
+
+    `member_sources` carries the group-expansion provenance (old member uuid ->
+    old group uuid) for the members a group put here, so a restored backup
+    detaches groups correctly instead of quietly reverting to "this group added
+    nobody". Kept as a side map rather than folded into `member_ids` so a file
+    written by this version still reads as a plain id list to anything that only
+    knows the old shape. Hand-picked members are simply absent from it, which is
+    also what a file written before this existed looks like: everybody manual.
+    """
+    return {
+        "name": view.name,
+        "include_members": view.include_members,
+        "include_bio": view.include_bio,
+        "include_fronting": view.include_fronting,
+        "fronting_show_count": view.fronting_show_count,
+        "include_relationships": view.include_relationships,
+        "include_groups": view.include_groups,
+        "member_permalinks": view.member_permalinks,
+        "member_ids": [str(m.member_id) for m in view.members],
+        "member_sources": {
+            str(m.member_id): str(m.added_via_group_id)
+            for m in view.members
+            if m.added_via_group_id is not None
+        },
+        "field_ids": [str(f.field_id) for f in view.fields],
+        "group_ids": [str(g.group_id) for g in view.groups],
     }
 
 
@@ -665,6 +728,9 @@ def _system_dict(system: System) -> dict:
             "applies_to_reminders": system.safety_applies_to_reminders,
             "applies_to_polls": system.safety_applies_to_polls,
             "applies_to_messages": system.safety_applies_to_messages,
+            "applies_to_relationships": (
+                system.safety_applies_to_relationships
+            ),
             "applies_to_archive": system.safety_applies_to_archive,
             "applies_to_profile_visibility": (
                 system.safety_applies_to_profile_visibility

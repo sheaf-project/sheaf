@@ -137,6 +137,51 @@ def test_json_round_trip_imports_core_records(auth_client: httpx.Client):
     assert members["OpIris"]["pluralkit_id"] == "opabc", members["OpIris"]
 
 
+def test_custom_front_without_the_guard_key_lands_guarded(
+    auth_client: httpx.Client,
+):
+    """`fronting_private` rides `extensions.sheaf`, so a file from an app that
+    does not speak Sheaf simply has no key there. That absence is not "the
+    owner said no": it means the source has no notion of the guard, and a
+    custom front is the one member kind whose state must not start published.
+    Fed here as a native member with no guard column at all, which is what an
+    OpenPlural file written by anything else turns into."""
+    native = _native()
+    native["members"].append({"id": "m3", "name": "OpAsleep", "is_custom_front": True})
+    job = _post(auth_client, _envelope_bytes(native))
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    members = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    assert members["OpAsleep"]["is_custom_front"] is True
+    assert members["OpAsleep"]["fronting_private"] is True
+    # The rule reaches custom fronts only.
+    assert members["OpIris"]["fronting_private"] is False
+
+
+def test_custom_front_with_a_released_guard_round_trips(auth_client: httpx.Client):
+    """A Sheaf-produced file always carries the key, so a guard the owner
+    deliberately released comes back released rather than silently re-armed by
+    the new default."""
+    native = _native()
+    native["members"].append(
+        {
+            "id": "m3",
+            "name": "OpAwake",
+            "is_custom_front": True,
+            "fronting_private": False,
+        }
+    )
+    job = _post(auth_client, _envelope_bytes(native))
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    members = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    assert members["OpAwake"]["fronting_private"] is False
+
+
 def test_bundle_round_trip_restores_avatar(auth_client: httpx.Client):
     """An .openplural.zip bundle restores the avatar blob under a fresh
     key owned by the importing user."""

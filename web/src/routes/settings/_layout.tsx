@@ -19,6 +19,7 @@ export function SettingsLayout() {
     { to: "/settings/account", label: "Account", icon: KeyRound },
     { to: "/settings/appearance", label: "Appearance", icon: Palette },
     { to: "/settings/relationships", label: "Relationships", icon: Share2 },
+    // Sharing used to live here; it is a top-level screen now.
     { to: "/settings/data", label: "Data", icon: Database },
     { to: "/settings/advanced", label: "Advanced", icon: Wrench },
     { to: "/settings/danger", label: "Danger zone", icon: AlertTriangle },

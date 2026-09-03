@@ -8,6 +8,7 @@ import redis.asyncio as redis
 from sheaf.config import settings
 
 _redis: redis.Redis | None = None
+_redis_bytes: redis.Redis | None = None
 
 
 async def get_redis() -> redis.Redis:
@@ -15,6 +16,22 @@ async def get_redis() -> redis.Redis:
     if _redis is None:
         _redis = redis.from_url(settings.redis_url, decode_responses=True)
     return _redis
+
+
+async def get_redis_bytes() -> redis.Redis:
+    """Redis client in raw-bytes mode (decode_responses=False).
+
+    The shared `get_redis()` client decodes every reply as UTF-8, which is
+    exactly wrong for reading the raw register bytes of a HyperLogLog sketch
+    (arbitrary binary, not UTF-8 - a GET would raise UnicodeDecodeError). The
+    usage-metrics sketch persistence needs to GET a sketch's bytes and SET them
+    back verbatim, so it uses this parallel client. Same connection pattern and
+    URL as `get_redis()`, just without the decode step.
+    """
+    global _redis_bytes
+    if _redis_bytes is None:
+        _redis_bytes = redis.from_url(settings.redis_url, decode_responses=False)
+    return _redis_bytes
 
 
 def _session_key(session_id: str) -> str:

@@ -52,7 +52,9 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "safety_applies_to_revisions": EXT,
         "safety_applies_to_notifications": EXT,
         "safety_applies_to_reminders": EXT, "safety_applies_to_polls": EXT,
-        "safety_applies_to_messages": EXT, "safety_applies_to_archive": EXT,
+        "safety_applies_to_messages": EXT,
+        "safety_applies_to_relationships": EXT,
+        "safety_applies_to_archive": EXT,
         "safety_applies_to_profile_visibility": EXT,
         "journal_max_revisions": EXT, "journal_max_revision_days": EXT,
         "pinned_revision_max_per_target": EXT,
@@ -80,6 +82,10 @@ DISPOSITION: dict[str, dict[str, object]] = {
     },
     "Group": {
         "name": CORE, "description": CORE, "color": CORE, "parent_id": CORE,
+        # v0.1 has no group privacy field, so the group's exposure ceiling
+        # rides extensions.sheaf on the group record, same as the member
+        # protective guards.
+        "privacy": EXT,
     },
     "Tag": {
         "name": CORE, "color": CORE,
@@ -134,12 +140,15 @@ DISPOSITION: dict[str, dict[str, object]] = {
     # nothing to give an OpenPlural disposition. The empty dict records that
     # deliberately (an empty exported set maps to no dispositions).
     "User": {},
-    # The share tables are dormant and export nothing (see the native
-    # CLASSIFICATION), so there is no column to give a disposition.
-    "ShareView": {},
-    "ShareViewMember": {},
-    "ShareViewField": {},
-    "ShareViewGroup": {},
+    # Share views ride the same file-level extensions.sheaf.share_views
+    # passthrough (OpenPlural v0.1 has no sharing/visibility module).
+    "ShareView": "_all_ext",
+    "ShareViewMember": "_all_ext",
+    "ShareViewField": "_all_ext",
+    "ShareViewGroup": "_all_ext",
+    # Share GRANTS export nothing at all (see the native CLASSIFICATION): a
+    # grant is a live capability, so it is never written to a portable file
+    # and can never be restored from one. Empty disposition, nothing to map.
     "ShareGrant": {},
 }
 

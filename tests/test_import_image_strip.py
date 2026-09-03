@@ -208,3 +208,60 @@ def test_strip_avatar_drops_weird_scheme_externals():
     shared policy gate, so a re-import can't smuggle in a scheme the
     profile-write path would refuse."""
     assert strip_internal_avatar_url("javascript:alert(1)") is None
+
+
+# ---------------------------------------------------------------------------
+# A foreign export must not be able to name this instance's own storage.
+#
+# Sheaf keys every upload as {prefix}/{user_id}/{uuid}.{ext} and the read path
+# signs any internal key it is handed into a working serve URL. An avatar field
+# carrying somebody else's key would therefore be re-signed on every read of
+# the importing user's profile: a live cross-tenant read of another account's
+# file, still working after they delete it. Nothing in a PluralKit / Tupperbox
+# / SimplyPlural / PluralSpace / Prism / Ampersand export can legitimately
+# point at Sheaf storage, so all three internal forms are dropped.
+# ---------------------------------------------------------------------------
+
+_VICTIM = "22222222-2222-2222-2222-222222222222"
+_FOREIGN_KEY = f"avatars/{_VICTIM}/stolen.png"
+
+
+def test_sanitize_rejects_cdn_form_internal_key(monkeypatch):
+    """The one that gets past a scheme check.
+
+    With a CDN hostname configured, https://{cdn}/avatars/{victim}/x.png is a
+    well-formed https URL that happens to name our own storage - and
+    resolve_avatar_url recognises the CDN form, so storing it would hand the
+    importing profile a re-signed URL for the victim's file.
+    """
+    from sheaf.config import settings
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    monkeypatch.setattr(settings, "allow_external_images", True)
+
+    assert (
+        sanitize_external_avatar_url(f"https://images.example.com/{_FOREIGN_KEY}")
+        is None
+    )
+
+
+def test_sanitize_rejects_serve_path_and_bare_key(monkeypatch):
+    from sheaf.config import settings
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    monkeypatch.setattr(settings, "allow_external_images", True)
+
+    assert sanitize_external_avatar_url(f"/v1/files/{_FOREIGN_KEY}") is None
+    assert sanitize_external_avatar_url(_FOREIGN_KEY) is None
+
+
+def test_sanitize_still_allows_genuine_external(monkeypatch):
+    from sheaf.config import settings
+    from sheaf.services.import_parsing import sanitize_external_avatar_url
+
+    monkeypatch.setattr(settings, "s3_public_url", "https://images.example.com")
+    monkeypatch.setattr(settings, "allow_external_images", True)
+
+    url = "https://cdn.pluralkit.example/avatars/abc.png"
+    assert sanitize_external_avatar_url(url) == url

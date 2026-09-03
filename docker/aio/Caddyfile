@@ -26,6 +26,19 @@
 	@compressible not path /v1/fronts/stream
 	encode @compressible zstd gzip
 
+	# Never write these paths to an access log. A share link's token IS the
+	# capability and it lives in the path (/s/{token} for the page,
+	# /v1/public/shared/{token}/... for the API calls it makes), and a public
+	# file URL carries the owner's account id in the path with a live signed
+	# token in the query - so an ordinary logged request line is a working key
+	# to somebody's profile, sitting in a file that outlives rotating the link.
+	# Caddy writes no access log unless one is configured, so this changes
+	# nothing today; it is here so that adding `log` to this file later - or an
+	# operator adding one downstream - cannot quietly start recording them.
+	# Sheaf's own access-log filter already redacts the same three.
+	@secret_urls path /s/* /v1/public/shared/* /v1/public/files/*
+	log_skip @secret_urls
+
 	# Realtime SSE stream: flush each event straight through with no buffering.
 	# reverse_proxy already auto-streams text/event-stream, but pin it so a
 	# future default can't reintroduce the stall. Must precede @backend below,
@@ -50,11 +63,39 @@
 		root * /srv/web
 		try_files {path} /index.html
 		file_server
-		header {
+		# Public profiles (/p/) and share links (/s/) get their own header set,
+		# and the two matchers are mutually exclusive on purpose: `header` sets,
+		# so if both handlers matched a request the last one Caddy ran would
+		# silently win, and the adapter does not order them by where they sit
+		# in this file. One request, one header handler, no precedence puzzle.
+		# `header` is ordered before try_files, so the matcher sees the original
+		# path, not /index.html.
+		@profiles path /p/* /s/*
+		@app not path /p/* /s/*
+		header @app {
 			X-Frame-Options "DENY"
 			X-Content-Type-Options "nosniff"
 			Referrer-Policy "no-referrer"
 			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+		}
+
+		# Same headers, two differences. X-Robots-Tag: these are the only pages
+		# a crawler can reach - the rest of the app is behind auth - and they
+		# are meant for sharing, not for search results. The pages set a
+		# noindex meta tag themselves; the header covers a crawler that indexes
+		# on headers before running the SPA. And img-src drops https: and blob:,
+		# because these pages are read by anonymous visitors: the server already
+		# withholds external images from them, and if that ever regressed the
+		# browser refuses the fetch rather than announcing the visitor's address
+		# to a host the profile owner chose. Hosted uploads use the dedicated
+		# same-origin /v1/public/files route even when normal image serving uses
+		# S3 redirects or a CDN.
+		header @profiles {
+			X-Frame-Options "DENY"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+			X-Robots-Tag "noindex, nofollow"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
 		}
 	}
 }

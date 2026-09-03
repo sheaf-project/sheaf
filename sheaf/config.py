@@ -255,6 +255,19 @@ class Settings(BaseSettings):
     pinned_revision_max_per_target_plus: int = 5
     pinned_revision_max_per_target_selfhosted: int = 10
 
+    # Master switch for the public-profile / share-link surface. Default OFF:
+    # an instance that never wants an anonymous read surface never has one
+    # (the public router 404s wholesale). Also lets the backend ship dark and
+    # be flipped on once the web UI lands.
+    public_profiles_enabled: bool = False
+
+    # Per-system ceilings on the sharing surface. Not a tier product limit:
+    # they bound how much an account can accumulate on a surface that is
+    # anonymously readable and whose audit page has to stay comprehensible.
+    # Well above any plausible real use; raise them if a self-hoster needs to.
+    share_views_max: int = 100
+    share_grants_max: int = 100
+
     # Allow external images in bios/descriptions. If False, CSP blocks
     # external image loading — only hosted uploads are displayed.
     allow_external_images: bool = True
@@ -561,6 +574,13 @@ class Settings(BaseSettings):
     # Legal links for the footer (optional). Empty = hide.
     terms_url: str = ""
     privacy_url: str = ""
+
+    # Free-form markdown the operator writes: where to report abuse of the
+    # public-profile surface, a chat contact, DMCA designated-agent details,
+    # whatever applies to this instance. Shown to anonymous visitors from the
+    # public profile footer, so it is operator-authored public information and
+    # nothing else reads it. Empty = no footer item, nothing rendered.
+    public_abuse_contact: str = ""
 
     # Operator support contact, surfaced on the in-app Support page
     # (optional). Each is independent; the whole operator section hides
@@ -1126,6 +1146,18 @@ def _validate_settings() -> None:
             "PRIVACY_URL is not set. The login/registration page will not show a "
             "Privacy Policy link. Strongly recommended for public instances, and "
             "may be required under GDPR/CCPA depending on jurisdiction."
+        )
+
+    # Abuse contact: only has anywhere to appear once there is an anonymous
+    # surface, so this is said to instances running public profiles and nobody
+    # else. Info rather than a warning: it is worth setting, but a self-host
+    # publishing one profile for one system does not need shouting at on every
+    # boot about a report queue of one.
+    if settings.public_profiles_enabled and not settings.public_abuse_contact:
+        logger.info(
+            "PUBLIC_ABUSE_CONTACT is not set. Public profile pages will not "
+            "show an abuse/DMCA contact. Recommended wherever those pages are "
+            "reachable by people you have not met."
         )
 
     # Custom support text: warn (don't refuse) if the operator pointed at a

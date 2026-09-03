@@ -189,6 +189,7 @@ Sheaf fields that land in OpenPlural core records.
 | `groups[].id` / `name` / `description` / `color` | `Group.id` / `name` / `description` / `color` |
 | `groups[].parent_id` | `Group.parent_group_id` |
 | `groups[].member_ids` | `GroupMembership[]` (one row per id) |
+| `groups[].privacy` | `Group.extensions.sheaf.privacy` (no core field; see extensions) |
 | `tags[].id` / `name` / `color` | `TaxonomyTerm` (kind `tag`) `.id` / `name` / `color` |
 | `tags[].member_ids` | `TaxonomyAssignment[]` (subject_type `member`) |
 | `custom_fields[].id` / `name` / `field_type` / `options` | `CustomFieldDefinition.id` / `name` / `field_type` / `options` |
@@ -237,6 +238,8 @@ opaque to apps that do not speak Sheaf.
 | Member | `emoji` | No core member-emoji field yet; a candidate shared optional in a later spec (Prism has an analogue). |
 | Member | `quick_switch_pin` | Sheaf quick-switch convenience field, app-specific. |
 | Member | `notify_on_front_global`, `notify_on_front_self`, `notify_on_front_member_ids` | Front-notification preferences; await a notifications module. |
+| Member | `never_shareable`, `fronting_private` | Sheaf's two hard per-member share guards; v0.1 has no equivalent, and without these a round-trip would return someone less protected than the backup was. A file that omits `fronting_private` is a foreign one that has no notion of the guard, so the import applies Sheaf's own default rather than `false`: on for a custom front, off for an ordinary member. A Sheaf-produced file always carries the key and round-trips unchanged. |
+| Group | `privacy` | v0.1 has no group privacy field; without this a group's exposure ceiling would be lost on a round-trip. |
 | Note (journal) | `member_id` | Sheaf journals can be scoped to one member; the core `Note` has no owning-member field. |
 | Note (journal) | `author_member_names` | Denormalised author names retained alongside `author_member_ids` for display fidelity. |
 | Board post | `board_kind` | Distinguishes system board vs per-member wall; no core distinction yet. |
@@ -257,6 +260,7 @@ tuple), plus the lineage chain.
 | `watch_tokens` | Notification watch tokens / channels; await a notifications/export module. |
 | `uploaded_files` | The sync JSON's file inventory (no bytes); meaningless without the async zip but kept so nothing is silently dropped. |
 | `relationship_types`, `member_relationships`, `group_relationships` | v0.1 has no relationship core record. NB these ride the `extensions.sheaf.*` passthrough, not the reserved top-level `relationships` key (which carries foreign preserved modules). |
+| `share_views` | v0.1 has no sharing/visibility module. Views only: share **grants** are never written to a portable file, so a restored view is curated but exposed to nobody. |
 | `lineage` | Provenance chain (see Provenance and lineage above). |
 
 On import these are read straight back: messages prefer the `boards` module shape

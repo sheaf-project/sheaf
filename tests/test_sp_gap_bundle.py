@@ -67,6 +67,46 @@ def test_member_can_be_marked_custom_front(auth_client: httpx.Client):
     assert resp.json()["is_custom_front"] is False
 
 
+def test_custom_front_is_created_with_the_fronting_guard_on(
+    auth_client: httpx.Client,
+):
+    """A custom front is a fronting STATE, and a shared page with fronting on
+    would name it (or count it anonymously) exactly as it does a person. So it
+    starts guarded, and releasing it is the owner's deliberate act through the
+    gated PATCH."""
+    resp = auth_client.post(
+        "/v1/members", json={"name": "Asleep", "is_custom_front": True}
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["fronting_private"] is True
+
+
+def test_ordinary_member_create_is_unchanged_by_the_custom_front_default(
+    auth_client: httpx.Client,
+):
+    resp = auth_client.post("/v1/members", json={"name": "Ordinary"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["fronting_private"] is False
+
+
+def test_custom_front_create_honours_an_explicit_false(
+    auth_client: httpx.Client,
+):
+    """The default only fills a gap. A body that asks for the guard off gets
+    it off, and needs no step-up to do so: a member created this second is in
+    no view, so there is nothing the release gate would be protecting."""
+    resp = auth_client.post(
+        "/v1/members",
+        json={
+            "name": "Broadcasting",
+            "is_custom_front": True,
+            "fronting_private": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["fronting_private"] is False
+
+
 def test_custom_fronts_listed_alongside_members(auth_client: httpx.Client):
     """The /v1/members endpoint returns both kinds; the UI partitions on the
     is_custom_front flag rather than the API doing it."""
@@ -196,6 +236,23 @@ def test_sp_import_marks_frontstatuses_as_custom_fronts(
     assert by_name["Real"]["is_custom_front"] is False
     assert by_name["Asleep"]["is_custom_front"] is True
     assert by_name["Away"]["is_custom_front"] is True
+
+
+def test_sp_import_lands_custom_fronts_with_the_fronting_guard_on(
+    auth_client: httpx.Client,
+):
+    """SP has no share guard to carry, so its custom fronts take the same
+    server default the create endpoint applies. An imported "Asleep" must not
+    start out able to announce itself."""
+    payload = _sp_export_with_custom_fronts()
+    job = _run_file_import(auth_client, source="simplyplural_file", payload=payload)
+    assert job["status"] == "complete", job
+
+    by_name = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    assert by_name["Asleep"]["fronting_private"] is True
+    assert by_name["Away"]["fronting_private"] is True
+    # And an ordinary imported member is untouched by the rule.
+    assert by_name["Real"]["fronting_private"] is False
 
 
 def test_sp_import_no_longer_prefixes_custom_front_descriptions(

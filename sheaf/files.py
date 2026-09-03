@@ -96,12 +96,17 @@ def _signing_key() -> bytes:
     ).digest()
 
 
-def _signed_url_params(key: str) -> tuple[str, int]:
+def _token_message(key: str, expires_at: int, *, public: bool = False) -> bytes:
+    prefix = "public:" if public else ""
+    return f"{prefix}{key}:{expires_at}".encode()
+
+
+def _signed_url_params(key: str, *, public: bool = False) -> tuple[str, int]:
     """Return (token, expires_at) for a key using the current signing window."""
     window = settings.file_url_expiry_seconds
     window_start = (int(time.time()) // window) * window
     expires_at = window_start + 2 * window
-    msg = f"{key}:{expires_at}".encode()
+    msg = _token_message(key, expires_at, public=public)
     token = hmac.new(_signing_key(), msg, hashlib.sha256).hexdigest()
     return token, expires_at
 
@@ -116,6 +121,19 @@ def sign_file_url(key: str) -> str:
     """
     token, expires_at = _signed_url_params(key)
     return f"/v1/files/{key}?token={token}&expires={expires_at}"
+
+
+def sign_public_file_url(key: str) -> str:
+    """Generate a same-origin URL for an image on an anonymous profile.
+
+    The public route reads the configured storage backend directly instead of
+    redirecting to S3 or returning a CDN URL. This keeps the public page's
+    strict ``img-src 'self' data:`` policy valid in every storage mode. Its
+    token is domain-separated from ordinary serve/CDN URLs.
+    """
+
+    token, expires_at = _signed_url_params(key, public=True)
+    return f"/v1/public/files/{key}?token={token}&expires={expires_at}"
 
 
 def sign_cdn_url(key: str) -> str:
@@ -138,7 +156,21 @@ def verify_file_token(key: str, token: str, expires: str) -> bool:
         return False
     if time.time() > expires_at:
         return False
-    msg = f"{key}:{expires_at}".encode()
+    msg = _token_message(key, expires_at)
+    expected = hmac.new(_signing_key(), msg, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, token)
+
+
+def verify_public_file_token(key: str, token: str, expires: str) -> bool:
+    """Verify a same-origin public-profile image capability."""
+
+    try:
+        expires_at = int(expires)
+    except ValueError:
+        return False
+    if time.time() > expires_at:
+        return False
+    msg = _token_message(key, expires_at, public=True)
     expected = hmac.new(_signing_key(), msg, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, token)
 
@@ -146,14 +178,17 @@ def verify_file_token(key: str, token: str, expires: str) -> bool:
 def _to_internal_key(url: str) -> str | None:
     """If `url` points at our own storage, return the bare key; else None.
 
-    "Our own storage" means either the app serve path (/v1/files/...) or the
-    configured CDN hostname (settings.s3_public_url). Query params are
-    stripped. Bare keys (no scheme, no leading slash) are returned as-is.
-    Anything else — Gravatar, avatars.dicebear.com, a user-typed URL — is
-    treated as external and returns None so callers can pass it through.
+    "Our own storage" means either app serve path (/v1/files/... or the
+    anonymous /v1/public/files/...), or the configured CDN hostname
+    (settings.s3_public_url). Query params are stripped. Bare keys (no scheme,
+    no leading slash) are returned as-is. Anything else — Gravatar,
+    avatars.dicebear.com, a user-typed URL — is treated as external and returns
+    None so callers can pass it through.
     """
     if url.startswith("/v1/files/"):
         return url.removeprefix("/v1/files/").split("?", 1)[0]
+    if url.startswith("/v1/public/files/"):
+        return url.removeprefix("/v1/public/files/").split("?", 1)[0]
     if settings.s3_public_url:
         base = settings.s3_public_url.rstrip("/") + "/"
         if url.startswith(base):
@@ -272,6 +307,79 @@ def resolve_description_urls(text: str | None, owner_id: object) -> str | None:
         return render_markdown_image(image, resolved or "/v1/files/" + key)
 
     return rewrite_markdown_images(text, _replace)
+
+
+# What an external image URL becomes on the anonymous public surface. A
+# fragment never triggers a fetch, so a client that does not special-case the
+# sentinel shows alt text or a broken image - the fail-closed direction. The
+# web app renders it as a neutral "external image" chip.
+EXTERNAL_IMAGE_HIDDEN = "#external-image-hidden"
+
+
+def resolve_description_urls_public(text: str | None, owner_id: object) -> str | None:
+    """resolve_description_urls for the anonymous public surface.
+
+    Internal refs resolve to a dedicated same-origin signed route regardless
+    of the instance's normal S3/CDN image mode, keeping the public CSP strict.
+    Every other image URL is replaced with EXTERNAL_IMAGE_HIDDEN, because the
+    browser that would fetch it belongs to a VISITOR who consented to nothing:
+    rendering it hands an owner-chosen host that visitor's IP address, user
+    agent, and a timestamp for every view of the page. The authenticated app
+    still renders externals - that leak is the owner's own, and theirs to
+    accept.
+
+    `owner_id` is the account this text belongs to, and it is REQUIRED rather
+    than optional so a new call site cannot quietly opt out of the check. An
+    internal key is signed only when it sits in that account's namespace; a key
+    belonging to somebody else is treated exactly like an external ref and
+    hidden. The signer is the last line, and it does not get to trust every
+    writer: `owned_description_urls` is enforced at the write handlers, but
+    handlers get added, importers get written, and rows already in the database
+    were stored before any of those guards existed. Signing here without asking
+    who owns the key would turn any one of those gaps into a live cross-tenant
+    capability URL, handed to anonymous visitors, refreshed on every page load.
+
+    data: URIs carry their own bytes and never touch the network, so they are
+    passed through untouched.
+    """
+    if text is None:
+        return None
+
+    def _replace(image: MarkdownImage) -> str | None:
+        if _is_data_url(image.url):
+            return None
+        key = _to_internal_key(image.url)
+        if key is None or internal_key_owner(key) != str(owner_id):
+            return render_markdown_image(image, EXTERNAL_IMAGE_HIDDEN)
+        return render_markdown_image(image, sign_public_file_url(key))
+
+    return rewrite_markdown_images(text, _replace)
+
+
+def resolve_avatar_url_public(url: str | None, owner_id: object) -> str | None:
+    """resolve_avatar_url for the anonymous public surface.
+
+    Internal keys resolve to the same-origin public media route; anything
+    external returns None so the client falls back to initials. Same reasoning as
+    resolve_description_urls_public: an avatar pointed at a third-party host
+    makes every anonymous visitor's browser announce itself to that host.
+
+    `owner_id` carries the same required ownership check, for the same reason:
+    a key from another account's namespace is not this profile's to publish, so
+    it is treated as external and the visitor gets initials.
+
+    data: URIs are dropped rather than passed through. They cannot leak an
+    address, but normalize_avatar_url has never been able to store one - it
+    hands the value to _to_internal_key, which classifies it as a bare storage
+    key - so there is no legitimate data: avatar to preserve, and initials beat
+    signing a nonsense key.
+    """
+    if url is None or _is_data_url(url):
+        return None
+    key = _to_internal_key(url)
+    if key is None or internal_key_owner(key) != str(owner_id):
+        return None
+    return sign_public_file_url(key)
 
 
 # Prefixes our uploads write under: {prefix}/{user_id}/{uuid}.{ext}. The

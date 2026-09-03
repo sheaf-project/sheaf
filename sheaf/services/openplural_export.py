@@ -68,6 +68,11 @@ _EXT_PASSTHROUGH_SECTIONS = (
     "relationship_types",
     "member_relationships",
     "group_relationships",
+    # OpenPlural v0.1 has no sharing/visibility module, so the curated share
+    # views ride the passthrough. Share GRANTS are absent from the native
+    # export by design (a grant is a live capability), so nothing here can
+    # republish a system on re-import.
+    "share_views",
 )
 
 
@@ -261,6 +266,14 @@ def build_envelope(
                 "description": g.get("description"),
                 "color": g.get("color"),
                 "parent_group_id": g.get("parent_id"),
+                # OpenPlural v0.1 has no group privacy field, so the group's
+                # exposure ceiling rides the sheaf extension rather than being
+                # invented as a core key. Carried for the same reason
+                # `never_shareable` is carried on a member: a round-trip must
+                # never return somebody less protected than they left.
+                "extensions": {
+                    EXT_NS: _prune({"privacy": _privacy(g.get("privacy"))})
+                },
             }
         )
         for mid in g.get("member_ids", []) or []:

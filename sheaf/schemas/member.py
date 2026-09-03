@@ -15,7 +15,13 @@ from sheaf.models.system import PrivacyLevel
 class MemberCreate(BaseModel):
     name: str = Field(max_length=100)
     display_name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # Bios are long-form markdown, so this cap is generous, but it is not
+    # unbounded: the markdown image/footnote parse is superlinear and runs
+    # synchronously (both on write and in the public projection), so an
+    # unbounded description is a cheap way to pin the event loop. Every sibling
+    # field is capped; this one was the gap. 20k chars is roomy for a real bio
+    # while keeping the worst-case parse bounded.
+    description: str | None = Field(default=None, max_length=20000)
     pronouns: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = Field(default=None, max_length=500)
     banner_url: str | None = Field(default=None, max_length=500)
@@ -27,9 +33,14 @@ class MemberCreate(BaseModel):
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
     note: str | None = Field(default=None, max_length=5000)
     quick_switch_pin: int | None = Field(default=None, ge=0)
-    # Share hard guards (see sheaf/models/member.py). Both default off.
+    # Share hard guards (see sheaf/models/member.py).
     never_shareable: bool = False
-    fronting_private: bool = False
+    # Tri-state on purpose, unlike its sibling: omitted (or null) means "use
+    # the server default", which is ON for a custom front and off for an
+    # ordinary member - see services/member_defaults.default_fronting_private.
+    # A body that says `false` outright still gets `false`; a new member is in
+    # no view, so there is nothing for the release gate to protect.
+    fronting_private: bool | None = None
 
     # banner_url shares the avatar normaliser: both are image storage keys /
     # external URLs with the same allow_external_images gate.
@@ -47,7 +58,8 @@ class MemberCreate(BaseModel):
 class MemberUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     display_name: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    # See MemberCreate.description for the cap rationale.
+    description: str | None = Field(default=None, max_length=20000)
     pronouns: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = Field(default=None, max_length=500)
     banner_url: str | None = Field(default=None, max_length=500)
@@ -62,6 +74,14 @@ class MemberUpdate(BaseModel):
     quick_switch_pin: int | None = Field(default=None, ge=0)
     never_shareable: bool | None = None
     fronting_private: bool | None = None
+
+    # Step-up credentials, only consulted when the edit is a deferred exposure
+    # (flipping a member who sits in a shared view to `public` while the
+    # profile_visibility safety category is armed). Never stored on the member.
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
 
     @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
@@ -114,6 +134,9 @@ class MemberRead(BaseModel):
     quick_switch_pin: int | None = None
     never_shareable: bool = False
     fronting_private: bool = False
+    # System Safety keeps fronting_private=True until this timestamp when a
+    # requested guard release is waiting out the grace period.
+    fronting_private_activates_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     # True iff at least one ContentRevision exists for this member's bio.
@@ -129,6 +152,13 @@ class MemberRead(BaseModel):
     # Set when the member is archived (soft-hidden from lists / switcher /
     # pickers; still shown in history). Null = active.
     archived_at: datetime | None = None
+    # Response-only: when a request re-exposed this member on a published
+    # profile and the grace window staged it, this is when they come back to
+    # the shared pages. Null everywhere else, including when the restore was
+    # immediate - it is not a stored column, it is what the request just did.
+    # Set by the unarchive endpoint; read by the client to say "they return to
+    # your shared pages on <date>" instead of implying it already happened.
+    share_exposure_activates_at: datetime | None = None
     # The account that owns this row's uploads. Required, and excluded from
     # the response: it exists purely so the serialisers below can tell "this
     # profile's own file" from "somebody else's key sitting in this column".

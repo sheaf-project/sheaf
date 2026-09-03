@@ -40,17 +40,51 @@ const STATUSES_CLIENT_SKIPS: ReadonlySet<number> = new Set([409]);
  * (red text under a form, etc.) where a toast would be the wrong UI
  * shape. Same toggle, same fallback semantics.
  */
-export function apiErrorMessage(err: unknown, fallback?: string): string {
+export function apiErrorMessage(
+  err: unknown,
+  fallback?: string,
+  opts: { preferDetail?: boolean } = {},
+): string {
   const showTechnical = getShowTechnicalErrors();
   if (err instanceof ApiError) {
-    return showTechnical
-      ? `[${err.status}] ${err.detail}`
-      : friendlySummary(err.status, fallback);
+    if (showTechnical) return `[${err.status}] ${err.detail}`;
+    // `preferDetail` is for the handful of endpoints whose 4xx detail IS the
+    // actionable content, written for the account holder about their own
+    // settings ("set your system to public first"). The friendly summaries
+    // exist because most backend details are noise to somebody who did not
+    // cause them; replacing one of these with "Invalid request." throws away
+    // the only thing that tells the user what to do next. Use it where the
+    // detail names a step the reader can take, not as a general escape hatch.
+    if (opts.preferDetail && err.detail) return err.detail;
+    return friendlySummary(err.status, fallback);
   }
   if (err instanceof Error) {
     return showTechnical ? err.message : (fallback ?? err.message);
   }
   return fallback ?? "Something went wrong.";
+}
+
+/**
+ * True when the server bounced this write asking for step-up credentials.
+ *
+ * Every exposing write (raising privacy, publishing a view, adding someone to
+ * an already-shared view, creating something straight to public) answers a
+ * missing password or TOTP code with a 400 carrying one of exactly these two
+ * details. Callers send the write bare first and re-prompt on this, so the
+ * common case stays one click and the dialog only appears when it is genuinely
+ * a step-up.
+ *
+ * Named once because every surface that can be bounced has to agree on the
+ * test: the client's own "will this need re-auth?" predicates are a mirror of
+ * the server's and a mirror can drift, at which point this is the only thing
+ * standing between the owner and a dead end with nowhere to type.
+ */
+export function isStepUpRequiredError(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 400 &&
+    (err.detail === "Password required" || err.detail === "TOTP code required")
+  );
 }
 
 /**

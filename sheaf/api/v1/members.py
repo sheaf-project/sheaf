@@ -1,9 +1,9 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, tuple_
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,10 +21,13 @@ from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
 from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.system import System
+from sheaf.models.security_event import SecurityEventType
+from sheaf.models.share import ShareViewMember
+from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
 from sheaf.observability.metrics import tier_label, tier_limit_hits_total
+from sheaf.request import client_ip
 from sheaf.schemas.journal import (
     ContentRevisionRead,
     PinRevisionRequest,
@@ -49,9 +52,21 @@ from sheaf.services.journals import (
     restore_member_bio_revision,
     unpin_revision_immediate,
 )
+from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
 from sheaf.services.pagination import decode_cursor, encode_cursor
+from sheaf.services.security_events import record_security_event
+from sheaf.services.sharing import (
+    exposure_activates_at,
+    fronting_guard_release_exposes,
+    refuse_raise_when_publishing_unavailable,
+    reject_mixed_exposure_directions,
+    shared_view_memberships,
+    stage_membership_exposure,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -71,11 +86,18 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
 
 
 async def _get_own_member(
-    member_id: uuid.UUID, system: System, db: AsyncSession
+    member_id: uuid.UUID,
+    system: System,
+    db: AsyncSession,
+    *,
+    for_update: bool = False,
 ) -> Member:
-    result = await db.execute(
-        select(Member).where(Member.id == member_id, Member.system_id == system.id)
+    stmt = select(Member).where(
+        Member.id == member_id, Member.system_id == system.id
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await db.execute(stmt)
     member = result.scalar_one_or_none()
     if member is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
@@ -184,6 +206,13 @@ async def create_member(
             )
 
     data = body.model_dump()
+    # The one field whose default depends on another field in the same body.
+    # Resolved through the shared helper so this endpoint and the importers
+    # cannot disagree about what a brand new custom front is guarded with.
+    data["fronting_private"] = default_fronting_private(
+        is_custom_front=bool(data.get("is_custom_front")),
+        requested=data.get("fronting_private"),
+    )
     plaintext_name: str = data.pop("name")
     plaintext_description: str | None = data.pop("description", None)
     plaintext_note: str | None = data.pop("note", None)
@@ -347,12 +376,185 @@ async def get_member(
 async def update_member(
     member_id: uuid.UUID,
     body: MemberUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Edit a member, including the three settings that decide what strangers see.
+
+    Those three - `privacy`, `fronting_private` and `never_shareable` - all
+    obey the same asymmetry as the sharing endpoints: raising exposure is gated
+    (step-up when the profile_visibility category is armed, and then a grace
+    window for the two that have somewhere to be staged), lowering it is
+    instant and ungated. `never_shareable` has no staging column, so its
+    release is step-up-and-apply rather than step-up-and-wait; the two others
+    stage behind `visibility_grace_days` when one is set.
+
+    A single body may not carry BOTH a raise and a lowering: it is refused with
+    400 before the step-up runs, so a failed re-auth can never take a lowering
+    down with it. See `reject_mixed_exposure_directions`.
+    """
     system = await _get_user_system(user, db)
-    member = await _get_own_member(member_id, system, db)
+    member = await _get_own_member(member_id, system, db, for_update=True)
     update_data = body.model_dump(exclude_unset=True)
+    # Step-up credentials are not member columns; drop them before anything
+    # iterates the update so they can never be persisted.
+    password = update_data.pop("password", None)
+    totp_code = update_data.pop("totp_code", None)
+
+    # The three raise-to-public directions on this endpoint, captured before the
+    # setattr loop touches anything: raising privacy to public, releasing the
+    # fronting guard, and clearing never_shareable. Read off the requested body
+    # and the member's CURRENT value, so they are the owner's intent regardless
+    # of whether the profile_visibility category is armed or anything is actually
+    # served. Used both for the publishing-availability gate just below and for
+    # the audit record at the end.
+    privacy_raise_requested = (
+        update_data.get("privacy") == PrivacyLevel.PUBLIC
+        and member.privacy != PrivacyLevel.PUBLIC
+    )
+    fronting_release_requested = (
+        update_data.get("fronting_private") is False and member.fronting_private
+    )
+    never_shareable_release_requested = (
+        update_data.get("never_shareable") is False and member.never_shareable
+    )
+    any_raise_requested = (
+        privacy_raise_requested
+        or fronting_release_requested
+        or never_shareable_release_requested
+    )
+
+    # Any of the three raises is refused for the same reasons create_grant is:
+    # not while the account is pending deletion, and not while the instance's
+    # public surface is switched off. Publishing availability, not step-up, so it
+    # fires whatever the safety category is set to. Lowering (private/friends,
+    # re-arming a guard) stays open - going dark is never gated.
+    if any_raise_requested:
+        refuse_raise_when_publishing_unavailable(user)
+
+    # Raising a member to `public` EXPOSES them: if they are already sitting in
+    # a view something points at, the projection would start serving them the
+    # moment this lands. Same rule as the sharing endpoints - when the category
+    # is armed, re-auth first; then, with a grace window set, the exposure
+    # itself waits it out (staged below), and with no window it applies at once
+    # because the re-auth already happened.
+    #
+    # Lowering privacy is the un-exposing direction and stays instant and
+    # ungated. private -> friends is ungated too because the friends tier is
+    # parked and every grant that exists today is public-tier, so it exposes
+    # nothing; when friends lands, this check has to become audience-aware
+    # (a flip to `friends` would then expose to friend grants) alongside the
+    # matching filter in share_projection._active_member_filter and the same
+    # test in import_dedup._privacy_raise_exposes.
+    exposing_rows: list[ShareViewMember] = []
+    if (
+        update_data.get("privacy") == PrivacyLevel.PUBLIC
+        and member.privacy != PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+    ):
+        exposing_rows = await shared_view_memberships(db, system, member.id)
+
+    # Releasing the dedicated fronting guard is another exposing direction.
+    # Active and pending paths both count: this request receives a fresh full
+    # grace window instead of piggybacking on an older pending action.
+    fronting_release_exposes = False
+    if (
+        update_data.get("fronting_private") is False
+        and member.fronting_private
+        and visibility_step_up_required(system)
+    ):
+        fronting_release_exposes = await fronting_guard_release_exposes(
+            db,
+            system.id,
+            member.id,
+            member_is_public=member.privacy == PrivacyLevel.PUBLIC,
+        )
+
+    # Clearing `never_shareable` is the THIRD exposing direction here, and it
+    # used to be the one that fell through to a plain setattr with no gate at
+    # all - which made it the cheap way past the other two. It is the hardest
+    # guard in the product ("this member appears in NO view, ever"), so
+    # releasing it must not be easier than releasing the softer fronting guard
+    # sitting right beside it in the same form.
+    #
+    # What it actually exposes is the same thing that guard does. Setting the
+    # flag deletes every `ShareViewMember` row for the member, so releasing it
+    # cannot put them back on a roster, in a group list, or at the end of an
+    # edge - all of those compose out of those rows. What it CAN do is let
+    # their presence leak through `project_fronting`, which excludes a
+    # never-shareable member from the anonymous `hidden_count` as well as from
+    # the naming, so a release while they are fronting turns "nobody else is
+    # around" into "somebody else is". `fronting_guard_release_exposes` is
+    # exactly that question, so it is the same call, not a parallel one.
+    #
+    # Step-up alone is the gate: unlike `fronting_private` there is no
+    # `never_shareable_activates_at` column to park the release in, and the
+    # finalize sweep has nothing to promote, so with the category armed this
+    # re-auths and applies immediately whatever the grace window is set to.
+    # Adding a staging column is a migration and a sweep pass, and is worth
+    # doing if this guard ever gates more than the presence bit; until then the
+    # re-auth is the protection and the docstring says so rather than the code
+    # implying a wait that does not happen.
+    never_shareable_release_exposes = False
+    if (
+        update_data.get("never_shareable") is False
+        and member.never_shareable
+        and visibility_step_up_required(system)
+    ):
+        never_shareable_release_exposes = await fronting_guard_release_exposes(
+            db,
+            system.id,
+            member.id,
+            member_is_public=member.privacy == PrivacyLevel.PUBLIC,
+        )
+
+    # Whether any raise would ACTUALLY expose (category armed AND something to
+    # serve). This is the step-up trigger, distinct from `any_raise_requested`
+    # above, which is the owner's intent regardless of the category.
+    raises_exposure = bool(
+        exposing_rows or fronting_release_exposes or never_shareable_release_exposes
+    )
+    # A body that also takes something DOWN must not ride on the raise's gate:
+    # if the step-up below failed, the lowering would fail with it. Checked
+    # before that step-up runs, and refused outright - see the helper.
+    reject_mixed_exposure_directions(
+        raises=raises_exposure,
+        lowers=(
+            (
+                update_data.get("privacy") is not None
+                and update_data["privacy"] != PrivacyLevel.PUBLIC
+                and member.privacy == PrivacyLevel.PUBLIC
+            )
+            or (
+                update_data.get("fronting_private") is True
+                and not member.fronting_private
+            )
+            or (
+                update_data.get("never_shareable") is True
+                and not member.never_shareable
+            )
+        ),
+    )
+
+    # Step-up fires whenever any of the three raises would actually expose.
+    # Staging is the separate question of whether a grace window is configured:
+    # with grace at 0 the raise applies immediately (no pending row, guard
+    # released now), the re-auth having already run above. The never-shareable
+    # release is never staged either way - it has nowhere to be staged.
+    if raises_exposure:
+        await verify_destructive_auth(user, system, password, totp_code, db)
+
+    grace = visibility_grace_days(system)
+    stage = grace > 0
+    visibility_activates_at = (
+        exposure_activates_at(system)
+        if (exposing_rows or fronting_release_exposes)
+        else None
+    )
+    # Only keep the guard live pending the finalizer when there is a window to
+    # wait out; otherwise it is released now (re-auth already happened).
+    defer_fronting_release = fronting_release_exposes and stage
 
     # Same ownership guard as create: a key from another account must not be
     # stored (and later re-signed) here. Filter before the revision-capture
@@ -396,11 +598,62 @@ async def update_member(
                 member.note = None
             else:
                 member.note = encrypt(value, aad=member_note_aad(member.id))
+        elif key == "fronting_private":
+            if defer_fronting_release:
+                # Keep the guard live until the finalizer releases it.
+                member.fronting_private_activates_at = visibility_activates_at
+            else:
+                member.fronting_private = value
+                member.fronting_private_activates_at = None
         else:
             setattr(member, key, value)
 
+    # Marking a member never-shareable must enforce it, not just remember it:
+    # pull them out of every share view immediately. The projection query also
+    # filters never_shareable, but leaving stale membership rows around would
+    # be a footgun the first time that filter is ever loosened.
+    if update_data.get("never_shareable") is True:
+        await db.execute(
+            delete(ShareViewMember).where(ShareViewMember.member_id == member.id)
+        )
+        # Nothing left to demote - the rows are gone, which is stricter still.
+        exposing_rows = []
+
+    # With a grace window, the privacy change itself is immediate but the
+    # exposure it would cause is not: demote the membership rows so the
+    # projection keeps hiding this member until the finalize sweep promotes
+    # them, exactly as if they had just been added to the view. With no window
+    # (grace 0) the rows stay live and the member is exposed now - the re-auth
+    # above was the whole gate.
+    stage_membership_exposure(exposing_rows, visibility_activates_at)
+
     await db.commit()
     await db.refresh(member)
+    # A member raise widens who a live grant serves, so it leaves an IP/UA
+    # trail. Every raise-to-public direction records exactly one event, whether
+    # it was step-up'd and staged, applied at once, or landed immediately because
+    # the category is disarmed - so the audit does not go dark exactly when
+    # step-up is off. `staged` when the membership rows were parked behind the
+    # grace window, `immediate` otherwise (grace 0, a guard release with nowhere
+    # to stage, or the category off). One event with a boolean per axis, keyed on
+    # the owner's requested direction; no member content, only the id and flags.
+    # Only raises record; lowering a ceiling or re-arming a guard un-exposes and
+    # stays silent.
+    if any_raise_requested:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if visibility_activates_at is not None else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "member_privacy",
+                "member_id": str(member.id),
+                "privacy_raise": privacy_raise_requested,
+                "fronting_release": fronting_release_requested,
+                "never_shareable_release": never_shareable_release_requested,
+            },
+        )
     return decrypt_member_for_read(
         member,
         user.id,
@@ -499,22 +752,99 @@ async def archive_member(
 )
 async def unarchive_member(
     member_id: uuid.UUID,
+    request: Request,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Restore an archived member to active. Ungated - restoring visibility
-    is not a destructive action."""
+    """Restore an archived member, treating a return to a published view as a raise.
+
+    Archiving takes a member off every public surface at once (see
+    `share_projection._active_member_filter`), so undoing it is an EXPOSING
+    act wherever a grant still points at a view they sit in - and this module's
+    rule is that exposing waits. So an unarchive that would put somebody back
+    in front of strangers goes through the same two controls as raising them to
+    `public`: step-up when the `profile_visibility` category is armed, then, if
+    a grace window is set, their `ShareViewMember` rows are demoted to PENDING
+    so the projection keeps hiding them until the finalize sweep promotes them.
+    Both use the same helper as the privacy raise (`stage_membership_exposure`)
+    rather than a second copy of the rule. With grace at 0 the rows stay ACTIVE
+    and the re-auth is the whole gate.
+
+    What does NOT wait is the member row itself: `archived_at` is cleared
+    immediately either way, so the owner gets them back in their own roster,
+    switcher and pickers the moment they ask. Only the public surface serves
+    the window. Deliberately: archive is the owner's private filing decision as
+    well as a public one, and making them wait a week to see their own member
+    again would be the safety feature punishing the person it protects.
+
+    The member's own `privacy` is never touched here. A member who was public
+    before archiving is still public after; the wait is carried entirely by the
+    membership rows, so nothing about their configuration silently changes
+    under them.
+
+    Ungated and instant when nothing points at them - no live-or-pending grant
+    over a view they belong to means unarchiving exposes nobody, and friction
+    bought for nothing is friction the next person learns to click through.
+    The optional body carries step-up credentials in the same shape the member
+    PATCH and the archive endpoint take.
+    """
     system = await _get_user_system(user, db)
-    member = await _get_own_member(member_id, system, db)
-    if member.archived_at is not None:
-        member.archived_at = None
-        await db.commit()
-        await db.refresh(member)
-    return decrypt_member_for_read(
+    # Locked like the privacy raise: this reads `archived_at`, decides whether
+    # the restore exposes anybody, and writes back, so two concurrent restores
+    # must not both pass the gate on the same stale read.
+    member = await _get_own_member(member_id, system, db, for_update=True)
+    if member.archived_at is None:
+        # Already active: nothing is being re-exposed, so nothing to gate.
+        return decrypt_member_for_read(
+            member,
+            user.id,
+            has_bio_revisions=await _member_has_bio_revisions(db, member.id),
+        )
+
+    exposing_rows: list[ShareViewMember] = []
+    if visibility_step_up_required(system):
+        exposing_rows = await shared_view_memberships(db, system, member.id)
+    if exposing_rows:
+        await verify_destructive_auth(
+            user,
+            system,
+            body.password if body else None,
+            body.totp_code if body else None,
+            db,
+        )
+
+    member.archived_at = None
+    activates_at = exposure_activates_at(system) if exposing_rows else None
+    stage_membership_exposure(exposing_rows, activates_at)
+    await db.commit()
+    await db.refresh(member)
+    # Unarchiving a member who still sits in a live view puts them back in front
+    # of strangers, which is a raise like flipping them to public, so it leaves
+    # the same IP/UA trail. Gated to the exposing path (nothing points at them
+    # means nothing to record); `staged` vs `immediate` follows the grace window.
+    if exposing_rows:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if activates_at is not None else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "member_privacy",
+                "member_id": str(member.id),
+                "unarchive": True,
+            },
+        )
+    result = decrypt_member_for_read(
         member,
         user.id,
         has_bio_revisions=await _member_has_bio_revisions(db, member.id),
     )
+    # Tells the client whether the restore is live to strangers now or still
+    # sitting behind the window, so it can say which without a second request.
+    result.share_exposure_activates_at = activates_at
+    return result
 
 
 @router.get("/{member_id}/tags", response_model=list[TagRead])

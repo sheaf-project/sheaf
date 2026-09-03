@@ -46,6 +46,7 @@ def _sample_data(
     thoughts: bool = False,
     poll_open_ended: bool = False,
     with_avatar: bool = False,
+    custom_front: bool = False,
 ) -> dict:
     """Build a sanitised PluralSpace data.json payload.
 
@@ -118,6 +119,29 @@ def _sample_data(
                 "custom_field_values": [],
                 "created_at": "2026-06-08T00:15:23+00:00",
             },
+            # Opt-in so the member counts every other test asserts on stay put.
+            *(
+                [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "name": "Asleep",
+                        "display_name": None,
+                        "pronouns": None,
+                        "description": None,
+                        "color": "#334155",
+                        "role": [],
+                        "is_archived": False,
+                        "is_custom_front": True,
+                        "avatar_path": None,
+                        "avatar_media_path": None,
+                        "groups": [],
+                        "custom_field_values": [],
+                        "created_at": "2026-06-08T00:16:00+00:00",
+                    }
+                ]
+                if custom_front
+                else []
+            ),
         ],
         "fronts": [
             {
@@ -365,6 +389,24 @@ def test_runner_imports_members_and_attaches_role_tags(auth_client: httpx.Client
     alpha_tags = auth_client.get(f"/v1/members/{by_name['Alpha']['id']}/tags").json()
     tag_names = {t["name"] for t in alpha_tags}
     assert {"protector", "host"} == tag_names
+
+
+def test_runner_lands_custom_fronts_with_the_fronting_guard_on(
+    auth_client: httpx.Client,
+):
+    """PluralSpace has no share guard to carry, so its custom fronts take the
+    same server default the create endpoint applies: an imported "Asleep"
+    cannot announce itself on a shared page until the owner releases it."""
+    job = _post_file(auth_client, _build_zip(_sample_data(custom_front=True)))
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    by_name = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    assert by_name["Asleep"]["is_custom_front"] is True
+    assert by_name["Asleep"]["fronting_private"] is True
+    # Ordinary members are untouched by the rule.
+    assert by_name["Alpha"]["fronting_private"] is False
 
 
 def test_runner_fronts_and_groups(auth_client: httpx.Client):

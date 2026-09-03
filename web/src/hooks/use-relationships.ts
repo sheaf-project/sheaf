@@ -2,11 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import * as api from "@/lib/relationships";
+import { useDateFormatters } from "@/hooks/use-date-formatters";
 import type {
+  DestructiveConfirm,
   RelationshipEdgeCreate,
+  RelationshipEdgeUpdate,
   RelationshipTypeCreate,
   RelationshipTypeUpdate,
 } from "@/types/api";
+import { isDeleteQueued } from "@/types/api";
 
 export const relationshipKeys = {
   types: ["relationship-types"] as const,
@@ -58,12 +62,28 @@ export function useUpdateRelationshipType() {
 
 export function useDeleteRelationshipType() {
   const qc = useQueryClient();
+  const { formatDate } = useDateFormatters();
   return useMutation({
-    mutationFn: (id: string) => api.deleteRelationshipType(id),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      confirm,
+    }: {
+      id: string;
+      confirm?: DestructiveConfirm;
+    }) => api.deleteRelationshipType(id, confirm),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: relationshipKeys.types });
       invalidateEdges(qc); // deleting a type cascades its edges
-      toast.success("Relationship type deleted");
+      if (isDeleteQueued(result)) {
+        // Queued, not gone: the type and its edges are still there, but they
+        // have already left any published profile.
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        toast.success(
+          `Relationship type scheduled for deletion - cancellable in Settings until ${formatDate(result.finalize_after)}.`,
+        );
+      } else {
+        toast.success("Relationship type deleted");
+      }
     },
   });
 }
@@ -81,11 +101,47 @@ export function useMemberRelationships(memberId: string | null) {
 export function useCreateMemberRelationship() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: RelationshipEdgeCreate) =>
-      api.createMemberRelationship(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: RelationshipEdgeCreate;
+      skipErrorToast?: boolean;
+    }) => api.createMemberRelationship(data, skipErrorToast),
     onSuccess: () => {
       invalidateEdges(qc);
       toast.success("Relationship added");
+    },
+  });
+}
+
+export function useUpdateMemberRelationship() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      edgeId,
+      data,
+      skipErrorToast = false,
+    }: {
+      edgeId: string;
+      data: RelationshipEdgeUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateMemberRelationship(edgeId, data, skipErrorToast),
+    onSuccess: (edge, vars) => {
+      invalidateEdges(qc);
+      // Direction and `mutual` travel on the same endpoint as privacy but are
+      // a different thing to have changed, so don't report them as one.
+      if (vars.data.visibility === undefined) {
+        toast.success("Relationship updated");
+        return;
+      }
+      // A raise that would actually expose the edge is staged, not applied, so
+      // the toast must not claim the new level is live yet.
+      toast.success(
+        edge.visibility_activates_at
+          ? "Change confirmed - it goes live after your grace period."
+          : "Relationship privacy updated",
+      );
     },
   });
 }
@@ -114,11 +170,39 @@ export function useGroupRelationships(groupId: string | null) {
 export function useCreateGroupRelationship() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: RelationshipEdgeCreate) =>
-      api.createGroupRelationship(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: RelationshipEdgeCreate;
+      skipErrorToast?: boolean;
+    }) => api.createGroupRelationship(data, skipErrorToast),
     onSuccess: () => {
       invalidateEdges(qc);
       toast.success("Relationship added");
+    },
+  });
+}
+
+export function useUpdateGroupRelationship() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      edgeId,
+      data,
+      skipErrorToast = false,
+    }: {
+      edgeId: string;
+      data: RelationshipEdgeUpdate;
+      skipErrorToast?: boolean;
+    }) => api.updateGroupRelationship(edgeId, data, skipErrorToast),
+    onSuccess: (_edge, vars) => {
+      invalidateEdges(qc);
+      toast.success(
+        vars.data.visibility === undefined
+          ? "Relationship updated"
+          : "Relationship privacy updated",
+      );
     },
   });
 }

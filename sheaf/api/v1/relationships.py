@@ -1,7 +1,9 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,17 +13,22 @@ from sheaf.database import get_db
 from sheaf.files import resolve_avatar_url
 from sheaf.models.group import Group
 from sheaf.models.member import Member
+from sheaf.models.pending_action import PendingActionType
 from sheaf.models.relationship import (
     GroupRelationship,
     MemberRelationship,
     RelationshipSymmetry,
     RelationshipType,
 )
-from sheaf.models.system import System
+from sheaf.models.security_event import SecurityEventType
+from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.request import client_ip
+from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.schemas.relationship import (
     RelationshipEdgeCreate,
     RelationshipEdgeRead,
+    RelationshipEdgeUpdate,
     RelationshipFromViewpoint,
     RelationshipGraph,
     RelationshipGraphEdge,
@@ -35,6 +42,20 @@ from sheaf.services.relationships import (
     canonicalize_pair,
     endpoint_labels,
     resolve_label,
+)
+from sheaf.services.security_events import record_security_event
+from sheaf.services.sharing import (
+    refuse_raise_when_publishing_unavailable,
+    reject_mixed_exposure_directions,
+    relationship_raise_exposes,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
+from sheaf.services.system_safety import (
+    is_safeguarded,
+    pending_finalize_after_by_target,
+    queue_pending_action,
+    verify_destructive_auth,
 )
 
 router = APIRouter(tags=["relationships"])
@@ -83,7 +104,16 @@ async def list_relationship_types(
         .where(RelationshipType.system_id == system.id)
         .order_by(RelationshipType.name)
     )
-    return list(rows.scalars().all())
+    types = list(rows.scalars().all())
+    pending = await pending_finalize_after_by_target(
+        db, system, PendingActionType.RELATIONSHIP_TYPE_DELETE
+    )
+    out: list[RelationshipTypeRead] = []
+    for rt in types:
+        tr = RelationshipTypeRead.model_validate(rt)
+        tr.pending_delete_at = pending.get(rt.id)
+        out.append(tr)
+    return out
 
 
 @router.post(
@@ -139,7 +169,13 @@ async def get_relationship_type(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
-    return await _get_type_in_system(type_id, system, db)
+    rt = await _get_type_in_system(type_id, system, db)
+    pending = await pending_finalize_after_by_target(
+        db, system, PendingActionType.RELATIONSHIP_TYPE_DELETE
+    )
+    tr = RelationshipTypeRead.model_validate(rt)
+    tr.pending_delete_at = pending.get(rt.id)
+    return tr
 
 
 @router.patch(
@@ -186,13 +222,65 @@ async def update_relationship_type(
 )
 async def delete_relationship_type(
     type_id: uuid.UUID,
+    body: MemberDeleteConfirm | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    # Deleting a type cascades its edges (DB FK). Low-stakes + reversible by
-    # re-adding, so no System Safety gate; the web client confirms first.
+    """Delete a relationship type, and with it every edge drawn using it.
+
+    A safeguarded action like member, group and field delete. It used to be
+    treated as low-stakes and reversible by re-adding, which was wrong twice
+    over: the DB cascade takes every member AND group edge of this type with
+    it, so "partner" deleted by mistake is the entire relationship graph gone,
+    and re-adding the type does not bring a single edge back. That is the
+    widest blast radius of any one delete in the product, and it had less
+    friction in front of it than deleting a tag.
+
+    So with the `relationships` category armed and a grace window set, this
+    queues a `PendingAction` (202) and changes nothing yet: the type and all
+    its edges stay exactly where they are until the finalize sweep, and
+    cancelling in Settings restores nothing because nothing was destroyed.
+    With the category off or the window at 0 it deletes immediately, as before.
+    A second DELETE while one is already queued is a 409 rather than a second
+    identical row.
+
+    The public surface does NOT wait: `projectable_relationships` drops edges
+    whose type has a queued delete the moment the action is queued. Un-exposing
+    is instant, and the grace window is there so the owner can change their
+    mind, not so strangers get a last look at a graph the owner has asked to be
+    rid of.
+    """
     system = await _get_user_system(user, db)
+    await verify_destructive_auth(
+        user,
+        system,
+        body.password if body else None,
+        body.totp_code if body else None,
+        db,
+    )
     rt = await _get_type_in_system(type_id, system, db)
+
+    if is_safeguarded(system, PendingActionType.RELATIONSHIP_TYPE_DELETE):
+        # One queued delete per type - the 409 for a second DELETE comes from
+        # queue_pending_action, which enforces that for every entity.
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.RELATIONSHIP_TYPE_DELETE,
+            target_id=rt.id,
+            target_label=rt.name,
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "pending_action_id": str(pending.id),
+                "finalize_after": pending.finalize_after.isoformat(),
+            },
+        )
+
     await db.delete(rt)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -223,8 +311,11 @@ async def _create_edge(
     node_model: type[Member] | type[Group],
     edge_model: type[MemberRelationship] | type[GroupRelationship],
     node_label: str,
+    gated: bool,
     system: System,
     db: AsyncSession,
+    user: User,
+    request: Request | None = None,
 ):
     if body.source_id == body.target_id:
         raise HTTPException(
@@ -254,13 +345,65 @@ async def _create_edge(
     src, tgt = canonicalize_pair(rtype.symmetry, body.source_id, body.target_id)
     # `mutual` only means anything for `either` types; normalise it off otherwise.
     mutual = body.mutual and rtype.symmetry == RelationshipSymmetry.EITHER
+
+    # Creating an edge straight to `public` exposes exactly what raising an
+    # existing one to `public` does, so it runs the SAME check and gets the same
+    # treatment: step-up now, and the edge is born private with the raise staged
+    # behind the grace window. Without this, "delete it and add it back public"
+    # would walk around the PATCH gate entirely. Group edges pass gated=False -
+    # nothing projects them, so there is no exposure to defer.
+    extra: dict = {}
+    visibility = body.visibility
+
+    # A member edge born public is a raise to public, refused for the same
+    # reasons create_grant is: not while the account is pending deletion, and not
+    # while the instance's public surface is switched off. Publishing
+    # availability, not step-up, so it fires whatever the safety category is set
+    # to. Group edges (gated=False) project nowhere, so there is nothing to gate.
+    if gated and visibility == PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
+    # Creating an edge straight to public exposes exactly what raising an
+    # existing one does, so it takes the same audit trail: `staged` when a grace
+    # window parks it PENDING, `immediate` when it is born public and lands live
+    # at once - including the case where step-up is off, so the trail does not go
+    # dark exactly when the category is disarmed. Only the gated raise-to-public
+    # path records - group edges (gated=False) project nowhere, so there is no
+    # exposure to log.
+    raise_outcome: str | None = None
+    if (
+        gated
+        and visibility == PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+        and await relationship_raise_exposes(
+            db, system, source_id=src, target_id=tgt
+        )
+    ):
+        await verify_destructive_auth(
+            user, system, body.password, body.totp_code, db
+        )
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            visibility = PrivacyLevel.PRIVATE
+            extra = {
+                "pending_visibility": PrivacyLevel.PUBLIC,
+                "visibility_activates_at": datetime.now(UTC)
+                + timedelta(days=grace),
+            }
+            raise_outcome = "staged"
+        else:
+            raise_outcome = "immediate"
+    elif gated and visibility == PrivacyLevel.PUBLIC:
+        raise_outcome = "immediate"
+
     edge = edge_model(
         system_id=system.id,
         source_id=src,
         target_id=tgt,
         relationship_type_id=rtype.id,
         mutual=mutual,
-        visibility=body.visibility,
+        visibility=visibility,
+        **extra,
     )
     db.add(edge)
     try:
@@ -272,6 +415,19 @@ async def _create_edge(
             detail="That relationship already exists",
         ) from e
     await db.refresh(edge)
+    if raise_outcome is not None and request is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "relationship_privacy",
+                "edge_id": str(edge.id),
+                "created": True,
+            },
+        )
     return edge
 
 
@@ -323,9 +479,98 @@ async def _node_relationships(
                 direction=direction,
                 mutual=e.mutual,
                 visibility=e.visibility,
+                # Group edges never stage a raise, so they have no such
+                # columns; both read as null there.
+                pending_visibility=getattr(e, "pending_visibility", None),
+                visibility_activates_at=getattr(
+                    e, "visibility_activates_at", None
+                ),
             )
         )
     return out
+
+
+async def _get_edge_for_update(
+    edge_id: uuid.UUID,
+    *,
+    edge_model: type[MemberRelationship] | type[GroupRelationship],
+    system: System,
+    db: AsyncSession,
+):
+    """Fetch one edge of this system, locked for the duration of the request.
+
+    Same 404 for "no such edge" and "not yours", so an id from another tenant
+    cannot be probed. `FOR UPDATE` matches `update_member`: two concurrent
+    privacy writes on one edge must not interleave into a state where the live
+    level and the staged level disagree about which way the owner was going.
+    """
+    row = await db.execute(
+        select(edge_model)
+        .where(edge_model.id == edge_id, edge_model.system_id == system.id)
+        .with_for_update()
+    )
+    edge = row.scalar_one_or_none()
+    if edge is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Relationship not found"
+        )
+    return edge
+
+
+async def _apply_orientation(
+    edge: MemberRelationship | GroupRelationship,
+    *,
+    flip: bool | None,
+    mutual: bool | None,
+    system: System,
+    db: AsyncSession,
+) -> bool:
+    """Apply a direction flip and/or a `mutual` change in place. Returns True
+    when the row actually changed.
+
+    Both are INSTANT and ungated, deliberately, and unlike a privacy raise they
+    never take step-up credentials. Neither one shows this edge to anybody new:
+    the same two endpoints are already named, at the same visibility, in the
+    same views, and all that moves is which of them reads which label. There is
+    no exposure to defer, and a grace window on a change that exposes nothing
+    would only teach people the gate is theatre. A staged raise is left exactly
+    where it was - reorienting an edge is not a way to cancel or hurry one.
+
+    Safe against the uniqueness guarantee: the functional unique index is over
+    least()/greatest() of the pair, so swapping source and target lands on the
+    same index key the row already held and can neither collide with itself nor
+    reach a key belonging to another row.
+    """
+    if not flip and mutual is None:
+        return False
+
+    rtype = await _get_type_in_system(edge.relationship_type_id, system, db)
+    changed = False
+
+    if flip:
+        if rtype.symmetry == RelationshipSymmetry.SYMMETRIC:
+            # Refused rather than normalised away: a symmetric edge stores its
+            # pair in uuid order purely for stable dedup, so "reversing" it
+            # would either do nothing visible or break that canonical order.
+            # `mutual` below is a state whose false value is honest for any
+            # type; a flip is an instruction, and quietly not carrying one out
+            # is worse than saying so.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A symmetric relationship type has no direction to reverse",
+            )
+        edge.source_id, edge.target_id = edge.target_id, edge.source_id
+        changed = True
+
+    if mutual is not None:
+        # Same normalisation as create: `mutual` only means anything for
+        # `either` types.
+        new_mutual = mutual and rtype.symmetry == RelationshipSymmetry.EITHER
+        if new_mutual != edge.mutual:
+            edge.mutual = new_mutual
+            changed = True
+
+    return changed
 
 
 async def _delete_edge(
@@ -380,6 +625,7 @@ async def list_member_relationships(
 )
 async def create_member_relationship(
     body: RelationshipEdgeCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -389,9 +635,148 @@ async def create_member_relationship(
         node_model=Member,
         edge_model=MemberRelationship,
         node_label="member",
+        gated=True,
+        system=system,
+        db=db,
+        user=user,
+        request=request,
+    )
+
+
+@router.patch(
+    "/member-relationships/{edge_id}",
+    response_model=RelationshipEdgeRead,
+    dependencies=[Depends(require_scope("relationships:write"))],
+)
+async def update_member_relationship(
+    edge_id: uuid.UUID,
+    body: RelationshipEdgeUpdate,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move one member edge up or down the privacy ladder, or reorient it.
+
+    Raising an edge to `public` EXPOSES it, but only if the whole chain that
+    would draw it is already in place - see `relationship_raise_exposes`. When
+    it is, this behaves exactly like raising a member to public: re-auth now,
+    and the raise itself waits out the grace window as
+    `pending_visibility` + `visibility_activates_at` while the live level stays
+    where it was.
+
+    Every other direction is instant and ungated. Lowering is the un-exposing
+    direction and nothing may slow it down, and ANY such change lands on top of
+    whatever was staged rather than queueing behind it - setting private, or
+    friends, while a public raise is pending cancels that raise outright. The
+    last thing the owner asked for wins, and it wins at its own gate. private ->
+    friends is ungated for the same reason it is on members: the friends tier is
+    parked and every grant that exists today is public-tier, so it exposes
+    nobody. When friends lands, this check and
+    `share_projection.projectable_relationships` have to become audience-aware
+    together.
+
+    `flip` and `mutual` are a different axis and never gated - see
+    `_apply_orientation`. A request carrying both axes applies both.
+
+    House rule shared with every other exposure PATCH: one body may not carry
+    both an exposure raise and an exposure lowering, because the raise's
+    step-up would then be able to fail the lowering with it. `visibility` is
+    this endpoint's only exposure axis (orientation is not one), so the check
+    cannot bite here yet - it is applied so a second axis added later cannot
+    land without it.
+    """
+    system = await _get_user_system(user, db)
+    update_data = body.model_dump(exclude_unset=True)
+    # Step-up credentials are not edge columns; drop them before anything
+    # iterates the update so they can never be persisted.
+    password = update_data.pop("password", None)
+    totp_code = update_data.pop("totp_code", None)
+
+    edge = await _get_edge_for_update(
+        edge_id, edge_model=MemberRelationship, system=system, db=db
+    )
+    reoriented = await _apply_orientation(
+        edge,
+        flip=update_data.get("flip"),
+        mutual=update_data.get("mutual"),
         system=system,
         db=db,
     )
+    requested = update_data.get("visibility")
+    if requested is None:
+        if reoriented:
+            await db.commit()
+            await db.refresh(edge)
+        return edge
+
+    # Raising to public is refused for the same reasons create_grant is: not
+    # while the account is pending deletion, and not while the instance's public
+    # surface is switched off. Publishing availability, not step-up, so it fires
+    # whatever the safety category is set to. Lowering stays open.
+    if requested == PrivacyLevel.PUBLIC and edge.visibility != PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
+    exposes = False
+    if (
+        requested == PrivacyLevel.PUBLIC
+        and edge.visibility != PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+    ):
+        exposes = await relationship_raise_exposes(
+            db, system, source_id=edge.source_id, target_id=edge.target_id
+        )
+
+    # Same uniform check as the other exposure PATCHes: one body may not both
+    # raise and lower exposure, or the raise's step-up gets to fail the
+    # lowering with it. `visibility` is this endpoint's only exposure axis
+    # (`flip` and `mutual` are orientation, not exposure), so it cannot fire
+    # today; it is here so a second axis added later inherits the rule.
+    reject_mixed_exposure_directions(raises=exposes, lowers=False)
+
+    # Raising an edge to public exposes that relationship wherever the chain
+    # that draws it is already served, so the raise leaves an IP/UA-stamped
+    # trail whether it lands live (`immediate`) or parks behind the grace window
+    # (`staged`). Only the raise-to-public direction is recorded; lowering
+    # un-exposes and stays silent. Recorded after the commit, best-effort.
+    raise_outcome: str | None = None
+    if exposes:
+        await verify_destructive_auth(user, system, password, totp_code, db)
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            edge.pending_visibility = PrivacyLevel.PUBLIC
+            edge.visibility_activates_at = datetime.now(UTC) + timedelta(
+                days=grace
+            )
+            raise_outcome = "staged"
+        else:
+            edge.visibility = PrivacyLevel.PUBLIC
+            edge.pending_visibility = None
+            edge.visibility_activates_at = None
+            raise_outcome = "immediate"
+    else:
+        # The immediate, ungated case: nothing would draw this edge yet, or the
+        # category is not armed, so there is nothing to stage - but a
+        # non-public -> public transition is still a raise and is logged, so the
+        # audit trail does not go dark exactly when step-up is off. Lowering
+        # un-exposes and stays silent.
+        if requested == PrivacyLevel.PUBLIC and edge.visibility != PrivacyLevel.PUBLIC:
+            raise_outcome = "immediate"
+        edge.visibility = requested
+        edge.pending_visibility = None
+        edge.visibility_activates_at = None
+
+    await db.commit()
+    await db.refresh(edge)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "relationship_privacy", "edge_id": str(edge.id)},
+        )
+    return edge
 
 
 @router.delete(
@@ -448,9 +833,63 @@ async def create_group_relationship(
         node_model=Group,
         edge_model=GroupRelationship,
         node_label="group",
+        gated=False,
+        system=system,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch(
+    "/group-relationships/{edge_id}",
+    response_model=RelationshipEdgeRead,
+    dependencies=[Depends(require_scope("relationships:write"))],
+)
+async def update_group_relationship(
+    edge_id: uuid.UUID,
+    body: RelationshipEdgeUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set one group edge's privacy level, direction or `mutual` flag. Always
+    instant, never gated.
+
+    Deliberately unlike the member endpoint above: no share view flag reaches
+    group edges and `share_projection` never queries that table, so a group edge
+    marked public is still visible to nobody but its owner. There is no exposure
+    to defer, and inventing a grace window for a change that exposes nothing
+    would only teach people the gate is theatre. The level is stored so it is
+    already correct if group edges are ever projected - at which point this
+    endpoint needs the same gate the member one has, added BEFORE the
+    projection, not after.
+    """
+    system = await _get_user_system(user, db)
+    update_data = body.model_dump(exclude_unset=True)
+    # Not columns here either; dropped for the same reason.
+    update_data.pop("password", None)
+    update_data.pop("totp_code", None)
+
+    edge = await _get_edge_for_update(
+        edge_id, edge_model=GroupRelationship, system=system, db=db
+    )
+    reoriented = await _apply_orientation(
+        edge,
+        flip=update_data.get("flip"),
+        mutual=update_data.get("mutual"),
         system=system,
         db=db,
     )
+    requested = update_data.get("visibility")
+    if requested is None:
+        if reoriented:
+            await db.commit()
+            await db.refresh(edge)
+        return edge
+
+    edge.visibility = requested
+    await db.commit()
+    await db.refresh(edge)
+    return edge
 
 
 @router.delete(

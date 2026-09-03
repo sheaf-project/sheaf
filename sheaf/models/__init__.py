@@ -53,7 +53,6 @@ from sheaf.models.relationship import (
     MemberRelationship,
     RelationshipSymmetry,
     RelationshipType,
-    RelationshipVisibility,
 )
 from sheaf.models.reminder import Reminder, ReminderPending, reminder_scope_members
 from sheaf.models.retention_trim_notice import RetentionTrimNotice, RetentionTrimStatus
@@ -72,6 +71,7 @@ from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.tag import Tag
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.uploaded_file import UploadedFile
+from sheaf.models.usage_sketch import UsageDailySketch
 from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.models.watch_token import WatchToken
 
@@ -134,7 +134,6 @@ __all__ = [
     "MemberRelationship",
     "RelationshipSymmetry",
     "RelationshipType",
-    "RelationshipVisibility",
     "Reminder",
     "ReminderPending",
     "RetentionTrimNotice",
@@ -154,6 +153,7 @@ __all__ = [
     "Tag",
     "TrustedDevice",
     "UploadedFile",
+    "UsageDailySketch",
     "User",
     "UserTier",
     "WatchToken",

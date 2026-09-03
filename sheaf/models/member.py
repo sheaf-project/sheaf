@@ -164,6 +164,13 @@ class Member(UUIDMixin, TimestampMixin, Base):
     fronting_private: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
+    # Clearing the fronting guard can expose live presence through an already
+    # shared view. When profile-visibility safety is armed, the guard stays on
+    # until this timestamp and the share finalizer clears it. Setting the guard
+    # back to True cancels the pending release immediately.
+    fronting_private_activates_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Archive: a soft-hide. When set, the member drops out of the members
     # list, the front switcher, top-fronters, and pickers, but is never

@@ -1,7 +1,8 @@
 import enum
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,10 +36,28 @@ class CustomFieldDefinition(UUIDMixin, TimestampMixin, Base):
     )
     options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # The definition's exposure CEILING, in the same three-level vocabulary a
+    # member, a group and a member edge already speak - and with the same
+    # meaning: permission, not a promise. A field still only appears where a
+    # view was told to show it. It applies to the field for EVERY member: there
+    # is deliberately no per-member-per-field level, because a setting that
+    # says "public except for these three" is one the owner has to keep right
+    # forever, and the day they forget is the day it outs somebody.
     privacy: Mapped[PrivacyLevel] = mapped_column(
         Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
         default=PrivacyLevel.PRIVATE,
         nullable=False,
+    )
+    # A raise waiting out the System Safety grace window: `privacy` above is
+    # still the truth until `privacy_activates_at` passes, at which point the
+    # sharing finalizer copies `pending_privacy` over it. Both null when
+    # nothing is staged. Same pair, same reasons, as `Group.pending_privacy`.
+    pending_privacy: Mapped[PrivacyLevel | None] = mapped_column(
+        Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
+        nullable=True,
+    )
+    privacy_activates_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relationships

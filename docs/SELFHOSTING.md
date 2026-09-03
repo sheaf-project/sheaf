@@ -99,6 +99,7 @@ POSTGRES_PASSWORD=<generated>
 **`JWT_SECRET_KEY`** — signs access tokens, refresh tokens, and keys the HMAC for password-reset and email-verification tokens stored in the DB. If you rotate it:
 - All sessions and refresh tokens are invalidated — every user must log in again.
 - Any outstanding password-reset or email-verification links become invalid (users request a new one).
+- **Every share link ever issued stops working, permanently.** A share link's token is stored only as a keyed hash under this secret, so after a rotation nothing an owner handed out verifies against anything. There is no grace period and no dual-key window: as soon as the new secret is in use, every share link 404s, and the old URLs cannot be revived (the raw tokens were never stored). Owners have to issue fresh links from Settings → Sharing and send them out again. Public profiles survive a rotation untouched: they are located by the system's id, not by a token. Tell your users before you rotate.
 
 Sheaf refuses to start in `saas` mode if this is left at the default, and logs a loud warning in `selfhosted` mode. The default is safe for local dev only.
 
@@ -645,6 +646,16 @@ When `S3_ACCESS_KEY`/`S3_SECRET_KEY` are unset, boto3's default credential chain
 
 Image URLs need to balance four things: preventing your instance from being used as free image hosting, CDN caching for performance, privacy (what the CDN sees), and operational cost/complexity. Four supported setups, pick whichever matches your deployment:
 
+Public profiles and share links are a deliberate exception to the normal URL
+shape below. Uploaded media on those anonymous pages is rewritten to an
+expiring `/v1/public/files/...` URL and served through the app from the
+configured storage backend. It never redirects to S3 or emits the CDN origin,
+so the public page can retain `img-src 'self' data:` without breaking uploads.
+Those responses are publicly cacheable until their capability expires. If you
+use S3/CDN primarily to keep image bytes away from the app, include public
+profile traffic when sizing the app; authenticated pages still use the chosen
+paradigm normally.
+
 #### 1. Filesystem, app-served (default, simplest)
 
 ```env
@@ -891,7 +902,7 @@ The `auto_pin_first_revision` toggle (per-system, default on) auto-pins the firs
 
 ## System Safety
 
-Optional grace + re-auth on destructive actions: member/group/tag/field/front/journal/image deletes, plus revision unpin. Configured per-system in Settings -> Safety, no env vars: each system picks its own grace period (0 disables), auth tier (none / password / TOTP / both), and which categories the policy applies to.
+Optional grace + re-auth on destructive actions: member/group/tag/field/front/journal/image/reminder/poll/message/relationship-type deletes, notification channel deletes and watcher revokes, plus revision unpin. Deleting a relationship type cascades every member and group edge drawn with it, which is why it has a category of its own. Configured per-system in Settings -> Safety, no env vars: each system picks its own grace period (0 disables), auth tier (none / password / TOTP / both), and which categories the policy applies to.
 
 Tightening (longer grace, stronger auth tier, enabling more categories) takes effect immediately. Loosening (shorter grace, weaker auth, disabling categories, lowering revision caps, disabling auto-pin) requires re-auth and is deferred behind the current grace period as a `SafetyChangeRequest` the user can cancel before it finalizes.
 
@@ -1036,6 +1047,8 @@ When disabled:
 - A CSP `img-src` directive blocks the browser from loading any non-hosted image as defense in depth.
 
 Regardless of this setting, avatar URLs accepted from imports must be plain `http(s)` - other schemes are dropped.
+
+This setting governs the authenticated app. It has no bearing on public profiles and share links, where an external image is never served at all: the visitor has no account and consented to nothing, so their browser is not made to fetch from a host the profile's owner chose. Bio embeds arrive as a placeholder the page renders as an "external image" label, and an external avatar arrives as null, so the member's initials show instead. Uploaded images use an expiring same-origin public-media route.
 
 The toggle does not retroactively scrub existing content — it only governs new writes. CSP blocks old references at render time.
 
@@ -1185,6 +1198,20 @@ The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_
 
 ---
 
+## Abuse and DMCA contact
+
+The Support page above is for people with an account. Public profiles and share links are the only pages someone without one can reach, so if you serve them, set `PUBLIC_ABUSE_CONTACT`: it is the only route a visitor has to tell you something is wrong with a page you host.
+
+```env
+PUBLIC_ABUSE_CONTACT="Report abuse: abuse@example.net"
+```
+
+The value is markdown you write, shown to anonymous visitors behind an "Abuse / DMCA" item in the public profile footer, next to "Powered by Sheaf". Nothing is submitted or stored: it renders your text and gets out of the way, so what to put in it is up to you. At minimum, some way to reach a person - an email address, a chat contact, a link to a form you run elsewhere. Operators subject to the DMCA (broadly, anyone hosting in the US or serving US users who wants the safe harbour) should include their designated agent's details here as well: name, address, phone, email. Registering that agent with the Copyright Office is a separate step this setting does not do for you; check what your jurisdiction actually requires rather than taking a config comment's word for it.
+
+Multi-line values work if your compose manager supports them; the usual way is a quoted string with `\n` escapes, or setting it from a file in your own entrypoint. It renders through the same pipeline as a public bio: markdown, no HTML, no external images, and `mailto:` and `https:` links stay clickable. Empty (the default) means no footer item at all and nothing rendered. It is read at startup, so changes need a restart, and it is served in the public `GET /v1/auth/config` payload - treat it as information you are publishing, and put a role address in it rather than someone's personal one.
+
+---
+
 ## Frontend
 
 The Sheaf web frontend is a React SPA built with Vite. The Docker Compose setup serves the backend API only - you build and serve the frontend separately, either from a local build (below) or from the prebuilt image.
@@ -1224,12 +1251,26 @@ sheaf.example.com {
         try_files {path} /index.html
         file_server
         # Sheaf only sets security headers on its own /v1/* responses;
-        # the SPA document is served by Caddy and needs them here.
-        header {
+        # the SPA document is served by Caddy and needs them here. Public
+        # profiles (/p/) and share links (/s/) get their own set: noindex,
+        # and an img-src with no third-party hosts in it. Keep the two
+        # matchers mutually exclusive - `header` sets, so if both matched a
+        # request, whichever handler Caddy ran last would win. `header` is
+        # ordered before try_files, so the matchers see the original path.
+        @profiles path /p/* /s/*
+        @app not path /p/* /s/*
+        header @app {
             X-Frame-Options "DENY"
             X-Content-Type-Options "nosniff"
             Referrer-Policy "no-referrer"
             Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+        }
+        header @profiles {
+            X-Frame-Options "DENY"
+            X-Content-Type-Options "nosniff"
+            Referrer-Policy "no-referrer"
+            X-Robots-Tag "noindex, nofollow"
+            Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
         }
     }
 }
@@ -1239,16 +1280,47 @@ Caddy terminates TLS automatically and passes `X-Forwarded-Proto=https` to the b
 
 **nginx example:**
 ```nginx
+# Public profiles (/p/) and share links (/s/) are the only pages a crawler can
+# reach; keep them out of search results. An empty value means nginx adds no
+# header at all, so the rest of the app is unaffected. Goes in the http block,
+# alongside the server blocks below. Key off $request_uri, not $uri: try_files
+# rewrites $uri to /index.html for these SPA routes before add_header is
+# evaluated, so a $uri map would never match and the header would go missing.
+map $request_uri $sheaf_robots {
+    default    "";
+    ~^/[ps]/   "noindex, nofollow";
+}
+
+# Those same pages are the ones visitors with no account read, so their img-src
+# allows no third-party host. Same map trick: one add_header, value by path.
+map $request_uri $sheaf_csp {
+    default    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+    ~^/[ps]/   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+}
+
+# /s/{token} and its API route both carry the unlisted share-link bearer.
+# /v1/public/files/ carries an owner id in the path and a live signed token
+# in the query. Exclude all three from nginx access logs in both the redirect
+# and TLS servers.
+map $request_uri $sheaf_access_loggable {
+    default                  1;
+    ~^/s/                    0;
+    ~^/v1/public/shared/     0;
+    ~^/v1/public/files/      0;
+}
+
 # Redirect plain HTTP to HTTPS
 server {
     listen 80;
     server_name sheaf.example.com;
+    access_log /var/log/nginx/access.log combined if=$sheaf_access_loggable;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
     server_name sheaf.example.com;
+    access_log /var/log/nginx/access.log combined if=$sheaf_access_loggable;
 
     # TLS — modern profile. Adjust paths to your certificates.
     ssl_certificate     /etc/letsencrypt/live/sheaf.example.com/fullchain.pem;
@@ -1298,12 +1370,95 @@ server {
         add_header X-Frame-Options "DENY" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "no-referrer" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
+        add_header Content-Security-Policy $sheaf_csp always;
+        add_header X-Robots-Tag $sheaf_robots always;
     }
 }
 ```
 
+#### Keep share-link tokens out of your access logs
+
+An unlisted share link is a bearer capability, and the whole capability is in
+the URL **path**: `/s/{token}` for the page and `/v1/public/shared/{token}/...`
+for the API calls it makes. A default access-log line records the request path
+verbatim, so with logging on as shipped by most distributions, every visit to
+a share link writes a working key to that link into a file - one that is world
+readable on plenty of systems, gets shipped to a log aggregator, and outlives
+the link's rotation by however long you keep logs. Anybody who can read the log
+can open the profile. `/v1/public/files/` is the same problem in a second
+shape: the path carries the owner's account id and the query string carries a
+live signed token for the image.
+
+The nginx example above already covers all three with a `map` and a conditional
+`access_log`, which is nginx's way of dropping a line entirely:
+
+```nginx
+map $request_uri $sheaf_access_loggable {
+    default                  1;
+    ~^/s/                    0;
+    ~^/v1/public/shared/     0;
+    ~^/v1/public/files/      0;
+}
+
+server {
+    # ... and in EVERY server block, including the plain-HTTP redirect one:
+    access_log /var/log/nginx/access.log combined if=$sheaf_access_loggable;
+}
+```
+
+Caddy does not write access logs unless you ask it to, so an unmodified Caddy
+config is already safe - but the moment somebody adds a `log` directive it
+starts recording tokens, which is a booby trap to leave lying around. Mark the
+paths instead, with `log_skip`, which costs nothing while logging is off and
+keeps them out of the log when it is turned on:
+
+```
+sheaf.example.com {
+    # Bearer token in the path (/s/, /v1/public/shared/) and a signed image
+    # token in the query (/v1/public/files/). Never log these requests.
+    @secret_urls path /s/* /v1/public/shared/* /v1/public/files/*
+    log_skip @secret_urls
+
+    log {
+        output file /var/log/caddy/access.log
+    }
+
+    # ... handle blocks as above
+}
+```
+
+If you would rather keep the line and lose only the secret, replace `log_skip`
+with a redacting filter on the URI:
+
+```
+log {
+    output file /var/log/caddy/access.log
+    format filter {
+        wrap console
+        fields {
+            request>uri regexp "^(/s/|/v1/public/shared/)[^/?]+" "${1}REDACTED"
+        }
+    }
+}
+```
+
+Whatever proxy you run, the rule is the same: those paths must not reach a log
+in full. Check the layers above it too - a CDN, a cloud load balancer, or a WAF
+in front of Sheaf keeps its own request log, and that one is usually on by
+default with no way to see it from here.
+
+Those tokens are verified against a hash keyed from `JWT_SECRET_KEY`, so
+rotating that secret breaks every link ever issued and owners must re-issue
+them; see "What each key does" above.
+
+Sheaf's own application logs already redact these - it is only the proxy's log
+that needs configuring.
+
 Sheaf sets security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and conditionally `Strict-Transport-Security`) on its own `/v1/*` responses only. The SPA document and static assets are served by your proxy, which is why the examples above add the headers there too - without them the app page itself ships with no clickjacking or XSS defence-in-depth.
+
+The examples also send `X-Robots-Tag: noindex, nofollow` for `/p/` and `/s/` (public profiles and share links). Those are the only pages a crawler can reach, since everything else needs a login, and they are meant for sharing with people you gave the link to, not for turning up in search results. The pages set a `robots` meta tag themselves as well; the header covers a crawler that indexes on headers alone without running the app.
+
+Those same two paths get a tighter `img-src` (`'self' data:`, dropping `https:` and `blob:`). They are read by visitors with no account, and Sheaf never sends them an external image URL: it withholds it, so a visitor's browser is never made to fetch from a host the profile's owner picked, which would hand that host the visitor's address on every view. Uploaded media is rewritten to the same-origin `/v1/public/files/...` route, including under S3/CDN configurations, so it remains compatible with the narrower policy. The policy is the backstop - if a bug ever let an owner-chosen URL through, the browser refuses the fetch and the visitor sees a broken image rather than being quietly announced.
 
 **Streaming endpoints (SSE).** The realtime front-change stream (`GET /v1/fronts/stream`, Server-Sent Events) needs your proxy to forward each event as it arrives rather than buffering the response - otherwise clients (Home Assistant, Node-RED) stall for seconds on connect before the first event. The examples above disable buffering for that path (`proxy_buffering off` for nginx, `flush_interval -1` for Caddy). The app also sends `X-Accel-Buffering: no`, which nginx honours to disable buffering per-response, but Caddy and some other proxies ignore it, so set it explicitly for whatever proxy you run. For Traefik, HAProxy, or others, disable response buffering (enable streaming/flush) for that route, and make sure the route is not gzipped - compressing a live stream re-buffers it. A revoked or expired key drops its stream on its own, so the long read timeout in the nginx example is just to stop an idle-looking (but heartbeating) connection being cut.
 

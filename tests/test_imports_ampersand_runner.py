@@ -246,8 +246,14 @@ def test_full_import_maps_all_sections(auth_client: httpx.Client):
     members = auth_client.get("/v1/members").json()
     fronts = [m for m in members if m.get("is_custom_front")]
     assert len(fronts) == 1
+    # Ampersand carries no share guard of its own, so its custom fronts take
+    # Sheaf's default: guarded, so an imported status cannot announce itself
+    # on a shared page before the owner has looked at it.
+    assert fronts[0]["fronting_private"] is True
     imported = next(m for m in members if m["name"] == "Member0")
     assert imported["avatar_url"]  # inline avatar was decoded + stored
+    # ...and an ordinary member is untouched by that rule.
+    assert imported["fronting_private"] is False
 
     # Systems became groups, and the child nests under the root.
     groups = auth_client.get("/v1/groups").json()

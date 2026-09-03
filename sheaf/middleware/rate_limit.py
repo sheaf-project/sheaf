@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request, status
+from redis.exceptions import RedisError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -45,6 +46,54 @@ from sheaf.observability.metrics import rate_limit_checks_total
 from sheaf.observability.middleware import route_template
 
 logger = logging.getLogger("sheaf.ratelimit")
+
+# What a Redis call actually raises when the server is unreachable, slow, or
+# mid-failover. This is the tuple that makes fail-closed real: `_get_redis` only
+# builds a client object (redis.from_url does not connect), so the first thing
+# that ever touches the network is the command itself - and until these were
+# caught, a Redis outage turned every rate-limited request into an unhandled
+# 500 with a stack trace, on the exact endpoints whose whole point is to keep
+# answering predictably when something is wrong.
+#
+# redis-py wraps socket failures and timeouts into its own hierarchy
+# (ConnectionError, TimeoutError, BusyLoadingError - all RedisError), but a
+# failure raised while the pool is opening the socket can still surface as a
+# bare OSError, so both are caught. Deliberately NOT `Exception`: a bug in our
+# own key building should stay a 500 and be fixed, not be laundered into
+# "Redis is down".
+_REDIS_ERRORS = (RedisError, OSError)
+
+# Retry-After on a fail-closed 503. Short on purpose - a Redis blip is usually
+# seconds, and the point is to tell a client to come back rather than to spin.
+_REDIS_RETRY_AFTER = "5"
+
+
+def _redis_unavailable(
+    request: Request, exc: BaseException, *, fail_closed: bool
+) -> None:
+    """The one place a Redis failure in the dependency path is turned into a
+    verdict: 503 when the limit is fail-closed, "skip the check" when not.
+
+    Logged at error level WITHOUT a traceback: an outage produces one of these
+    per request, and a stack trace per request buries the incident in its own
+    logs while telling nobody anything the message does not already say.
+    """
+    if fail_closed:
+        logger.error(
+            "Redis unavailable on fail-closed endpoint: %s (%s)",
+            route_template(request),
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable",
+            headers={"Retry-After": _REDIS_RETRY_AFTER},
+        ) from exc
+    logger.warning(
+        "Redis unavailable - skipping rate limit check (path=%s, error=%s)",
+        route_template(request),
+        type(exc).__name__,
+    )
 
 
 # Map route templates to a stable bucket label. The set is intentionally
@@ -240,19 +289,13 @@ async def _enforce_limit(
     if not settings.rate_limit_enabled:
         return
 
+    # Building the client can only fail on a malformed redis_url, which is a
+    # deployment fault rather than an outage - caught broadly, and it lands on
+    # the same verdict.
     try:
         r = await _get_redis()
     except Exception as exc:
-        if fail_closed:
-            logger.error(
-                "Redis unavailable on fail-closed endpoint: %s",
-                request.url.path,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Service temporarily unavailable",
-            ) from exc
-        logger.warning("Redis unavailable - skipping rate limit check")
+        _redis_unavailable(request, exc, fail_closed=fail_closed)
         return
 
     # Build the identifier
@@ -276,7 +319,13 @@ async def _enforce_limit(
     key_suffix = bucket if bucket is not None else route
     redis_key = f"{identifier}:{key_suffix}"
 
-    allowed, remaining, reset = await _check_limit(r, redis_key, limit)
+    # The counter itself is the first thing that touches the network, so this
+    # is where a Redis outage actually shows up.
+    try:
+        allowed, remaining, reset = await _check_limit(r, redis_key, limit)
+    except _REDIS_ERRORS as exc:
+        _redis_unavailable(request, exc, fail_closed=fail_closed)
+        return
 
     # Metric bucket: an explicit shared bucket names its own label so a
     # combined limit stays legible on dashboards instead of collapsing into
@@ -329,6 +378,8 @@ def rate_limit(
     window: int = 60,
     key: str = "ip",
     fail_closed: bool = False,
+    *,
+    bucket: str | None = None,
 ):
     """FastAPI dependency that enforces a rate limit on a single endpoint.
 
@@ -345,12 +396,15 @@ def rate_limit(
             unreachable. Use on auth endpoints so a Redis outage can't be
             used to bypass brute-force protection. Default False - most
             endpoints are better off staying available on Redis blips.
+        bucket: Optional fixed counter name. Use when several routes should
+            share one limit, or when a route contains a bearer capability that
+            must not be copied into Redis keys.
     """
     limit = Limit(requests=requests, window=window)
 
     async def _check(request: Request):
         await _enforce_limit(
-            request, limit=limit, key=key, bucket=None, fail_closed=fail_closed,
+            request, limit=limit, key=key, bucket=bucket, fail_closed=fail_closed,
         )
 
     if key == "user":
@@ -544,7 +598,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             logger.warning(
                 "Redis unavailable - global per-IP rate-limit backstop is "
                 "open (path=%s)",
-                request.url.path,
+                route_template(request),
             )
             return await call_next(request)
 
@@ -554,9 +608,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             window=settings.rate_limit_global_window,
         )
 
-        allowed, remaining, reset = await _check_limit(
-            r, f"ip:{ip}:global", limit,
-        )
+        # Same hole as the dependency had, and worse here: this runs on EVERY
+        # request, so an unhandled connection error would turn a Redis outage
+        # into a site-wide 500 rather than a degraded backstop. Fail open, for
+        # the reason given above the connect path.
+        try:
+            allowed, remaining, reset = await _check_limit(
+                r, f"ip:{ip}:global", limit,
+            )
+        except _REDIS_ERRORS as exc:
+            logger.warning(
+                "Redis unavailable - global per-IP rate-limit backstop is "
+                "open (path=%s, error=%s)",
+                route_template(request),
+                type(exc).__name__,
+            )
+            return await call_next(request)
 
         rate_limit_checks_total.labels(
             bucket="global",

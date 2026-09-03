@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,9 +12,20 @@ from sheaf.crypto import decrypt, encrypt
 from sheaf.database import get_db
 from sheaf.encrypted_fields import system_note_aad, user_totp_secret_aad
 from sheaf.files import owned_avatar_url, owned_description_urls
-from sheaf.models.system import DeleteConfirmation, System
+from sheaf.models.security_event import SecurityEventType
+from sheaf.models.system import DeleteConfirmation, PrivacyLevel, System
 from sheaf.models.user import User
+from sheaf.request import client_ip
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
+from sheaf.services.security_events import record_security_event
+from sheaf.services.sharing import (
+    refuse_raise_when_publishing_unavailable,
+    reject_mixed_exposure_directions,
+    system_privacy_raise_exposes,
+    visibility_grace_days,
+    visibility_step_up_required,
+)
+from sheaf.services.system_safety import verify_destructive_auth
 
 router = APIRouter(prefix="/systems", tags=["systems"])
 
@@ -55,11 +68,116 @@ async def get_own_system(
 )
 async def update_own_system(
     body: SystemUpdate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Edit your own system, including the master public/private switch.
+
+    House rule shared with every other exposure PATCH: one body may not carry
+    both an exposure raise and an exposure lowering, because the raise's
+    step-up would then be able to fail the lowering with it. `privacy` is this
+    endpoint's only exposure axis, so the check cannot bite here yet - it is
+    applied so a second axis added later cannot land without it.
+    """
     system = await _get_user_system(user, db)
     update_data = body.model_dump(exclude_unset=True)
+    # Step-up credentials are not system columns; drop them before anything
+    # iterates the update so they can never be persisted.
+    password = update_data.pop("password", None)
+    totp_code = update_data.pop("totp_code", None)
+
+    # Raising system privacy to `public` is the broadest exposure an owner can
+    # make - it is the master switch over the whole surface - so it takes the
+    # same shape as every other raise: step-up when the profile_visibility
+    # category is armed AND a grant would actually serve, then stage behind the
+    # grace window if one is set, else apply immediately (the re-auth already
+    # happened). Lowering (to friends/private) is the un-exposing direction and
+    # stays instant and ungated; anything staged is cancelled by it. Handled
+    # here, out of the generic setattr loop below.
+    requested_privacy = update_data.pop("privacy", None)
+
+    # Raising the master switch to public is refused for the same reasons
+    # `create_grant` is: not while the account is pending deletion, and not while
+    # the instance's public surface is switched off (a raise now would wake up on
+    # an operator's later config flip, unwitnessed). Publishing availability, not
+    # step-up, so it is checked whatever the safety category is set to. Lowering
+    # stays open - going dark is never gated.
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and system.privacy != PrivacyLevel.PUBLIC
+    ):
+        refuse_raise_when_publishing_unavailable(user)
+
+    # Operator takedown latch. The master switch is the broadest publish there
+    # is, so raising it to public is refused for the same reason `create_grant`
+    # is: a blocked system may take things down but may not put anything new up.
+    # Lowering (to friends/private) is the un-exposing direction and stays open,
+    # so a blocked owner can still go fully dark. Same distinct message as the
+    # grant path.
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and system.privacy != PrivacyLevel.PUBLIC
+        and system.publishing_blocked
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Publishing has been disabled on your system by an operator, so "
+                "your system cannot be set to public. You can still keep it "
+                "private or friends. Contact the instance operator."
+            ),
+        )
+
+    exposes = False
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and system.privacy != PrivacyLevel.PUBLIC
+        and visibility_step_up_required(system)
+    ):
+        exposes = await system_privacy_raise_exposes(db, system)
+
+    # Same uniform check as the other exposure PATCHes: one body may not both
+    # raise and lower exposure, or the raise's step-up gets to fail the
+    # lowering with it. `privacy` is this endpoint's only exposure axis - the
+    # rest of a system edit is name, avatar, colour, tag, description - so it
+    # cannot fire today; it is here so a second axis added later inherits the
+    # rule instead of rediscovering the bug.
+    reject_mixed_exposure_directions(raises=exposes, lowers=False)
+
+    # The master switch to public is the broadest exposure an owner can make, so
+    # a hijacked session flipping it leaves an IP/UA-stamped trail whether it
+    # parks behind the grace window (`staged`) or lands live at once
+    # (`immediate`) - and both branches below flip it, so both record. The
+    # `elif` is the immediate, ungated case: no grant would serve yet (or the
+    # category is not armed), so there is nothing to stage, but a non-public ->
+    # public transition is still the #1 raise and is logged. A staged flip
+    # correlates with its later activation in the finalize sweep. Only the
+    # raise-to-public direction is recorded; lowering to friends/private
+    # un-exposes and stays silent. Recorded after the commit, best-effort.
+    raise_outcome: str | None = None
+    if exposes:
+        await verify_destructive_auth(user, system, password, totp_code, db)
+        grace = visibility_grace_days(system)
+        if grace > 0:
+            system.pending_privacy = PrivacyLevel.PUBLIC
+            system.privacy_activates_at = datetime.now(UTC) + timedelta(days=grace)
+            raise_outcome = "staged"
+        else:
+            system.privacy = PrivacyLevel.PUBLIC
+            system.pending_privacy = None
+            system.privacy_activates_at = None
+            raise_outcome = "immediate"
+    elif requested_privacy is not None:
+        if (
+            requested_privacy == PrivacyLevel.PUBLIC
+            and system.privacy != PrivacyLevel.PUBLIC
+        ):
+            raise_outcome = "immediate"
+        system.privacy = requested_privacy
+        system.pending_privacy = None
+        system.privacy_activates_at = None
+
     # Drop avatar/bio media referencing another account's storage keys before
     # it is stored (and later re-signed on read) - cross-tenant read oracle.
     if "avatar_url" in update_data:
@@ -80,6 +198,15 @@ async def update_own_system(
             setattr(system, key, value)
     await db.commit()
     await db.refresh(system)
+    if raise_outcome is not None:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome=raise_outcome,
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "system_privacy", "system_id": str(system.id)},
+        )
     return _system_to_read(system)
 
 

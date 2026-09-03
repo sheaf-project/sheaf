@@ -15,6 +15,23 @@ from sheaf.models.system import PrivacyLevel
 _MAX_CHOICES_PER_FIELD = 100
 _MAX_CHOICE_LENGTH = 100
 
+# Cap on a stored field VALUE's text. Until this existed, a value was the one
+# piece of user content the API took with no length at all: the validator below
+# checked the value's TYPE and nothing else, so a text field would accept a
+# string of any size, encrypt it, and store it - and then decrypt it on every
+# read of that member, including on a public profile. 20000 is the same number
+# every other long-form field on the instance uses (member/system/group
+# descriptions, `max_length=20000` in the schemas next door), which is the
+# right ceiling here: a custom field is a short labelled answer, so a limit
+# generous enough for a whole bio cannot get in a real user's way.
+#
+# The cap bounds NEW text; it does not retroactively invalidate what was stored
+# before it existed. Nothing rewrites or truncates an existing row, and the
+# write path re-accepts an over-cap value that comes back unchanged (see
+# api/v1/custom_fields.set_member_field_values), so somebody carrying a long
+# value from before is not locked out of editing their other fields.
+MAX_CUSTOM_FIELD_VALUE_CHARS = 20000
+
 
 def _normalise_choices(raw: list) -> list[str]:
     """Trim, drop empties, enforce length cap + case-insensitive uniqueness.
@@ -87,7 +104,19 @@ class CustomFieldCreate(BaseModel):
     field_type: FieldType
     options: dict | None = None
     order: int = 0
+    # Born private unless asked otherwise, and asking otherwise runs the same
+    # gate the PATCH raise does (see api/v1/custom_fields.create_field):
+    # creating a field already public and raising an existing one are the same
+    # exposure, so "delete it and add it back as public" must not be a way
+    # round the slower door.
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
+    # Step-up credentials, carried for the same reason `GroupCreate` carries
+    # them: a create that skips straight to public goes through the same door
+    # as a raise. Popped before persistence.
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
 
     @model_validator(mode="after")
     def _validate_options(self) -> "CustomFieldCreate":
@@ -100,6 +129,15 @@ class CustomFieldUpdate(BaseModel):
     options: dict | None = None
     order: int | None = None
     privacy: PrivacyLevel | None = None
+
+    # Step-up credentials for a raise that is actually deferred. NOT field
+    # columns: the handler pops them before anything iterates the update, the
+    # same way the group and relationship-edge handlers do, so they can never
+    # be persisted.
+    password: str | None = Field(
+        default=None, description="Required when the change is deferred"
+    )
+    totp_code: str | None = None
 
     @field_validator("name", "order", "privacy")
     @classmethod
@@ -117,6 +155,11 @@ class CustomFieldRead(BaseModel):
     options: dict | None
     order: int
     privacy: PrivacyLevel
+    # A raise waiting out the grace window: `privacy` above is still the truth,
+    # and this says what it will become when `privacy_activates_at` passes.
+    # Null = nothing staged.
+    pending_privacy: PrivacyLevel | None = None
+    privacy_activates_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     # finalize_after timestamp if queued for delete; null otherwise.
@@ -140,6 +183,28 @@ def _unwrap_value(raw: Any) -> Any:
     return raw
 
 
+def value_over_text_cap(value: Any) -> bool:
+    """True if any string inside a submitted/stored value is over the cap.
+
+    THE definition of "too long", shared by the write API and the importers so
+    the two cannot disagree about which values are refused. Takes the value in
+    any shape it legitimately arrives in: a bare scalar, the web client's
+    legacy `{"v": ...}` envelope, or a multiselect's list (walked so an
+    oversized string cannot ride in as a list entry). Non-string leaves have no
+    length and are never over.
+
+    Deliberately a predicate rather than a raise: the API turns it into a 422
+    and an importer turns it into a skipped value with a warning, and neither
+    reading belongs in here.
+    """
+    unwrapped = _unwrap_value(value)
+    items = unwrapped if isinstance(unwrapped, list) else [unwrapped]
+    return any(
+        isinstance(item, str) and len(item) > MAX_CUSTOM_FIELD_VALUE_CHARS
+        for item in items
+    )
+
+
 def _validate_value_for_field(
     field_type: FieldType,
     options: dict | None,
@@ -155,6 +220,12 @@ def _validate_value_for_field(
         list allowed (clears the selection).
       - Other types: anything serialisable goes through. The web /
         mobile widgets enforce shape client-side.
+
+    Length is NOT checked here, and cannot be: an over-cap value that is
+    already stored has to stay editable (see `value_over_text_cap` and the
+    write handler), and a validator with no database in front of it cannot
+    tell "somebody is pasting a novel" from "somebody is re-saving what they
+    already had".
     """
     if value is None:
         return  # nullable; clear-on-save.

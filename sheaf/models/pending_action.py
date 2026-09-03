@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,6 +24,7 @@ class PendingActionType(StrEnum):
     POLL_DELETE = "poll_delete"
     MESSAGE_DELETE = "message_delete"
     MESSAGE_THREAD_DELETE = "message_thread_delete"
+    RELATIONSHIP_TYPE_DELETE = "relationship_type_delete"
 
 
 class PendingActionStatus(StrEnum):
@@ -104,5 +105,19 @@ class PendingAction(UUIDMixin, Base):
             "system_id",
             "status",
             "finalize_after",
+        ),
+        # At most one OPEN action per (system, action_type, target). The
+        # service checks before inserting; this is the backstop for two
+        # requests racing that check, and the reason a duplicate can only
+        # ever be a 409 rather than a second row on the Safety page.
+        # Partial on status so cancelled/completed/errored history piles up
+        # freely and a target can be re-queued after a cancel.
+        Index(
+            "uq_pending_actions_pending_target",
+            "system_id",
+            "action_type",
+            "target_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
         ),
     )

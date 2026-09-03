@@ -998,6 +998,18 @@ wheels = [
 ]
 
 [[package]]
+name = "mdit-py-plugins"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown-it-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/fc/f8d0863f8862f25602c0404d75568e89fb6b4109804645e5cdfb1be5cf56/mdit_py_plugins-0.6.1.tar.gz", hash = "sha256:a2bca0f039f39dbd35fb74ae1b5f998608c437463371f0ff7f49a19a17a114d0", size = 56114, upload-time = "2026-05-13T09:03:38.91Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/69/6da5581c6a7fede7dc261bf4e67d6adca4196f176b43288b55b3db395b6e/mdit_py_plugins-0.6.1-py3-none-any.whl", hash = "sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d", size = 66663, upload-time = "2026-05-13T09:03:37.76Z" },
+]
+
+[[package]]
 name = "mdurl"
 version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1706,6 +1718,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx", extra = ["http2"] },
     { name = "markdown-it-py" },
+    { name = "mdit-py-plugins" },
     { name = "nh3" },
     { name = "pillow" },
     { name = "prometheus-client" },
@@ -1759,6 +1772,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'sendgrid'", specifier = ">=0.28.0" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.0" },
     { name = "markdown-it-py", specifier = "==4.0.0" },
+    { name = "mdit-py-plugins", specifier = ">=0.4.0" },
     { name = "nh3", specifier = ">=0.2.18" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "prometheus-client", specifier = ">=0.20.0" },

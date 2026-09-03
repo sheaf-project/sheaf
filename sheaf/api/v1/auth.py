@@ -80,14 +80,17 @@ from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.observability.metrics import (
+    adult_attestations_total,
     auth_logins_total,
     auth_password_reset_total,
     auth_recovery_codes_used_total,
     auth_sessions_invalidated_total,
+    signups_total,
 )
 from sheaf.redact import redact_email
 from sheaf.request import client_ip
 from sheaf.schemas.user import (
+    AdultAttestationRead,
     SecondarySessionRequest,
     SecondarySessionResponse,
     TokenRefresh,
@@ -118,6 +121,7 @@ _VALID_SCOPES = {
     "polls:read", "polls:write", "polls:delete",
     "messages:read", "messages:write", "messages:delete",
     "relationships:read", "relationships:write", "relationships:delete",
+    "sharing:read", "sharing:write", "sharing:delete",
     "import:write",
     "export:read",
     "admin:read", "admin:write",
@@ -175,6 +179,10 @@ async def get_auth_config():
         "file_cdn_base": settings.s3_public_url.rstrip("/") or None,
         "terms_url": settings.terms_url or None,
         "privacy_url": settings.privacy_url or None,
+        # Operator-authored markdown, rendered only on the public profile
+        # footer. Public information by definition, so it rides the same
+        # unauthenticated payload as the rest of this.
+        "abuse_contact": settings.public_abuse_contact or None,
         "support_email": settings.support_email or None,
         "support_url": settings.support_url or None,
         "support_note": settings.support_note or None,
@@ -443,6 +451,10 @@ async def register(
     )
 
     await db.commit()
+
+    # New-account velocity. Incremented only after the registration commit, so a
+    # rolled-back / abandoned signup never moves it. No labels (no id/email/IP).
+    signups_total.inc()
 
     await record_security_event(
         event_type=SecurityEventType.REGISTER,
@@ -1789,7 +1801,61 @@ async def get_me(user: User = Depends(get_current_user_allow_unverified)):
         ),
         external_images_allowed=settings.allow_external_images,
         animated_uploads_allowed=animation_allowed(user, settings),
+        public_profiles_enabled=settings.public_profiles_enabled,
+        adult_attested_at=user.adult_attested_at,
     )
+
+
+@router.post("/me/attest-adult", response_model=AdultAttestationRead)
+async def attest_adult(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AdultAttestationRead:
+    """Record the account's self-declared "I am 18 or older".
+
+    We store a bare timestamp and nothing else: no date of birth, no identity
+    document. Verifying age is itself a privacy harm for exactly the people
+    this app exists for, so self-declaration is the accepted tradeoff. It
+    gates the creation of share grants (see
+    `sheaf.services.sharing.require_adult_attestation`) and nothing else.
+
+    Idempotent: re-declaring leaves the original timestamp alone. There is no
+    un-attest endpoint - clearing it would not un-publish anything anyway
+    (revoking a grant does that, immediately and ungated).
+
+    Refuses API-key auth: this is a one-way declaration made on the account's
+    behalf that unlocks publishing, so a leaked key must not be able to set
+    it. Same posture as the key-management and account endpoints.
+    """
+    if getattr(request.state, "auth_method", None) == "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "API keys cannot record the adult attestation. Sign in with "
+                "a session or JWT to declare it."
+            ),
+        )
+
+    if user.adult_attested_at is None:
+        user.adult_attested_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(user)
+        # Count the one-way transition only; a no-op re-declaration below is
+        # not a state change and must not increment.
+        adult_attestations_total.inc()
+        # Durable trail: the attestation is irreversible and gates publishing,
+        # so the account needs a record of when and from where it was set.
+        # Best-effort, never raises. Only the transition is recorded - a
+        # no-op re-declaration is not an account state change.
+        await record_security_event(
+            event_type=SecurityEventType.ADULT_ATTESTATION,
+            outcome="success",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+    return AdultAttestationRead(adult_attested_at=user.adult_attested_at)
 
 
 @router.patch("/me", response_model=UserRead)
@@ -1847,6 +1913,8 @@ async def update_me(
         ),
         external_images_allowed=settings.allow_external_images,
         animated_uploads_allowed=animation_allowed(user, settings),
+        public_profiles_enabled=settings.public_profiles_enabled,
+        adult_attested_at=user.adult_attested_at,
     )
 
 

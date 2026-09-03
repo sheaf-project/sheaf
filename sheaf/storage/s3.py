@@ -73,8 +73,8 @@ class S3Storage(StorageBackend):
                 Bucket=self.bucket,
                 Key=key,
             )
-            # StreamingBody.read performs network I/O, so it belongs in the
-            # executor too - reading it inline blocks the event loop.
+            # StreamingBody.read performs network I/O. Keep it in the executor
+            # too now that public-profile images use this path on live GETs.
             return await self._run(response["Body"].read)
 
         try:
