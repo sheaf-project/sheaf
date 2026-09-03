@@ -955,7 +955,7 @@ function MemberCardBody({
   member: PublicMemberView;
   linkName?: boolean;
 }) {
-  const fields = Object.entries(member.fields ?? {});
+  const fields = member.fields ?? [];
   const header = (
     <>
       <Avatar className="size-12">
@@ -1006,10 +1006,12 @@ function MemberCardBody({
         )}
         {fields.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {fields.map(([k, v]) => (
-              <Badge key={k} variant="secondary" className="font-normal">
-                <span className="text-muted-foreground">{k}:</span>&nbsp;
-                {formatFieldValue(v)}
+            {fields.map((f, i) => (
+              // Index in the key because field names are not unique: two
+              // same-named fields must render as two distinct badges.
+              <Badge key={i} variant="secondary" className="font-normal">
+                <span className="text-muted-foreground">{f.name}:</span>&nbsp;
+                {formatFieldValue(f.value)}
               </Badge>
             ))}
           </div>

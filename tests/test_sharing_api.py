@@ -2263,6 +2263,100 @@ def test_raising_a_member_to_public_logs_but_lowering_does_not():
     c.close()
 
 
+def test_safety_off_immediate_raise_to_public_is_logged_for_each_ceiling():
+    """The regression this pins: with the profile_visibility category DISARMED a
+    raise to public lands at once and used to leave no audit trail at all. Every
+    ceiling - group, custom field, member, relationship edge - now records
+    exactly one EXPOSURE_RAISED `immediate`, so the trail does not go dark
+    precisely when step-up is off."""
+    c, email = _logged_client()
+    _disarm_visibility_safety(c)
+
+    # Group.
+    g = _group(c, f"G-{uuid.uuid4().hex[:6]}")
+    assert c.patch(f"/v1/groups/{g}", json={"privacy": "public"}).status_code == 200
+    assert [e["outcome"] for e in _events_of(email, "group_privacy")] == ["immediate"]
+
+    # Custom field.
+    fld = _field(c, f"F-{uuid.uuid4().hex[:6]}")
+    assert c.patch(f"/v1/fields/{fld}", json={"privacy": "public"}).status_code == 200
+    assert [e["outcome"] for e in _events_of(email, "field_privacy")] == ["immediate"]
+
+    # Member.
+    m = _member(c, "OffCeiling", privacy="private")
+    assert c.patch(f"/v1/members/{m}", json={"privacy": "public"}).status_code == 200
+    mem = _events_of(email, "member_privacy")
+    assert [e["outcome"] for e in mem] == ["immediate"]
+    assert mem[0]["detail"]["privacy_raise"] is True
+
+    # Relationship edge: create it private, then raise it.
+    a = _member(c, "EdgeA", privacy="public")
+    b = _member(c, "EdgeB", privacy="public")
+    t = c.post(
+        "/v1/relationship-types",
+        json={"name": "Pal", "symmetry": "symmetric", "forward_label": "pal"},
+    ).json()["id"]
+    edge = c.post(
+        "/v1/member-relationships",
+        json={"source_id": a, "target_id": b, "relationship_type_id": t},
+    )
+    assert edge.status_code == 201, edge.text
+    raised = c.patch(
+        f"/v1/member-relationships/{edge.json()['id']}",
+        json={"visibility": "public"},
+    )
+    assert raised.status_code == 200, raised.text
+    assert [
+        e["outcome"] for e in _events_of(email, "relationship_privacy")
+    ] == ["immediate"]
+    c.close()
+
+
+def test_safety_off_lowering_a_ceiling_records_nothing():
+    """The other half of the invariant: lowering a ceiling back down un-exposes,
+    and un-exposing is never audited - even with the category off and the raise
+    itself logged."""
+    c, email = _logged_client()
+    _disarm_visibility_safety(c)
+
+    g = _group(c, f"G-{uuid.uuid4().hex[:6]}")
+    assert c.patch(f"/v1/groups/{g}", json={"privacy": "public"}).status_code == 200
+    assert len(_events_of(email, "group_privacy")) == 1
+    # Drop it back to private: a tightening, so no new event.
+    assert c.patch(f"/v1/groups/{g}", json={"privacy": "private"}).status_code == 200
+    assert len(_events_of(email, "group_privacy")) == 1
+    c.close()
+
+
+def test_raise_to_public_is_refused_while_the_account_is_pending_deletion():
+    """The publishing-availability gate has two halves; this is the other one.
+    An account on its way out may not raise any ceiling to public - the deletion
+    sweep is going to remove the data underneath it - answered 409, the same as
+    minting a grant. Lowering stays open."""
+    c, email = _logged_client()
+    m = _member(c, "PendingCeiling", privacy="private")
+    g = _group(c, f"G-{uuid.uuid4().hex[:6]}")
+
+    # Schedule the account for deletion.
+    req = c.post("/v1/auth/delete-account", json={"password": "testpassword123"})
+    assert req.status_code == 200, req.text
+
+    for path, body in (
+        ("/v1/systems/me", {"privacy": "public"}),
+        (f"/v1/members/{m}", {"privacy": "public"}),
+        (f"/v1/groups/{g}", {"privacy": "public"}),
+    ):
+        r = c.patch(path, json=body)
+        assert r.status_code == 409, f"{path}: {r.text}"
+        assert "deletion" in r.json()["detail"].lower()
+
+    # Lowering the member to private (it is already private) still answers 200:
+    # un-exposing is never gated, pending deletion included.
+    lowered = c.patch(f"/v1/members/{m}", json={"privacy": "private"})
+    assert lowered.status_code == 200, lowered.text
+    c.close()
+
+
 # ---------------------------------------------------------------------------
 # The instance's public surface switched off
 #
@@ -2409,16 +2503,37 @@ def _stock_view_in_db(
     _in_db(_work)
 
 
+def _go_public_in_db(system_id: str) -> None:
+    """Set a system's privacy to public straight through the database.
+
+    With the surface off, raising system privacy to public is now refused at the
+    API for the same reason minting a grant is (see
+    `refuse_raise_when_publishing_unavailable`), so a system that was made public
+    while the surface was ON has to be simulated rather than asked for - the same
+    move `_view_row_in_db` and `_grant_row_in_db` already make for their rows.
+    """
+
+    async def _work(db) -> None:
+        from sheaf.models.system import PrivacyLevel, System
+
+        system = await db.get(System, uuid.UUID(system_id))
+        assert system is not None
+        system.privacy = PrivacyLevel.PUBLIC
+
+    _in_db(_work)
+
+
 def _dormant_setup(c: httpx.Client, subject_type: str = "public") -> tuple[str, str]:
     """A view with a dormant grant pointing at it. Returns (view_id, grant_id).
 
-    Both rows go in through the database, because both acts are now refused
-    while the surface is off - which is the state these tests describe: a view
-    and a grant that were made while it was ON and are sitting dormant.
+    Every act here is now refused while the surface is off - system going
+    public, the view, and the grant - which is the state these tests describe: a
+    system, view and grant that were made while it was ON and are sitting
+    dormant. So all three go in through the database.
     """
-    _go_public(c)
     _attest(c)
     system_id = c.get("/v1/systems/me").json()["id"]
+    _go_public_in_db(system_id)
     vid = _view_row_in_db(
         system_id, f"Dormant-{uuid.uuid4().hex[:6]}", include_bio=False
     )
@@ -2432,11 +2547,11 @@ def test_publishing_is_refused_while_the_instance_surface_is_off(
     """The trap this closes: a grant minted now serves nobody today and would
     start serving the day an operator flips the setting back, with nobody left
     who remembers agreeing to it."""
-    _go_public(auth_client)
     _attest(auth_client)
-    # View creation is itself refused while the surface is off, so the view
-    # under test is written straight into the database.
+    # Going public and creating a view are both refused while the surface is
+    # off, so both are written straight into the database.
     system_id = auth_client.get("/v1/systems/me").json()["id"]
+    _go_public_in_db(system_id)
     vid = _view_row_in_db(system_id, f"Off-{uuid.uuid4().hex[:6]}")
 
     for subject in ("public", "link"):
@@ -2449,6 +2564,36 @@ def test_publishing_is_refused_while_the_instance_surface_is_off(
         assert "unpublishing" in r.json()["detail"].lower()
 
     assert auth_client.get("/v1/share-grants").json() == []
+
+
+@pytest.mark.public_profiles_off
+def test_raising_a_ceiling_to_public_is_refused_with_the_surface_off(
+    auth_client: httpx.Client,
+):
+    """Every raise-to-public goes through the same door create_grant does: with
+    the surface off it is refused, because the ceiling would wake up serving on
+    the day an operator flips the setting back, unwitnessed. Covers the master
+    switch and a per-entity ceiling; lowering stays open."""
+    system_id = auth_client.get("/v1/systems/me").json()["id"]
+
+    # The master switch.
+    r = auth_client.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 403, r.text
+    assert "turned off" in r.json()["detail"]
+
+    # A per-entity ceiling (member privacy).
+    m = _member(auth_client, "OffRaise", privacy="private")
+    r = auth_client.patch(f"/v1/members/{m}", json={"privacy": "public"})
+    assert r.status_code == 403, r.text
+    assert "turned off" in r.json()["detail"]
+
+    # Lowering is un-exposing and stays open even while off. The system was made
+    # public back when the surface was on (simulated in the DB), and dropping it
+    # back to private still answers 200.
+    _go_public_in_db(system_id)
+    lowered = auth_client.patch("/v1/systems/me", json={"privacy": "private"})
+    assert lowered.status_code == 200, lowered.text
+    assert lowered.json()["privacy"] == "private"
 
 
 @pytest.mark.public_profiles_off
@@ -2618,9 +2763,9 @@ def test_member_permalinks_can_be_turned_off_while_the_surface_is_off(
     """The un-exposing direction on a view that HAS them on, which is the case
     that matters: a view curated while the surface was up, whose owner now wants
     the per-member addresses gone before it ever comes back."""
-    _go_public(auth_client)
     _attest(auth_client)
     system_id = auth_client.get("/v1/systems/me").json()["id"]
+    _go_public_in_db(system_id)
     vid = _view_row_in_db(
         system_id, f"Dormant-{uuid.uuid4().hex[:6]}", member_permalinks=True
     )

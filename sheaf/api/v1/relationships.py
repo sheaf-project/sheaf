@@ -45,6 +45,7 @@ from sheaf.services.relationships import (
 )
 from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
+    refuse_raise_when_publishing_unavailable,
     reject_mixed_exposure_directions,
     relationship_raise_exposes,
     visibility_grace_days,
@@ -353,11 +354,22 @@ async def _create_edge(
     # nothing projects them, so there is no exposure to defer.
     extra: dict = {}
     visibility = body.visibility
+
+    # A member edge born public is a raise to public, refused for the same
+    # reasons create_grant is: not while the account is pending deletion, and not
+    # while the instance's public surface is switched off. Publishing
+    # availability, not step-up, so it fires whatever the safety category is set
+    # to. Group edges (gated=False) project nowhere, so there is nothing to gate.
+    if gated and visibility == PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
     # Creating an edge straight to public exposes exactly what raising an
     # existing one does, so it takes the same audit trail: `staged` when a grace
     # window parks it PENDING, `immediate` when it is born public and lands live
-    # at once. Only the gated raise-to-public path records - group edges
-    # (gated=False) project nowhere, so there is no exposure to log.
+    # at once - including the case where step-up is off, so the trail does not go
+    # dark exactly when the category is disarmed. Only the gated raise-to-public
+    # path records - group edges (gated=False) project nowhere, so there is no
+    # exposure to log.
     raise_outcome: str | None = None
     if (
         gated
@@ -381,6 +393,8 @@ async def _create_edge(
             raise_outcome = "staged"
         else:
             raise_outcome = "immediate"
+    elif gated and visibility == PrivacyLevel.PUBLIC:
+        raise_outcome = "immediate"
 
     edge = edge_model(
         system_id=system.id,
@@ -695,6 +709,13 @@ async def update_member_relationship(
             await db.refresh(edge)
         return edge
 
+    # Raising to public is refused for the same reasons create_grant is: not
+    # while the account is pending deletion, and not while the instance's public
+    # surface is switched off. Publishing availability, not step-up, so it fires
+    # whatever the safety category is set to. Lowering stays open.
+    if requested == PrivacyLevel.PUBLIC and edge.visibility != PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
     exposes = False
     if (
         requested == PrivacyLevel.PUBLIC
@@ -733,6 +754,13 @@ async def update_member_relationship(
             edge.visibility_activates_at = None
             raise_outcome = "immediate"
     else:
+        # The immediate, ungated case: nothing would draw this edge yet, or the
+        # category is not armed, so there is nothing to stage - but a
+        # non-public -> public transition is still a raise and is logged, so the
+        # audit trail does not go dark exactly when step-up is off. Lowering
+        # un-exposes and stays silent.
+        if requested == PrivacyLevel.PUBLIC and edge.visibility != PrivacyLevel.PUBLIC:
+            raise_outcome = "immediate"
         edge.visibility = requested
         edge.pending_visibility = None
         edge.visibility_activates_at = None

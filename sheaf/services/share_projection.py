@@ -65,6 +65,7 @@ from sheaf.schemas.public_profile import (
     PublicGroupMember,
     PublicGroupsView,
     PublicGroupView,
+    PublicMemberField,
     PublicMemberView,
     PublicRelationship,
     PublicRelationshipEndpoint,
@@ -447,14 +448,19 @@ def _member_view(
     not to be called something else; publishing the something else next to it
     makes the request decorative.
     """
-    fields: dict[str, object] = {}
+    fields: list[PublicMemberField] = []
     for v in values:
         name = field_names.get(v.field_id)
         if name is not None:
-            # Field values are text by contract: the public page renders them
-            # as plain strings in a badge, never as markdown or a URL, so they
-            # need no image handling.
-            fields[name] = field_value_plaintext(v)
+            # An ordered list, one entry per value, rather than a name-keyed map:
+            # field names are not unique, so two exposed definitions sharing a
+            # name both belong on the card - keying by name dropped the first.
+            # Field values are text by contract: the public page renders them as
+            # plain strings in a badge, never as markdown or a URL, so they need
+            # no image handling.
+            fields.append(
+                PublicMemberField(name=name, value=field_value_plaintext(v))
+            )
     return PublicMemberView(
         id=str(m.id),
         name=_shown_name(m),

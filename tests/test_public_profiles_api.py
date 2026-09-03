@@ -510,9 +510,9 @@ def test_only_exposed_custom_fields_appear():
     system_id = owner.get("/v1/systems/me").json()["id"]
 
     mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
-    assert mem["fields"] == {"Role": "Protector"}
+    assert mem["fields"] == [{"name": "Role", "value": "Protector"}]
     # Secret is doubly held: never selected, and still at the private default.
-    assert "Secret" not in mem["fields"]
+    assert all(f["name"] != "Secret" for f in mem["fields"])
     owner.close()
 
 
@@ -2297,11 +2297,13 @@ def test_a_field_queued_for_deletion_stops_being_served_at_once():
     assert r.status_code == 200, r.text
 
     base = f"/v1/public/systems/{system_id}"
-    assert _anon().get(f"{base}/members").json()[0]["fields"] == {"Doomed": "x"}
+    assert _anon().get(f"{base}/members").json()[0]["fields"] == [
+        {"name": "Doomed", "value": "x"}
+    ]
 
     queued = owner.delete(f"/v1/fields/{field}")
     assert queued.status_code == 202, queued.text
-    assert _anon().get(f"{base}/members").json()[0]["fields"] == {}
+    assert _anon().get(f"{base}/members").json()[0]["fields"] == []
     owner.close()
 
 
@@ -2600,7 +2602,7 @@ def test_preview_matches_the_anonymous_endpoints_section_by_section():
     assert got["suppressed"] is None
     # Sanity that the comparison above was not comparing two empty pages.
     assert len(got["members"]) == 2
-    assert got["members"][0]["fields"] == {"Role": "cook"}
+    assert got["members"][0]["fields"] == [{"name": "Role", "value": "cook"}]
     assert [m["name"] for m in got["fronting"]["members"]] == ["PreviewA"]
     assert len(got["relationships"]["relationships"]) == 1
     assert [g["name"] for g in got["groups"]["groups"]] == ["Kitchen"]
