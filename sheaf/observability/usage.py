@@ -3,10 +3,17 @@
 The hard invariant: DAU/MAU are aggregate CARDINALITY only, never attributable
 to an account. The mechanism is a Redis HyperLogLog (HLL) sketch per day per
 scope per auth kind: account ids and system ids are PFADDed in at the auth choke
-point, and only the estimated COUNT is ever published, as an id-free gauge. HLL
-is one-way - you cannot enumerate members or answer "was account X active on day
-Y" from a sketch - so raw ids are NEVER stored anywhere, only folded into the
-registers.
+point, and only the estimated COUNT is ever published, as an id-free gauge. Raw
+ids are NEVER stored, only folded into the registers.
+
+A HLL alone is NOT membership-proof: someone holding a sketch can test whether a
+KNOWN id was active by PFADDing it into a copy and watching whether the estimate
+moves (an already-present id barely shifts it). So the id is never added raw - it
+is first run through a keyed HMAC (`_active_token`) under the server encryption
+key. Without that key an attacker cannot compute the element that was added, so a
+leaked or dumped sketch answers neither "who was active" nor "was X active". The
+HMAC is deterministic and collision-resistant, so the cardinality is unchanged; a
+key rotation just resets the current window (acceptable for 31-day ops data).
 
 Auth kind splits interactive client use from automation. A request authenticated
 by session cookie or JWT bearer (web + native apps) is `client`; one
@@ -32,6 +39,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -85,8 +94,30 @@ _system_id_cache: dict[uuid.UUID, uuid.UUID | None] = {}
 _SYSTEM_ID_CACHE_CAP = 100_000
 
 # Keep references to in-flight fire-and-forget tasks so they aren't garbage
-# collected mid-flight (asyncio only holds a weak reference).
+# collected mid-flight (asyncio only holds a weak reference). Bounded: a stalled
+# Redis must not let this grow without limit and exhaust the process, so once the
+# cap is hit new samples are dropped (best-effort metrics, dropping is fine).
 _bg_tasks: set[asyncio.Task] = set()
+_MAX_INFLIGHT_TASKS = 256
+# Hard ceiling on a single PFADD round-trip, so a wedged Redis connection cannot
+# pin a task (and its slot) open indefinitely.
+_REDIS_OP_TIMEOUT_S = 2.0
+
+
+def _active_token(scope: str, value: str) -> str:
+    """Keyed HMAC of an id, so what lands in a sketch cannot be reconstructed or
+    membership-tested without the server key. Deterministic and
+    collision-resistant, so distinct ids stay distinct and the cardinality is
+    exactly preserved. Keyed on the encryption key (a stable server secret);
+    rotating it resets the current window's sketches, which is fine for 31-day
+    ops data."""
+    from sheaf.config import settings
+
+    return hmac.new(
+        settings.get_encryption_key(),
+        f"{scope}:{value}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _day_str(day: date) -> str:
@@ -131,6 +162,11 @@ def record_active_account(user_id: uuid.UUID, auth_kind: str) -> None:
             return
         if auth_kind not in WRITE_KINDS:
             return
+        if len(_bg_tasks) >= _MAX_INFLIGHT_TASKS:
+            # Redis is not draining tasks fast enough (or is stalled); drop this
+            # sample rather than let the backlog grow without bound.
+            logger.debug("usage: in-flight task cap hit, dropping activity sample")
+            return
         loop = asyncio.get_running_loop()
         task = loop.create_task(_record_active(user_id, auth_kind))
         _bg_tasks.add(task)
@@ -155,13 +191,13 @@ async def _record_active(user_id: uuid.UUID, auth_kind: str) -> None:
 
         pipe = r.pipeline()
         acct_key = day_key(SCOPE_ACCOUNT, auth_kind, today)
-        pipe.pfadd(acct_key, str(user_id))
+        pipe.pfadd(acct_key, _active_token(SCOPE_ACCOUNT, str(user_id)))
         pipe.expire(acct_key, HLL_KEY_TTL_SECONDS)
         if system_id is not None:
             sys_key = day_key(SCOPE_SYSTEM, auth_kind, today)
-            pipe.pfadd(sys_key, str(system_id))
+            pipe.pfadd(sys_key, _active_token(SCOPE_SYSTEM, str(system_id)))
             pipe.expire(sys_key, HLL_KEY_TTL_SECONDS)
-        await pipe.execute()
+        await asyncio.wait_for(pipe.execute(), timeout=_REDIS_OP_TIMEOUT_S)
     except Exception:
         # Best-effort: a down or slow Redis just means this activity isn't
         # counted. Debug-level so a Redis blip doesn't spam warnings on every

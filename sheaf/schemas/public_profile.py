@@ -23,6 +23,16 @@ cosmetic - a scraper reads JSON, not the rendered page.
 from pydantic import BaseModel
 
 
+class PublicMemberField(BaseModel):
+    # One custom-field entry on a member card: the definition's name and this
+    # member's value for it. A LIST of these rather than a name-keyed map on
+    # purpose - field names are not unique, so two definitions a view exposes
+    # that happen to share a name must BOTH reach the card. Keying by name
+    # silently dropped the first of any such pair.
+    name: str
+    value: object
+
+
 class PublicMemberView(BaseModel):
     # Identity always shown for a member the owner put in a view.
     id: str
@@ -35,9 +45,10 @@ class PublicMemberView(BaseModel):
     # Only populated when the view has include_bio on. Markdown, with embedded
     # image refs resolved/signed like any other rendered bio.
     bio: str | None = None
-    # {field_name: value} for the custom fields this view exposes and that this
-    # member has a value for. Empty when the view exposes no fields.
-    fields: dict[str, object] = {}
+    # One entry per custom field this view exposes that this member has a value
+    # for, in selection order. Empty when the view exposes no fields. A list, not
+    # a map: field names are not unique, so same-named fields must both appear.
+    fields: list[PublicMemberField] = []
 
 
 class PublicSystemView(BaseModel):

@@ -10,12 +10,13 @@ class UsageDailySketch(Base):
     """Durable backing store for the per-day active-cardinality HLL sketches.
 
     This is aggregate OPERATIONS data, not user data. Each row holds the raw
-    HyperLogLog register bytes for one (day, scope, auth_kind) - the account ids
-    / system ids that were active that day are irreversibly folded into the
-    registers, so a sketch can answer "roughly how many distinct ids" but can
-    never enumerate them or answer "was id X active on day Y". Nothing
-    per-account is stored, which is why this table is deliberately excluded from
-    the Article 20 export (there is nothing user-attributable to hand back).
+    HyperLogLog register bytes for one (day, scope, auth_kind). What was folded
+    into the registers is not the id but a keyed HMAC of it (see usage.py
+    `_active_token`), so a sketch answers "roughly how many distinct ids" while a
+    holder of these bytes can neither enumerate the ids nor test whether a known
+    id was active without the server key. Nothing per-account is stored, which is
+    why this table is deliberately excluded from the Article 20 export (there is
+    nothing user-attributable to hand back).
 
     scope is "acct" or "sys". auth_kind is "client" (session cookie or JWT
     bearer) or "api" (API key) - the two are kept in separate sketches because a

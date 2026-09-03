@@ -1456,6 +1456,14 @@ export interface AdultAttestation {
 
 // --- Public projection payloads (anonymous /v1/public/... surface) ---
 
+/** One custom-field entry on a member card. A list of these, not a name-keyed
+ *  map: field names are not unique, so two exposed definitions sharing a name
+ *  must both appear. */
+export interface PublicMemberField {
+  name: string;
+  value: unknown;
+}
+
 export interface PublicMemberView {
   id: string;
   /** The one name this surface has, and it is already the shown one: the
@@ -1468,7 +1476,7 @@ export interface PublicMemberView {
   banner_url: string | null;
   color: string | null;
   bio: string | null;
-  fields: Record<string, unknown>;
+  fields: PublicMemberField[];
 }
 
 export interface PublicSystemView {

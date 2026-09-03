@@ -19,6 +19,7 @@ from sheaf.request import client_ip
 from sheaf.schemas.system import DeleteConfirmationUpdate, SystemRead, SystemUpdate
 from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
+    refuse_raise_when_publishing_unavailable,
     reject_mixed_exposure_directions,
     system_privacy_raise_exposes,
     visibility_grace_days,
@@ -95,6 +96,18 @@ async def update_own_system(
     # stays instant and ungated; anything staged is cancelled by it. Handled
     # here, out of the generic setattr loop below.
     requested_privacy = update_data.pop("privacy", None)
+
+    # Raising the master switch to public is refused for the same reasons
+    # `create_grant` is: not while the account is pending deletion, and not while
+    # the instance's public surface is switched off (a raise now would wake up on
+    # an operator's later config flip, unwitnessed). Publishing availability, not
+    # step-up, so it is checked whatever the safety category is set to. Lowering
+    # stays open - going dark is never gated.
+    if (
+        requested_privacy == PrivacyLevel.PUBLIC
+        and system.privacy != PrivacyLevel.PUBLIC
+    ):
+        refuse_raise_when_publishing_unavailable(user)
 
     # Operator takedown latch. The master switch is the broadest publish there
     # is, so raising it to public is refused for the same reason `create_grant`
