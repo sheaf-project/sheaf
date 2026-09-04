@@ -231,8 +231,15 @@ run_config "selfhosted/admin_auth_password" "password" "selfhosted" \
 run_config "selfhosted/admin_auth_totp" "totp" "selfhosted" \
     "admin_auth_totp"
 
-# 4. SaaS mode — run all tests; conftest skips password/totp marks, runs saas marks
-run_config "saas/none" "none" "saas"
+# 4. SaaS mode. The full run (every unmarked test under saas, plus the
+# saas-marked ones) is a safety net for an unmarked mode-dependence, but it
+# re-runs ~2000 mode-agnostic tests to exercise a handful of saas-specific ones.
+# So it is tiered: SHEAF_TEST_SAAS_FULL=true (set by main / release CI) runs the
+# full net; otherwise (PRs, local iteration) it runs only the saas-marked tests.
+# Export SHEAF_TEST_SAAS_FULL=true locally when you want the full saas run.
+SAAS_MARKS="saas"
+[[ "${SHEAF_TEST_SAAS_FULL:-}" == "true" ]] && SAAS_MARKS=""
+run_config "saas/none" "none" "saas" "$SAAS_MARKS"
 
 # 5. Rate limiting - low limits so tests can trigger 429s
 if should_run "selfhosted/rate_limit"; then
