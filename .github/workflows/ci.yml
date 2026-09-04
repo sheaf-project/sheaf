@@ -58,9 +58,59 @@ jobs:
       - name: Type check frontend
         run: cd web && npx tsc --noEmit
 
+  # On a PR, decide whether anything the backend suite depends on actually
+  # changed. A docs-only or web-only PR then skips the whole matrix below rather
+  # than paying eleven stack spin-ups for nothing. Pushes to main / preview /
+  # tags ignore this and always run the full matrix (see the `if` on `test`), so
+  # it only ever trims PR feedback, never the correctness gate.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'sheaf/**'
+              - 'tests/**'
+              - 'alembic/**'
+              - 'scripts/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'run_tests.sh'
+              - 'Dockerfile.backend'
+              - 'docker-compose*.yml'
+              - '.github/workflows/ci.yml'
+
+  # Each test configuration runs as its own parallel job instead of eleven in
+  # sequence inside one run_tests.sh call, so wall-clock is the slowest single
+  # config rather than the sum of all of them. run_tests.sh already takes a
+  # config name; run per-job on isolated runners it needs no cross-run mutex.
   test:
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, changes]
+    # Full matrix on every push (main / preview / tags). On a PR, only when
+    # something the backend suite depends on changed.
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - selfhosted/none
+          - selfhosted/admin_auth_password
+          - selfhosted/admin_auth_totp
+          - saas/none
+          - selfhosted/rate_limit
+          - selfhosted/uploads_disabled
+          - selfhosted/bio_uploads_disabled
+          - selfhosted/external_images_disabled
+          - selfhosted/metrics
+          - selfhosted/public_profiles
+          - selfhosted/public_profiles_off
     steps:
       - uses: actions/checkout@v4
 
@@ -74,8 +124,31 @@ jobs:
       - name: Install test deps
         run: uv pip install --system -e ".[dev]"
 
-      - name: Run test suite
-        run: ./run_tests.sh
+      - name: Run ${{ matrix.config }}
+        env:
+          # Full both-modes saas run only on push (main / preview / tags); a PR
+          # runs just the saas-marked tests. Ignored by every other config.
+          SHEAF_TEST_SAAS_FULL: ${{ github.event_name != 'pull_request' }}
+        run: ./run_tests.sh ${{ matrix.config }}
+
+  # One stable status for branch protection to require: green when every matrix
+  # leg passed, and green when the matrix was legitimately skipped on a docs-only
+  # PR (a skipped required check would otherwise block the PR forever). Red only
+  # on a real failure or cancellation. Point the required check at THIS job, not
+  # at the individual `test (config)` legs.
+  test-result:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always()
+    steps:
+      - name: Aggregate matrix result
+        run: |
+          result="${{ needs.test.result }}"
+          if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+            echo "::error::test matrix result: $result"
+            exit 1
+          fi
+          echo "test matrix result: $result (ok)"
 
   # Fast pre-checks for a tagged release, BEFORE the approval gate, so an
   # obviously-bad tag (not on main, or a version mismatch) fails in seconds
