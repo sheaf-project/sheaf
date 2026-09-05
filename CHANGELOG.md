@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Setting a member's avatar or banner to an external image URL works again on the web.** Pressing Set (or Enter) in the image-URL box triggered the browser's own page navigation instead of setting the image: the URL box was a form nested inside the member editing form, which React does not deliver events for, so the browser fell back to natively submitting it - producing an "are you sure you want to leave this page?" prompt and losing the image (and any other unsaved edits with it). The URL box no longer uses a form at all; Set and the Enter key both just set the image, in place.
+
 ## [1.4.0] - 2026-09-02
 
 ### Added

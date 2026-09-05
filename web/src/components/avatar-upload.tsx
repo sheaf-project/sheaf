@@ -1,4 +1,4 @@
-import { type FormEvent, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { uploadFile } from "@/lib/files";
 import { apiErrorMessage } from "@/lib/api-errors";
@@ -70,13 +70,7 @@ export function AvatarUpload({
     if (file && file.type.startsWith("image/")) setPendingFile(file);
   }
 
-  function handleUrlSubmit(e: FormEvent) {
-    e.preventDefault();
-    // This <form> is nested inside the parent profile <form>. Submit events
-    // bubble through React's tree (even across Radix portals), so without
-    // stopPropagation the parent form saves with stale state before our
-    // onUpload takes effect.
-    e.stopPropagation();
+  function handleUrlSet() {
     const trimmed = urlValue.trim();
     if (!trimmed) return;
     // Allowlist the scheme so a javascript:/data:/file: URL can't ride in
@@ -152,19 +146,37 @@ export function AvatarUpload({
           )}
         </div>
         {showUrlInput && (
-          <form onSubmit={handleUrlSubmit} className="flex gap-1">
+          // Deliberately NOT a <form>: same fix as BannerUpload. React does
+          // not deliver onSubmit for a form nested in another form - the
+          // browser natively submits the inner one, navigating the page and
+          // losing the edit. Explicit button + Enter handler instead; the
+          // Enter handler preventDefaults so the key can't implicitly
+          // submit the OUTER profile form.
+          <div className="flex gap-1">
             <Input
               value={urlValue}
               onChange={(e) => setUrlValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleUrlSet();
+                }
+              }}
               placeholder="https://..."
               className="h-7 text-xs"
               type="url"
               autoFocus
             />
-            <Button type="submit" size="sm" variant="ghost" className="h-7 px-2 text-xs">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              onClick={handleUrlSet}
+            >
               Set
             </Button>
-          </form>
+          </div>
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
