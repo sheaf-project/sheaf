@@ -226,3 +226,52 @@ def test_legacy_envelope_value_still_validated(auth_client: httpx.Client):
         json=[{"field_id": field["id"], "value": {"v": "nope"}}],
     )
     assert resp.status_code == 400, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Clearing a value: explicit null and omitted `value` are the same thing
+# ---------------------------------------------------------------------------
+
+
+def test_omitted_value_clears_like_explicit_null(auth_client: httpx.Client):
+    """An entry that omits `value` entirely clears the field, exactly like an
+    explicit null. Several client serialisers drop null object fields by
+    default (Moshi on Android is how this was found: clearing a field
+    serialised to [{"field_id": ...}] and the whole request 422'd), and
+    absence has no other meaning on this endpoint - the handler upserts
+    every entry it is given."""
+    member = _member(auth_client)
+    field = auth_client.post(
+        "/v1/fields",
+        json={"name": "Likes", "field_type": "text"},
+    ).json()
+
+    # Populate.
+    resp = auth_client.put(
+        f"/v1/members/{member}/fields",
+        json=[{"field_id": field["id"], "value": "tea"}],
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Clear by omitting `value` entirely.
+    resp = auth_client.put(
+        f"/v1/members/{member}/fields",
+        json=[{"field_id": field["id"]}],
+    )
+    assert resp.status_code == 200, resp.text
+    row = next(v for v in resp.json() if v["field_id"] == field["id"])
+    assert row["value"] is None
+
+    # And the sibling path: explicit null still clears, identically.
+    resp = auth_client.put(
+        f"/v1/members/{member}/fields",
+        json=[{"field_id": field["id"], "value": "coffee"}],
+    )
+    assert resp.status_code == 200, resp.text
+    resp = auth_client.put(
+        f"/v1/members/{member}/fields",
+        json=[{"field_id": field["id"], "value": None}],
+    )
+    assert resp.status_code == 200, resp.text
+    row = next(v for v in resp.json() if v["field_id"] == field["id"])
+    assert row["value"] is None
