@@ -8,6 +8,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Fixed
 
+- **Clearing a member's custom field now works from the web app.** Emptying a field and saving silently kept the old value: the web skipped empty fields from the save request entirely, and the server only touches the entries it is given, so nothing ever asked it to clear. The same skip also meant a ticked yes/no field could never be unticked, and a multiselect could never be emptied back to nothing. An emptied field that has a stored value is now sent as an explicit clear. (This is the web sibling of the Android clear-a-field bug; each client tripped over the same endpoint in its own way.)
+
+### Fixed
+
 - **Front-change notifications with hidden co-fronters no longer say "and" twice.** A switch like five members starting with two of them hidden from the channel rendered "A, B, and C, and 2 others started fronting" - the visible names were joined into a finished list and the "N others" tail then bolted on with its own "and". The tail now joins the same list as the names, so the "and" lands exactly once, before the true final item: "A, B, C, and 2 others started fronting."
 
 ### Fixed

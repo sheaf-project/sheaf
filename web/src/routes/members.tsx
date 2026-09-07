@@ -517,7 +517,19 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
           ? []
           : "";
       const val = effectiveValue(f.id, fallback);
-      if (isEmptyValue(f.field_type, val)) continue;
+      if (isEmptyValue(f.field_type, val)) {
+        // An emptied field still needs SAYING when the server holds a value
+        // for it: the endpoint only upserts the entries it is given, so
+        // skipping the entry entirely means "leave it as it was" and the
+        // field could never be cleared (nor a stored-true boolean unticked,
+        // nor a multiselect emptied). An explicit null clears it, and works
+        // against every deployed server version. A field the server has no
+        // row for stays skipped - there is nothing to clear.
+        if (f.id in serverValues) {
+          payload.push({ field_id: f.id, value: null });
+        }
+        continue;
+      }
       payload.push({ field_id: f.id, value: valueForWire(f.field_type, val) });
     }
     setValues.mutate(
