@@ -262,7 +262,14 @@ def _validate_value_for_field(
 
 class CustomFieldValueSet(BaseModel):
     field_id: uuid.UUID
-    value: Any
+    # Defaulted so an entry that OMITS `value` clears the field exactly like an
+    # explicit null. Absence has no other meaning on this endpoint (the handler
+    # upserts every entry it is given; there is no omit-to-leave-alone mode),
+    # and several client serialisers drop null object fields by default - Moshi
+    # on Android serialised "clear this field" as {"field_id": ...} and the
+    # whole request 422'd. Without the default, `Any` is a required field in
+    # Pydantic v2.
+    value: Any = None
 
 
 class CustomFieldValueRead(BaseModel):
