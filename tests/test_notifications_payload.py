@@ -323,3 +323,76 @@ def test_flap_within_window_nets_to_suppressed():
         visible_member_ids={a, b},
     )
     assert msg.suppress is True
+
+
+# ---------------------------------------------------------------------------
+# Redacted-tail grammar: exactly one "and", exactly single spaces
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_visible_plus_hidden_says_and_exactly_once():
+    """Five-member switch, two private: the reported bug rendered
+    "A, B, and C, and 2 others" - the visible names were oxford-joined on
+    their own and the redacted tail bolted on with a second "and". The tail
+    must instead join the same list, so the "and" lands once, before the
+    true final item."""
+    ids = [uuid.uuid4() for _ in range(5)]
+    names = dict(zip(ids, ["Ash", "Brook", "Cedar", "Dee", "Em"]))
+    msg = render_message(
+        _channel(redaction="count"),
+        payload=_payload([], ids),
+        member_names=names,
+        visible_member_ids=set(ids[:3]),
+    )
+    # Name order is set-derived, so assert structure, not sequence: all three
+    # visible names, the tail LAST (right before the verb), one "and", no
+    # doubled spaces.
+    for name in ("Ash", "Brook", "Cedar"):
+        assert name in msg.body
+    assert msg.body.endswith(", and 2 others started fronting.")
+    assert msg.body.count(" and ") == 1
+    assert "  " not in msg.body
+
+
+def test_two_visible_plus_hidden_tail_grammar():
+    ids = [uuid.uuid4() for _ in range(3)]
+    names = dict(zip(ids, ["Ash", "Brook", "Cedar"]))
+    msg = render_message(
+        _channel(redaction="count"),
+        payload=_payload([], ids),
+        member_names=names,
+        visible_member_ids=set(ids[:2]),
+    )
+    assert "Ash" in msg.body and "Brook" in msg.body
+    assert msg.body.endswith(", and 1 other started fronting.")
+    assert msg.body.count(" and ") == 1
+    assert "  " not in msg.body
+
+
+def test_one_visible_plus_hidden_tail_grammar():
+    ids = [uuid.uuid4() for _ in range(3)]
+    names = dict(zip(ids, ["Ash", "Brook", "Cedar"]))
+    msg = render_message(
+        _channel(redaction="someone"),
+        payload=_payload([], ids),
+        member_names=names,
+        visible_member_ids={ids[0]},
+    )
+    assert "Ash and 2 others started fronting." in msg.body
+    assert msg.body.count(" and ") == 1
+    assert "  " not in msg.body
+
+
+def test_all_visible_unchanged_by_tail_fix():
+    ids = [uuid.uuid4() for _ in range(3)]
+    names = dict(zip(ids, ["Ash", "Brook", "Cedar"]))
+    msg = render_message(
+        _channel(),
+        payload=_payload([], ids),
+        member_names=names,
+        visible_member_ids=set(ids),
+    )
+    for name in ("Ash", "Brook", "Cedar"):
+        assert name in msg.body
+    assert msg.body.count(" and ") == 1
+    assert "  " not in msg.body
