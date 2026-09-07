@@ -36,18 +36,21 @@ def _name(member_names: dict[uuid.UUID, str], mid: uuid.UUID) -> str:
     return member_names.get(mid, "(unknown)")
 
 
+def _oxford_join(items: list[str]) -> str:
+    """Comma-and-style join: A / A and B / A, B, and C."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
 def _join_names(
     members: list[uuid.UUID], member_names: dict[uuid.UUID, str]
 ) -> str:
-    """Comma-and-style join: A / A and B / A, B, and C."""
-    names = [_name(member_names, m) for m in members]
-    if not names:
-        return ""
-    if len(names) == 1:
-        return names[0]
-    if len(names) == 2:
-        return f"{names[0]} and {names[1]}"
-    return ", ".join(names[:-1]) + f", and {names[-1]}"
+    return _oxford_join([_name(member_names, m) for m in members])
 
 
 def _redacted_others(count: int, redaction: CofrontRedaction) -> str:
@@ -64,16 +67,19 @@ def _phrase(
     member_names: dict[uuid.UUID, str],
     redaction: CofrontRedaction,
 ) -> str:
-    """Build a noun phrase covering visible + invisible participants."""
-    visible_part = _join_names(visible, member_names)
-    if invisible_count == 0:
-        return visible_part
-    redacted = _redacted_others(invisible_count, redaction)
-    if not visible_part:
-        return redacted
-    if len(visible) == 1:
-        return f"{visible_part} and {redacted}"
-    return f"{visible_part}, and {redacted}"
+    """Build a noun phrase covering visible + invisible participants.
+
+    The redacted tail joins the SAME list as the visible names, and the
+    whole thing is comma-and joined exactly once, so the "and" lands only
+    before the true final item: "A, B, C, and 2 others". Joining the names
+    first and bolting the tail on afterwards is how a five-member switch
+    with two private members used to render "A, B, and C, and 2 others" -
+    two "and"s in one phrase.
+    """
+    items = [_name(member_names, m) for m in visible]
+    if invisible_count > 0:
+        items.append(_redacted_others(invisible_count, redaction))
+    return _oxford_join(items)
 
 
 def _cofront_changed_for(
