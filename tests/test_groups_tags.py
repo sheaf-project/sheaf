@@ -71,6 +71,97 @@ def test_group_members(auth_client: httpx.Client):
     assert len(resp.json()) == 2
 
 
+# ---------------------------------------------------------------------------
+# Group reordering (PUT /v1/groups/reorder)
+# ---------------------------------------------------------------------------
+
+
+def _group_names(client: httpx.Client) -> list[str]:
+    return [g["name"] for g in client.get("/v1/groups").json()]
+
+
+def test_reorder_groups(auth_client: httpx.Client):
+    ids = {
+        name: auth_client.post("/v1/groups", json={"name": name}).json()["id"]
+        for name in ("Alpha", "Beta", "Gamma")
+    }
+    resp = auth_client.put(
+        "/v1/groups/reorder",
+        json={"group_ids": [ids["Gamma"], ids["Alpha"], ids["Beta"]]},
+    )
+    assert resp.status_code == 200, resp.text
+    # The response IS the re-sorted list, and the list endpoint agrees.
+    assert [g["name"] for g in resp.json()] == ["Gamma", "Alpha", "Beta"]
+    assert _group_names(auth_client) == ["Gamma", "Alpha", "Beta"]
+
+
+def test_reorder_groups_unnamed_keep_their_order(auth_client: httpx.Client):
+    ids = {
+        name: auth_client.post("/v1/groups", json={"name": name}).json()["id"]
+        for name in ("Alpha", "Beta", "Gamma")
+    }
+    auth_client.put(
+        "/v1/groups/reorder",
+        json={"group_ids": [ids["Gamma"], ids["Alpha"], ids["Beta"]]},
+    )
+    # Now Gamma=0, Alpha=1, Beta=2. Naming only Beta moves it to 0; the
+    # others keep the order they had, and the name tiebreak puts Beta ahead
+    # of Gamma at 0.
+    resp = auth_client.put(
+        "/v1/groups/reorder", json={"group_ids": [ids["Beta"]]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert _group_names(auth_client) == ["Beta", "Gamma", "Alpha"]
+
+
+def test_reorder_groups_duplicate_ids_rejected(auth_client: httpx.Client):
+    gid = auth_client.post("/v1/groups", json={"name": "Dup"}).json()["id"]
+    resp = auth_client.put(
+        "/v1/groups/reorder", json={"group_ids": [gid, gid]}
+    )
+    assert resp.status_code == 400
+
+
+def test_reorder_groups_rejects_unknown_and_foreign_ids(auth_client: httpx.Client):
+    import uuid
+
+    mine = {
+        name: auth_client.post("/v1/groups", json={"name": name}).json()["id"]
+        for name in ("KeepA", "KeepB")
+    }
+
+    resp = auth_client.put(
+        "/v1/groups/reorder",
+        json={"group_ids": [mine["KeepA"], str(uuid.uuid4())]},
+    )
+    assert resp.status_code == 400
+
+    # A real group on another account gets the exact same answer, with
+    # nothing in the response hinting which id was the problem.
+    with httpx.Client(base_url=str(auth_client.base_url)) as other:
+        reg = other.post(
+            "/v1/auth/register",
+            json={
+                "email": f"test-{uuid.uuid4().hex[:8]}@sheaf.dev",
+                "password": "testpassword123",
+            },
+        )
+        other.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        foreign = other.post(
+            "/v1/groups", json={"name": "NotYours"}
+        ).json()["id"]
+
+    resp = auth_client.put(
+        "/v1/groups/reorder",
+        json={"group_ids": [mine["KeepB"], mine["KeepA"], foreign]},
+    )
+    assert resp.status_code == 400
+    assert foreign not in resp.text
+
+    # The refused call moved nothing: still alphabetical (all order 0).
+    assert _group_names(auth_client) == ["KeepA", "KeepB"]
+
+
 def test_create_tag(auth_client: httpx.Client):
     resp = auth_client.post(
         "/v1/tags", json={"name": "frequent", "color": "#00ff00"},

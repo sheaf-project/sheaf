@@ -1,11 +1,12 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, GripVertical } from "lucide-react";
 import {
   useGroups,
   useCreateGroup,
   useUpdateGroup,
   useDeleteGroup,
   useGroupMembers,
+  useReorderGroups,
   useSetGroupMembers,
 } from "@/hooks/use-groups";
 import { useQuery } from "@tanstack/react-query";
@@ -15,6 +16,7 @@ import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   buildGroupTree,
+  compareGroups,
   flattenGroupTree,
   getDescendantIds,
 } from "@/lib/group-tree";
@@ -143,6 +145,7 @@ export function GroupsPage() {
   const createGroup = useCreateGroup();
   const updateGroup = useUpdateGroup();
   const deleteGroup = useDeleteGroup();
+  const reorderGroups = useReorderGroups();
   const { data: system } = useQuery({
     queryKey: ["system", "me"],
     queryFn: getMySystem,
@@ -302,6 +305,42 @@ export function GroupsPage() {
     );
   }
 
+  /** This group's siblings (same parent), in the order the tree renders
+   *  them. */
+  function siblingsOf(g: Group): Group[] {
+    return allGroups
+      .filter((s) => (s.parent_id ?? null) === (g.parent_id ?? null))
+      .sort(compareGroups);
+  }
+
+  /** Move a group one place among its siblings.
+   *
+   * Sends the FULL flat ordering (every group, depth-first, with the pair
+   * swapped) so the server's order = list-index assignment reproduces
+   * exactly what is on screen. Arrows rather than drag because drag on
+   * these rows already means reparenting.
+   */
+  function moveGroup(g: Group, delta: -1 | 1) {
+    const siblings = siblingsOf(g);
+    const i = siblings.findIndex((s) => s.id === g.id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= siblings.length) return;
+    const swapped = [...siblings];
+    [swapped[i], swapped[j]] = [swapped[j], swapped[i]];
+    // Rebuild the tree with the swapped run's new positions patched in,
+    // then flatten it (nothing collapsed) into the id list to send.
+    const position = new Map(swapped.map((s, idx) => [s.id, idx]));
+    const patched = allGroups.map((grp) =>
+      position.has(grp.id) ? { ...grp, order: position.get(grp.id)! } : grp,
+    );
+    const ids = flattenGroupTree(buildGroupTree(patched), new Set()).map(
+      (r) => r.group.id,
+    );
+    reorderGroups.mutate(ids, {
+      onError: (e) => showApiErrorToast(e, "Couldn't reorder groups."),
+    });
+  }
+
   return (
     <>
       <PageHeader title="Groups">
@@ -332,7 +371,8 @@ export function GroupsPage() {
               }
             }}
             onDragLeave={() => setDropTarget((t) => (t === "root" ? null : t))}
-            onDrop={() => {
+            onDrop={(e) => {
+              e.preventDefault();
               if (draggingId) reparent(draggingId, null);
               setDraggingId(null);
               setDropTarget(null);
@@ -350,11 +390,27 @@ export function GroupsPage() {
 
           {rows.map(({ group: g, depth, hasChildren }) => {
             const invalid = draggingId ? isInvalidDrop(g.id) : false;
+            const sibIndex = siblingsOf(g).findIndex((s) => s.id === g.id);
+            const sibCount = siblingsOf(g).length;
             return (
               <div
                 key={g.id}
                 draggable
-                onDragStart={() => setDraggingId(g.id)}
+                onDragStart={(e) => {
+                  // Populating the drag data store is REQUIRED for the drag
+                  // to start at all in Firefox (Chrome tolerates an empty
+                  // store) - without this line drag-to-reparent is simply
+                  // inert there. The payload itself is unused; draggingId
+                  // in React state is the real carrier.
+                  e.dataTransfer.setData("text/plain", g.id);
+                  e.dataTransfer.effectAllowed = "move";
+                  // Deferred one tick: setting state here re-renders the row
+                  // (opacity) and mounts the top-level drop zone, and Chromium
+                  // cancels a drag whose source DOM mutates during dragstart.
+                  // After the current tick the drag has genuinely begun and
+                  // mutations are fine.
+                  setTimeout(() => setDraggingId(g.id), 0);
+                }}
                 onDragEnd={() => {
                   setDraggingId(null);
                   setDropTarget(null);
@@ -368,7 +424,8 @@ export function GroupsPage() {
                 onDragLeave={() =>
                   setDropTarget((t) => (t === g.id ? null : t))
                 }
-                onDrop={() => {
+                onDrop={(e) => {
+                  e.preventDefault();
                   if (draggingId && !invalid) reparent(draggingId, g.id);
                   setDraggingId(null);
                   setDropTarget(null);
@@ -406,6 +463,28 @@ export function GroupsPage() {
                   className="min-w-0 flex-1 truncate text-left font-medium hover:underline"
                 >
                   {g.name}
+                </button>
+                {/* Reorder arrows move the group among its SIBLINGS only;
+                    moving between parents is what the drag gesture does. */}
+                <button
+                  type="button"
+                  onClick={() => moveGroup(g, -1)}
+                  disabled={sibIndex <= 0 || reorderGroups.isPending}
+                  className="shrink-0 text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                  aria-label="Move up"
+                >
+                  <ChevronUp className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => moveGroup(g, 1)}
+                  disabled={
+                    sibIndex >= sibCount - 1 || reorderGroups.isPending
+                  }
+                  className="shrink-0 text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                  aria-label="Move down"
+                >
+                  <ChevronDown className="h-4 w-4" />
                 </button>
                 {/* Private is the default and the safe state, so saying so on
                     every row would be noise that trains people to stop reading

@@ -60,6 +60,19 @@ export function useUpdateField() {
   });
 }
 
+export function useReorderFields() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (fieldIds: string[]) => api.reorderFields(fieldIds),
+    // No success toast: each arrow click is a reorder, and a toast per
+    // click would bury the list under confirmations of what the list
+    // itself already shows.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: fieldKeys.all });
+    },
+  });
+}
+
 export function useDeleteField() {
   const qc = useQueryClient();
   const { formatDate } = useDateFormatters();

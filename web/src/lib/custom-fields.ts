@@ -36,6 +36,15 @@ export function updateField(
   });
 }
 
+/** Set each named field's sort order to its position in the list; fields
+ *  not named keep theirs. Returns the full re-sorted list. */
+export function reorderFields(fieldIds: string[]) {
+  return apiFetch<CustomField[]>("/v1/fields/reorder", {
+    method: "PUT",
+    body: JSON.stringify({ field_ids: fieldIds }),
+  });
+}
+
 export function deleteField(id: string, confirm?: DestructiveConfirm) {
   return apiFetch<DeleteResult>(`/v1/fields/${id}`, {
     method: "DELETE",

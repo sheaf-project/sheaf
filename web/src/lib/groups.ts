@@ -39,6 +39,15 @@ export function updateGroup(id: string, data: GroupUpdate, skipErrorToast = fals
   });
 }
 
+/** Set each named group's sort order to its position in the list; groups
+ *  not named keep theirs. Returns the full re-sorted list. */
+export function reorderGroups(groupIds: string[]) {
+  return apiFetch<Group[]>("/v1/groups/reorder", {
+    method: "PUT",
+    body: JSON.stringify({ group_ids: groupIds }),
+  });
+}
+
 export function deleteGroup(id: string, confirm?: DestructiveConfirm) {
   return apiFetch<DeleteResult>(`/v1/groups/${id}`, {
     method: "DELETE",

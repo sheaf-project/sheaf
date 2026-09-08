@@ -292,7 +292,7 @@ CLASSIFICATION: dict[type, dict] = {
         },
     },
     Group: {
-        "exported": {"name", "description", "color", "parent_id", "privacy"},
+        "exported": {"name", "description", "color", "parent_id", "order", "privacy"},
         "excluded": {
             "id": _SURROGATE_PK,
             "system_id": _TENANT_FK,

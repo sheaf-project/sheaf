@@ -317,8 +317,10 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 # v0.1 has no core group privacy, so it rides the sheaf
                 # extension. A foreign file that carries none leaves this
                 # absent and the native importer's coercer defaults it to
-                # private, which is the direction to be wrong in.
+                # private, which is the direction to be wrong in. The sort
+                # order rides the same extension; absent coerces to 0.
                 "privacy": _ext(g).get("privacy"),
+                "order": _ext(g).get("order"),
                 "member_ids": group_members.get(g.get("id"), []),
             }
         )

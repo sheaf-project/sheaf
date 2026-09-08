@@ -364,6 +364,10 @@ async def _exposed_fields(
     result = await db.execute(
         select(CustomFieldDefinition.id, CustomFieldDefinition.name)
         .join(ShareViewField, ShareViewField.field_id == CustomFieldDefinition.id)
+        # The owner's field order (name tiebreak), so the insertion-ordered
+        # dict this returns carries it and every card renders fields the same
+        # way the owner arranged them in Settings.
+        .order_by(CustomFieldDefinition.order, CustomFieldDefinition.name)
         .where(
             ShareViewField.view_id == view.id,
             ShareViewField.status == ShareItemStatus.ACTIVE.value,
@@ -449,6 +453,12 @@ def _member_view(
     makes the request decorative.
     """
     fields: list[PublicMemberField] = []
+    # `field_names` is insertion-ordered by the owner's field order; rank the
+    # member's values by it so cards follow that order rather than the value
+    # rows' storage order. Unknown ids are filtered below anyway; the fallback
+    # rank just keeps the sort total.
+    rank = {fid: i for i, fid in enumerate(field_names)}
+    values = sorted(values, key=lambda v: rank.get(v.field_id, len(rank)))
     for v in values:
         name = field_names.get(v.field_id)
         if name is not None:
@@ -839,6 +849,12 @@ def _build_group_views(
     Only column attributes of the already-loaded group and member rows are read
     here; the membership rows were resolved into `roster` before the hop.
     """
+    # The owner's manual order, name as the tiebreak - the same ordering the
+    # in-app groups page shows. This used to be a hard name sort so creation
+    # order could not leak which groups the system considers foundational;
+    # `order` is deliberate curation rather than an accident of insertion, so
+    # honouring it is showing the owner's choice, not leaking one.
+    pairs = sorted(pairs, key=lambda p: (p[0].order, p[0].name.casefold()))
     out: list[PublicGroupView] = []
     for group, shown in pairs:
         shown.sort(key=_sort_key)
@@ -868,9 +884,6 @@ def _build_group_views(
             )
         )
 
-    # By name, never by insertion order, for the reason `_sort_key` exists:
-    # creation order says which groups the system considers foundational.
-    out.sort(key=lambda g: g.name.casefold())
     return PublicGroupsView(groups=out)
 
 

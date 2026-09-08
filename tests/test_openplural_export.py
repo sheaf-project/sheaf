@@ -58,7 +58,7 @@ def _native() -> dict:
         ],
         "groups": [
             {"id": "g1", "name": "G", "description": None, "color": None,
-             "parent_id": None, "member_ids": ["m1"]}
+             "parent_id": None, "order": 3, "member_ids": ["m1"]}
         ],
         "tags": [{"id": "t1", "name": "tag", "color": "#f00", "member_ids": ["m1"]}],
         "custom_fields": [
@@ -188,6 +188,8 @@ def test_round_trip_to_native_restores_fields():
     assert m1["note"] == "mn"
     assert m1["notify_on_front_member_ids"] == ["m2"]
     assert back["groups"][0]["member_ids"] == ["m1"]
+    # Sort order rides extensions.sheaf on the group record (no v0.1 home).
+    assert back["groups"][0]["order"] == 3
     assert back["tags"][0]["member_ids"] == ["m1"]
     assert back["custom_fields"][0]["values"] == [{"member_id": "m1", "value": "v"}]
     front = back["fronts"][0]

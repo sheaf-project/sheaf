@@ -18,7 +18,13 @@ from sheaf.models.system import PrivacyLevel, System
 from sheaf.models.user import User
 from sheaf.observability.metrics import groups_created_total
 from sheaf.request import client_ip
-from sheaf.schemas.group import GroupCreate, GroupMemberUpdate, GroupRead, GroupUpdate
+from sheaf.schemas.group import (
+    GroupCreate,
+    GroupMemberUpdate,
+    GroupRead,
+    GroupReorder,
+    GroupUpdate,
+)
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
 from sheaf.services.security_events import record_security_event
@@ -99,14 +105,14 @@ async def _get_own_group(
     return group
 
 
-@router.get("", response_model=list[GroupRead])
-async def list_groups(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    system = await _get_user_system(user, db)
+async def _list_groups_read(system: System, db: AsyncSession) -> list[GroupRead]:
+    """The full group list as the list endpoint serves it, (order, name)
+    sorted with pending-delete timestamps attached. Shared with the reorder
+    endpoint so its response is exactly what the next GET would return."""
     result = await db.execute(
-        select(Group).where(Group.system_id == system.id).order_by(Group.name)
+        select(Group)
+        .where(Group.system_id == system.id)
+        .order_by(Group.order, Group.name)
     )
     groups = list(result.scalars().all())
     pending = await pending_finalize_after_by_target(
@@ -118,6 +124,15 @@ async def list_groups(
         gr.pending_delete_at = pending.get(g.id)
         out.append(gr)
     return out
+
+
+@router.get("", response_model=list[GroupRead])
+async def list_groups(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    return await _list_groups_read(system, db)
 
 
 @router.post(
@@ -186,6 +201,51 @@ async def create_group(
     groups_created_total.inc()
     await db.refresh(group)
     return group
+
+
+# Declared before the /{group_id} routes so "reorder" is matched as this
+# endpoint rather than parsed (and 422ed) as a group uuid.
+@router.put(
+    "/reorder",
+    response_model=list[GroupRead],
+    dependencies=[Depends(require_scope("groups:write"))],
+)
+async def reorder_groups(
+    body: GroupReorder,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the sort order of the named groups to their position in the list.
+
+    Groups not named keep the order they had, so a client can send just the
+    slice it re-arranged - though sending the full list is the reliable way
+    to get exactly the order on screen. One transaction: either every named
+    group moves or none do.
+    """
+    system = await _get_user_system(user, db)
+    if len(set(body.group_ids)) != len(body.group_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate group IDs",
+        )
+    result = await db.execute(
+        select(Group).where(
+            Group.id.in_(body.group_ids), Group.system_id == system.id
+        )
+    )
+    owned = {g.id: g for g in result.scalars().all()}
+    if len(owned) != len(body.group_ids):
+        # One answer for unknown and foreign ids alike, naming neither, the
+        # same way set_group_members refuses - so this endpoint cannot be
+        # used to probe whether a uuid exists on someone else's account.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more group IDs are invalid",
+        )
+    for index, gid in enumerate(body.group_ids):
+        owned[gid].order = index
+    await db.commit()
+    return await _list_groups_read(system, db)
 
 
 @router.get("/{group_id}", response_model=GroupRead)

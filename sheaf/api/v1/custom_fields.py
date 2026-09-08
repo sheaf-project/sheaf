@@ -20,6 +20,7 @@ from sheaf.schemas.custom_field import (
     MAX_CUSTOM_FIELD_VALUE_CHARS,
     CustomFieldCreate,
     CustomFieldRead,
+    CustomFieldReorder,
     CustomFieldUpdate,
     CustomFieldValueRead,
     CustomFieldValueSet,
@@ -69,12 +70,12 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
 
 # --- Field definitions ---
 
-@router.get("/fields", response_model=list[CustomFieldRead])
-async def list_fields(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    system = await _get_user_system(user, db)
+async def _list_fields_read(
+    system: System, db: AsyncSession
+) -> list[CustomFieldRead]:
+    """The full field list as the list endpoint serves it, order-sorted with
+    pending-delete timestamps attached. Shared with the reorder endpoint so
+    its response is exactly what the next GET would return."""
     result = await db.execute(
         select(CustomFieldDefinition)
         .where(CustomFieldDefinition.system_id == system.id)
@@ -90,6 +91,15 @@ async def list_fields(
         fr.pending_delete_at = pending.get(f.id)
         out.append(fr)
     return out
+
+
+@router.get("/fields", response_model=list[CustomFieldRead])
+async def list_fields(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    return await _list_fields_read(system, db)
 
 
 @router.post(
@@ -141,6 +151,52 @@ async def create_field(
     custom_fields_created_total.inc()
     await db.refresh(field)
     return field
+
+
+# Declared before the /fields/{field_id} routes so "reorder" is matched as
+# this endpoint rather than parsed (and 422ed) as a field uuid.
+@router.put(
+    "/fields/reorder",
+    response_model=list[CustomFieldRead],
+    dependencies=[Depends(require_scope("fields:write"))],
+)
+async def reorder_fields(
+    body: CustomFieldReorder,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the sort order of the named fields to their position in the list.
+
+    Fields not named keep the order they had, so a client can send just the
+    slice it re-arranged - though sending the full list is the reliable way
+    to get exactly the order on screen. One transaction: either every named
+    field moves or none do.
+    """
+    system = await _get_user_system(user, db)
+    if len(set(body.field_ids)) != len(body.field_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate field IDs",
+        )
+    result = await db.execute(
+        select(CustomFieldDefinition).where(
+            CustomFieldDefinition.id.in_(body.field_ids),
+            CustomFieldDefinition.system_id == system.id,
+        )
+    )
+    owned = {f.id: f for f in result.scalars().all()}
+    if len(owned) != len(body.field_ids):
+        # One answer for unknown and foreign ids alike, naming neither, the
+        # same way set_member_field_values refuses - so this endpoint cannot
+        # be used to probe whether a uuid exists on someone else's account.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more field IDs are invalid",
+        )
+    for index, fid in enumerate(body.field_ids):
+        owned[fid].order = index
+    await db.commit()
+    return await _list_fields_read(system, db)
 
 
 @router.get("/fields/{field_id}", response_model=CustomFieldRead)
