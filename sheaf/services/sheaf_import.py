@@ -1483,7 +1483,7 @@ async def run_import(
                     name=name,
                     field_type=ftype,
                     options=_clamp_field_options(fd_data.get("options"), report),
-                    order=fd_data.get("order", 0),
+                    order=_coerce_int(fd_data.get("order"), default=0),
                     privacy=_privacy(fd_data.get("privacy")),
                 )
                 db.add(field_def)
@@ -1579,6 +1579,7 @@ async def run_import(
                     )
                 ),
                 color=clamp_str(g_data.get("color"), il.GROUP_COLOR, report=report),
+                order=_coerce_int(g_data.get("order"), default=0),
                 privacy=privacy,
             )
             db.add(group)

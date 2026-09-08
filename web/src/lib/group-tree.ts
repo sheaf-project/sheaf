@@ -13,8 +13,11 @@ export interface GroupTreeNode {
   children: GroupTreeNode[];
 }
 
-function byName(a: Group, b: Group): number {
-  return a.name.localeCompare(b.name);
+/** (order, name), matching the API's list sort - so a list nobody has
+ *  rearranged (all order 0) stays alphabetical. Exported for the reorder
+ *  arrows, which need the same sibling order the tree renders. */
+export function compareGroups(a: Group, b: Group): number {
+  return a.order - b.order || a.name.localeCompare(b.name);
 }
 
 export function buildGroupTree(groups: Group[]): GroupTreeNode[] {
@@ -35,10 +38,10 @@ export function buildGroupTree(groups: Group[]): GroupTreeNode[] {
     depth,
     children: (childrenOf.get(g.id) ?? [])
       .slice()
-      .sort(byName)
+      .sort(compareGroups)
       .map((c) => build(c, depth + 1)),
   });
-  return roots.sort(byName).map((g) => build(g, 0));
+  return roots.sort(compareGroups).map((g) => build(g, 0));
 }
 
 /** Every group nested under `groupId` (not including it). */

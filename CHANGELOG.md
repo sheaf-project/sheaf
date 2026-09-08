@@ -6,7 +6,13 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Groups and custom fields can now be put in the order you want.** Up/down arrows on the Groups page move a group among the groups next to it (its siblings, when nested), and the same arrows in Settings > Custom fields reorder your fields; dragging a group still moves it into or out of another group, so the two gestures stay distinct. The order you set is respected everywhere the app lists your groups - groups you have not rearranged stay alphabetical - and it travels with your backups, so a restore puts everything back in the order you left it. Public profiles and share links follow it too: groups and custom fields appear to visitors in the order you arranged them, the same as inside the app.
+
 ### Fixed
+
+- **Dragging a group onto another to nest it now works in Firefox.** The drag never started there: Firefox requires drag data to be set when a drag begins, and the groups page never set any. Chrome-family browsers tolerated the omission, which is why the same gesture worked in one browser and was simply inert in the other.
 
 - **Clearing a member's custom field no longer fails with some client libraries.** Clearing a field is expressed as `value: null` on `PUT /v1/members/{id}/fields` - but several client serialisers omit null fields entirely rather than writing them (the Android app's JSON library does this, which is how clearing a field from Android broke), and the server rejected an entry with no `value` at all. An omitted `value` is now accepted and clears the field exactly like an explicit null. Absence has no other meaning on this endpoint, so nothing changes for any client that already sends the null.
 - **Front-change notifications with hidden co-fronters no longer say "and" twice.** A switch like five members starting with two of them hidden from the channel rendered "A, B, and C, and 2 others started fronting" - the visible names were joined into a finished list and the "N others" tail then bolted on with its own "and". The tail now joins the same list as the names, so the "and" lands exactly once, before the true final item: "A, B, C, and 2 others started fronting."

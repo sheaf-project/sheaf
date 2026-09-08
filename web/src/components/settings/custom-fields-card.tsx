@@ -5,6 +5,7 @@ import {
   useCreateField,
   useUpdateField,
   useDeleteField,
+  useReorderFields,
 } from "@/hooks/use-custom-fields";
 import { getMySystem } from "@/lib/systems";
 import { getSystemSafety } from "@/lib/system-safety";
@@ -24,7 +25,7 @@ import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { cn } from "@/lib/utils";
-import { Plus, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, X } from "lucide-react";
 import type {
   CustomField,
   DeleteConfirmation,
@@ -253,6 +254,7 @@ export function CustomFieldsCard() {
   const createField = useCreateField();
   const updateField = useUpdateField();
   const deleteField = useDeleteField();
+  const reorderFields = useReorderFields();
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState<FieldType>("text");
   const [newChoices, setNewChoices] = useState<string[]>([]);
@@ -302,6 +304,18 @@ export function CustomFieldsCard() {
     setEditName(field.name);
     setEditType(field.field_type);
     setEditChoices(choicesFromOptions(field.options));
+  }
+
+  /** Swap a field with its neighbour and send the FULL ordered id list, so
+   *  the server's order = list-index assignment reproduces exactly what is
+   *  on screen. */
+  function moveField(index: number, delta: -1 | 1) {
+    if (!fields) return;
+    const j = index + delta;
+    if (j < 0 || j >= fields.length) return;
+    const ids = fields.map((f) => f.id);
+    [ids[index], ids[j]] = [ids[j], ids[index]];
+    reorderFields.mutate(ids);
   }
 
   function handleUpdate(e: FormEvent) {
@@ -376,7 +390,7 @@ export function CustomFieldsCard() {
         </form>
 
         <div className="space-y-2">
-          {fields?.map((f) =>
+          {fields?.map((f, i) =>
             editingId === f.id ? (
               <form
                 key={f.id}
@@ -425,16 +439,41 @@ export function CustomFieldsCard() {
                 <FieldPrivacyControl
                   field={f}
                   trailing={
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-                      onClick={() =>
-                        setDeletingField({ id: f.id, name: f.name })
-                      }
-                    >
-                      Delete
-                    </Button>
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        disabled={i === 0 || reorderFields.isPending}
+                        onClick={() => moveField(i, -1)}
+                        aria-label="Move up"
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        disabled={
+                          i === (fields?.length ?? 0) - 1 ||
+                          reorderFields.isPending
+                        }
+                        onClick={() => moveField(i, 1)}
+                        aria-label="Move down"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+                        onClick={() =>
+                          setDeletingField({ id: f.id, name: f.name })
+                        }
+                      >
+                        Delete
+                      </Button>
+                    </>
                   }
                 >
                   <span

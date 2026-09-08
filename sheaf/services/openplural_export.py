@@ -270,9 +270,15 @@ def build_envelope(
                 # exposure ceiling rides the sheaf extension rather than being
                 # invented as a core key. Carried for the same reason
                 # `never_shareable` is carried on a member: a round-trip must
-                # never return somebody less protected than they left.
+                # never return somebody less protected than they left. The
+                # sort order has no v0.1 home either, so it rides along.
                 "extensions": {
-                    EXT_NS: _prune({"privacy": _privacy(g.get("privacy"))})
+                    EXT_NS: _prune(
+                        {
+                            "privacy": _privacy(g.get("privacy")),
+                            "order": g.get("order"),
+                        }
+                    )
                 },
             }
         )

@@ -91,6 +91,19 @@ export function useUpdateGroup() {
   });
 }
 
+export function useReorderGroups() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (groupIds: string[]) => api.reorderGroups(groupIds),
+    // No success toast: each arrow click is a reorder, and a toast per
+    // click would bury the list under confirmations of what the list
+    // itself already shows.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: groupKeys.all });
+    },
+  });
+}
+
 export function useDeleteGroup() {
   const qc = useQueryClient();
   const { formatDate } = useDateFormatters();

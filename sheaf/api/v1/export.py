@@ -529,6 +529,7 @@ async def export_all(
                 "description": g.description,
                 "color": g.color,
                 "parent_id": str(g.parent_id) if g.parent_id else None,
+                "order": g.order,
                 # The group's own exposure ceiling. The LIVE level only: a
                 # staged raise is mid-grace-window state, not curation, so a
                 # restore never resurrects a half-applied publish.

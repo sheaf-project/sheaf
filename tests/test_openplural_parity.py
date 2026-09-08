@@ -86,6 +86,8 @@ DISPOSITION: dict[str, dict[str, object]] = {
         # rides extensions.sheaf on the group record, same as the member
         # protective guards.
         "privacy": EXT,
+        # No group sort order in v0.1 either; same extension channel.
+        "order": EXT,
     },
     "Tag": {
         "name": CORE, "color": CORE,

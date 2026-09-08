@@ -86,6 +86,41 @@ def test_sheaf_runner_roundtrip_from_export(auth_client: httpx.Client):
     assert len([m for m in members if m["name"] == "RoundtripMember"]) == 1
 
 
+def test_sheaf_runner_roundtrips_group_order(auth_client: httpx.Client):
+    """Group sort order survives the trip: the file's order lands on the
+    imported rows, the list endpoint serves it, and a re-export carries it
+    back out. Junk order in a crafted file coerces to the default rather
+    than failing the import."""
+    payload = {
+        **_SHEAF_EXPORT,
+        "members": [],
+        "groups": [
+            {"id": "g1", "name": "OrderLast", "order": 2, "member_ids": []},
+            {"id": "g2", "name": "OrderFirst", "order": 0, "member_ids": []},
+            {"id": "g3", "name": "OrderMid", "order": 1, "member_ids": []},
+            {"id": "g4", "name": "OrderJunk", "order": "nope", "member_ids": []},
+        ],
+    }
+    job = _post_file(auth_client, payload=json.dumps(payload).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"]["groups_imported"] == 4, final["counts"]
+
+    # (order, name) sort: Junk coerced to 0 ties with First and loses the
+    # name tiebreak.
+    listed = auth_client.get("/v1/groups").json()
+    assert [g["name"] for g in listed] == [
+        "OrderFirst", "OrderJunk", "OrderMid", "OrderLast",
+    ], listed
+
+    dump = auth_client.get("/v1/export").json()
+    order_by_name = {g["name"]: g["order"] for g in dump["groups"]}
+    assert order_by_name == {
+        "OrderFirst": 0, "OrderJunk": 0, "OrderMid": 1, "OrderLast": 2,
+    }, order_by_name
+
+
 def test_sheaf_runner_custom_front_guard_follows_the_file(
     auth_client: httpx.Client,
 ):

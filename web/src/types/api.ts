@@ -369,6 +369,9 @@ export interface Group {
   description: string | null;
   color: string | null;
   parent_id: string | null;
+  /** Manual sort position. Lists sort by (order, name), so groups nobody
+   *  has rearranged (all 0) stay alphabetical. */
+  order: number;
   /** The same `PrivacyLevel` vocabulary a member carries, and the same
    *  meaning: a ceiling, not a promise. A group still only appears where a
    *  view was told to show groups. Private unless said otherwise. */
@@ -389,6 +392,7 @@ export interface GroupCreate {
   description?: string | null;
   color?: string | null;
   parent_id?: string | null;
+  order?: number;
   privacy?: PrivacyLevel;
   /** Step-up credentials, sent only on the retry after the server asks for
    *  them. Creating a group already public is the same exposure as raising an
@@ -403,6 +407,7 @@ export interface GroupUpdate {
   description?: string | null;
   color?: string | null;
   parent_id?: string | null;
+  order?: number;
   privacy?: PrivacyLevel;
   /** Step-up credentials, sent only on the retry after the server asks for
    *  them: a raise that would actually put this group in front of someone is

@@ -147,6 +147,16 @@ class CustomFieldUpdate(BaseModel):
         return v
 
 
+class CustomFieldReorder(BaseModel):
+    """Body for PUT /v1/fields/reorder: the desired order, first to last.
+
+    Every id must be one of the caller's fields; fields not named keep the
+    order they had.
+    """
+
+    field_ids: list[uuid.UUID]
+
+
 class CustomFieldRead(BaseModel):
     id: uuid.UUID
     system_id: uuid.UUID

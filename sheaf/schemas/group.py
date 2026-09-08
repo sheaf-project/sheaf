@@ -16,6 +16,7 @@ class GroupCreate(BaseModel):
     description: str | None = Field(default=None, max_length=20000)
     color: str | None = Field(default=None, max_length=7)
     parent_id: uuid.UUID | None = None
+    order: int = 0
     # Born private unless asked otherwise, and asking otherwise runs the same
     # gate the PATCH raise does (see api/v1/groups.create_group): creating a
     # group already public and raising an existing one to public are the same
@@ -50,6 +51,7 @@ class GroupUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=20000)
     color: str | None = Field(default=None, max_length=7)
     parent_id: uuid.UUID | None = None
+    order: int | None = None
     privacy: PrivacyLevel | None = None
 
     # Step-up credentials for a raise that is actually deferred. NOT group
@@ -61,7 +63,7 @@ class GroupUpdate(BaseModel):
     )
     totp_code: str | None = None
 
-    @field_validator("name")
+    @field_validator("name", "order")
     @classmethod
     def _reject_explicit_null(cls, v):
         if v is None:
@@ -82,6 +84,7 @@ class GroupRead(BaseModel):
     description: str | None
     color: str | None
     parent_id: uuid.UUID | None
+    order: int
     created_at: datetime
     updated_at: datetime
     privacy: PrivacyLevel
@@ -98,3 +101,13 @@ class GroupRead(BaseModel):
 
 class GroupMemberUpdate(BaseModel):
     member_ids: list[uuid.UUID]
+
+
+class GroupReorder(BaseModel):
+    """Body for PUT /v1/groups/reorder: the desired order, first to last.
+
+    Every id must be one of the caller's groups; groups not named keep the
+    order they had.
+    """
+
+    group_ids: list[uuid.UUID]
