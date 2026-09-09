@@ -18,7 +18,8 @@ export type ImportJobSource =
   | "pluralspace_file"
   | "prism_file"
   | "openplural_file"
-  | "ampersand_file";
+  | "ampersand_file"
+  | "masquerade_file";
 
 export type ImportJobStatus =
   | "pending"
@@ -82,6 +83,7 @@ export const SOURCE_LABELS: Record<ImportJobSource, string> = {
   prism_file: "Prism",
   openplural_file: "OpenPlural",
   ampersand_file: "Ampersand",
+  masquerade_file: "Masquerade",
 };
 
 const TERMINAL = new Set<ImportJobStatus>(["complete", "failed", "cancelled"]);

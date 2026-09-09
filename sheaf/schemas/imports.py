@@ -46,6 +46,7 @@ class ImportFileCreateRequest(BaseModel):
         ImportJobSource.PRISM_FILE,
         ImportJobSource.OPENPLURAL_FILE,
         ImportJobSource.AMPERSAND_FILE,
+        ImportJobSource.MASQUERADE_FILE,
     ]
     idempotency_key: uuid.UUID
     # Source-specific options as JSON string in the form field. Parsed

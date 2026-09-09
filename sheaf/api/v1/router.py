@@ -21,6 +21,7 @@ from sheaf.api.v1 import (
     groups,
     imports,
     journals,
+    masquerade_import,
     members,
     messages,
     notification_channels,
@@ -183,6 +184,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     ampersand_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    masquerade_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 # Unified async-job import router. Replaces the per-source legacy

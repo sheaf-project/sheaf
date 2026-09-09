@@ -44,6 +44,10 @@ import {
   previewImport as previewAmpersand,
 } from "@/lib/ampersand-import";
 import {
+  type MasqueradePreviewSummary,
+  previewImport as previewMasquerade,
+} from "@/lib/masquerade-import";
+import {
   createApiImport,
   createFileImport,
   newIdempotencyKey,
@@ -59,7 +63,8 @@ type Source =
   | "ps"
   | "prism"
   | "op"
-  | "amp";
+  | "amp"
+  | "masq";
 // "importing" shows a brief spinner while the enqueue POST is in
 // flight; on success the flow navigates to /imports/:id, which owns
 // the running/done UI. There's no "done" step here any more.
@@ -100,6 +105,9 @@ export function ImportPage() {
       )}
       {source === "amp" && (
         <AmpersandImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "masq" && (
+        <MasqueradeImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -231,6 +239,24 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
             and decodes the embedded avatars. Each Ampersand system becomes
             a Sheaf group; the shared asset library and cosmetic name/avatar
             styling have no Sheaf equivalent and are dropped.
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("masq")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">Import from Masquerade</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Upload an export from Masquerade (Stoat proxy bot): mention the
+            bot with the word "export" and it replies with an export.json
+            file. Masquerade doesn't track fronting or groups, so your
+            profiles come across as members with their display names,
+            avatars, and colours.
+            Proxy tags are dropped since Sheaf doesn't proxy messages.
           </p>
         </CardContent>
       </Card>
@@ -2140,6 +2166,146 @@ function AmpersandImportFlow({ onBack }: { onBack: () => void }) {
                 incoming={preview.member_count}
                 onImport={handleImport}
               />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Masquerade import flow
+// ---------------------------------------------------------------------------
+
+function MasqueradeImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<MasqueradePreviewSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
+
+  const [allMembers, setAllMembers] = useState(true);
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+
+  const importIncoming = allMembers
+    ? (preview?.member_count ?? 0)
+    : selectedMembers.size;
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewMasquerade(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to parse file"));
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const job = await createFileImport({
+        source: "masquerade_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          member_ids: allMembers ? null : Array.from(selectedMembers),
+          conflict_strategy: conflictStrategy,
+        },
+      });
+      navigate(`/imports/${job.id}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Import failed"));
+      setStep("preview");
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload Masquerade export file</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Export your profiles from Masquerade (Stoat proxy bot), then
+              upload the JSON file here.
+            </p>
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={onBack}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div className="col-span-2 text-xs text-muted-foreground">
+                Masquerade doesn't track fronting, groups, or system
+                metadata. Proxy tags and the hidden flag are dropped on
+                import.
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
+              <MemberSelector
+                members={preview.members}
+                totalCount={preview.member_count}
+                allMembers={allMembers}
+                setAllMembers={setAllMembers}
+                selectedMembers={selectedMembers}
+                toggleMember={toggleMember}
+              />
+
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
+              <ImportSubmit incoming={importIncoming} onImport={handleImport} />
             </CardContent>
           </Card>
         </div>

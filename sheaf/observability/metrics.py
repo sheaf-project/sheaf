@@ -92,7 +92,8 @@ EmailProviderEvent = Literal["bounce", "blocked", "dropped", "deferred", "spamre
 
 JobOutcome = Literal["success", "error", "skipped"]
 ImportSource = Literal[
-    "pluralkit_file", "pluralkit_api", "simplyplural", "tupperbox", "sheaf", "ampersand"
+    "pluralkit_file", "pluralkit_api", "simplyplural", "tupperbox", "sheaf",
+    "ampersand", "masquerade",
 ]
 ImportOutcome = Literal["complete", "failed", "cancelled"]
 ExportOutcome = Literal["done", "failed", "expired"]

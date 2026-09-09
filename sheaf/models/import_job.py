@@ -42,6 +42,9 @@ class ImportJobSource(enum.StrEnum):
     # Ampersand JSON export ({revision, config, database}). Base64 images
     # inline as data URIs; decoded + stored like the archive importers.
     AMPERSAND_FILE = "ampersand_file"
+    # Masquerade (Stoat proxy bot) JSON export ({profiles: [...]}).
+    # Members-only: proxy tags have no Sheaf equivalent.
+    MASQUERADE_FILE = "masquerade_file"
 
 
 class ImportJobStatus(enum.StrEnum):

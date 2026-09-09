@@ -8,6 +8,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Added
 
+- **You can now import from Masquerade.** Upload an export from Masquerade (the Stoat proxy bot) on the Import page and your profiles come across as members, bringing their names, display names, avatars, and colours with them. The preview shows what's in the file before anything is written, lets you deselect profiles, and warns up front about anything that would be shortened to fit Sheaf's limits. Masquerade's proxy tags don't apply to Sheaf - it doesn't proxy messages - so those are left behind, and its hidden flag adds nothing because imported members arrive private by default. Re-importing the same file won't duplicate your roster.
 - **Groups and custom fields can now be put in the order you want.** Up/down arrows on the Groups page move a group among the groups next to it (its siblings, when nested), and the same arrows in Settings > Custom fields reorder your fields; dragging a group still moves it into or out of another group, so the two gestures stay distinct. The order you set is respected everywhere the app lists your groups - groups you have not rearranged stay alphabetical - and it travels with your backups, so a restore puts everything back in the order you left it. Public profiles and share links follow it too: groups and custom fields appear to visitors in the order you arranged them, the same as inside the app.
 
 ### Fixed
