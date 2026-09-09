@@ -296,11 +296,15 @@ jobs:
         run: |
           ./.github/scripts/with-retry.sh sh -c '
             set -eu
-            curl -sSfL -o /tmp/syft.tar.gz               "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
-            curl -sSfL -o /tmp/syft-checksums.txt               "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt"
-            (cd /tmp && grep "syft_${SYFT_VERSION}_linux_amd64.tar.gz$" syft-checksums.txt | sha256sum -c -)
-            tar -xzf /tmp/syft.tar.gz -C /tmp syft
-            sudo install /tmp/syft /usr/local/bin/syft
+            cd /tmp
+            # The tarball must keep its ORIGINAL release filename: sha256sum -c
+            # verifies the name recorded inside the checksums file, so a
+            # renamed download can never pass verification.
+            curl -sSfL -O "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+            curl -sSfL -o syft-checksums.txt "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt"
+            grep "syft_${SYFT_VERSION}_linux_amd64.tar.gz$" syft-checksums.txt | sha256sum -c -
+            tar -xzf "syft_${SYFT_VERSION}_linux_amd64.tar.gz" syft
+            sudo install syft /usr/local/bin/syft
           '
           syft version
 
