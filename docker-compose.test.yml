@@ -3,8 +3,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+    # Fixed image tag - the same name a default build under the sheaf-test
+    # project produces - so run_tests.sh --jobs N can build once and point
+    # every per-slot compose project (sheaf-test-1, sheaf-test-2, ...) at
+    # the one image instead of each project building its own.
+    image: sheaf-test-app
+    # Host ports (and the base URL derived from the app one) interpolate
+    # from SHEAF_TEST_*_PORT so run_tests.sh --jobs N can give each slot
+    # its own port block. Unset - the serial run, manual compose use -
+    # they collapse to the classic 8001/5433/6380.
     ports: !override
-      - "8001:8000"
+      - "${SHEAF_TEST_APP_PORT:-8001}:8000"
     # Clear the env_file inherited from the base compose so the test
     # stack does not pick up whatever the developer has in their .env
     # (e.g. SHIELD_MODE_ENABLED, FCM credentials, captcha keys). The
@@ -23,7 +32,7 @@ services:
       # The write gate defaults off in production for a rollback-safe
       # rollout; the test stack runs the enabled state on purpose.
       FIELD_ENCRYPTION_WRITE_V2: "true"
-      SHEAF_BASE_URL: "http://localhost:8001"
+      SHEAF_BASE_URL: "http://localhost:${SHEAF_TEST_APP_PORT:-8001}"
       SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
       ADMIN_AUTH_LEVEL: "${ADMIN_AUTH_LEVEL:-none}"
       REGISTRATION_MODE: open
@@ -84,7 +93,7 @@ services:
 
   db:
     ports: !override
-      - "5433:5432"
+      - "${SHEAF_TEST_DB_PORT:-5433}:5432"
     volumes: []
     environment:
       POSTGRES_DB: sheaf
@@ -93,5 +102,5 @@ services:
 
   redis:
     ports: !override
-      - "6380:6379"
+      - "${SHEAF_TEST_REDIS_PORT:-6380}:6379"
     volumes: []

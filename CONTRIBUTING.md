@@ -49,7 +49,7 @@ Use `run_tests.sh` to spin up a dedicated isolated Docker stack, run tests again
 ./run_tests.sh
 ```
 
-This runs nine configurations in sequence: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and five selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, and the metrics endpoint enabled). Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack.
+This runs nine configurations in sequence: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and five selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, and the metrics endpoint enabled). Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack. Configurations spread over parallel stacks (two by default, each on its own port block); pass `--jobs N` to widen or `--jobs 1` to force the classic serial run. Each config's output is still printed one at a time at the end.
 
 ```bash
 # Skip rebuilding the image if you haven't changed backend code:
