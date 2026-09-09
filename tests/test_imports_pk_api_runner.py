@@ -15,7 +15,11 @@ import uuid
 
 import httpx
 
-from tests._import_runner_helpers import drive_import_runner, wait_for_terminal
+from tests._import_runner_helpers import (
+    COMPOSE_PROJECT,
+    drive_import_runner,
+    wait_for_terminal,
+)
 
 # Minimal valid PK-export shape the stub fetch returns. One member,
 # no groups, no switches — enough to prove the handler walks the
@@ -153,7 +157,7 @@ async def main():
 asyncio.run(main())
 """
     result = subprocess.run(
-        ["docker", "compose", "-p", "sheaf-test", "exec", "-T", "app", "python", "-c", script],
+        ["docker", "compose", "-p", COMPOSE_PROJECT, "exec", "-T", "app", "python", "-c", script],
         check=True,
         capture_output=True,
         text=True,

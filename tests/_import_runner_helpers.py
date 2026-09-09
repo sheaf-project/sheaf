@@ -10,10 +10,18 @@ Not a `test_*.py` module, so pytest does not collect it.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
 import httpx
+
+# Compose project of the stack under test. The in-container drives below
+# `docker compose exec` into it, so the name has to match the stack pytest
+# is pointed at: run_tests.sh --jobs N gives each parallel slot its own
+# project (sheaf-test-1, sheaf-test-2, ...) and exports this variable
+# accordingly. The default matches the classic serial project name.
+COMPOSE_PROJECT = os.environ.get("SHEAF_TEST_COMPOSE_PROJECT", "sheaf-test")
 
 
 def drive_import_runner(*, setup: str = "") -> None:
@@ -42,7 +50,7 @@ asyncio.run(main())
 """
     subprocess.run(
         [
-            "docker", "compose", "-p", "sheaf-test", "exec", "-T", "app",
+            "docker", "compose", "-p", COMPOSE_PROJECT, "exec", "-T", "app",
             "python", "-c", script,
         ],
         check=True,
