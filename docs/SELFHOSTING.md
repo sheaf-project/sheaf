@@ -1100,13 +1100,13 @@ MAX_IMPORT_RESTORED_IMAGES=20000 # per-import image-restore cap (archive import)
 
 The last knob bounds how many images one export-with-images archive import will restore. The storage quota already bounds the restored bytes; this bounds the number of normalization passes a single job can demand, so a crafted zip full of tiny images can't monopolise the import runner. An import that hits the cap completes with a warning and strips the remaining image references. Raise it if your system genuinely has more images than the default.
 
-OpenPlural imports additionally preserve data Sheaf cannot model (other apps' `extensions` namespaces, the chat/relationships modules, non-tag taxonomy) so a Sheaf-in-the-middle round-trip is not lossy: that residual is compressed and encrypted on the system and re-emitted on the next OpenPlural export. Its size is bounded by:
+PluralPort imports additionally preserve data Sheaf cannot model (other apps' `extensions` namespaces, the chat/relationships modules, non-tag taxonomy) so a Sheaf-in-the-middle round-trip is not lossy: that residual is compressed and encrypted on the system and re-emitted on the next PluralPort export. Its size is bounded by:
 
 ```env
-OPENPLURAL_MAX_PRESERVED_MB=8    # max preserved unsupported-data per system; 0 = unlimited
+PLURALPORT_MAX_PRESERVED_MB=8    # max preserved unsupported-data per system; 0 = unlimited
 ```
 
-Measured on the raw (pre-compression) JSON. A file whose unsupported data exceeds this has its residual dropped with a warning rather than stored unbounded. `0` disables the cap (unlimited), matching the storage-quota convention. See `docs/OPENPLURAL.md` for what gets preserved.
+Measured on the raw (pre-compression) JSON. A file whose unsupported data exceeds this has its residual dropped with a warning rather than stored unbounded. `0` disables the cap (unlimited), matching the storage-quota convention. The setting was named `OPENPLURAL_MAX_PRESERVED_MB` before the format's rename from OpenPlural to PluralPort; the old env var name is still accepted (the new one wins if both are set). See `docs/PLURALPORT.md` for what gets preserved.
 
 ### Animated avatars
 

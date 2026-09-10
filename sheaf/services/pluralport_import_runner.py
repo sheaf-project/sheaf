@@ -1,8 +1,8 @@
-"""Async runner handler for OpenPlural v0.1 imports.
+"""Async runner handler for PluralPort v0.1 imports.
 
 Wrap-pattern handler. Sniffs whether the payload is a bare JSON document
-or an ``.openplural.zip`` bundle, translates the envelope to the native
-shape (``openplural_import.to_native``), and delegates to the existing
+or an ``.pluralport.zip`` bundle, translates the envelope to the native
+shape (``pluralport_import.to_native``), and delegates to the existing
 native importer: ``sheaf_import.run_import`` for JSON,
 ``sheaf_archive_import.run_import`` for the bundle (which restores the
 ``assets/`` blobs). All the import guards therefore live in one place.
@@ -10,7 +10,7 @@ native importer: ``sheaf_import.run_import`` for JSON,
 Lineage: any ``extensions.sheaf.lineage`` carried in is surfaced as an
 info event. v0.1 Sheaf does not yet persist inherited lineage across a
 DB round-trip (there is no column for it), so a re-export starts a fresh
-Sheaf-only chain - see the limitation noted in docs/OPENPLURAL.md and
+Sheaf-only chain - see the limitation noted in docs/PLURALPORT.md and
 upstream issue #7.
 """
 
@@ -32,14 +32,14 @@ from sheaf.services.import_runner import (
     update_counts,
 )
 from sheaf.services.import_storage import get_payload
-from sheaf.services.openplural_archive import (
+from sheaf.services.pluralport_archive import (
     extract_residual,
     has_per_record_foreign_extensions,
     merge_residual,
     pack_residual,
     unpack_residual,
 )
-from sheaf.services.openplural_import import (
+from sheaf.services.pluralport_import import (
     build_json_import,
     inherited_lineage,
     looks_like_zip,
@@ -47,7 +47,7 @@ from sheaf.services.openplural_import import (
     parse_json,
 )
 
-logger = logging.getLogger("sheaf.imports.openplural")
+logger = logging.getLogger("sheaf.imports.pluralport")
 
 
 def _note_lineage(job: ImportJob, envelope: dict) -> None:
@@ -63,7 +63,7 @@ def _note_lineage(job: ImportJob, envelope: dict) -> None:
         stage="parse",
         message=(
             f"file carries lineage from {len(lineage)} prior export(s) "
-            f"[{apps}]; not persisted in this release (see docs/OPENPLURAL.md)"
+            f"[{apps}]; not persisted in this release (see docs/PLURALPORT.md)"
         ),
     )
 
@@ -71,7 +71,7 @@ def _note_lineage(job: ImportJob, envelope: dict) -> None:
 def _preserve_residual(job: ImportJob, system, envelope: dict) -> None:
     """Capture the parts of the envelope Sheaf cannot model and park them
     (encrypted, compressed, size-capped) on the system so the next
-    OpenPlural export re-emits them. Baseline (file-level + whole-section)
+    PluralPort export re-emits them. Baseline (file-level + whole-section)
     passthrough; per-record foreign extensions are warned, not stored."""
     if has_per_record_foreign_extensions(envelope):
         append_event(
@@ -80,15 +80,18 @@ def _preserve_residual(job: ImportJob, system, envelope: dict) -> None:
             stage="preserve",
             message=(
                 "per-record extensions from other apps were not preserved "
-                "(file-level passthrough only in this release); see docs/OPENPLURAL.md"
+                "(file-level passthrough only in this release); see docs/PLURALPORT.md"
             ),
         )
     residual = extract_residual(envelope)
     if not residual:
         return
+    # `openplural_archive` is the column's frozen historical name, kept from
+    # before the format was renamed to PluralPort because the AAD derived
+    # from it is baked into every stored blob. See models/system.py.
     existing = unpack_residual(system.openplural_archive, system_id=system.id)
     merged = merge_residual(existing, residual)
-    max_bytes = settings.openplural_max_preserved_mb * 1024 * 1024
+    max_bytes = settings.pluralport_max_preserved_mb * 1024 * 1024
     token, warning = pack_residual(merged, system_id=system.id, max_bytes=max_bytes)
     if warning:
         append_event(job, level="warning", stage="preserve", message=warning)
@@ -143,16 +146,16 @@ def _base_counts(job: ImportJob, base) -> None:
     )
 
 
-async def handle_openplural_file(job: ImportJob, db: AsyncSession) -> None:
-    """Run an OpenPlural import (bare JSON or .openplural.zip) for a job."""
+async def handle_pluralport_file(job: ImportJob, db: AsyncSession) -> None:
+    """Run a PluralPort import (bare JSON or .pluralport.zip) for a job."""
     if job.payload_storage_key is None:
         raise ImportPayloadError(
-            "OpenPlural job has no payload - was the upload step skipped?"
+            "PluralPort job has no payload - was the upload step skipped?"
         )
     blob = await get_payload(job.payload_storage_key)
     if blob is None:
         raise ImportPayloadError(
-            "OpenPlural payload missing from storage - "
+            "PluralPort payload missing from storage - "
             "the blob may have been swept by orphan cleanup"
         )
 
@@ -168,7 +171,7 @@ async def _run_json(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
         job,
         level="info",
         stage="parse",
-        message=f"parsed {len(blob)} bytes of OpenPlural JSON",
+        message=f"parsed {len(blob)} bytes of PluralPort JSON",
     )
     _note_lineage(job, envelope)
     native, inline_archive = build_json_import(envelope)
@@ -243,7 +246,7 @@ async def _run_bundle(job: ImportJob, db: AsyncSession, blob: bytes) -> None:
         level="info",
         stage="parse",
         message=(
-            f"parsed {len(blob)} bytes of OpenPlural bundle "
+            f"parsed {len(blob)} bytes of PluralPort bundle "
             f"({len(parsed.image_keys)} bundled asset(s))"
         ),
     )
@@ -263,7 +266,7 @@ async def _run_archive(
     job: ImportJob, db: AsyncSession, parsed, envelope: dict, *, missing_label: str
 ) -> None:
     """Import a native dict whose images are restored from blobs (an
-    ``.openplural.zip`` bundle or an inline-asset bare JSON), delegating to
+    ``.pluralport.zip`` bundle or an inline-asset bare JSON), delegating to
     ``sheaf_archive_import`` for the image pipeline plus every section
     guard. ``missing_label`` phrases the per-asset "couldn't restore this"
     warning for the payload shape."""
@@ -322,4 +325,4 @@ async def _run_archive(
     )
 
 
-register_handler(ImportJobSource.OPENPLURAL_FILE.value, handle_openplural_file)
+register_handler(ImportJobSource.PLURALPORT_FILE.value, handle_pluralport_file)

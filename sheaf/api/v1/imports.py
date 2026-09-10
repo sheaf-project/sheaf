@@ -30,7 +30,7 @@ from sheaf.auth.dependencies import get_current_user
 from sheaf.crypto import encrypt
 from sheaf.database import get_db
 from sheaf.encrypted_fields import import_credential_aad
-from sheaf.models.import_job import ImportJob, ImportJobStatus
+from sheaf.models.import_job import ImportJob, ImportJobSource, ImportJobStatus
 from sheaf.models.user import User
 from sheaf.schemas.imports import (
     ImportApiCreateRequest,
@@ -168,6 +168,12 @@ async def create_file_import(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="options must be a JSON object",
             )
+
+    # Deprecated alias from before the OpenPlural -> PluralPort rename:
+    # normalise the old source value before validation so pre-rename
+    # clients keep working. The job row always records the new value.
+    if source == "openplural_file":
+        source = ImportJobSource.PLURALPORT_FILE.value
 
     try:
         body = ImportFileCreateRequest(

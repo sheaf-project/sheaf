@@ -17,7 +17,7 @@ export type ImportJobSource =
   | "sheaf_archive"
   | "pluralspace_file"
   | "prism_file"
-  | "openplural_file"
+  | "pluralport_file"
   | "ampersand_file";
 
 export type ImportJobStatus =
@@ -80,7 +80,7 @@ export const SOURCE_LABELS: Record<ImportJobSource, string> = {
   sheaf_archive: "Sheaf (with images)",
   pluralspace_file: "PluralSpace",
   prism_file: "Prism",
-  openplural_file: "OpenPlural",
+  pluralport_file: "PluralPort",
   ampersand_file: "Ampersand",
 };
 

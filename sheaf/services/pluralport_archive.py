@@ -1,24 +1,27 @@
-"""OpenPlural import-residual preservation.
+"""PluralPort import-residual preservation.
 
-Sheaf's OpenPlural importer maps the subset of the format it models and,
+Sheaf's PluralPort importer maps the subset of the format it models and,
 without this module, drops the rest. That makes Sheaf a lossy hop: a
 file from another app loses that app's `extensions` namespaces, its chat
 and relationships modules, switch-style `front_events` / `front_comments`,
 and non-tag taxonomy on the way through.
 
 This module captures that residual on import and re-merges it into the
-next OpenPlural export, so a Sheaf-in-the-middle round-trip preserves it.
+next PluralPort export, so a Sheaf-in-the-middle round-trip preserves it.
 This is the "baseline" tier of the preservation contract Sheaf proposed
-upstream (skylartaylor/openplural#11): file-level and whole-section
+upstream (PluralPort/spec#11): file-level and whole-section
 passthrough. Per-record foreign `extensions` (which need stable record
 identity to re-attach) are not preserved yet and are reported with a
 warning; that is the follow-up "full passthrough" tier.
 
 Storage: the residual is JSON, zlib-compressed (it can be large), then
 encrypted at rest (it can carry message bodies and other content Sheaf
-treats as sensitive), and parked on `System.openplural_archive`. It is
-bounded by `settings.openplural_max_preserved_mb` (measured on the raw
-JSON) so a hostile or huge file cannot grow the row without limit.
+treats as sensitive), and parked on `System.openplural_archive`. (The
+column and its AAD keep the pre-rename OpenPlural name: the AAD string is
+baked into every encrypted archive blob in production, so renaming it
+would make existing data undecryptable.) It is bounded by
+`settings.pluralport_max_preserved_mb` (measured on the raw JSON) so a
+hostile or huge file cannot grow the row without limit.
 """
 
 from __future__ import annotations
@@ -38,13 +41,13 @@ _OWN_NS = "sheaf"
 # verbatim. `chat` / `relationships` are spec modules Sheaf has no feature
 # for; `front_comments` are time-anchored comments on fronting that Sheaf
 # has no model for. NB `front_events` are NOT here: the importer converts
-# them to interval fronts (see openplural_import._fronts_from_events), so
+# them to interval fronts (see pluralport_import._fronts_from_events), so
 # they are consumed, not preserved.
 _PASSTHROUGH_TOP_LEVEL = ("chat", "relationships", "front_comments")
 
 
 def extract_residual(envelope: dict) -> dict:
-    """Return the parts of an OpenPlural envelope Sheaf does not model.
+    """Return the parts of a PluralPort envelope Sheaf does not model.
 
     Empty dict when there is nothing to preserve. Pure: no IO.
     """
@@ -156,17 +159,18 @@ def pack_residual(
     JSON: it bounds what we are willing to retain, not the on-disk size.
 
     ``system_id`` is the owning system's id; the ciphertext is AAD-bound to
-    the ``systems.openplural_archive`` cell so it cannot be relocated to
-    another system's row.
+    the ``systems.openplural_archive`` cell (the column keeps its pre-rename
+    name for AAD compatibility) so it cannot be relocated to another
+    system's row.
     """
     if not residual:
         return None, None
     raw = json.dumps(residual, separators=(",", ":")).encode("utf-8")
     if max_bytes and len(raw) > max_bytes:
         return None, (
-            f"preserved {len(raw)} bytes of unsupported OpenPlural data exceeds "
+            f"preserved {len(raw)} bytes of unsupported PluralPort data exceeds "
             f"the {max_bytes // (1024 * 1024)}MB limit "
-            "(OPENPLURAL_MAX_PRESERVED_MB); it was not retained"
+            "(PLURALPORT_MAX_PRESERVED_MB); it was not retained"
         )
     compressed = zlib.compress(raw, 9)
     token = encrypt(

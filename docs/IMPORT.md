@@ -152,7 +152,7 @@ same preview-then-import flow as PK and covers:
   statistics and listed separately on the Members page). Every importer that
   brings custom fronts across creates them with **keep fronting private** on,
   so an imported "Asleep" never announces itself on a shared page until you
-  release the guard yourself; a Sheaf backup or an OpenPlural file that
+  release the guard yourself; a Sheaf backup or a PluralPort file that
   records the setting restores what it recorded instead.
 - Custom field definitions and per-member values.
 - Groups with parent hierarchy and member memberships.
@@ -175,21 +175,27 @@ bucket. The async `/v1/export/jobs` endpoint produces a zip with image bytes
 included; the import side that consumes those zips is on the roadmap (see
 [CHANGELOG.md](../CHANGELOG.md)).
 
-## OpenPlural import
+## PluralPort import
 
 For moving data in from any app that speaks the
-[OpenPlural](https://github.com/skylartaylor/openplural) v0.1 standard, including
-a Sheaf OpenPlural export. Accepts either a bare `.json` document or an
-`.openplural.zip` bundle (`openplural.json` + `assets/`); the runner detects
-which by content. The envelope is translated back to the native shape and run
-through the same importer as a Sheaf re-import, so dedup, the member cap, the
-image-restore pipeline (for bundles), and the avatar-policy gate all apply. A
-file whose `openplural_version` this build does not understand is rejected
-rather than partially imported.
+[PluralPort](https://github.com/PluralPort/spec) v0.1 standard (formerly
+OpenPlural), including a Sheaf PluralPort export. Accepts either a bare
+`.json` document or a `.pluralport.zip` bundle (`pluralport.json` +
+`assets/`); the runner detects which by content. The envelope is translated
+back to the native shape and run through the same importer as a Sheaf
+re-import, so dedup, the member cap, the image-restore pipeline (for
+bundles), and the avatar-policy gate all apply. A file whose
+`pluralport_version` this build does not understand is rejected rather than
+partially imported.
 
-Sheaf round-trips its own OpenPlural exports losslessly: anything the v0.1 spec
+Files from before the format's rename still import: the deprecated
+`openplural_version` envelope key is accepted as a v0.1 alias
+(`pluralport_version` wins if a file carries both), and a bundle whose inner
+document is still named `openplural.json` reads the same as a current one.
+
+Sheaf round-trips its own PluralPort exports losslessly: anything the v0.1 spec
 cannot model rides under `extensions.sheaf.*` and is restored on import. See
-[OPENPLURAL.md](OPENPLURAL.md) for the full mapping, the per-version
+[PLURALPORT.md](PLURALPORT.md) for the full mapping, the per-version
 implementation log, and the known gaps.
 
 ---

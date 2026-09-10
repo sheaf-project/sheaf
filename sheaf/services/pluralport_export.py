@@ -1,26 +1,26 @@
-"""OpenPlural v0.1 export mapping.
+"""PluralPort v0.1 export mapping.
 
-Sheaf is a founding adopter of the OpenPlural data standard
-(https://github.com/skylartaylor/openplural). This module is a *pure*
+Sheaf is a founding adopter of the PluralPort data standard
+(https://github.com/PluralPort/spec). This module is a *pure*
 transform: it takes the native Article-20 export dict that
 ``sheaf/api/v1/export.py::export_all`` already produces (version "2")
-and reshapes it into an OpenPlural v0.1 envelope. It performs no DB
+and reshapes it into a PluralPort v0.1 envelope. It performs no DB
 access and no decryption - everything it needs is already plaintext in
 the native dict.
 
-The mapping follows the Sheaf card in ``../openplural/adopt.md``. Every
-field Sheaf has that OpenPlural v0.1 can model goes into a core record;
+The mapping follows the Sheaf card in ``../pluralport-spec/adopt.md``. Every
+field Sheaf has that PluralPort v0.1 can model goes into a core record;
 everything else is preserved losslessly under the namespaced
 ``extensions.sheaf`` key so a round-trip back into Sheaf restores it and
-another app can at least carry it forward. See ``docs/OPENPLURAL.md``
+another app can at least carry it forward. See ``docs/PLURALPORT.md``
 for the full per-field rationale and the running implementation log.
 
 Two delivery shapes share this builder:
 
-* The sync ``GET /v1/export?format=openplural`` path emits a single
+* The sync ``GET /v1/export?format=pluralport`` path emits a single
   JSON document with *uri-only* assets (avatar URLs, no bytes) and a
   top-level ``asset_uri_only`` warning.
-* The async ``.openplural.zip`` bundle additionally writes the blobs to
+* The async ``.pluralport.zip`` bundle additionally writes the blobs to
   ``assets/<key>`` and records the in-zip path under each asset's
   ``extensions.sheaf.bundle_path`` (the official bundle-path convention
   is still pending upstream issue #9; until it lands we keep ``uri``
@@ -35,10 +35,10 @@ import uuid
 from sheaf import __version__
 
 # What this module targets / advertises.
-OPENPLURAL_VERSION = "0.1"
+PLURALPORT_VERSION = "0.1"
 # Bumped independently of the Sheaf app version when the *mapping* logic
 # changes in a way worth tracking; surfaces as producer.exporter_version.
-OPENPLURAL_IMPL_VERSION = "0.1.0"
+PLURALPORT_IMPL_VERSION = "0.1.0"
 APP_ID = "sheaf"
 APP_NAME = "Sheaf"
 # The reverse-DNS-free registered namespace key Sheaf owns in the spec.
@@ -49,11 +49,11 @@ EXT_NS = "sheaf"
 # member can reference it by id.
 _ASSET_NS = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 
-# Native sub-sections with no OpenPlural v0.1 core representation. Carried
+# Native sub-sections with no PluralPort v0.1 core representation. Carried
 # verbatim under extensions.sheaf.<key> so the round-trip is lossless and
 # the importer can lift them straight back. Each is parked pending the
 # matching upstream module (polls/reminders -> v0.2, etc); see the table
-# in docs/OPENPLURAL.md.
+# in docs/PLURALPORT.md.
 _EXT_PASSTHROUGH_SECTIONS = (
     "polls",
     "reminders",
@@ -61,14 +61,14 @@ _EXT_PASSTHROUGH_SECTIONS = (
     "revisions",
     "watch_tokens",
     "uploaded_files",
-    # OpenPlural v0.1 has no relationship core record, so the types and both
+    # PluralPort v0.1 has no relationship core record, so the types and both
     # edge tables ride the file-level extensions.sheaf.* passthrough (NOT the
     # reserved top-level `relationships` key, which is for foreign preserved
     # modules; see _merge_preserved).
     "relationship_types",
     "member_relationships",
     "group_relationships",
-    # OpenPlural v0.1 has no sharing/visibility module, so the curated share
+    # PluralPort v0.1 has no sharing/visibility module, so the curated share
     # views ride the passthrough. Share GRANTS are absent from the native
     # export by design (a grant is a live capability), so nothing here can
     # republish a system on re-import.
@@ -92,7 +92,7 @@ def _internal_key(url: str) -> str | None:
 
 def _birthday(raw: str | None) -> dict | None:
     """Map Sheaf's ``"MM-DD"`` / ``"YYYY-MM-DD"`` birthday string to an
-    OpenPlural precision-aware Birthday sub-record."""
+    PluralPort precision-aware Birthday sub-record."""
     if not raw:
         return None
     parts = raw.split("-")
@@ -162,7 +162,7 @@ def build_envelope(
     inherited_lineage: list | None = None,
     include_asset_bytes: bool = False,
 ) -> dict:
-    """Transform a native export dict into an OpenPlural v0.1 envelope.
+    """Transform a native export dict into a PluralPort v0.1 envelope.
 
     ``exported_at`` is an ISO-8601 UTC timestamp supplied by the caller
     (this module takes no clock). ``inherited_lineage`` is any
@@ -231,7 +231,7 @@ def build_envelope(
             "notify_on_front_self": m.get("notify_on_front_self"),
             "notify_on_front_member_ids": m.get("notify_on_front_member_ids"),
             # Protective share guards. Carried so a round-trip through
-            # OpenPlural never returns a member less protected than they were.
+            # PluralPort never returns a member less protected than they were.
             "never_shareable": m.get("never_shareable"),
             "fronting_private": m.get("fronting_private"),
         }
@@ -266,7 +266,7 @@ def build_envelope(
                 "description": g.get("description"),
                 "color": g.get("color"),
                 "parent_group_id": g.get("parent_id"),
-                # OpenPlural v0.1 has no group privacy field, so the group's
+                # PluralPort v0.1 has no group privacy field, so the group's
                 # exposure ceiling rides the sheaf extension rather than being
                 # invented as a core key. Carried for the same reason
                 # `never_shareable` is carried on a member: a round-trip must
@@ -405,7 +405,7 @@ def build_envelope(
         {
             "app": APP_ID,
             "app_version": app_version,
-            "exporter_version": OPENPLURAL_IMPL_VERSION,
+            "exporter_version": PLURALPORT_IMPL_VERSION,
             "exported_at": exported_at,
         }
     )
@@ -423,19 +423,19 @@ def build_envelope(
                 "code": "asset_uri_only",
                 "message": (
                     "Assets are referenced by URL only; export with images "
-                    "(the .openplural.zip bundle) to include the binary blobs."
+                    "(the .pluralport.zip bundle) to include the binary blobs."
                 ),
             }
         )
 
     envelope: dict = {
-        "openplural_version": OPENPLURAL_VERSION,
+        "pluralport_version": PLURALPORT_VERSION,
         "exported_at": exported_at,
         "producer": {
             "app": APP_NAME,
             "app_id": APP_ID,
             "app_version": app_version,
-            "exporter_version": OPENPLURAL_IMPL_VERSION,
+            "exporter_version": PLURALPORT_IMPL_VERSION,
         },
         "capabilities": {"modules": modules},
         "systems": systems,
@@ -458,8 +458,8 @@ def build_envelope(
     # Re-merge any preserved residual from a prior foreign import (the
     # baseline passthrough tier: file-level extensions + whole un-consumed
     # sections). Sheaf stores this encrypted on the system; the native
-    # export decrypts it into `system.openplural_archive` as a plain dict.
-    preserved = sys_data.get("openplural_archive") if isinstance(sys_data, dict) else None
+    # export decrypts it into `system.pluralport_archive` as a plain dict.
+    preserved = sys_data.get("pluralport_archive") if isinstance(sys_data, dict) else None
     if isinstance(preserved, dict) and preserved:
         _merge_preserved(envelope, preserved)
     return envelope
@@ -501,10 +501,10 @@ _VALID_VISIBILITY = {"public", "friends", "private", "trusted", "unknown"}
 
 
 def _privacy(val: str | None) -> str:
-    """Sheaf privacy/visibility -> OpenPlural conservative bucket.
+    """Sheaf privacy/visibility -> PluralPort conservative bucket.
 
     Sheaf's PrivacyLevel (public/friends/private) maps 1:1 onto the
-    OpenPlural visibility vocabulary; anything unrecognised rounds to
+    PluralPort visibility vocabulary; anything unrecognised rounds to
     the strictest-safe ``unknown``.
     """
     if val in _VALID_VISIBILITY:
@@ -513,7 +513,7 @@ def _privacy(val: str | None) -> str:
 
 
 def _privacy_obj(val: str | None) -> dict:
-    """Wrap a Sheaf privacy bucket in the OpenPlural Privacy *object*
+    """Wrap a Sheaf privacy bucket in the PluralPort Privacy *object*
     (``{"visibility": ...}``), which is the spec shape for system / member /
     custom-field privacy. Sheaf has no richer raw source detail to carry, so
     the optional ``source`` key is omitted. (Note/journal ``visibility`` is a

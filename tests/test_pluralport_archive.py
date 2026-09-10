@@ -1,4 +1,4 @@
-"""Unit tests for OpenPlural import-residual preservation (the baseline
+"""Unit tests for PluralPort import-residual preservation (the baseline
 passthrough tier). Pure functions: extraction, compress+encrypt pack/unpack,
 size cap, merge, per-record detection, and re-merge on export.
 """
@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import uuid
 
-from sheaf.services.openplural_archive import (
+from sheaf.services.pluralport_archive import (
     extract_residual,
     has_per_record_foreign_extensions,
     merge_residual,
     pack_residual,
     unpack_residual,
 )
-from sheaf.services.openplural_export import build_envelope
-from sheaf.services.openplural_import import to_native
+from sheaf.services.pluralport_export import build_envelope
+from sheaf.services.pluralport_import import to_native
 
 _EXPORTED_AT = "2026-06-20T00:00:00+00:00"
 
@@ -25,7 +25,7 @@ def _foreign_envelope() -> dict:
     not model (foreign extensions, chat + relationships modules,
     front_comments, non-tag taxonomy)."""
     return {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "producer": {"app": "Prism", "app_id": "prism"},
         "systems": [{"id": "s1", "name": "Foreign", "privacy": "public"}],
         "members": [{"id": "m1", "name": "Iris", "privacy": "private"}],
@@ -112,9 +112,9 @@ def test_preserved_residual_re_merges_on_export():
     on the (native) system as a plain dict, comes back out in the envelope."""
     residual = extract_residual(_foreign_envelope())
     native = to_native(
-        {"openplural_version": "0.1", "systems": [{"id": "s1", "name": "S"}], "members": []}
+        {"pluralport_version": "0.1", "systems": [{"id": "s1", "name": "S"}], "members": []}
     )
-    native["system"]["openplural_archive"] = residual
+    native["system"]["pluralport_archive"] = residual
     env = build_envelope(native, exported_at=_EXPORTED_AT)
     # Foreign extensions ride alongside Sheaf's namespace.
     assert env["extensions"]["prism"] == {"theme": "dark", "legacyCoFronters": [1, 2]}

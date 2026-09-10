@@ -1,20 +1,20 @@
-"""OpenPlural export-coverage guard.
+"""PluralPort export-coverage guard.
 
 ``test_export_import_parity.py`` proves every user-data column is either
 *exported* in the native Article-20 dump or deliberately *excluded*. This
-test extends that to the OpenPlural exporter: every column the native
+test extends that to the PluralPort exporter: every column the native
 export carries (each model's ``exported`` set) must have a stated
-disposition in the OpenPlural envelope, one of:
+disposition in the PluralPort envelope, one of:
 
-* ``core``  - mapped to an OpenPlural v0.1 core record/field,
+* ``core``  - mapped to a PluralPort v0.1 core record/field,
 * ``ext``   - preserved under ``extensions.sheaf.*`` (lossless, opaque),
 * ``gap``   - intentionally not carried, with a reason.
 
 The dispositions below are read against ``CLASSIFICATION`` live, so a
 newly-added *exported* column fails here until someone decides how the
-OpenPlural exporter should treat it (and wires it into
-``openplural_export.build_envelope``). That is the whole point: it stops
-a new field silently falling out of the OpenPlural format the same way
+PluralPort exporter should treat it (and wires it into
+``pluralport_export.build_envelope``). That is the whole point: it stops
+a new field silently falling out of the PluralPort format the same way
 the native parity guard stops it falling out of the native one.
 """
 
@@ -26,17 +26,17 @@ from tests.test_export_import_parity import CLASSIFICATION
 
 # Per model: every column in that model's `exported` set maps to exactly
 # one disposition. `gap` carries a reason string; `core`/`ext`/`residual`
-# are bare markers. Keep in sync with openplural_export.build_envelope.
+# are bare markers. Keep in sync with pluralport_export.build_envelope.
 CORE = "core"
 EXT = "ext"
 # The preservation channel itself: it does not map to one envelope field,
 # it carries the FOREIGN residual (other apps' extensions/modules) that is
-# re-merged into the envelope on export. See openplural_archive.py.
+# re-merged into the envelope on export. See pluralport_archive.py.
 RESIDUAL = "residual"
 
 DISPOSITION: dict[str, dict[str, object]] = {
     "System": {
-        # Core OpenPlural System fields.
+        # Core PluralPort System fields.
         "name": CORE, "description": CORE, "tag": CORE, "color": CORE,
         "privacy": CORE, "avatar_url": CORE,
         # extensions.sheaf.* (note + prefs + the safety/retention blocks).
@@ -58,6 +58,8 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "safety_applies_to_profile_visibility": EXT,
         "journal_max_revisions": EXT, "journal_max_revision_days": EXT,
         "pinned_revision_max_per_target": EXT,
+        # Column name frozen pre-rename for AAD compatibility; the
+        # exported key is pluralport_archive.
         "openplural_archive": RESIDUAL,
     },
     "Member": {
@@ -65,7 +67,7 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "pronouns": CORE, "avatar_url": CORE, "banner_url": CORE,
         "color": CORE, "birthday": CORE, "is_custom_front": CORE,
         "privacy": CORE, "created_at": CORE,
-        # archived_at maps to the OpenPlural core Member.archived boolean.
+        # archived_at maps to the PluralPort core Member.archived boolean.
         "archived_at": CORE,
         # pluralkit_id becomes a SourceRef(app="pluralkit").
         "pluralkit_id": CORE,
@@ -132,18 +134,18 @@ DISPOSITION: dict[str, dict[str, object]] = {
     "PollVote": "_all_ext",
     "PollVoteEvent": "_all_ext",
     # Relationship types + both edge tables carry verbatim under the file-level
-    # extensions.sheaf.<section> passthrough (OpenPlural v0.1 has no
+    # extensions.sheaf.<section> passthrough (PluralPort v0.1 has no
     # relationship core record).
     "RelationshipType": "_all_ext",
     "MemberRelationship": "_all_ext",
     "GroupRelationship": "_all_ext",
     # User is classified in the native guard purely so new account columns
     # cannot skip export review; every column is excluded there, so there is
-    # nothing to give an OpenPlural disposition. The empty dict records that
+    # nothing to give a PluralPort disposition. The empty dict records that
     # deliberately (an empty exported set maps to no dispositions).
     "User": {},
     # Share views ride the same file-level extensions.sheaf.share_views
-    # passthrough (OpenPlural v0.1 has no sharing/visibility module).
+    # passthrough (PluralPort v0.1 has no sharing/visibility module).
     "ShareView": "_all_ext",
     "ShareViewMember": "_all_ext",
     "ShareViewField": "_all_ext",
@@ -160,8 +162,8 @@ def _disposition_for(model_name: str, exported: set[str]) -> dict[str, object]:
     if entry == "_all_ext":
         return {col: EXT for col in exported}
     assert isinstance(entry, dict), (
-        f"{model_name} has no OpenPlural disposition. Add it to "
-        f"tests/test_openplural_parity.py (core / ext / gap per column)."
+        f"{model_name} has no PluralPort disposition. Add it to "
+        f"tests/test_pluralport_parity.py (core / ext / gap per column)."
     )
     return entry
 
@@ -169,12 +171,12 @@ def _disposition_for(model_name: str, exported: set[str]) -> dict[str, object]:
 @pytest.mark.parametrize(
     "model", list(CLASSIFICATION), ids=lambda m: m.__name__
 )
-def test_every_exported_column_has_an_openplural_disposition(model: type):
-    """Every natively-exported column must have an OpenPlural disposition.
+def test_every_exported_column_has_an_pluralport_disposition(model: type):
+    """Every natively-exported column must have a PluralPort disposition.
 
     A new column added to a model's `exported` set in the native parity
     guard fails here until it is given a disposition and (if core/ext)
-    threaded into openplural_export.build_envelope.
+    threaded into pluralport_export.build_envelope.
     """
     name = model.__name__
     exported: set[str] = set(CLASSIFICATION[model]["exported"])
@@ -182,10 +184,10 @@ def test_every_exported_column_has_an_openplural_disposition(model: type):
 
     missing = exported - set(disposition)
     assert not missing, (
-        f"{name}: exported column(s) {sorted(missing)} have no OpenPlural "
+        f"{name}: exported column(s) {sorted(missing)} have no PluralPort "
         f"disposition. Decide core / ext / gap in "
-        f"tests/test_openplural_parity.py and wire core/ext fields into "
-        f"openplural_export.build_envelope."
+        f"tests/test_pluralport_parity.py and wire core/ext fields into "
+        f"pluralport_export.build_envelope."
     )
 
     phantom = set(disposition) - exported

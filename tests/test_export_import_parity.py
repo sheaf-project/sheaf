@@ -235,6 +235,10 @@ CLASSIFICATION: dict[type, dict] = {
             "safety_applies_to_relationships",
             "safety_applies_to_archive", "safety_applies_to_profile_visibility",
             "journal_max_revisions", "journal_max_revision_days",
+            # This set holds COLUMN names. `openplural_archive` keeps its
+            # pre-rename spelling because the name is baked into the AAD of
+            # every stored blob; the export key it maps to is
+            # `pluralport_archive`.
             "pinned_revision_max_per_target", "openplural_archive",
         },
         "excluded": {

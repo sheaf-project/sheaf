@@ -1,26 +1,41 @@
-# Sheaf OpenPlural support: implementation log
+# Sheaf PluralPort support: implementation log
 
-[OpenPlural](https://github.com/skylartaylor/openplural) is a draft (v0.1)
+[PluralPort](https://github.com/PluralPort/spec) is a draft (v0.1)
 interchange format for plural-system data: systems, members, fronting history,
 groups, taxonomy, custom fields, notes, and assets, with a registered
 `extensions.<app>` namespace for anything an app models that the core spec does
 not yet cover. The point of it is that one good exporter beats N pairwise
-converters: map your records to the OpenPlural core once and every other adopter
+converters: map your records to the PluralPort core once and every other adopter
 can read them.
 
 Sheaf is a founding adopter. Its exporter lives in
-`sheaf/services/openplural_export.py` and the inverse importer in
-`sheaf/services/openplural_import.py`; the import runner that wires them to the
-async job system is `sheaf/services/openplural_import_runner.py`.
+`sheaf/services/pluralport_export.py` and the inverse importer in
+`sheaf/services/pluralport_import.py`; the import runner that wires them to the
+async job system is `sheaf/services/pluralport_import_runner.py`.
+
+## The OpenPlural rename
+
+The format was called **OpenPlural** until a name conflict forced an upstream
+rename to **PluralPort**; the spec's version string stayed at `0.1`. Files
+written against the old name keep importing into Sheaf: the v0.1 reader
+accepts the deprecated `openplural_version` envelope key as an alias with
+identical semantics (when a file carries both keys, `pluralport_version`
+wins), and a bundle whose inner document is still named `openplural.json` is
+read the same as one named `pluralport.json`. Sheaf's own exports now emit
+`pluralport_version` and download as `.pluralport.zip`. The API keeps the
+pre-rename request values working too (`format=openplural`,
+`source=openplural_file`, `/v1/import/openplural/preview`), and self-hosters
+can keep the old `OPENPLURAL_MAX_PRESERVED_MB` env var (see
+`docs/SELFHOSTING.md`).
 
 ## How to use this file
 
-Every Sheaf OpenPlural export stamps two versions in its `producer` block:
+Every Sheaf PluralPort export stamps two versions in its `producer` block:
 
 - `producer.app_version` - the Sheaf release that produced the file (e.g.
   `1.1.0`), taken from package metadata.
 - `producer.exporter_version` - the version of the *mapping logic* itself
-  (`OPENPLURAL_IMPL_VERSION`, currently `0.1.0`). This moves independently of
+  (`PLURALPORT_IMPL_VERSION`, currently `0.1.0`). This moves independently of
   the Sheaf release whenever the field mapping changes in a way worth tracking.
 
 When you are handed an export and need to know exactly how that build mapped its
@@ -41,18 +56,21 @@ The envelope carries a `producer` object describing what wrote it:
 | `producer.app` | `"Sheaf"` | `APP_NAME` |
 | `producer.app_id` | `"sheaf"` | `APP_ID`, the registered namespace key |
 | `producer.app_version` | the Sheaf release, e.g. `"1.1.0"` | package metadata (`sheaf.__version__`) |
-| `producer.exporter_version` | `"0.1.0"` | `OPENPLURAL_IMPL_VERSION` |
+| `producer.exporter_version` | `"0.1.0"` | `PLURALPORT_IMPL_VERSION` |
 
-Separately, the top-level `openplural_version` field records the *spec* version
-the file targets, currently `"0.1"` (`OPENPLURAL_VERSION`). This is not the
+Separately, the top-level `pluralport_version` field records the *spec* version
+the file targets, currently `"0.1"` (`PLURALPORT_VERSION`). This is not the
 Sheaf version and not the exporter version - it is the contract the document
 claims to satisfy.
 
 The importer is strict about it. `SUPPORTED_VERSIONS = {"0.1"}`, and
 `_check_version` raises an `ImportPayloadError` for any other
-`openplural_version` rather than silently part-importing a document it does not
-understand. A file stamped, say, `openplural_version: "0.2"` will be rejected by
-a build that only knows `0.1`; this is deliberate per the spec.
+`pluralport_version` rather than silently part-importing a document it does not
+understand. A file stamped, say, `pluralport_version: "0.2"` will be rejected by
+a build that only knows `0.1`; this is deliberate per the spec. Per the spec's
+versioning rule, the deprecated pre-rename `openplural_version` key is accepted
+as a v0.1 alias with identical semantics; if a file carries both keys,
+`pluralport_version` wins.
 
 ## Provenance and lineage
 
@@ -111,7 +129,7 @@ that nothing in the DB layer can hand it back on the next export yet.
 The same `build_envelope` builder backs two delivery shapes, which differ only
 in how assets travel.
 
-### Sync JSON: `GET /v1/export?format=openplural`
+### Sync JSON: `GET /v1/export?format=pluralport`
 
 A single JSON document. Assets are **uri-only**: each `Asset` carries its avatar
 or image URL but no bytes. Because there are no blobs, the export emits a
@@ -119,16 +137,16 @@ top-level `info` warning with code `asset_uri_only`:
 
 ```json
 {"level": "info", "code": "asset_uri_only",
- "message": "Assets are referenced by URL only; export with images (the .openplural.zip bundle) to include the binary blobs."}
+ "message": "Assets are referenced by URL only; export with images (the .pluralport.zip bundle) to include the binary blobs."}
 ```
 
 Use this for a quick portable copy of structured data (systems, members, fronts,
 groups, tags, custom fields, journals); the images themselves only resolve if
 the destination can reach those URLs.
 
-### Async bundle: `.openplural.zip`
+### Async bundle: `.pluralport.zip`
 
-Produced by the async export job path. The zip contains `openplural.json` plus
+Produced by the async export job path. The zip contains `pluralport.json` plus
 an `assets/<storage_key>` entry for every internal image blob. In this shape each
 bundled asset additionally carries pointers under its own namespace:
 
@@ -159,10 +177,11 @@ present so the document stays spec-valid for an app that does not understand
 
 ---
 
-## Sheaf 1.1.0 - initial OpenPlural v0.1 support
+## Sheaf 1.1.0 - initial PluralPort v0.1 support
 
-First release with OpenPlural import/export. `OPENPLURAL_IMPL_VERSION = 0.1.0`,
-targeting spec `openplural_version 0.1`. The exporter is a pure transform over
+First release with PluralPort import/export (shipped under the format's
+pre-rename OpenPlural name; see "The OpenPlural rename" above). `PLURALPORT_IMPL_VERSION = 0.1.0`,
+targeting spec `pluralport_version 0.1`. The exporter is a pure transform over
 the native Article-20 export dict (version `"2"`); the importer is its inverse
 and translates back to that same native dict before delegating to the native
 importer, so all the import guards (member cap, safe-JSON, decompressed-size
@@ -171,9 +190,9 @@ one place and cannot drift per-format.
 
 ### Direct mappings
 
-Sheaf fields that land in OpenPlural core records.
+Sheaf fields that land in PluralPort core records.
 
-| Sheaf (native export) | OpenPlural core record / field |
+| Sheaf (native export) | PluralPort core record / field |
 |---|---|
 | `system.id` / `name` / `description` / `tag` / `color` | `System.id` / `name` / `description` / `tag` / `color` |
 | `system.avatar_url` | `Asset` (kind `avatar`) + `System.avatar_asset_id` |
@@ -208,10 +227,10 @@ Sheaf fields that land in OpenPlural core records.
 #### Birthday precision mapping
 
 Sheaf stores a birthday as a flat string, either with or without a year, and the
-exporter (`_birthday`) derives an OpenPlural precision-aware sub-record from its
+exporter (`_birthday`) derives a PluralPort precision-aware sub-record from its
 shape:
 
-| Sheaf stored value | OpenPlural `birthday` |
+| Sheaf stored value | PluralPort `birthday` |
 |---|---|
 | `"YYYY-MM-DD"` (3 parts) | `{"value": "YYYY-MM-DD", "precision": "day", "year_visible": true}` |
 | `"MM-DD"` (2 parts, year-less) | `{"value": "MM-DD", "precision": "month_day", "year_visible": false}` |
@@ -222,7 +241,7 @@ Sheaf string (and tolerates a plain string too).
 
 ### `extensions.sheaf.*` (platform-specific data)
 
-Everything Sheaf models that OpenPlural v0.1 has no core record for is preserved
+Everything Sheaf models that PluralPort v0.1 has no core record for is preserved
 losslessly under the registered `sheaf` namespace, so a round-trip restores it
 and another app can at least carry it forward. None of this is lost; it is just
 opaque to apps that do not speak Sheaf.
@@ -247,7 +266,7 @@ opaque to apps that do not speak Sheaf.
 
 #### File-level extensions
 
-These are the native sub-sections with no OpenPlural v0.1 core representation,
+These are the native sub-sections with no PluralPort v0.1 core representation,
 carried verbatim under `extensions.sheaf.<key>` (the `_EXT_PASSTHROUGH_SECTIONS`
 tuple), plus the lineage chain.
 
@@ -270,7 +289,7 @@ lifted directly into the native dict.
 ### Edge cases and decisions
 
 - **Privacy / visibility buckets.** Sheaf's `PrivacyLevel`
-  (`public` / `friends` / `private`) maps 1:1 onto the OpenPlural visibility
+  (`public` / `friends` / `private`) maps 1:1 onto the PluralPort visibility
   vocabulary (`{public, friends, private, trusted, unknown}`), rounding
   anything unrecognised to the strictest-safe `"unknown"` rather than
   guessing. Note the *shape*: on **system / member / custom-field** the spec
@@ -281,7 +300,7 @@ lifted directly into the native dict.
   **Note (journal) `visibility`** is a plain string in the spec, not the
   object, and stays a string both directions. (Treating the privacy object as
   a bare string was the cause of the `unhashable type: 'dict'` import crash on
-  spec-conformant files, e.g. a PluralSpace export routed through OpenPlural.)
+  spec-conformant files, e.g. a PluralSpace export routed through PluralPort.)
 - **Front status is free text.** `fronts[].custom_status` becomes
   `FrontPeriod.status` verbatim; there is no controlled vocabulary on the Sheaf
   side, so none is imposed.
@@ -308,14 +327,14 @@ lifted directly into the native dict.
 
 ### Preserving data Sheaf cannot model (incoming)
 
-Sheaf maps the subset of OpenPlural it models; without preservation, a file from
+Sheaf maps the subset of PluralPort it models; without preservation, a file from
 another app would lose everything Sheaf has no home for. To avoid being a lossy
 hop, the importer captures that residual on import and re-merges it into the next
-OpenPlural export. This is the **baseline tier** of the preservation contract
-Sheaf proposed upstream ([skylartaylor/openplural#11](https://github.com/skylartaylor/openplural/issues/11)):
+PluralPort export. This is the **baseline tier** of the preservation contract
+Sheaf proposed upstream ([PluralPort/spec#11](https://github.com/PluralPort/spec/issues/11)):
 file-level and whole-section passthrough.
 
-What is preserved (`services/openplural_archive.py`, `extract_residual`):
+What is preserved (`services/pluralport_archive.py`, `extract_residual`):
 
 | Residual | Source |
 | --- | --- |
@@ -327,8 +346,12 @@ What is preserved (`services/openplural_archive.py`, `extract_residual`):
 
 Storage: the residual is JSON, zlib-compressed, then encrypted at rest (it can
 carry message bodies and other content Sheaf treats as sensitive), and parked on
-`System.openplural_archive`. It is bounded by `OPENPLURAL_MAX_PRESERVED_MB`
-(default 8, measured on the raw JSON); a file over that has its residual dropped
+`System.openplural_archive` (the column keeps its pre-rename name: the AAD baked
+into the stored ciphertext is derived from it, so renaming it would make
+existing data undecryptable; the exported key is `pluralport_archive`, with the
+old spelling still accepted on import). It is bounded by
+`PLURALPORT_MAX_PRESERVED_MB` (default 8, measured on the raw JSON; the
+pre-rename `OPENPLURAL_MAX_PRESERVED_MB` env var still works); a file over that has its residual dropped
 with a warning rather than stored unbounded. The residual rides the native
 Article-20 export (decrypted) and is deleted with the account, so it is the
 user's data with the usual export and erasure coverage. Re-importing from a
@@ -346,8 +369,8 @@ silently dropping them.
 Much of what currently round-trips via `extensions.sheaf.*` should move to core
 records or dedicated modules if the matching upstream work lands. Sheaf filed
 issues #2 through #9 against
-[skylartaylor/openplural](https://github.com/skylartaylor/openplural) toward
-that (drafts live in `../sheaf-design-docs/openplural-adoption/`):
+[PluralPort/spec](https://github.com/PluralPort/spec) toward
+that (drafts live in `../sheaf-design-docs/pluralport-adoption/`):
 
 - **#2 - Add nullable `parent_post_id` to `BoardPost`.** Board posts carry a
   single-level reply pointer (`parent_message_id`) with no core field today; it
@@ -369,7 +392,7 @@ that (drafts live in `../sheaf-design-docs/openplural-adoption/`):
 - **#8 - Specify markdown flavour and in-body image embed syntax.** Pin how
   `description` / `body` markdown and embedded image references are written so
   bodies render identically across apps.
-- **#9 - Standardise the `.openplural` zip bundle format.** Where bundled asset
+- **#9 - Standardise the `.pluralport` zip bundle format.** Where bundled asset
   bytes live in the archive, so the `bundle_path` pointer can move out of the
   Sheaf namespace into the core asset shape.
 
@@ -387,7 +410,7 @@ When the mapping logic changes - a field moves from `extensions.sheaf.*` into a
 new core record, a new section is mapped, an enum is remapped, an upstream issue
 lands - do two things:
 
-1. Bump `OPENPLURAL_IMPL_VERSION` in `sheaf/services/openplural_export.py` (and
+1. Bump `PLURALPORT_IMPL_VERSION` in `sheaf/services/pluralport_export.py` (and
    add the new value to the importer's `SUPPORTED_VERSIONS` if the change is not
    backward-compatible for reading older files).
 2. Add a new dated `## Sheaf X.Y.Z` section here describing exactly what changed.

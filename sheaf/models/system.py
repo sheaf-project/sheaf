@@ -217,13 +217,17 @@ class System(UUIDMixin, TimestampMixin, Base):
         Integer, default=0, server_default="0", nullable=False
     )
 
-    # OpenPlural import residual: foreign data Sheaf does not model (other
+    # PluralPort import residual: foreign data Sheaf does not model (other
     # apps' `extensions` namespaces, the chat/relationships modules,
     # front_events/front_comments, non-tag taxonomy) preserved verbatim on
-    # import and re-merged into the next OpenPlural export, so a
+    # import and re-merged into the next PluralPort export, so a
     # Sheaf-in-the-middle round-trip does not silently drop it. Stored
     # encrypted (it can carry message bodies) and zlib-compressed; see
-    # services/openplural_archive.py. NULL when nothing was preserved.
+    # services/pluralport_archive.py. NULL when nothing was preserved.
+    # NB the column (and attribute) name is FROZEN at the format's old
+    # OpenPlural name: the AAD string derived from it is baked into every
+    # encrypted archive blob in production, so renaming it would make
+    # existing data undecryptable. Only the format branding changed.
     openplural_archive: Mapped[str | None] = mapped_column(
         Text, nullable=True, info={"encrypted": True}
     )

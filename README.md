@@ -16,7 +16,7 @@ Open-source plural system tracking. A self-hostable replacement for SimplyPlural
 
 [Android/WearOS](https://github.com/sheaf-project/android) is on the [Play Store](https://play.google.com/store/apps/details?id=systems.lupine.sheaf) (or sideload the APK from [Releases](https://github.com/sheaf-project/android/releases)), and [iOS/WatchOS](https://github.com/sheaf-project/ios) is on the [App Store](https://apps.apple.com/us/app/sheaf-plural-system-tracker/id6766770364). Both ship a watch companion app and complication.
 
-Sheaf supports the [OpenPlural](https://github.com/skylartaylor/openplural) data standard proposal as a founding project, and ships import and export for v0.1 today.
+Sheaf supports the [PluralPort](https://github.com/PluralPort/spec) data standard proposal (formerly OpenPlural) as a founding project, and ships import and export for v0.1 today.
 
 ## Why
 
@@ -49,8 +49,8 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Front-history retention** - Opt-in per-system window that ages out old closed fronts. A privacy control rather than a tier limit: off by default, with a fixed 14-day import grace so a freshly restored archive is never abruptly deleted, and tightening it takes a deferred, re-auth-gated countdown.
 - **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
 - **Realtime front stream** - `GET /v1/fronts/stream` pushes your front changes over Server-Sent Events instead of making you poll, aimed at home automation (Home Assistant, Node-RED) and live UI updates. The client dials out and holds the connection open, so a LAN-only consumer works with no inbound reachability at all. There is an official [Home Assistant integration](https://github.com/sheaf-project/sheaf-ha) built on it.
-- **Imports** — SimplyPlural, PluralKit (export file or live via your `pk;token`), Tupperbox, PluralSpace, Prism, Ampersand, OpenPlural, and Sheaf's own exports. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals, and the preview tells you what will be deduplicated, shortened, or capped before you commit to it. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
-- **OpenPlural** - Import and export for [OpenPlural](https://github.com/skylartaylor/openplural) v0.1, as either a single JSON document or an `.openplural.zip` bundle carrying image bytes. Sheaf data the draft spec doesn't model yet rides in a namespaced extensions key so a round-trip is lossless, and other apps' unmodellable data is preserved on import and re-emitted on the next export rather than dropped. See **[docs/OPENPLURAL.md](docs/OPENPLURAL.md)**.
+- **Imports** - SimplyPlural, PluralKit (export file or live via your `pk;token`), Tupperbox, PluralSpace, Prism, Ampersand, PluralPort, and Sheaf's own exports. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals, and the preview tells you what will be deduplicated, shortened, or capped before you commit to it. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
+- **PluralPort** - Import and export for [PluralPort](https://github.com/PluralPort/spec) v0.1 (formerly OpenPlural; files written against the old name still import), as either a single JSON document or a `.pluralport.zip` bundle carrying image bytes. Sheaf data the draft spec doesn't model yet rides in a namespaced extensions key so a round-trip is lossless, and other apps' unmodellable data is preserved on import and re-emitted on the next export rather than dropped. See **[docs/PLURALPORT.md](docs/PLURALPORT.md)**.
 - **File storage** — File uploads with filesystem or S3-compatible backends
 - **Data export** — sync JSON (Article 20 portability), async zip with image bytes that imports back as-is, and a separate Article 15 endpoint covering everything we know about your account
 - **Front-history export** - Fronting history on its own as CSV (one row per front, with duration and co-fronters), JSON, or ICS to drop into a calendar app
@@ -192,8 +192,8 @@ Key endpoints:
 | `POST /v1/imports/api` | Import a PluralKit system live via `pk;token` |
 | `GET /v1/imports` | Import job history and status |
 | `POST /v1/import/{source}/preview` | Preview a file before committing to it |
-| `GET /v1/export` | Export plural system content (sync JSON; `format=openplural` for OpenPlural) |
-| `POST /v1/export/jobs` | Queue an async export: full backup with image bytes, an `.openplural.zip` bundle, or front history as CSV / JSON / ICS |
+| `GET /v1/export` | Export plural system content (sync JSON; `format=pluralport` for PluralPort) |
+| `POST /v1/export/jobs` | Queue an async export: full backup with image bytes, a `.pluralport.zip` bundle, or front history as CSV / JSON / ICS |
 | `POST /v1/account/data` | Article 15 — everything we know about your account |
 | `POST /v1/files/upload` | Upload avatar |
 
@@ -270,7 +270,7 @@ Shipped items are listed here for context; the [CHANGELOG](CHANGELOG.md) has the
 - [x] PluralKit one-shot import (file or live API via `pk;token`)
 - [ ] PluralKit bidirectional sync
 - [x] Importers for Tupperbox, PluralSpace, Prism, and Ampersand
-- [x] OpenPlural v0.1 import and export, with lossless round-trip and foreign-extension preservation ([docs/OPENPLURAL.md](docs/OPENPLURAL.md))
+- [x] PluralPort v0.1 import and export, with lossless round-trip and foreign-extension preservation ([docs/PLURALPORT.md](docs/PLURALPORT.md))
 - [x] Member and group relationships with a system graph
 - [x] Archived members
 - [x] Subgroups (nested groups) with a drag-to-reparent tree

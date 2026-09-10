@@ -182,6 +182,8 @@ _GOLDEN_BINDINGS = {
     "member_description_aad": ("members", "description"),
     "member_note_aad": ("members", "note"),
     "system_note_aad": ("systems", "note"),
+    # Frozen at the pre-rename OpenPlural name: this AAD is baked into
+    # every encrypted archive blob in production (see encrypted_fields).
     "system_openplural_archive_aad": ("systems", "openplural_archive"),
     "front_custom_status_aad": ("fronts", "custom_status"),
     "journal_title_aad": ("journal_entries", "title"),

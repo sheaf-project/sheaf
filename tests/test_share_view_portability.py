@@ -5,7 +5,7 @@ does. An export therefore carries view names, flags and membership but no
 token, no token hash and no grant row, and an import restores the curation
 while leaving the system published to nobody.
 
-Covers both file formats: the native Sheaf export and the OpenPlural
+Covers both file formats: the native Sheaf export and the PluralPort
 envelope (whose importer lifts the `extensions.sheaf.share_views` and
 relationships passthrough sections back into the native shape).
 
@@ -21,7 +21,7 @@ import uuid
 
 import httpx
 
-from sheaf.services.openplural_export import build_envelope
+from sheaf.services.pluralport_export import build_envelope
 from tests._import_runner_helpers import drive_import_runner, wait_for_terminal
 
 _EXPORTED_AT = "2026-07-01T00:00:00+00:00"
@@ -384,11 +384,11 @@ def test_import_guards_malformed_share_views(auth_client: httpx.Client):
     assert views[0]["name"] == "x" * 100, views[0]["name"]
 
 
-# --- OpenPlural round trip ---------------------------------------------------
+# --- PluralPort round trip ---------------------------------------------------
 
 
-def _openplural_native() -> dict:
-    native = _native_with_views("OpenPlural View")
+def _pluralport_native() -> dict:
+    native = _native_with_views("PluralPort View")
     native["system"]["name"] = "OP Share Portability"
     native["relationship_types"] = [
         {
@@ -423,26 +423,26 @@ def _openplural_native() -> dict:
     return native
 
 
-def test_openplural_envelope_carries_the_passthrough_sections():
+def test_pluralport_envelope_carries_the_passthrough_sections():
     """Sanity check on the exporter half: the sections the importer lifts back
     are actually written where it looks for them."""
-    env = build_envelope(_openplural_native(), exported_at=_EXPORTED_AT)
+    env = build_envelope(_pluralport_native(), exported_at=_EXPORTED_AT)
     sheaf_ext = env["extensions"]["sheaf"]
-    assert sheaf_ext["share_views"][0]["name"] == "OpenPlural View"
+    assert sheaf_ext["share_views"][0]["name"] == "PluralPort View"
     assert sheaf_ext["relationship_types"][0]["name"] == "OpPartner"
     assert len(sheaf_ext["member_relationships"]) == 1
     assert len(sheaf_ext["group_relationships"]) == 1
 
 
-def test_openplural_roundtrip_restores_views_and_relationships(
+def test_pluralport_roundtrip_restores_views_and_relationships(
     auth_client: httpx.Client,
 ):
-    """The sections the OpenPlural exporter parks under extensions.sheaf.* come
+    """The sections the PluralPort exporter parks under extensions.sheaf.* come
     back on import - they used to be written and then dropped on the way in.
     Share views arrive inert here too."""
-    env = build_envelope(_openplural_native(), exported_at=_EXPORTED_AT)
+    env = build_envelope(_pluralport_native(), exported_at=_EXPORTED_AT)
     final = _run(
-        auth_client, json.dumps(env).encode(), source="openplural_file"
+        auth_client, json.dumps(env).encode(), source="pluralport_file"
     )
     counts = final["counts"]
     assert counts["share_views_imported"] == 1, counts
@@ -455,12 +455,12 @@ def test_openplural_roundtrip_restores_views_and_relationships(
     field_id = {f["name"]: f["id"] for f in dump["custom_fields"]}
     group_id = {g["name"]: g["id"] for g in dump["groups"]}
 
-    # Group privacy has no OpenPlural v0.1 core field, so it rides
+    # Group privacy has no PluralPort v0.1 core field, so it rides
     # extensions.sheaf on the group record; this proves that passthrough works
     # in both directions.
     assert _group_by_name(dump, "ShareGroup")["privacy"] == "friends"
 
-    view = _view_by_name(auth_client, "OpenPlural View")
+    view = _view_by_name(auth_client, "PluralPort View")
     assert view["include_members"] is False
     assert view["include_bio"] is True
     assert view["fronting_show_count"] is False

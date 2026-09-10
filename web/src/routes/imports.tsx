@@ -110,7 +110,7 @@ export function ImportsPage() {
         <Card className="max-w-lg">
           <CardContent className="py-6 text-sm text-muted-foreground">
             No imports yet. Bring in data from PluralKit, SimplyPlural,
-            Tupperbox, PluralSpace, Prism, OpenPlural, or a Sheaf export.
+            Tupperbox, PluralSpace, Prism, PluralPort, or a Sheaf export.
             <div className="mt-4">
               <Button size="sm" asChild>
                 <Link to="/import">Start an import</Link>

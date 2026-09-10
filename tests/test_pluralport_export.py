@@ -1,10 +1,10 @@
-"""Unit tests for the OpenPlural exporter / inverse-importer transforms.
+"""Unit tests for the PluralPort exporter / inverse-importer transforms.
 
 These are pure-function tests (no DB, no HTTP): they exercise
-``openplural_export.build_envelope`` and ``openplural_import.to_native``
+``pluralport_export.build_envelope`` and ``pluralport_import.to_native``
 directly, plus the version guard and lineage handling. The end-to-end
 job-runner behaviour (guards, dedup, image restore) is covered by
-``test_imports_openplural_runner.py``.
+``test_imports_pluralport_runner.py``.
 """
 
 from __future__ import annotations
@@ -12,12 +12,12 @@ from __future__ import annotations
 import pytest
 
 from sheaf.services.import_parsing import ImportPayloadError
-from sheaf.services.openplural_export import (
-    OPENPLURAL_IMPL_VERSION,
-    OPENPLURAL_VERSION,
+from sheaf.services.pluralport_export import (
+    PLURALPORT_IMPL_VERSION,
+    PLURALPORT_VERSION,
     build_envelope,
 )
-from sheaf.services.openplural_import import inherited_lineage, parse_json, to_native
+from sheaf.services.pluralport_import import inherited_lineage, parse_json, to_native
 
 _EXPORTED_AT = "2026-06-20T00:00:00+00:00"
 
@@ -90,19 +90,19 @@ def _native() -> dict:
 
 def test_envelope_producer_and_version_stamp():
     env = build_envelope(_native(), exported_at=_EXPORTED_AT, app_version="1.1.0")
-    assert env["openplural_version"] == OPENPLURAL_VERSION == "0.1"
+    assert env["pluralport_version"] == PLURALPORT_VERSION == "0.1"
     p = env["producer"]
     assert p["app"] == "Sheaf"
     assert p["app_id"] == "sheaf"
     assert p["app_version"] == "1.1.0"
-    assert p["exporter_version"] == OPENPLURAL_IMPL_VERSION
+    assert p["exporter_version"] == PLURALPORT_IMPL_VERSION
     assert env["exported_at"] == _EXPORTED_AT
 
 
 def test_core_records_mapped():
     env = build_envelope(_native(), exported_at=_EXPORTED_AT)
     assert env["systems"][0]["name"] == "Sys"
-    # privacy is the OpenPlural Privacy object, not a bare string.
+    # privacy is the PluralPort Privacy object, not a bare string.
     assert env["systems"][0]["privacy"] == {"visibility": "public"}
     # pluralkit_id becomes a source_ref, not a core member field.
     m1 = next(m for m in env["members"] if m["id"] == "m1")
@@ -159,7 +159,7 @@ def test_lineage_appends_and_accumulates():
     lineage = env["extensions"]["sheaf"]["lineage"]
     assert lineage[-1] == {
         "app": "sheaf", "app_version": "1.1.0",
-        "exporter_version": OPENPLURAL_IMPL_VERSION, "exported_at": _EXPORTED_AT,
+        "exporter_version": PLURALPORT_IMPL_VERSION, "exported_at": _EXPORTED_AT,
     }
     # A prior hop carried in is preserved ahead of Sheaf's entry.
     prior = [{"app": "simply_plural", "exported_at": "2023-01-01T00:00:00+00:00"}]
@@ -209,8 +209,8 @@ def test_round_trip_to_native_restores_fields():
 
 def test_import_rejects_unknown_version():
     bad = build_envelope(_native(), exported_at=_EXPORTED_AT)
-    bad["openplural_version"] = "0.2"
-    with pytest.raises(ImportPayloadError, match="unsupported openplural_version"):
+    bad["pluralport_version"] = "0.2"
+    with pytest.raises(ImportPayloadError, match="unsupported pluralport_version"):
         to_native(bad)
 
 
@@ -219,8 +219,77 @@ def test_parse_json_rejects_non_dict_and_bad_version():
 
     with pytest.raises(ImportPayloadError):
         parse_json(json.dumps([1, 2, 3]).encode())
-    with pytest.raises(ImportPayloadError, match="unsupported openplural_version"):
-        parse_json(json.dumps({"openplural_version": "9.9"}).encode())
+    with pytest.raises(ImportPayloadError, match="unsupported pluralport_version"):
+        parse_json(json.dumps({"pluralport_version": "9.9"}).encode())
+
+
+def test_legacy_openplural_version_key_still_accepted():
+    """Pre-rename files stamp `openplural_version`; the spec keeps it as a
+    deprecated v0.1 alias with identical semantics."""
+    env = {
+        "openplural_version": "0.1",
+        "systems": [{"id": "s1", "name": "Legacy Sys", "privacy": "public"}],
+        "members": [{"id": "m1", "name": "OldName"}],
+    }
+    native = to_native(env)
+    assert native["system"]["name"] == "Legacy Sys"
+    assert native["members"][0]["name"] == "OldName"
+    # parse_json runs the same version check.
+    import json
+
+    assert parse_json(json.dumps(env).encode())["systems"][0]["name"] == "Legacy Sys"
+
+
+def test_both_version_keys_pluralport_wins():
+    """When a file carries both keys, `pluralport_version` wins per the
+    spec - even when only the deprecated key holds a supported value. A
+    bogus pluralport_version therefore rejects the file outright."""
+    env = {
+        "pluralport_version": "9.9",
+        "openplural_version": "0.1",
+        "members": [{"id": "m1", "name": "A"}],
+    }
+    with pytest.raises(ImportPayloadError, match="unsupported pluralport_version"):
+        to_native(env)
+    # And the other way around: a valid pluralport_version imports fine
+    # regardless of what the stale alias says.
+    env2 = {
+        "pluralport_version": "0.1",
+        "openplural_version": "9.9",
+        "members": [{"id": "m1", "name": "A"}],
+    }
+    assert to_native(env2)["members"][0]["name"] == "A"
+
+
+def test_bundle_accepts_legacy_inner_json_name():
+    """A pre-rename bundle carries openplural.json instead of
+    pluralport.json; both open, and pluralport.json wins if both exist."""
+    import io
+    import json
+    import zipfile
+
+    from sheaf.services.pluralport_import import parse_bundle
+
+    def _zip(entries: dict[str, str]) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name, body in entries.items():
+                zf.writestr(name, body)
+        return buf.getvalue()
+
+    legacy_env = json.dumps(
+        {"openplural_version": "0.1", "systems": [{"id": "s", "name": "Old"}]}
+    )
+    parsed, _ = parse_bundle(_zip({"openplural.json": legacy_env}))
+    assert parsed.data["system"]["name"] == "Old"
+
+    new_env = json.dumps(
+        {"pluralport_version": "0.1", "systems": [{"id": "s", "name": "New"}]}
+    )
+    parsed, _ = parse_bundle(
+        _zip({"openplural.json": legacy_env, "pluralport.json": new_env})
+    )
+    assert parsed.data["system"]["name"] == "New"
 
 
 def test_front_events_convert_to_intervals():
@@ -228,7 +297,7 @@ def test_front_events_convert_to_intervals():
     event runs until the next, an empty-assignment event is a gap, and the
     last event stays open-ended."""
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "members": [{"id": "m1", "name": "A"}, {"id": "m2", "name": "B"}],
         "front_events": [
             {"id": "e1", "at": "2026-01-01T00:00:00+00:00",
@@ -252,7 +321,7 @@ def test_front_events_dedup_against_periods():
     """A file carrying both a period and an identical event collapses to one
     front (no double-import); the open-ended period is preserved."""
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "members": [{"id": "m1", "name": "A"}],
         "front_periods": [
             {"id": "p1", "started_at": "2026-01-01T00:00:00+00:00", "ended_at": None,
@@ -277,12 +346,12 @@ def test_privacy_buckets_round_to_known():
 
 
 def test_privacy_object_extracted_on_import():
-    """Spec-conformant OpenPlural privacy is an object {visibility, source};
+    """Spec-conformant PluralPort privacy is an object {visibility, source};
     to_native must extract the visibility string rather than pass the dict
     through (which crashed the native importer: unhashable type 'dict').
-    Repro of the reported PluralSpace-via-OpenPlural import failure."""
+    Repro of the reported PluralSpace-via-PluralPort import failure."""
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "systems": [
             {
                 "id": "s1",
@@ -306,7 +375,7 @@ def test_privacy_object_extracted_on_import():
 def test_privacy_bare_string_still_accepted_on_import():
     """Older / lenient files with a bare-string privacy still read."""
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "systems": [{"id": "s1", "name": "S", "privacy": "public"}],
     }
     assert to_native(env)["system"]["privacy"] == "public"

@@ -4,7 +4,7 @@ from enum import StrEnum
 from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("sheaf")
@@ -185,13 +185,20 @@ class Settings(BaseSettings):
     # the body is buffered anywhere. Must be >= the largest per-endpoint cap
     # (currently the 100MB import endpoint) plus a little multipart overhead.
     max_request_body_size_mb: int = 110
-    # OpenPlural import: max size (MB) of foreign data Sheaf cannot model
+    # PluralPort import: max size (MB) of foreign data Sheaf cannot model
     # (other apps' `extensions` namespaces, the chat/relationships modules,
     # front_events/front_comments, non-tag taxonomy) that gets preserved as
-    # an opaque archive on the system and re-emitted on the next OpenPlural
+    # an opaque archive on the system and re-emitted on the next PluralPort
     # export. Measured on the raw (pre-compression) JSON; over this, the
     # residual is dropped with a warning rather than stored unbounded.
-    openplural_max_preserved_mb: int = 8
+    # The env var was OPENPLURAL_MAX_PRESERVED_MB before the format's
+    # rename; both names are honoured (the new one wins if both are set).
+    pluralport_max_preserved_mb: int = Field(
+        default=8,
+        validation_alias=AliasChoices(
+            "pluralport_max_preserved_mb", "openplural_max_preserved_mb"
+        ),
+    )
 
     # Storage quotas per tier (MB). 0 = unlimited.
     storage_quota_free_mb: int = 50
