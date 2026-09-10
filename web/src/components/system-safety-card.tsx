@@ -82,6 +82,50 @@ const categoryLabels: {
   },
 ];
 
+/**
+ * What a tier or grace change is about to start enforcing, or null when it is
+ * not arming anything.
+ *
+ * Arming the tier, or opening a grace window, does not change WHICH categories
+ * are ticked. It changes whether being ticked does anything at all: at the
+ * `none` tier with no grace, a ticked category enforces nothing. So somebody
+ * who sets a tier to get a password prompt before deletions has, in the same
+ * action, put that prompt in front of every other ticked category - including
+ * Profile visibility, the one category that ships on and therefore the one they
+ * never switched on themselves.
+ *
+ * That is the reported surprise, and it is far cheaper to say here than to let
+ * someone discover it later when a publish is refused. Silent on an ordinary
+ * save, so it stays worth reading when it does appear.
+ */
+function newlyEnforced(
+  current: SystemSafetySettings,
+  draft: SystemSafetySettings,
+): { labels: string[]; effects: string[]; visibilityRidesAlong: boolean } | null {
+  const tierArming = current.auth_tier === "none" && draft.auth_tier !== "none";
+  const graceArming =
+    current.grace_period_days === 0 && draft.grace_period_days > 0;
+  if (!tierArming && !graceArming) return null;
+
+  const on = categoryLabels.filter((c) => draft[c.key] as boolean);
+  if (on.length === 0) return null;
+
+  const effects: string[] = [];
+  if (tierArming) effects.push("ask you to re-authenticate");
+  if (graceArming) {
+    effects.push(`wait out the ${draft.grace_period_days}-day grace period`);
+  }
+  return {
+    labels: on.map((c) => c.label),
+    effects,
+    // Only called out when the user is not the one who just ticked it. If they
+    // turned it on in this same edit they already know it is there.
+    visibilityRidesAlong:
+      (draft.applies_to_profile_visibility as boolean) &&
+      (current.applies_to_profile_visibility as boolean),
+  };
+}
+
 function changeSummary(changes: Record<string, unknown>): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(changes)) {
@@ -187,6 +231,7 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
   });
 
   const dirty = hasDiff(settings, draft);
+  const arming = newlyEnforced(settings, draft);
   const loosening = detectLoosening(settings, draft);
   const needsReauth =
     loosening && (settings.grace_period_days > 0 || draft.grace_period_days > 0);
@@ -276,6 +321,30 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
           ))}
         </div>
       </div>
+      {arming && (
+        <div className="space-y-1 rounded-md border border-dashed p-3">
+          <p className="text-sm">
+            Saving this starts enforcing the categories ticked above. Actions in
+            them will {arming.effects.join(" and ")}.
+          </p>
+          {/* Skipped when profile visibility is the only thing covered: the
+              callout below already names it, and a one-item list restating it
+              reads as a stutter. */}
+          {(!arming.visibilityRidesAlong || arming.labels.length > 1) && (
+            <p className="text-xs text-muted-foreground">
+              Covered: {arming.labels.join(", ")}.
+            </p>
+          )}
+          {arming.visibilityRidesAlong && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              That includes Profile visibility, which is on by default rather
+              than something you turned on. Publishing a share view, or raising
+              a member, group or field to public, goes through the same gate.
+              Untick it above if you meant this for deleting things only.
+            </p>
+          )}
+        </div>
+      )}
       <div className="space-y-2 border-t pt-3">
         <Label className="text-sm">Revision pinning</Label>
         <label className="flex items-start gap-2 text-sm cursor-pointer">
