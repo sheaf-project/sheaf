@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-10
+
 ### Added
 
 - **Groups and custom fields can now be put in the order you want.** Up/down arrows on the Groups page move a group among the groups next to it (its siblings, when nested), and the same arrows in Settings > Custom fields reorder your fields; dragging a group still moves it into or out of another group, so the two gestures stay distinct. The order you set is respected everywhere the app lists your groups - groups you have not rearranged stay alphabetical - and it travels with your backups, so a restore puts everything back in the order you left it. Public profiles and share links follow it too: groups and custom fields appear to visitors in the order you arranged them, the same as inside the app.
@@ -24,9 +26,6 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 - **Clearing a member's custom field now works from the web app.** Emptying a field and saving silently kept the old value: the web skipped empty fields from the save request entirely, and the server only touches the entries it is given, so nothing ever asked it to clear. The same skip also meant a ticked yes/no field could never be unticked, and a multiselect could never be emptied back to nothing. An emptied field that has a stored value is now sent as an explicit clear. (This is the web sibling of the Android clear-a-field bug; each client tripped over the same endpoint in its own way.)
 - **Clearing a member's custom field no longer fails with some client libraries.** Clearing a field is expressed as `value: null` on `PUT /v1/members/{id}/fields` - but several client serialisers omit null fields entirely rather than writing them (the Android app's JSON library does this, which is how clearing a field from Android broke), and the server rejected an entry with no `value` at all. An omitted `value` is now accepted and clears the field exactly like an explicit null. Absence has no other meaning on this endpoint, so nothing changes for any client that already sends the null.
 - **Front-change notifications with hidden co-fronters no longer say "and" twice.** A switch like five members starting with two of them hidden from the channel rendered "A, B, and C, and 2 others started fronting" - the visible names were joined into a finished list and the "N others" tail then bolted on with its own "and". The tail now joins the same list as the names, so the "and" lands exactly once, before the true final item: "A, B, C, and 2 others started fronting."
-
-### Fixed
-
 - **Setting a member's avatar or banner to an external image URL works again on the web.** Pressing Set (or Enter) in the image-URL box triggered the browser's own page navigation instead of setting the image: the URL box was a form nested inside the member editing form, which React does not deliver events for, so the browser fell back to natively submitting it - producing an "are you sure you want to leave this page?" prompt and losing the image (and any other unsaved edits with it). The URL box no longer uses a form at all; Set and the Enter key both just set the image, in place.
 
 ## [1.4.0] - 2026-09-02
