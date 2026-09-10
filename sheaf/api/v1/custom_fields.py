@@ -114,6 +114,17 @@ async def create_field(
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
+
+    # A definition BORN public is the same exposure as raising one later, so it
+    # meets the same publishing-availability gate `update_field` applies. The
+    # guard's whole point is that a ceiling set while the instance's public
+    # surface is off serves nobody today and would quietly START serving the
+    # moment an operator flips the setting back; being new rather than edited
+    # does not change that. This is the availability check, separate from the
+    # step-up/staging below, which handles the case where the surface IS on.
+    if body.privacy == PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
     fields = body.model_dump()
     # Step-up credentials are not field columns; drop them before the row is
     # built so they can never be persisted.

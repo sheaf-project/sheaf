@@ -33,12 +33,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
 import {
   Dialog,
   DialogContent,
@@ -54,14 +51,6 @@ import type {
   GroupUpdate,
   PrivacyLevel,
 } from "@/types/api";
-
-/** Same three words, in the same order, as the member and per-edge privacy
- *  selects: "who may see this" is one question, so it gets one vocabulary. */
-const GROUP_PRIVACY_LEVELS: { value: PrivacyLevel; label: string }[] = [
-  { value: "private", label: "Private" },
-  { value: "friends", label: "Friends only" },
-  { value: "public", label: "Public" },
-];
 
 /** Permission, never a promise: a public group still has to be in a view that
  *  was told to show groups before anyone sees it. One line, because a
@@ -545,24 +534,16 @@ export function GroupsPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="group-create-privacy">Privacy</Label>
-              <Select
+              {/* No stored record yet, so Public is a raise from nothing. */}
+              <PrivacyLevelSelect
+                id="group-create-privacy"
                 value={privacy}
-                onValueChange={(v) => setPrivacy(v as PrivacyLevel)}
-              >
-                <SelectTrigger id="group-create-privacy">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {GROUP_PRIVACY_LEVELS.map((l) => (
-                    <SelectItem key={l.value} value={l.value}>
-                      {l.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onValueChange={setPrivacy}
+              />
               <p className="text-xs text-muted-foreground">
                 {GROUP_PRIVACY_HELP}
               </p>
+              <PublishingOffNote />
             </div>
             <DialogFooter>
               <Button type="submit" disabled={createGroup.isPending || !name}>
@@ -620,24 +601,21 @@ export function GroupsPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="group-edit-privacy">Privacy</Label>
-              <Select
+              {/* `savedValue` is the group's LIVE level, not `privacy` (which
+                  the select is busy changing) and not a staged
+                  `pending_privacy`: the backend compares a request against the
+                  stored level, so a group already public keeps Public offered
+                  and can still be lowered. */}
+              <PrivacyLevelSelect
+                id="group-edit-privacy"
                 value={privacy}
-                onValueChange={(v) => setPrivacy(v as PrivacyLevel)}
-              >
-                <SelectTrigger id="group-edit-privacy">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {GROUP_PRIVACY_LEVELS.map((l) => (
-                    <SelectItem key={l.value} value={l.value}>
-                      {l.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onValueChange={setPrivacy}
+                savedValue={editingLive?.privacy}
+              />
               <p className="text-xs text-muted-foreground">
                 {GROUP_PRIVACY_HELP}
               </p>
+              <PublishingOffNote savedValue={editingLive?.privacy} />
               {/* A raise is staged, so the live level is still the old one
                   until the grace window elapses; say which is which. */}
               {editingLive?.privacy_activates_at && (

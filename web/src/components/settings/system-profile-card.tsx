@@ -15,6 +15,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
+import {
   AUTO_VALUE,
   FOLLOW_ACCOUNT_VALUE,
   TimezoneSelect,
@@ -216,16 +220,18 @@ function SystemSettingsForm({
           </div>
           <div className="space-y-2">
             <Label htmlFor="system-privacy">Privacy</Label>
-            <Select value={privacy} onValueChange={(v) => setPrivacy(v as PrivacyLevel)}>
-              <SelectTrigger id="system-privacy">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="private">Private</SelectItem>
-                <SelectItem value="friends">Friends only</SelectItem>
-                <SelectItem value="public">Public</SelectItem>
-              </SelectContent>
-            </Select>
+            {/* The master switch. `savedValue` is the LIVE level, not `privacy`
+                (which the select is busy changing) and not a staged
+                `pending_privacy`: the backend refuses only a real raise, so a
+                system already public keeps Public offered and can still be
+                taken back down. */}
+            <PrivacyLevelSelect
+              id="system-privacy"
+              value={privacy}
+              onValueChange={setPrivacy}
+              savedValue={initial.privacy}
+            />
+            <PublishingOffNote savedValue={initial.privacy} />
             {initial.pending_privacy === "public" &&
               initial.privacy_activates_at && (
                 <p className="text-xs text-amber-600">

@@ -148,6 +148,15 @@ async def create_group(
 ):
     system = await _get_user_system(user, db)
 
+    # A group BORN public is the same exposure as raising one later, so it meets
+    # the same publishing-availability gate `update_group` applies. The guard's
+    # whole point is that a ceiling set while the instance's public surface is
+    # off serves nobody today and would quietly START serving the moment an
+    # operator flips the setting back; being new rather than edited does not
+    # change that, and without this create was the way around it.
+    if body.privacy == PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
     if body.parent_id is not None:
         await _get_own_group(body.parent_id, system, db)
         if await _depth_to_root(body.parent_id, system, db) >= MAX_GROUP_DEPTH:
