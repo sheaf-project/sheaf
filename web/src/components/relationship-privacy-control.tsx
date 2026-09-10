@@ -5,22 +5,17 @@ import { Badge } from "@/components/ui/badge";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  PrivacyLevelLabel,
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import {
   useUpdateGroupRelationship,
   useUpdateMemberRelationship,
 } from "@/hooks/use-relationships";
 import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
-import {
-  EDGE_VISIBILITY_HELP,
-  EDGE_VISIBILITY_LEVELS,
-} from "@/lib/relationship-privacy";
+import { EDGE_VISIBILITY_HELP } from "@/lib/relationship-privacy";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 import { cn } from "@/lib/utils";
@@ -155,26 +150,25 @@ export function RelationshipPrivacyControl({
     );
   }
 
+  // Read-modify-write straight onto the stored edge, so the select's value IS
+  // the saved level - an edge already public keeps Public offered and can
+  // still be lowered. `gated` is false for group edges because the backend
+  // genuinely accepts public there (nothing projects them), so disabling the
+  // option would invent a restriction the server does not have.
   const select = readOnly ? null : (
-    <Select
+    <PrivacyLevelSelect
       value={edge.visibility}
-      onValueChange={(v) => changeVisibility(v as PrivacyLevel)}
+      onValueChange={changeVisibility}
+      savedValue={edge.visibility}
+      gated={isMember}
       disabled={updateEdge.isPending}
-    >
-      <SelectTrigger
-        className={layout === "row" ? "h-6 w-28 text-xs" : "w-full"}
-        aria-label="Visibility"
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {EDGE_VISIBILITY_LEVELS.map((l) => (
-          <SelectItem key={l.value} value={l.value}>
-            {l.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+      className={layout === "row" ? "h-6 w-28 text-xs" : "w-full"}
+      ariaLabel="Visibility"
+    />
+  );
+
+  const publishingOff = readOnly ? null : (
+    <PublishingOffNote savedValue={edge.visibility} gated={isMember} />
   );
 
   // Display only, stacked: say what the level is in the same words the select
@@ -184,8 +178,7 @@ export function RelationshipPrivacyControl({
   // over on the right.)
   const staticLevel = readOnly ? (
     <p className="text-sm">
-      {EDGE_VISIBILITY_LEVELS.find((l) => l.value === edge.visibility)?.label ??
-        edge.visibility}
+      <PrivacyLevelLabel level={edge.visibility} />
     </p>
   ) : null;
 
@@ -233,6 +226,7 @@ export function RelationshipPrivacyControl({
         {select}
         {staticLevel}
         {help}
+        {publishingOff}
         {pendingNote}
         {stepUp}
       </div>
@@ -249,6 +243,7 @@ export function RelationshipPrivacyControl({
         </div>
       </div>
       {help}
+      {publishingOff}
       {pendingNote}
       {stepUp}
     </div>

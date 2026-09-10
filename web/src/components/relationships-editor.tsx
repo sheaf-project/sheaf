@@ -40,10 +40,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
+import { EDGE_VISIBILITY_HELP } from "@/lib/relationship-privacy";
 import {
-  EDGE_VISIBILITY_HELP,
-  EDGE_VISIBILITY_LEVELS,
-} from "@/lib/relationship-privacy";
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 
@@ -345,24 +346,21 @@ export function RelationshipsEditor({
 
           <div className="space-y-1">
             <Label className="text-xs">Visibility</Label>
-            <Select
+            {/* An edge born public is the same exposure as one raised later
+                and gets the same refusal, so no `savedValue`. Group edges pass
+                gated=false: the backend accepts public there because nothing
+                projects them. */}
+            <PrivacyLevelSelect
               value={visibility}
-              onValueChange={(v) => setVisibility(v as PrivacyLevel)}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {EDGE_VISIBILITY_LEVELS.map((l) => (
-                  <SelectItem key={l.value} value={l.value}>
-                    {l.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              onValueChange={setVisibility}
+              gated={scope === "member"}
+              className="w-full"
+              ariaLabel="Visibility"
+            />
             <p className="text-[11px] text-muted-foreground">
               {EDGE_VISIBILITY_HELP}
             </p>
+            <PublishingOffNote gated={scope === "member"} />
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

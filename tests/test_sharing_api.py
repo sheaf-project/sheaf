@@ -2523,6 +2523,30 @@ def _go_public_in_db(system_id: str) -> None:
     _in_db(_work)
 
 
+def _public_member_in_db(c: httpx.Client, name: str) -> str:
+    """A member that is public, on an instance whose surface is off.
+
+    Creating one born public is now refused at the API for the same reason
+    raising an existing one is (see `refuse_raise_when_publishing_unavailable`),
+    so - exactly like `_go_public_in_db` and the view/grant row helpers - a
+    member who was made public while the surface was ON is simulated rather than
+    asked for. These tests describe the dormant state that follows an operator
+    switching the surface off, not a fresh publish.
+    """
+    member_id = _member(c, name, privacy="private")
+
+    async def _work(db) -> None:
+        from sheaf.models.member import Member
+        from sheaf.models.system import PrivacyLevel
+
+        member = await db.get(Member, uuid.UUID(member_id))
+        assert member is not None
+        member.privacy = PrivacyLevel.PUBLIC
+
+    _in_db(_work)
+    return member_id
+
+
 def _dormant_setup(c: httpx.Client, subject_type: str = "public") -> tuple[str, str]:
     """A view with a dormant grant pointing at it. Returns (view_id, grant_id).
 
@@ -2597,6 +2621,37 @@ def test_raising_a_ceiling_to_public_is_refused_with_the_surface_off(
 
 
 @pytest.mark.public_profiles_off
+def test_creating_a_record_born_public_is_refused_with_the_surface_off(
+    auth_client: httpx.Client,
+):
+    """The companion hole to the raise gate above, and the one that was open:
+    create used to accept `privacy: public` on members, groups and custom fields
+    while PATCHing an existing one to public was refused. A record BORN public
+    wakes up serving on the day an operator flips the setting back exactly like a
+    raised one does, so "make a new one public" must not be the way around "make
+    this one public"."""
+    cases = (
+        ("/v1/members", {"name": f"Born-{uuid.uuid4().hex[:6]}"}),
+        ("/v1/groups", {"name": f"Born-{uuid.uuid4().hex[:6]}"}),
+        (
+            "/v1/fields",
+            {"name": f"Born-{uuid.uuid4().hex[:6]}", "field_type": "text"},
+        ),
+    )
+    for path, body in cases:
+        r = auth_client.post(path, json={**body, "privacy": "public"})
+        assert r.status_code == 403, f"{path}: {r.text}"
+        # Same two halves as every other refusal on this surface.
+        assert "turned off" in r.json()["detail"], path
+        assert "unpublishing" in r.json()["detail"].lower(), path
+
+        # Private and friends are untouched: only the public ceiling is gated,
+        # and the record still has to be creatable at all.
+        ok = auth_client.post(path, json={**body, "privacy": "private"})
+        assert ok.status_code == 201, f"{path}: {ok.text}"
+
+
+@pytest.mark.public_profiles_off
 def test_creating_a_view_is_refused_with_the_surface_off(
     auth_client: httpx.Client,
 ):
@@ -2619,7 +2674,7 @@ def test_adding_to_a_view_is_refused_with_the_surface_off(
     is promoted by the finalize sweep on its own schedule, so the member, field
     or group would be on a live page the day the switch comes back."""
     vid, _ = _dormant_setup(auth_client)
-    m = _member(auth_client, "Prep", privacy="public")
+    m = _public_member_in_db(auth_client, "Prep")
     g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
     f = _field(auth_client, f"F-{uuid.uuid4().hex[:6]}")
 
@@ -2648,7 +2703,7 @@ def test_group_resync_is_refused_with_the_surface_off(auth_client: httpx.Client)
     g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
     _stock_view_in_db(vid, group_id=g)
 
-    joined_later = _member(auth_client, "JoinedLater", privacy="public")
+    joined_later = _public_member_in_db(auth_client, "JoinedLater")
     assert auth_client.put(
         f"/v1/groups/{g}/members", json={"member_ids": [joined_later]}
     ).status_code == 200
@@ -2680,7 +2735,7 @@ def test_removing_from_a_view_still_works_with_the_surface_off(
     them waking up with it, so no setting the owner does not control may stand
     in the way."""
     vid, _ = _dormant_setup(auth_client)
-    m = _member(auth_client, "Curated", privacy="public")
+    m = _public_member_in_db(auth_client, "Curated")
     g = _group(auth_client, f"G-{uuid.uuid4().hex[:6]}")
     f = _field(auth_client, f"F-{uuid.uuid4().hex[:6]}")
     _stock_view_in_db(vid, member_id=m, field_id=f, group_id=g)
@@ -2848,7 +2903,7 @@ def test_a_row_staged_before_the_switch_still_promotes(
     the surface is off; the anonymous router 404s regardless.
     """
     vid, _ = _dormant_setup(auth_client)
-    m = _member(auth_client, "Staged", privacy="public")
+    m = _public_member_in_db(auth_client, "Staged")
     _stock_view_in_db(vid, member_id=m, member_pending=True)
 
     staged = auth_client.get(f"/v1/share-views/{vid}").json()["members"]

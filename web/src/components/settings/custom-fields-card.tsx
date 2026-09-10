@@ -22,6 +22,10 @@ import {
 } from "@/components/ui/select";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import {
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { cn } from "@/lib/utils";
@@ -33,15 +37,6 @@ import type {
   FieldType,
   PrivacyLevel,
 } from "@/types/api";
-
-/** Same three words, in the same order, as the member, group and per-edge
- *  privacy selects: "who may see this" is one question, so it gets one
- *  vocabulary. */
-const FIELD_PRIVACY_LEVELS: { value: PrivacyLevel; label: string }[] = [
-  { value: "private", label: "Private" },
-  { value: "friends", label: "Friends only" },
-  { value: "public", label: "Public" },
-];
 
 /** Permission, never a promise: a public field still has to be added to a
  *  shared view before anyone sees it. The second sentence is the one people
@@ -122,22 +117,17 @@ function FieldPrivacyControl({
       <div className="flex items-center justify-between gap-2">
         {children}
         <div className="flex shrink-0 items-center gap-1">
-          <Select
+          {/* Read-modify-write straight onto the stored definition, so the
+              select's value IS the saved level - a field already public keeps
+              Public offered and can still be lowered. */}
+          <PrivacyLevelSelect
             value={field.privacy}
-            onValueChange={(v) => changePrivacy(v as PrivacyLevel)}
+            onValueChange={changePrivacy}
+            savedValue={field.privacy}
             disabled={updateField.isPending}
-          >
-            <SelectTrigger className="h-6 w-28 text-xs" aria-label="Privacy">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {FIELD_PRIVACY_LEVELS.map((l) => (
-                <SelectItem key={l.value} value={l.value}>
-                  {l.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            className="h-6 w-28 text-xs"
+            ariaLabel="Privacy"
+          />
           {trailing}
         </div>
       </div>
@@ -515,6 +505,11 @@ export function CustomFieldsCard() {
             <p className="text-xs text-muted-foreground">
               {FIELD_PRIVACY_HELP}
             </p>
+            {/* Once for the whole list, where the field help already lives,
+                rather than repeated under every row. A list can be mixed - a
+                field already public keeps Public selectable in its own row -
+                and the note's second sentence is what covers that case. */}
+            <PublishingOffNote />
           </>
         )}
       </CardContent>

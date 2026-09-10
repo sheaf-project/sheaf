@@ -16,6 +16,10 @@ import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
+import {
   getMemberTags,
   listMemberBioRevisions,
   pinMemberBioRevision,
@@ -281,16 +285,18 @@ function MemberForm({
       </div>
       <div className="space-y-2">
         <Label htmlFor="member-privacy">Privacy</Label>
-        <Select value={privacy} onValueChange={(v) => setPrivacy(v as PrivacyLevel)}>
-          <SelectTrigger id="member-privacy">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="private">Private</SelectItem>
-            <SelectItem value="friends">Friends only</SelectItem>
-            <SelectItem value="public">Public</SelectItem>
-          </SelectContent>
-        </Select>
+        {/* `savedValue` is what the SERVER holds, not `privacy` (which the
+            select is busy changing): the backend refuses only a real raise, so
+            a member already public keeps Public offered and can still be
+            lowered. On the create dialog `initial` is undefined, so Public is
+            treated as a raise from nothing. */}
+        <PrivacyLevelSelect
+          id="member-privacy"
+          value={privacy}
+          onValueChange={setPrivacy}
+          savedValue={initial?.privacy}
+        />
+        <PublishingOffNote savedValue={initial?.privacy} />
       </div>
       {shareGuardsVisible && (
         <div className="space-y-3 rounded-md border border-dashed p-3">

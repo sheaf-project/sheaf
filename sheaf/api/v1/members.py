@@ -193,6 +193,15 @@ async def create_member(
 ):
     system = await _get_user_system(user, db)
 
+    # A member BORN public is the same exposure as raising one later, so it
+    # meets the same publishing-availability gate `update_member` applies. The
+    # guard's whole point is that a ceiling set while the instance's public
+    # surface is off serves nobody today and would quietly START serving the
+    # moment an operator flips the setting back; being new rather than edited
+    # does not change that, and without this create was the way around it.
+    if body.privacy == PrivacyLevel.PUBLIC:
+        refuse_raise_when_publishing_unavailable(user)
+
     limit = get_member_limit(user)
     if limit > 0:
         count = await count_members(db, system.id)

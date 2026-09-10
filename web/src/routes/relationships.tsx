@@ -45,10 +45,11 @@ import {
 import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { summariseType } from "@/lib/relationship-types";
 import type { GraphEdge } from "@/lib/relationship-graph";
+import { EDGE_VISIBILITY_HELP } from "@/lib/relationship-privacy";
 import {
-  EDGE_VISIBILITY_HELP,
-  EDGE_VISIBILITY_LEVELS,
-} from "@/lib/relationship-privacy";
+  PrivacyLevelSelect,
+  PublishingOffNote,
+} from "@/components/privacy-level-select";
 import { getSystemSafety } from "@/lib/system-safety";
 import { getMySystem } from "@/lib/systems";
 import { cn } from "@/lib/utils";
@@ -495,24 +496,20 @@ function AddEdgeDialog({
           )}
           <div className="space-y-1">
             <Label className="text-xs">Visibility</Label>
-            <Select
+            {/* An edge born public is the same exposure as one raised later
+                and gets the same refusal, so no `savedValue`. The groups graph
+                passes gated=false: the backend accepts public on a group edge
+                because nothing projects them. */}
+            <PrivacyLevelSelect
               value={visibility}
-              onValueChange={(v) => setVisibility(v as PrivacyLevel)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {EDGE_VISIBILITY_LEVELS.map((l) => (
-                  <SelectItem key={l.value} value={l.value}>
-                    {l.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              onValueChange={setVisibility}
+              gated={scope === "members"}
+              ariaLabel="Visibility"
+            />
             <p className="text-[11px] text-muted-foreground">
               {EDGE_VISIBILITY_HELP}
             </p>
+            <PublishingOffNote gated={scope === "members"} />
           </div>
         </div>
         <DialogFooter>
