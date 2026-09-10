@@ -1,10 +1,10 @@
-"""End-to-end tests for the OpenPlural import runner.
+"""End-to-end tests for the PluralPort import runner.
 
-The OpenPlural importer translates an envelope back to the native shape
+The PluralPort importer translates an envelope back to the native shape
 and delegates to the Sheaf JSON / archive importers, so these tests
-build real OpenPlural payloads with ``build_envelope`` (the exporter)
+build real PluralPort payloads with ``build_envelope`` (the exporter)
 and drive them through ``POST /v1/imports/file`` with
-``source=openplural_file``. That makes each happy-path test a genuine
+``source=pluralport_file``. That makes each happy-path test a genuine
 export->import round-trip. Failure paths cover the version guard, the
 member-cap precheck, and the zip guards inherited from the archive path.
 """
@@ -19,7 +19,7 @@ import zipfile
 
 import httpx
 
-from sheaf.services.openplural_export import build_envelope
+from sheaf.services.pluralport_export import build_envelope
 from tests._import_runner_helpers import (
     drive_import_runner,
     set_member_limit,
@@ -80,7 +80,7 @@ def _bundle_bytes(native: dict, images: dict[str, bytes]) -> bytes:
     env = build_envelope(native, exported_at=_EXPORTED_AT, include_asset_bytes=True)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("openplural.json", json.dumps(env))
+        zf.writestr("pluralport.json", json.dumps(env))
         zf.writestr("README.txt", "test bundle")
         for key, blob in images.items():
             zf.writestr(f"assets/{key}", blob)
@@ -91,11 +91,12 @@ def _post(
     client: httpx.Client,
     payload: bytes,
     *,
-    filename: str = "export.openplural.json",
+    filename: str = "export.pluralport.json",
     options: dict | None = None,
+    source: str = "pluralport_file",
 ) -> dict:
     form: dict[str, str] = {
-        "source": "openplural_file",
+        "source": source,
         "idempotency_key": str(uuid.uuid4()),
     }
     if options is not None:
@@ -119,7 +120,7 @@ def _files_list(client: httpx.Client) -> list[dict]:
 
 
 def test_json_round_trip_imports_core_records(auth_client: httpx.Client):
-    """A Sheaf-produced OpenPlural JSON re-imports its members, fronts,
+    """A Sheaf-produced PluralPort JSON re-imports its members, fronts,
     groups, and tags."""
     job = _post(auth_client, _envelope_bytes(_native()))
     drive_import_runner()
@@ -145,7 +146,7 @@ def test_custom_front_without_the_guard_key_lands_guarded(
     owner said no": it means the source has no notion of the guard, and a
     custom front is the one member kind whose state must not start published.
     Fed here as a native member with no guard column at all, which is what an
-    OpenPlural file written by anything else turns into."""
+    PluralPort file written by anything else turns into."""
     native = _native()
     native["members"].append({"id": "m3", "name": "OpAsleep", "is_custom_front": True})
     job = _post(auth_client, _envelope_bytes(native))
@@ -183,10 +184,10 @@ def test_custom_front_with_a_released_guard_round_trips(auth_client: httpx.Clien
 
 
 def test_bundle_round_trip_restores_avatar(auth_client: httpx.Client):
-    """An .openplural.zip bundle restores the avatar blob under a fresh
+    """An .pluralport.zip bundle restores the avatar blob under a fresh
     key owned by the importing user."""
     payload = _bundle_bytes(_native(avatar=True), {_AVATAR_KEY: _TINY_PNG})
-    job = _post(auth_client, payload, filename="export.openplural.zip")
+    job = _post(auth_client, payload, filename="export.pluralport.zip")
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
 
@@ -201,7 +202,7 @@ def test_bundle_round_trip_restores_avatar(auth_client: httpx.Client):
 
 
 def _inline_asset_envelope(*, carrier: str) -> bytes:
-    """A bare-JSON OpenPlural envelope from a foreign producer whose avatar
+    """A bare-JSON PluralPort envelope from a foreign producer whose avatar
     bytes ride inline on the asset (not in a bundle). ``carrier`` selects
     where the bytes sit: ``uri_data`` (a ``data:`` URI a producer put in
     the ``uri`` field, as pluralport does), ``data_uri`` (the spec field),
@@ -216,7 +217,7 @@ def _inline_asset_envelope(*, carrier: str) -> bytes:
     else:
         asset["data_base64"] = b64
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "exported_at": _EXPORTED_AT,
         "producer": {"app": "Pluralport", "app_id": "pluralport"},
         "systems": [{"id": "s1", "name": "OP System", "privacy": "public"}],
@@ -286,7 +287,7 @@ def test_preview_reports_counts_and_lineage(auth_client: httpx.Client):
     """The preview endpoint summarises without writing, and surfaces the
     lineage length of the file."""
     resp = auth_client.post(
-        "/v1/import/openplural/preview",
+        "/v1/import/pluralport/preview",
         files={"file": ("e.json", _envelope_bytes(_native()), "application/json")},
     )
     assert resp.status_code == 200, resp.text
@@ -305,7 +306,7 @@ def test_front_events_imported_as_fronts(auth_client: httpx.Client):
     """A switch-log style file (front_events, no front_periods) imports its
     fronting history as intervals instead of dropping it."""
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "producer": {"app": "PluralKit", "app_id": "pluralkit"},
         "systems": [{"id": "s1", "name": "SwitchLog Sys", "privacy": "public"}],
         "members": [
@@ -331,7 +332,7 @@ def test_front_events_imported_as_fronts(auth_client: httpx.Client):
 def _foreign_envelope_bytes() -> bytes:
     """An envelope as if from another app, carrying data Sheaf cannot model."""
     env = {
-        "openplural_version": "0.1",
+        "pluralport_version": "0.1",
         "producer": {"app": "Prism", "app_id": "prism"},
         "systems": [{"id": "s1", "name": "Foreign Sys", "privacy": "public"}],
         "members": [{"id": "m1", "name": "ForeignIris", "privacy": "private"}],
@@ -352,7 +353,7 @@ def _foreign_envelope_bytes() -> bytes:
 def test_foreign_data_preserved_and_re_exported(auth_client: httpx.Client):
     """Data Sheaf cannot model (foreign extensions, chat/relationships,
     non-tag taxonomy) survives an import and comes back out on a Sheaf
-    OpenPlural export, instead of being dropped."""
+    PluralPort export, instead of being dropped."""
     job = _post(auth_client, _foreign_envelope_bytes())
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
@@ -365,8 +366,8 @@ def test_foreign_data_preserved_and_re_exported(auth_client: httpx.Client):
         for e in final["events"]
     ), final["events"]
 
-    # Re-export as OpenPlural: the foreign residual is merged back in.
-    resp = auth_client.get("/v1/export", params={"format": "openplural"})
+    # Re-export as PluralPort: the foreign residual is merged back in.
+    resp = auth_client.get("/v1/export", params={"format": "pluralport"})
     assert resp.status_code == 200, resp.text
     env = resp.json()
     assert env["extensions"]["prism"] == {"theme": "dark"}
@@ -382,14 +383,14 @@ def test_foreign_data_preserved_and_re_exported(auth_client: httpx.Client):
 
 def test_unknown_version_fails(auth_client: httpx.Client):
     env = build_envelope(_native(), exported_at=_EXPORTED_AT)
-    env["openplural_version"] = "0.2"
+    env["pluralport_version"] = "0.2"
     job = _post(auth_client, json.dumps(env).encode())
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "failed", final
     assert any(
-        "unsupported openplural_version" in e["message"] for e in final["events"]
+        "unsupported pluralport_version" in e["message"] for e in final["events"]
     ), final["events"]
 
 
@@ -411,25 +412,25 @@ def test_garbage_json_fails(auth_client: httpx.Client):
     assert final["status"] == "failed", final
 
 
-def test_bundle_rejects_missing_openplural_json(auth_client: httpx.Client):
+def test_bundle_rejects_missing_pluralport_json(auth_client: httpx.Client):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("data.json", "{}")
-    job = _post(auth_client, buf.getvalue(), filename="x.openplural.zip")
+    job = _post(auth_client, buf.getvalue(), filename="x.pluralport.zip")
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "failed", final
     assert any(
-        "must contain openplural.json" in e["message"] for e in final["events"]
+        "must contain pluralport.json" in e["message"] for e in final["events"]
     ), final["events"]
 
 
 def test_bundle_rejects_decompression_bomb(auth_client: httpx.Client):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("openplural.json", b" " * (260 * 1024 * 1024))
-    job = _post(auth_client, buf.getvalue(), filename="x.openplural.zip")
+        zf.writestr("pluralport.json", b" " * (260 * 1024 * 1024))
+    job = _post(auth_client, buf.getvalue(), filename="x.pluralport.zip")
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
 
@@ -437,3 +438,150 @@ def test_bundle_rejects_decompression_bomb(auth_client: httpx.Client):
     assert any(
         "decompresses to more than" in e["message"] for e in final["events"]
     ), final["events"]
+
+
+# --- Legacy-name compatibility (OpenPlural -> PluralPort rename) -------------
+
+
+def test_legacy_openplural_version_envelope_imports(auth_client: httpx.Client):
+    """A pre-rename file stamped `openplural_version` still imports: the
+    spec keeps the old key as a deprecated v0.1 alias."""
+    env = build_envelope(_native(), exported_at=_EXPORTED_AT)
+    env["openplural_version"] = env.pop("pluralport_version")
+    job = _post(auth_client, json.dumps(env).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["counts"]["members_imported"] == 2, final["counts"]
+
+
+def test_both_version_keys_pluralport_wins(auth_client: httpx.Client):
+    """A file carrying a bogus `pluralport_version` alongside a valid
+    `openplural_version` is rejected: the new key wins outright per the
+    spec, it is not a fallback for a bad value."""
+    env = build_envelope(_native(), exported_at=_EXPORTED_AT)
+    env["pluralport_version"] = "bogus"
+    env["openplural_version"] = "0.1"
+    job = _post(auth_client, json.dumps(env).encode())
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "failed", final
+    assert any(
+        "unsupported pluralport_version" in e["message"] for e in final["events"]
+    ), final["events"]
+    assert auth_client.get("/v1/members").json() == []
+
+
+def test_bundle_with_legacy_inner_json_imports(auth_client: httpx.Client):
+    """A pre-rename bundle (openplural.json inside the zip) still imports,
+    including its bundled assets."""
+    native = _native(avatar=True)
+    env = build_envelope(
+        native, exported_at=_EXPORTED_AT, include_asset_bytes=True
+    )
+    env["openplural_version"] = env.pop("pluralport_version")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("openplural.json", json.dumps(env))
+        zf.writestr(f"assets/{_AVATAR_KEY}", _TINY_PNG)
+    job = _post(auth_client, buf.getvalue(), filename="old.openplural.zip")
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["counts"]["members_imported"] == 2, final["counts"]
+    assert final["counts"].get("images_imported", 0) == 1, final["counts"]
+
+
+def test_legacy_source_value_accepted_and_normalised(auth_client: httpx.Client):
+    """POST /v1/imports/file with the pre-rename source "openplural_file"
+    still enqueues, and the job row records the new value."""
+    job = _post(
+        auth_client, _envelope_bytes(_native()), source="openplural_file"
+    )
+    assert job["source"] == "pluralport_file", job
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+
+    assert final["status"] == "complete", final
+    assert final["source"] == "pluralport_file", final
+
+
+def test_legacy_preview_route_still_works(auth_client: httpx.Client):
+    """The pre-rename /v1/import/openplural/preview path is a working
+    (schema-hidden) alias of the pluralport preview."""
+    resp = auth_client.post(
+        "/v1/import/openplural/preview",
+        files={"file": ("e.json", _envelope_bytes(_native()), "application/json")},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["system_name"] == "OP System"
+    assert body["member_count"] == 2
+    # Preview must not have created anything.
+    assert auth_client.get("/v1/members").json() == []
+
+
+def test_export_format_openplural_alias_emits_pluralport(
+    auth_client: httpx.Client,
+):
+    """GET /v1/export?format=openplural (the pre-rename value) is accepted
+    and produces a current envelope: pluralport_version, no legacy key."""
+    resp = auth_client.get("/v1/export", params={"format": "openplural"})
+    assert resp.status_code == 200, resp.text
+    env = resp.json()
+    assert env["pluralport_version"] == "0.1"
+    assert "openplural_version" not in env
+
+
+def test_native_import_accepts_legacy_archive_key(auth_client: httpx.Client):
+    """A native Sheaf export written before the rename carries the
+    preserved foreign residual under system.openplural_archive; the
+    importer still restores it, and it re-emits on a PluralPort export
+    (and under the renamed key in the native export)."""
+    native = {
+        "version": "2",
+        "system": {
+            "name": "Legacy Archive Sys",
+            "privacy": "public",
+            "openplural_archive": {"extensions": {"legacyapp": {"kept": True}}},
+        },
+        "members": [{"id": "m1", "name": "ArchIris"}],
+    }
+    job = _post(auth_client, json.dumps(native).encode(), source="sheaf_file")
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    env = auth_client.get("/v1/export", params={"format": "pluralport"}).json()
+    assert env["extensions"]["legacyapp"] == {"kept": True}, env["extensions"]
+    native_out = auth_client.get("/v1/export").json()
+    assert native_out["system"]["pluralport_archive"]["extensions"][
+        "legacyapp"
+    ] == {"kept": True}
+    assert "openplural_archive" not in native_out["system"]
+
+
+def test_native_import_archive_key_pluralport_wins(auth_client: httpx.Client):
+    """If a (hand-edited) native file carries both archive keys, the
+    renamed pluralport_archive wins, mirroring the version-key rule."""
+    native = {
+        "version": "2",
+        "system": {
+            "name": "Both Keys Sys",
+            "privacy": "public",
+            "pluralport_archive": {"extensions": {"newapp": {"win": 1}}},
+            "openplural_archive": {"extensions": {"oldapp": {"lose": 1}}},
+        },
+        "members": [{"id": "m1", "name": "BothIris"}],
+    }
+    job = _post(auth_client, json.dumps(native).encode(), source="sheaf_file")
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    env = auth_client.get("/v1/export", params={"format": "pluralport"}).json()
+    assert env["extensions"].get("newapp") == {"win": 1}, env["extensions"]
+    assert "oldapp" not in env["extensions"], env["extensions"]

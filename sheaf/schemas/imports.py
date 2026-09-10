@@ -44,7 +44,7 @@ class ImportFileCreateRequest(BaseModel):
         ImportJobSource.SHEAF_ARCHIVE,
         ImportJobSource.PLURALSPACE_FILE,
         ImportJobSource.PRISM_FILE,
-        ImportJobSource.OPENPLURAL_FILE,
+        ImportJobSource.PLURALPORT_FILE,
         ImportJobSource.AMPERSAND_FILE,
     ]
     idempotency_key: uuid.UUID

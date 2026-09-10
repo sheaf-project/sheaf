@@ -171,7 +171,7 @@ _VALID_FIELD_TYPE = {e.value for e in FieldType}
 
 def _privacy(val: object) -> str:
     # `val` is untrusted/translated import data: guard the type before the
-    # set membership test. A non-string (e.g. an OpenPlural `{visibility:
+    # set membership test. A non-string (e.g. a PluralPort `{visibility:
     # ...}` privacy object that reached here un-extracted) must default
     # rather than raise `TypeError: unhashable type` mid-import.
     if isinstance(val, str) and val in _VALID_PRIVACY:
@@ -676,7 +676,7 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
 
     Reads the same keys ``run_import`` clamps, calling the same helpers, so the
     preview's warnings match what the import would shorten. The archive and
-    OpenPlural importers translate to this shape, so they reuse this for their
+    PluralPort importers translate to this shape, so they reuse this for their
     previews too. Defensive: only string values are measured and only list
     shapes are counted, so a malformed upload can't raise here.
     """
@@ -1174,15 +1174,22 @@ async def run_import(
                             )
                         )
 
-            # OpenPlural import residual: a native export carries it as a
+            # PluralPort import residual: a native export carries it as a
             # plain dict (decrypted in export.py). Re-pack (compress +
             # encrypt) and merge onto the column so a Sheaf backup/restore
-            # preserves another app's data the same way the OpenPlural
-            # importer does. See services/openplural_archive.py.
-            op_archive = sys_data.get("openplural_archive")
+            # preserves another app's data the same way the PluralPort
+            # importer does. See services/pluralport_archive.py. Exports
+            # from before the OpenPlural -> PluralPort rename carry the
+            # key under its old name; the new spelling wins when a file
+            # (oddly) has both. The DB column itself keeps the old name
+            # (AAD-frozen).
+            if "pluralport_archive" in sys_data:
+                op_archive = sys_data.get("pluralport_archive")
+            else:
+                op_archive = sys_data.get("openplural_archive")
             if isinstance(op_archive, dict) and op_archive:
                 from sheaf.config import settings
-                from sheaf.services.openplural_archive import (
+                from sheaf.services.pluralport_archive import (
                     merge_residual,
                     pack_residual,
                     unpack_residual,
@@ -1197,7 +1204,7 @@ async def run_import(
                 token, _warn = pack_residual(
                     merged,
                     system_id=system.id,
-                    max_bytes=settings.openplural_max_preserved_mb * 1024 * 1024,
+                    max_bytes=settings.pluralport_max_preserved_mb * 1024 * 1024,
                 )
                 if token is not None:
                     system.openplural_archive = token

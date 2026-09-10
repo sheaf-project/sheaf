@@ -85,8 +85,8 @@ class ParsedArchive:
     bytes can be fetched lazily by storage key.
 
     `asset_prefix` is the in-zip directory blobs live under. The native
-    Sheaf archive uses ``images/``; the OpenPlural bundle reuses this
-    same struct with ``assets/`` (see ``openplural_import``).
+    Sheaf archive uses ``images/``; the PluralPort bundle reuses this
+    same struct with ``assets/`` (see ``pluralport_import``).
     """
 
     data: dict

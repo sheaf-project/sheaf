@@ -10,6 +10,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 - **Groups and custom fields can now be put in the order you want.** Up/down arrows on the Groups page move a group among the groups next to it (its siblings, when nested), and the same arrows in Settings > Custom fields reorder your fields; dragging a group still moves it into or out of another group, so the two gestures stay distinct. The order you set is respected everywhere the app lists your groups - groups you have not rearranged stay alphabetical - and it travels with your backups, so a restore puts everything back in the order you left it. Public profiles and share links follow it too: groups and custom fields appear to visitors in the order you arranged them, the same as inside the app.
 
+### Changed
+
+- **The OpenPlural interchange format is now called PluralPort**, following the standard's own rename upstream (a name conflict; the spec version stays 0.1). Exports now stamp `pluralport_version` and download as `.pluralport.zip`, and the API's format/source values are `pluralport` / `pluralport_file`. Nothing you already have stops working: files stamped with the old `openplural_version` (or bundles carrying `openplural.json`) still import, the old API values are still accepted as deprecated aliases, and self-hosters can keep the `OPENPLURAL_MAX_PRESERVED_MB` env var (the new `PLURALPORT_MAX_PRESERVED_MB` name wins if both are set).
+
 ### Fixed
 
 - **Dragging a group onto another to nest it now works in Firefox.** The drag never started there: Firefox requires drag data to be set when a drag begins, and the groups page never set any. Chrome-family browsers tolerated the omission, which is why the same gesture worked in one browser and was simply inert in the other.

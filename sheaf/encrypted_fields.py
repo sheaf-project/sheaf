@@ -68,6 +68,11 @@ def system_note_aad(system_id) -> bytes:
     return field_aad("systems", "note", system_id)
 
 
+# FROZEN NAME: the format this column serves was renamed OpenPlural ->
+# PluralPort, but this helper (and the systems.openplural_archive column
+# it names) must keep the old string - it is the AAD baked into every
+# encrypted archive blob in production, so renaming it would make that
+# data undecryptable.
 def system_openplural_archive_aad(system_id) -> bytes:
     return field_aad("systems", "openplural_archive", system_id)
 

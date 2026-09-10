@@ -15,11 +15,11 @@ import logging
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -71,7 +71,7 @@ from sheaf.services.activity_log import log_activity
 from sheaf.services.custom_fields import field_value_plaintext
 from sheaf.services.journals import entry_plaintext, revision_plaintext
 from sheaf.services.members import member_plaintext
-from sheaf.services.openplural_archive import unpack_residual
+from sheaf.services.pluralport_archive import unpack_residual
 from sheaf.services.security_events import record_security_event
 
 router = APIRouter(prefix="/export", tags=["export"])
@@ -114,6 +114,11 @@ def _safe_decrypt(value: str | None, aad: bytes) -> str | None:
 # name) can't be decrypted. Null would risk a NOT NULL violation on re-import;
 # a placeholder re-imports cleanly and signals the field was unrecoverable.
 _UNREADABLE_PLACEHOLDER = "[unreadable]"
+
+
+def _normalise_export_format(value: object) -> object:
+    """Map the deprecated pre-rename format name onto its current one."""
+    return "pluralport" if value == "openplural" else value
 
 
 def _safe_plaintext(fn: Callable, *, fallback):
@@ -246,14 +251,22 @@ async def _note_api_key_export(
 async def export_all(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    format: Literal["sheaf", "openplural"] = Query(
-        "sheaf",
-        description=(
-            "Output format. 'sheaf' is the native re-importable JSON; "
-            "'openplural' wraps it in an OpenPlural v0.1 envelope "
-            "(uri-only assets; use the async zip export for image bytes)."
+    format: Annotated[
+        Literal["sheaf", "pluralport"],
+        # "openplural" is the format's pre-rename name; normalised here so
+        # existing callers keep working while the documented enum stays
+        # pluralport-only.
+        BeforeValidator(_normalise_export_format),
+        Query(
+            description=(
+                "Output format. 'sheaf' is the native re-importable JSON; "
+                "'pluralport' wraps it in a PluralPort v0.1 envelope "
+                "(uri-only assets; use the async zip export for image "
+                "bytes). 'openplural' is accepted as a deprecated alias "
+                "for 'pluralport'."
+            ),
         ),
-    ),
+    ] = "sheaf",
 ):
     """Export the user's plural-system content as JSON. Article 20 - data
     portability. Re-importable into another Sheaf instance.
@@ -266,7 +279,7 @@ async def export_all(
     result = await db.execute(select(System).where(System.user_id == user.id))
     system = result.scalar_one_or_none()
     if system is None:
-        return _maybe_openplural(_empty_export(), format)
+        return _maybe_pluralport(_empty_export(), format)
 
     # Members. Member.name is encrypted ciphertext, so DB-side ORDER BY on
     # it is meaningless - sort in Python after decrypting names below.
@@ -595,20 +608,20 @@ async def export_all(
         ],
         "share_views": [_share_view_dict(v) for v in share_views],
     }
-    return _maybe_openplural(native, format)
+    return _maybe_pluralport(native, format)
 
 
-def _maybe_openplural(native: dict, format: str) -> dict:
-    """Return the native dict unchanged, or wrap it in an OpenPlural v0.1
-    envelope when `format == "openplural"`.
+def _maybe_pluralport(native: dict, format: str) -> dict:
+    """Return the native dict unchanged, or wrap it in a PluralPort v0.1
+    envelope when `format == "pluralport"`.
 
     The sync path produces uri-only assets (no image bytes); the async
-    zip builder calls `openplural_export.build_envelope` directly with
+    zip builder calls `pluralport_export.build_envelope` directly with
     `include_asset_bytes=True` for the bundle.
     """
-    if format != "openplural":
+    if format != "pluralport":
         return native
-    from sheaf.services.openplural_export import build_envelope
+    from sheaf.services.pluralport_export import build_envelope
 
     return build_envelope(native, exported_at=datetime.now(UTC).isoformat())
 
@@ -743,10 +756,13 @@ def _system_dict(system: System) -> dict:
             "journal_max_revision_days": system.journal_max_revision_days,
             "pinned_revision_max_per_target": system.pinned_revision_max_per_target,
         },
-        # OpenPlural import residual (foreign data Sheaf cannot model),
+        # PluralPort import residual (foreign data Sheaf cannot model),
         # decrypted to a plain dict so it rides the portability export and
-        # is re-merged on a Sheaf OpenPlural export. None when empty.
-        "openplural_archive": (
+        # is re-merged on a Sheaf PluralPort export. None when empty. The
+        # DB column keeps its pre-rename openplural name (the AAD baked
+        # into the stored ciphertext is frozen); the exported KEY uses the
+        # new name, and the importer accepts both spellings.
+        "pluralport_archive": (
             unpack_residual(system.openplural_archive, system_id=system.id) or None
         ),
     }
@@ -1011,17 +1027,25 @@ def _poll_dict(poll) -> dict:
 class ExportJobRequest(BaseModel):
     include_images: bool = False
     # Artefact format: "sheaf_native" (export.json + images/) or
-    # "openplural" (openplural.json + assets/, an .openplural.zip bundle), or
+    # "pluralport" (pluralport.json + assets/, a .pluralport.zip bundle), or
     # a standalone front-history file ("fronts_csv" / "fronts_json" /
     # "fronts_ics") - a single file of just the fronting history, no zip.
     # include_images is ignored for the fronts_* formats.
     format: Literal[
         "sheaf_native",
-        "openplural",
+        "pluralport",
         "fronts_csv",
         "fronts_json",
         "fronts_ics",
     ] = "sheaf_native"
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def _legacy_format_alias(cls, value: object) -> object:
+        # "openplural" is the format's pre-rename name; accepted as a
+        # deprecated request alias and normalised before the Literal check
+        # so it stays out of the documented enum.
+        return "pluralport" if value == "openplural" else value
     # Step-up auth: same shape and rules as POST /v1/account/data. Always
     # required; mirrors the Article 15 lock since this is the broader read
     # (everything the user has, including binary blobs).
@@ -1183,8 +1207,8 @@ async def download_export_job(
         format_extension,
     )
 
-    if job.format == "openplural":
-        filename = f"sheaf-export-{job.id}.openplural.zip"
+    if job.format == "pluralport":
+        filename = f"sheaf-export-{job.id}.pluralport.zip"
     elif job.format in FRONT_HISTORY_FORMATS:
         filename = (
             f"sheaf-front-history-{job.id}.{format_extension(job.format)}"

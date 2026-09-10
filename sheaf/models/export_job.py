@@ -49,7 +49,9 @@ class ExportJob(UUIDMixin, Base):
     )
 
     # Output format: "sheaf_native" (export.json + images/) or
-    # "openplural" (openplural.json + assets/, an .openplural.zip bundle).
+    # "pluralport" (pluralport.json + assets/, a .pluralport.zip bundle).
+    # Pre-rename "openplural" rows were migrated to "pluralport"; the API
+    # still accepts the old value as a deprecated request alias.
     format: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

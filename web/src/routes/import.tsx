@@ -36,9 +36,9 @@ import {
   previewImport as previewPrism,
 } from "@/lib/prism-import";
 import {
-  type OpenpluralPreviewSummary,
-  previewOpenpluralImport,
-} from "@/lib/openplural-import";
+  type PluralportPreviewSummary,
+  previewPluralportImport,
+} from "@/lib/pluralport-import";
 import {
   type AmpersandPreviewSummary,
   previewImport as previewAmpersand,
@@ -205,13 +205,13 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
         onClick={() => onSelect("op")}
       >
         <CardHeader>
-          <CardTitle className="text-base">Import from OpenPlural</CardTitle>
+          <CardTitle className="text-base">Import from PluralPort</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Import an OpenPlural v0.1 export from Sheaf or another
-            OpenPlural-compatible app. Upload the <code>.json</code>{" "}
-            document, or the <code>.openplural.zip</code> bundle (the
+            Import a PluralPort v0.1 export from Sheaf or another
+            PluralPort-compatible app. Upload the <code>.json</code>{" "}
+            document, or the <code>.pluralport.zip</code> bundle (the
             bundle restores avatars and embedded images too).
           </p>
         </CardContent>
@@ -1666,14 +1666,14 @@ function PrismImportFlow({ onBack }: { onBack: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// OpenPlural import flow
+// PluralPort import flow
 // ---------------------------------------------------------------------------
 
 function OPImportFlow({ onBack }: { onBack: () => void }) {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("upload");
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<OpenpluralPreviewSummary | null>(null);
+  const [preview, setPreview] = useState<PluralportPreviewSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   // One idempotency key per flow visit - a double-click on Import
   // reuses it, so the server dedupes instead of enqueueing twice.
@@ -1693,7 +1693,7 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
   const [importPolls, setImportPolls] = useState(true);
   const [importNotifications, setImportNotifications] = useState(true);
   const [importReminders, setImportReminders] = useState(true);
-  // Only meaningful for the .openplural.zip bundle (preview.archive).
+  // Only meaningful for the .pluralport.zip bundle (preview.archive).
   const [restoreImages, setRestoreImages] = useState(true);
 
   const importIncoming = allMembers
@@ -1706,7 +1706,7 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
     setFile(f);
     setError(null);
     try {
-      const p = await previewOpenpluralImport(f);
+      const p = await previewPluralportImport(f);
       setPreview(p);
       setStep("preview");
     } catch (err) {
@@ -1721,7 +1721,7 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
     try {
       const isArchive = preview?.archive ?? false;
       const job = await createFileImport({
-        source: "openplural_file",
+        source: "pluralport_file",
         file,
         idempotencyKey: idemKey,
         options: {
@@ -1739,7 +1739,7 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
           // Reminders need a channel; without notifications there's nothing
           // for them to attach to.
           reminders: importReminders && importNotifications,
-          // The images toggle only applies to the .openplural.zip bundle.
+          // The images toggle only applies to the .pluralport.zip bundle.
           ...(isArchive ? { images: restoreImages } : {}),
         },
       });
@@ -1766,19 +1766,22 @@ function OPImportFlow({ onBack }: { onBack: () => void }) {
       {step === "upload" && (
         <Card className="max-w-lg">
           <CardHeader>
-            <CardTitle className="text-base">Upload OpenPlural export</CardTitle>
+            <CardTitle className="text-base">Upload PluralPort export</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Upload an OpenPlural v0.1 export from Sheaf or another
-              OpenPlural-compatible app. Either the bare{" "}
+              Upload a PluralPort v0.1 export from Sheaf or another
+              PluralPort-compatible app. Either the bare{" "}
               <code>.json</code> document, or the full{" "}
-              <code>.openplural.zip</code> bundle (the bundle restores
+              <code>.pluralport.zip</code> bundle (the bundle restores
               avatars and embedded images too).
             </p>
             <input
               type="file"
-              accept=".json,.zip,.openplural.zip,application/json,application/zip"
+              // .openplural.zip stays accepted: bundles exported before
+              // the format's rename must still be selectable (the server
+              // sniffs content, so they import fine).
+              accept=".json,.zip,.pluralport.zip,.openplural.zip,application/json,application/zip"
               onChange={handleFileSelect}
               className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
             />

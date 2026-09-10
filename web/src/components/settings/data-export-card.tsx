@@ -36,13 +36,13 @@ import {
 } from "@/components/ui/select";
 
 type ExportMode = "with_images" | "account_data" | "front_history";
-type ExportFormat = "sheaf_native" | "openplural";
+type ExportFormat = "sheaf_native" | "pluralport";
 type FrontHistoryFormat = "fronts_csv" | "fronts_json" | "fronts_ics";
 
 // Friendly labels for every artefact format a job row can carry.
 const FORMAT_LABELS: Record<ExportJobFormat, string> = {
   sheaf_native: "Sheaf native",
-  openplural: "OpenPlural",
+  pluralport: "PluralPort",
   fronts_csv: "Front history (CSV)",
   fronts_json: "Front history (JSON)",
   fronts_ics: "Front history (Calendar)",
@@ -248,7 +248,7 @@ export function DataExportCard() {
       const a = document.createElement("a");
       a.href = url;
       const date = new Date().toISOString().slice(0, 10);
-      const ext = format === "openplural" ? "openplural.json" : "json";
+      const ext = format === "pluralport" ? "pluralport.json" : "json";
       a.download = `sheaf-export-${date}.${ext}`;
       a.click();
       URL.revokeObjectURL(url);
@@ -330,15 +330,15 @@ export function DataExportCard() {
                   type="radio"
                   name="export-format"
                   className="mt-0.5 h-4 w-4 border-input"
-                  checked={format === "openplural"}
-                  onChange={() => setFormat("openplural")}
+                  checked={format === "pluralport"}
+                  onChange={() => setFormat("pluralport")}
                 />
                 <span>
-                  OpenPlural
+                  PluralPort
                   <span className="block text-xs text-muted-foreground">
-                    OpenPlural v0.1, for interchange with other
-                    OpenPlural-compatible apps. JSON export here is uri-only;
-                    the full backup is a .openplural.zip with image bytes.
+                    PluralPort v0.1, for interchange with other
+                    PluralPort-compatible apps. JSON export here is uri-only;
+                    the full backup is a .pluralport.zip with image bytes.
                   </span>
                 </span>
               </label>
@@ -367,8 +367,8 @@ export function DataExportCard() {
             </p>
             <p className="text-xs text-muted-foreground mb-3 max-w-prose">
               Uses the <strong>format</strong> selected above
-              {format === "openplural"
-                ? " (OpenPlural .openplural.zip)."
+              {format === "pluralport"
+                ? " (PluralPort .pluralport.zip)."
                 : " (Sheaf native zip)."}
             </p>
             <Button onClick={() => setMode("with_images")} variant="outline">

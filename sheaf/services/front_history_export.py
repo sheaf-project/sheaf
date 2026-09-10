@@ -1,7 +1,7 @@
 """Standalone front-history export: CSV / JSON / ICS.
 
 A lighter-weight companion to the full account export. Where the native /
-OpenPlural exports produce a whole-account zip, this produces a single
+PluralPort exports produce a whole-account zip, this produces a single
 file containing only the system's front history, in a format the user
 picks:
 

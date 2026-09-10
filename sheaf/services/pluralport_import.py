@@ -1,23 +1,29 @@
-"""OpenPlural v0.1 import: envelope -> native Sheaf shape.
+"""PluralPort v0.1 import: envelope -> native Sheaf shape.
 
-Sheaf's OpenPlural importer is deliberately thin. Rather than re-walk
-every record type, it *translates* an OpenPlural v0.1 envelope back into
+Sheaf's PluralPort importer is deliberately thin. Rather than re-walk
+every record type, it *translates* a PluralPort v0.1 envelope back into
 the native Article-20 export dict (version "2") that
 ``sheaf_import.run_import`` already consumes, then delegates. Every
 mandatory guard (member cap, safe-JSON, decompressed-size bound, avatar
 normalisation, internal-image stripping, business caps, fresh UUIDs,
 tenant scoping) therefore lives in the native importer and cannot drift
-per-format. This module is the inverse of ``openplural_export`` and is
+per-format. This module is the inverse of ``pluralport_export`` and is
 verified against it by the round-trip test.
 
 Two payload shapes:
 
 * A bare ``.json`` document -> translate, hand to ``sheaf_import``.
-* An ``.openplural.zip`` bundle (``openplural.json`` + ``assets/<key>``)
+* An ``.pluralport.zip`` bundle (``pluralport.json`` + ``assets/<key>``)
   -> translate, then hand a ``ParsedArchive`` (with ``asset_prefix``
   ``"assets/"``) to ``sheaf_archive_import`` so the blobs are restored.
 
-See ``docs/OPENPLURAL.md`` for the field-by-field mapping and the list
+The format was called OpenPlural before an upstream rename, and files
+produced against the old name are still out there, so the v0.1 reader
+also accepts the deprecated ``openplural_version`` envelope key and the
+legacy ``openplural.json`` bundle member (see the spec's versioning
+section; the pluralport-named forms win whenever both are present).
+
+See ``docs/PLURALPORT.md`` for the field-by-field mapping and the list
 of things that round-trip via ``extensions.sheaf.*``.
 """
 
@@ -32,17 +38,20 @@ from dataclasses import dataclass
 
 from sheaf.services.import_parsing import ImportPayloadError, expect_dict, safe_json_loads
 from sheaf.services.member_defaults import default_fronting_private
-from sheaf.services.openplural_export import EXT_NS
+from sheaf.services.pluralport_export import EXT_NS
 
 # Versions this importer understands. The spec mandates rejecting an
-# unknown openplural_version rather than silently part-importing it.
+# unknown pluralport_version rather than silently part-importing it.
 SUPPORTED_VERSIONS = {"0.1"}
 
 # Matches the native archive's decompressed-size caps (DEFLATE reaches
 # ~1000:1, so the 100MB compressed upload cap alone does not bound memory).
 _MAX_JSON_DECOMPRESSED = 256 * 1024 * 1024
 _MAX_ASSET_DECOMPRESSED = 100 * 1024 * 1024
-_BUNDLE_JSON_NAME = "openplural.json"
+_BUNDLE_JSON_NAME = "pluralport.json"
+# Deprecated inner name from before the OpenPlural -> PluralPort rename;
+# still accepted so bundles exported by older builds keep importing.
+_LEGACY_BUNDLE_JSON_NAME = "openplural.json"
 _ASSET_PREFIX = "assets/"
 
 # zip local-file-header magic; lets the runner sniff bundle vs bare JSON.
@@ -54,11 +63,20 @@ def looks_like_zip(blob: bytes) -> bool:
 
 
 def _check_version(envelope: dict) -> None:
-    ver = envelope.get("openplural_version")
+    # The spec's v0.1 versioning rule: producers emit `pluralport_version`,
+    # but importers must also accept the deprecated `openplural_version`
+    # alias (identical semantics) from before the format's rename. When a
+    # file carries both keys, `pluralport_version` wins - even if only the
+    # openplural one holds a supported value.
+    if "pluralport_version" in envelope:
+        ver = envelope.get("pluralport_version")
+    else:
+        ver = envelope.get("openplural_version")
     if ver not in SUPPORTED_VERSIONS:
         raise ImportPayloadError(
-            f"unsupported openplural_version {ver!r} "
-            f"(this build understands {sorted(SUPPORTED_VERSIONS)})"
+            f"unsupported pluralport_version {ver!r} "
+            f"(this build understands {sorted(SUPPORTED_VERSIONS)}; the "
+            "deprecated openplural_version key is accepted as a v0.1 alias)"
         )
 
 
@@ -74,7 +92,7 @@ def _ext(obj: dict) -> dict:
 
 
 def _op_privacy(val: object) -> str | None:
-    """Extract the visibility bucket from an OpenPlural privacy value.
+    """Extract the visibility bucket from a PluralPort privacy value.
 
     Per the spec, `privacy` is an object: ``{"visibility": "...", "source":
     {...}}`` (on systems, members, and custom fields). We carry just the
@@ -93,7 +111,7 @@ def _op_privacy(val: object) -> str | None:
 
 
 def _birthday_to_native(b: object) -> str | None:
-    """OpenPlural Birthday sub-record -> Sheaf's flat ``MM-DD`` / ``YYYY-MM-DD``."""
+    """PluralPort Birthday sub-record -> Sheaf's flat ``MM-DD`` / ``YYYY-MM-DD``."""
     if isinstance(b, str):
         return b
     if isinstance(b, dict):
@@ -113,7 +131,7 @@ def _b64decode(value: str) -> bytes | None:
 def _decode_inline_asset(asset: dict) -> bytes | None:
     """Decoded bytes for an asset that carries its payload inline, else None.
 
-    Per the OpenPlural Asset spec an asset populates at least one of
+    Per the PluralPort Asset spec an asset populates at least one of
     ``uri`` (external URL), ``data_base64``, or ``data_uri``
     (``data:<mime>;base64,<...>``). This handles the two inline carriers,
     plus the common producer slip of putting a ``data:`` URI in the
@@ -196,7 +214,7 @@ class _InlineAssetArchive:
     / ``read_image``; this serves the decoded bytes from memory instead of
     a zip so a bare-JSON export with inline ``data_uri`` assets restores
     through the same pipeline (quota, scrub-on-failure, unused-key discard)
-    as an ``.openplural.zip`` bundle.
+    as an ``.pluralport.zip`` bundle.
     """
 
     data: dict
@@ -210,9 +228,9 @@ class _InlineAssetArchive:
 
 
 def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
-    """Translate an OpenPlural v0.1 envelope into the native export dict.
+    """Translate a PluralPort v0.1 envelope into the native export dict.
 
-    Pure transform: no DB, no IO. Mirrors ``openplural_export.build_envelope``.
+    Pure transform: no DB, no IO. Mirrors ``pluralport_export.build_envelope``.
     Pass a prebuilt ``assets`` map to reuse its inline-asset decode (the
     JSON runner does, to route inline images through the archive path).
     """
@@ -268,7 +286,7 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 "pluralkit_id": _pluralkit_id(m.get("source_refs")),
                 "emoji": ext.get("emoji"),
                 "is_custom_front": bool(m.get("is_custom_front")),
-                # OpenPlural `archived` is a bool; Sheaf stores a timestamp.
+                # PluralPort `archived` is a bool; Sheaf stores a timestamp.
                 # The exact archive time is not portable through the bool, so
                 # stamp it with the file's exported_at on import.
                 "archived_at": (
@@ -484,7 +502,7 @@ def _file_extensions(envelope: dict) -> dict:
 
 
 def _fronts_from_events(events: object) -> list[dict]:
-    """Convert OpenPlural point-in-time ``front_events`` (a switch log) into
+    """Convert PluralPort point-in-time ``front_events`` (a switch log) into
     Sheaf interval fronts.
 
     Each event names who is fronting *from its timestamp onward*; the
@@ -574,8 +592,8 @@ def _field_value_index(values: object) -> dict[str, list[dict]]:
 
 
 def parse_json(blob: bytes) -> dict:
-    """Parse + version-check a bare OpenPlural JSON document."""
-    envelope = expect_dict(safe_json_loads(blob), descriptor="OpenPlural export")
+    """Parse + version-check a bare PluralPort JSON document."""
+    envelope = expect_dict(safe_json_loads(blob), descriptor="PluralPort export")
     _check_version(envelope)
     return envelope
 
@@ -600,7 +618,7 @@ def build_json_import(envelope: dict) -> tuple[dict, _InlineAssetArchive | None]
 
 
 def parse_bundle(blob: bytes):
-    """Open an .openplural.zip, validate, and return a translated
+    """Open a .pluralport.zip, validate, and return a translated
     ``ParsedArchive`` ready for ``sheaf_archive_import.run_import``.
 
     Returns ``(ParsedArchive, envelope)``: the archive carries the
@@ -615,19 +633,26 @@ def parse_bundle(blob: bytes):
         raise ImportPayloadError("file is not a valid zip archive") from exc
 
     names = set(zf.namelist())
-    if _BUNDLE_JSON_NAME not in names:
+    # Prefer pluralport.json; fall back to the deprecated openplural.json
+    # so pre-rename bundles keep importing.
+    if _BUNDLE_JSON_NAME in names:
+        json_name = _BUNDLE_JSON_NAME
+    elif _LEGACY_BUNDLE_JSON_NAME in names:
+        json_name = _LEGACY_BUNDLE_JSON_NAME
+    else:
         raise ImportPayloadError(
-            f"OpenPlural bundle must contain {_BUNDLE_JSON_NAME} "
-            "(is this an .openplural.zip export?)"
+            f"PluralPort bundle must contain {_BUNDLE_JSON_NAME} "
+            f"(or the legacy {_LEGACY_BUNDLE_JSON_NAME}; is this a "
+            ".pluralport.zip export?)"
         )
-    if zf.getinfo(_BUNDLE_JSON_NAME).file_size > _MAX_JSON_DECOMPRESSED:
+    if zf.getinfo(json_name).file_size > _MAX_JSON_DECOMPRESSED:
         raise ImportPayloadError(
-            f"{_BUNDLE_JSON_NAME} decompresses to more than "
+            f"{json_name} decompresses to more than "
             f"{_MAX_JSON_DECOMPRESSED // (1024 * 1024)}MB; refusing to parse"
         )
 
     envelope = expect_dict(
-        safe_json_loads(zf.read(_BUNDLE_JSON_NAME)), descriptor="OpenPlural bundle"
+        safe_json_loads(zf.read(json_name)), descriptor="PluralPort bundle"
     )
     _check_version(envelope)
 

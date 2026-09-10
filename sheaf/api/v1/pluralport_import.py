@@ -1,13 +1,13 @@
-"""OpenPlural import - preview endpoint.
+"""PluralPort import - preview endpoint.
 
 The actual import runs asynchronously through the unified job runner
-(POST /v1/imports/file with source=openplural_file). This is the
-synchronous preview: parse an OpenPlural v0.1 export, translate it to
+(POST /v1/imports/file with source=pluralport_file). This is the
+synchronous preview: parse a PluralPort v0.1 export, translate it to
 the native shape, and summarise the importable data. Preview writes
 nothing.
 
-Accepts both shapes the exporter produces: a bare OpenPlural JSON
-document and an `.openplural.zip` bundle (`openplural.json` +
+Accepts both shapes the exporter produces: a bare PluralPort JSON
+document and an `.pluralport.zip` bundle (`pluralport.json` +
 `assets/`), distinguished by the zip magic bytes. The response carries
 `archive` / `image_count` so the client knows which flavour it
 previewed, and `lineage_length` so it can surface the file's prior
@@ -24,7 +24,7 @@ from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.services.front_retention import front_retention_preview_warning
 from sheaf.services.import_parsing import ImportPayloadError
-from sheaf.services.openplural_import import (
+from sheaf.services.pluralport_import import (
     inherited_lineage,
     looks_like_zip,
     parse_bundle_async,
@@ -73,13 +73,17 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
     return system
 
 
-@router.post("/openplural/preview")
-async def preview_openplural_import(
+@router.post("/pluralport/preview")
+# Deprecated alias from before the OpenPlural -> PluralPort rename. Same
+# handler, kept working for older clients but hidden from the OpenAPI
+# schema; remove once nothing calls it any more.
+@router.post("/openplural/preview", include_in_schema=False)
+async def preview_pluralport_import(
     file: UploadFile,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Parse an OpenPlural export (JSON or .openplural.zip) and summarise it."""
+    """Parse a PluralPort export (JSON or .pluralport.zip) and summarise it."""
     data = await file.read()
     if len(data) > MAX_IMPORT_SIZE:
         raise HTTPException(
@@ -137,7 +141,7 @@ async def preview_openplural_import(
         }
     except ImportPayloadError as exc:
         # User-facing parse/version failures (bad JSON, bad zip, unknown
-        # openplural_version) map to a 400 with the short message.
+        # pluralport_version) map to a 400 with the short message.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc

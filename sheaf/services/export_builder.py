@@ -53,20 +53,20 @@ image references removed.
 """
 
 
-_OPENPLURAL_README = """\
-This zip is an OpenPlural v0.1 bundle export of your Sheaf data.
+_PLURALPORT_README = """\
+This zip is a PluralPort v0.1 bundle export of your Sheaf data.
 
 Contents:
-- openplural.json -- your plural-system content mapped to the OpenPlural
-  v0.1 data standard (https://github.com/skylartaylor/openplural).
+- pluralport.json -- your plural-system content mapped to the PluralPort
+  v0.1 data standard (https://github.com/PluralPort/spec).
   Systems, members, groups, tags, custom fields, front history, and
-  journals map to OpenPlural core records; everything Sheaf has that
+  journals map to PluralPort core records; everything Sheaf has that
   the spec does not yet model is preserved under extensions.sheaf.*
 - assets/ -- the binary blobs (avatars, banners, journal images)
   referenced by the assets[] entries via their bundle_path.
 
 Re-importable into Sheaf (Settings -> Import) and into any other app
-that supports OpenPlural v0.1. See docs/OPENPLURAL.md in the Sheaf
+that supports PluralPort v0.1. See docs/PLURALPORT.md in the Sheaf
 source for the field-by-field mapping and known gaps.
 """
 
@@ -238,8 +238,8 @@ async def _assemble_zip_to_tempfile(
         README.txt    -- explains the asymmetry around image re-import
         images/<key>  -- (when include_images) the binary blobs
 
-    OpenPlural bundle (`fmt="openplural"`):
-        openplural.json   -- OpenPlural v0.1 envelope
+    PluralPort bundle (`fmt="pluralport"`):
+        pluralport.json   -- PluralPort v0.1 envelope
         README.txt        -- bundle notes
         assets/<key>      -- (when include_images) the referenced blobs
 
@@ -260,8 +260,8 @@ async def _assemble_zip_to_tempfile(
     os.close(fd)  # zipfile reopens the path; we just needed exclusive creation
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            if fmt == "openplural":
-                from sheaf.services.openplural_export import build_envelope
+            if fmt == "pluralport":
+                from sheaf.services.pluralport_export import build_envelope
 
                 envelope = build_envelope(
                     native_payload,
@@ -269,12 +269,12 @@ async def _assemble_zip_to_tempfile(
                     include_asset_bytes=include_images,
                 )
                 zf.writestr(
-                    "openplural.json",
+                    "pluralport.json",
                     json.dumps(envelope, indent=2, default=str).encode("utf-8"),
                 )
-                zf.writestr("README.txt", _OPENPLURAL_README)
+                zf.writestr("README.txt", _PLURALPORT_README)
                 if include_images:
-                    await _add_openplural_assets(zf, envelope)
+                    await _add_pluralport_assets(zf, envelope)
             else:
                 zf.writestr(
                     "export.json",
@@ -332,8 +332,8 @@ async def _assemble_fronts_to_tempfile(
     return tmp_path, size_bytes
 
 
-async def _add_openplural_assets(zf: zipfile.ZipFile, envelope: dict) -> None:
-    """Pack the blobs the OpenPlural envelope references under assets/<key>.
+async def _add_pluralport_assets(zf: zipfile.ZipFile, envelope: dict) -> None:
+    """Pack the blobs the PluralPort envelope references under assets/<key>.
 
     Only assets carrying an `extensions.sheaf.storage_key` (Sheaf-internal
     references) have bytes to bundle; external CDN URLs stay uri-only.
@@ -351,14 +351,14 @@ async def _add_openplural_assets(zf: zipfile.ZipFile, envelope: dict) -> None:
         try:
             blob = await storage.get(key)
         except Exception:  # noqa: BLE001
-            logger.warning("Skipping unreadable asset %s in OpenPlural export", key)
+            logger.warning("Skipping unreadable asset %s in PluralPort export", key)
             continue
         if blob is None:
             # Row references a blob absent from storage: the export.json still
             # lists it, so the archive is internally inconsistent (missing on
             # restore). Distinct from the unreadable case above.
             logger.warning(
-                "OpenPlural export: asset %s missing from storage, omitted "
+                "PluralPort export: asset %s missing from storage, omitted "
                 "though still referenced", key,
             )
             continue

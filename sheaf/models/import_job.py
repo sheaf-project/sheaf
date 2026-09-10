@@ -34,11 +34,13 @@ class ImportJobSource(enum.StrEnum):
     SHEAF_ARCHIVE = "sheaf_archive"
     PLURALSPACE_FILE = "pluralspace_file"
     PRISM_FILE = "prism_file"
-    # OpenPlural v0.1 envelope: a bare .json document or an .openplural.zip
-    # bundle (openplural.json + assets/). The runner sniffs which by the
+    # PluralPort v0.1 envelope: a bare .json document or a .pluralport.zip
+    # bundle (pluralport.json + assets/). The runner sniffs which by the
     # zip magic; both translate to the native shape and reuse the Sheaf
-    # JSON / archive importers underneath.
-    OPENPLURAL_FILE = "openplural_file"
+    # JSON / archive importers underneath. The API still accepts the
+    # pre-rename "openplural_file" as a deprecated request alias (it is
+    # normalised before validation); stored rows were migrated.
+    PLURALPORT_FILE = "pluralport_file"
     # Ampersand JSON export ({revision, config, database}). Base64 images
     # inline as data URIs; decoded + stored like the archive importers.
     AMPERSAND_FILE = "ampersand_file"
