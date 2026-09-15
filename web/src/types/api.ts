@@ -500,6 +500,7 @@ export type PendingActionType =
   | "field_delete"
   | "front_delete"
   | "journal_delete"
+  | "journal_unpin"
   | "image_delete"
   | "revision_unpin"
   | "watch_token_revoke"
@@ -644,8 +645,12 @@ export interface JournalEntry {
   author_member_names: string[];
   created_at: string;
   updated_at: string;
+  /** Null when not pinned. Pinned entries list ahead of the rest. */
+  pinned_at: string | null;
   /** Pending-delete grace timestamp; null when not queued. */
   pending_delete_at: string | null;
+  /** Pending-unpin grace timestamp; null when not queued. */
+  pending_unpin_at: string | null;
 }
 
 export interface JournalEntryWithCount extends JournalEntry {
@@ -685,6 +690,12 @@ export interface ContentRevision {
   body: string;
   created_at: string;
   pinned_at: string | null;
+}
+
+export interface JournalUnpinResponse {
+  entry: JournalEntry | null;
+  pending_action_id: string | null;
+  finalize_after: string | null;
 }
 
 export interface UnpinRevisionResponse {

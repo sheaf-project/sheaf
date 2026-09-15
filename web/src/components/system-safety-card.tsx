@@ -42,7 +42,7 @@ const categoryLabels: {
   { key: "applies_to_tags", label: "Tags", desc: "Deleting a tag" },
   { key: "applies_to_fields", label: "Custom fields", desc: "Deleting a custom field" },
   { key: "applies_to_fronts", label: "Front entries", desc: "Deleting a front entry" },
-  { key: "applies_to_journals", label: "Journal entries", desc: "Deleting a journal entry" },
+  { key: "applies_to_journals", label: "Journal entries", desc: "Deleting or unpinning a journal entry" },
   { key: "applies_to_images", label: "Images", desc: "Deleting an uploaded image" },
   { key: "applies_to_revisions", label: "Revision pins", desc: "Unpinning a protected revision" },
   {

@@ -2095,6 +2095,7 @@ async def run_import(
                 image_keys=_resolve_image_keys(
                     _str_list(j_data.get("image_keys"))
                 ),
+                pinned_at=_parse_iso(j_data.get("pinned_at")),
             )
             if created:
                 entry.created_at = created

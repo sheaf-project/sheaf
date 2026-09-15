@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Journal entries can be pinned.** A Pin button on an entry keeps it in a Pinned section above the rest of the journal list, and the pin travels with your backups. The Journal entries toggle in System Safety now covers unpinning as well as deleting: with it on, unpinning asks you to re-authenticate and waits out the grace period, cancellable from Settings > Safety like any other queued action. API clients can filter the list with `?pinned=true` or `?pinned=false`, and use `POST /v1/journals/{id}/pin` and `/unpin`.
+
 ## [1.5.0] - 2026-09-10
 
 ### Added

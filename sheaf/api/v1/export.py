@@ -788,6 +788,7 @@ def _journal_dict(entry: JournalEntry) -> dict:
         "image_keys": entry.image_keys,
         "created_at": entry.created_at.isoformat(),
         "updated_at": entry.updated_at.isoformat(),
+        "pinned_at": entry.pinned_at.isoformat() if entry.pinned_at else None,
     }
 
 

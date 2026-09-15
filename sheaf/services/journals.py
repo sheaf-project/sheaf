@@ -442,6 +442,7 @@ def decrypt_entry_for_read(
         "image_keys": entry.image_keys,
         "created_at": entry.created_at,
         "updated_at": entry.updated_at,
+        "pinned_at": entry.pinned_at,
     }
 
 

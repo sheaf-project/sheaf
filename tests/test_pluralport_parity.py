@@ -105,7 +105,7 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "title": CORE, "body": CORE, "visibility": CORE,
         "author_member_ids": CORE, "image_keys": CORE,
         "created_at": CORE, "updated_at": CORE,
-        "member_id": EXT, "author_member_names": EXT,
+        "member_id": EXT, "author_member_names": EXT, "pinned_at": EXT,
         "author_user_id": (
             "GAP: journal author account id is re-pointed to the importing "
             "user by the native importer, so it is not portable content"

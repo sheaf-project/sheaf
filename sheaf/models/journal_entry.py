@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,6 +62,11 @@ class JournalEntry(UUIDMixin, TimestampMixin, Base):
     # Pre-extracted at write so orphan cleanup is a fast set lookup.
     image_keys: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
+    )
+
+    # NULL = not pinned. Pinned entries are listed ahead of the rest.
+    pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     system: Mapped["System"] = relationship()

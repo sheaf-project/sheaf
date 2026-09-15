@@ -261,6 +261,7 @@ opaque to apps that do not speak Sheaf.
 | Group | `privacy` | v0.1 has no group privacy field; without this a group's exposure ceiling would be lost on a round-trip. |
 | Note (journal) | `member_id` | Sheaf journals can be scoped to one member; the core `Note` has no owning-member field. |
 | Note (journal) | `author_member_names` | Denormalised author names retained alongside `author_member_ids` for display fidelity. |
+| Note (journal) | `pinned_at` | When the entry was pinned to the top of the journal list; null or absent when not pinned. |
 | Board post | `board_kind` | Distinguishes system board vs per-member wall; no core distinction yet. |
 | Board post | `parent_message_id` | Single-level reply pointer; parks here until `BoardPost.parent_post_id` lands (issue #2). |
 

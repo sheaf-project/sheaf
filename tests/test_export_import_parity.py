@@ -426,7 +426,7 @@ CLASSIFICATION: dict[type, dict] = {
         "exported": {
             "member_id", "title", "body", "visibility", "author_user_id",
             "author_member_ids", "author_member_names", "image_keys",
-            "created_at", "updated_at",
+            "created_at", "updated_at", "pinned_at",
         },
         "excluded": {
             "id": _SURROGATE_PK,

@@ -5,13 +5,14 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router";
-import { ArrowLeft, History, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, History, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   JournalEntryEditor,
   type JournalEntryEditorValue,
 } from "@/components/journal-entry-editor";
 import { ContentRevisionList } from "@/components/content-revision-list";
+import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,14 +32,16 @@ import {
   deleteJournal,
   getJournal,
   listRevisions,
+  pinJournal,
   pinJournalRevision,
   restoreRevision,
+  unpinJournal,
   unpinJournalRevision,
   updateJournal,
 } from "@/lib/journals";
 import { getSystemSafety } from "@/lib/system-safety";
 import { apiErrorMessage } from "@/lib/api-errors";
-import { isDeleteQueued } from "@/types/api";
+import { isDeleteQueued, type DestructiveConfirm } from "@/types/api";
 
 const MarkdownPreview = lazy(() =>
   import("@/components/bio-editor").then((m) => ({
@@ -66,6 +69,7 @@ export function JournalDetailPage() {
   const [editing, setEditing] = useState(false);
   const [showRevisions, setShowRevisions] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmUnpin, setConfirmUnpin] = useState(false);
 
   const update = useMutation({
     mutationFn: (value: JournalEntryEditorValue) =>
@@ -83,6 +87,31 @@ export function JournalDetailPage() {
     },
   });
 
+  const pin = useMutation({
+    mutationFn: () => pinJournal(entryId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["journal", entryId] });
+      qc.invalidateQueries({ queryKey: ["journals"] });
+      toast.success("Entry pinned");
+    },
+  });
+
+  const unpin = useMutation({
+    mutationFn: (confirm?: DestructiveConfirm) => unpinJournal(entryId, confirm),
+    onSuccess: (resp) => {
+      qc.invalidateQueries({ queryKey: ["journal", entryId] });
+      qc.invalidateQueries({ queryKey: ["journals"] });
+      setConfirmUnpin(false);
+      if (resp.pending_action_id && resp.finalize_after) {
+        qc.invalidateQueries({ queryKey: ["system-safety"] });
+        const when = formatDateTime(resp.finalize_after);
+        toast.success(`Unpin queued, finalizes ${when}. Cancel from Safety settings.`);
+      } else {
+        toast.success("Entry unpinned");
+      }
+    },
+  });
+
   if (!entryId) return null;
   if (isLoading) return <Skeleton className="h-64" />;
   if (!entry) {
@@ -97,6 +126,9 @@ export function JournalDetailPage() {
   const authors = entry.author_member_names.length > 0
     ? entry.author_member_names.join(", ")
     : "account";
+  const unpinSafeguarded =
+    !!safety?.settings.applies_to_journals &&
+    (safety?.settings.grace_period_days ?? 0) > 0;
 
   return (
     <>
@@ -124,6 +156,35 @@ export function JournalDetailPage() {
               <History className="h-4 w-4 mr-1" />
               Revisions {entry.revision_count > 0 && `(${entry.revision_count})`}
             </Button>
+            {entry.pinned_at ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (unpinSafeguarded) setConfirmUnpin(true);
+                  else unpin.mutate(undefined);
+                }}
+                disabled={unpin.isPending || !!entry.pending_unpin_at}
+                title={
+                  entry.pending_unpin_at
+                    ? `Unpin scheduled for ${formatDateTime(entry.pending_unpin_at)}`
+                    : undefined
+                }
+              >
+                <PinOff className="h-4 w-4 mr-1" />
+                {entry.pending_unpin_at ? "Unpin scheduled" : "Unpin"}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => pin.mutate()}
+                disabled={pin.isPending}
+              >
+                <Pin className="h-4 w-4 mr-1" />
+                Pin
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
               <Pencil className="h-4 w-4 mr-1" />
               Edit
@@ -210,6 +271,20 @@ export function JournalDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      <DestructiveConfirmDialog
+        open={confirmUnpin}
+        onOpenChange={setConfirmUnpin}
+        title="Unpin journal entry?"
+        description={
+          "Unpinning will queue a pending action you can cancel from the Safety settings page."
+        }
+        tier={safety?.settings.auth_tier ?? "none"}
+        actionLabel="Queue unpin"
+        actionLabelLoading="Queuing…"
+        loading={unpin.isPending}
+        onConfirm={(confirm) => unpin.mutate(confirm)}
+      />
 
       {confirmDelete && (
         <DeleteEntryDialog
