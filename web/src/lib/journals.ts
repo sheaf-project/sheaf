@@ -7,6 +7,7 @@ import type {
   JournalEntryUpdate,
   JournalEntryWithCount,
   JournalListResponse,
+  JournalUnpinResponse,
   UnpinRevisionResponse,
 } from "@/types/api";
 import { apiFetch } from "./api-client";
@@ -14,6 +15,7 @@ import { apiFetch } from "./api-client";
 export interface ListJournalsParams {
   member_id?: string | null;
   system_only?: boolean;
+  pinned?: boolean;
   cursor?: string | null;
   limit?: number;
 }
@@ -22,6 +24,7 @@ export function listJournals(params: ListJournalsParams = {}) {
   const qs = new URLSearchParams();
   if (params.system_only) qs.set("system_only", "true");
   if (params.member_id) qs.set("member_id", params.member_id);
+  if (params.pinned !== undefined) qs.set("pinned", String(params.pinned));
   if (params.cursor) qs.set("cursor", params.cursor);
   if (params.limit) qs.set("limit", String(params.limit));
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
@@ -49,6 +52,17 @@ export function updateJournal(id: string, data: JournalEntryUpdate) {
 export function deleteJournal(id: string, confirm?: DestructiveConfirm) {
   return apiFetch<DeleteResult>(`/v1/journals/${id}`, {
     method: "DELETE",
+    ...(confirm ? { body: JSON.stringify(confirm) } : {}),
+  });
+}
+
+export function pinJournal(id: string) {
+  return apiFetch<JournalEntry>(`/v1/journals/${id}/pin`, { method: "POST" });
+}
+
+export function unpinJournal(id: string, confirm?: DestructiveConfirm) {
+  return apiFetch<JournalUnpinResponse>(`/v1/journals/${id}/unpin`, {
+    method: "POST",
     ...(confirm ? { body: JSON.stringify(confirm) } : {}),
   });
 }

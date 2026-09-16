@@ -362,6 +362,7 @@ def build_envelope(
                         {
                             "member_id": j.get("member_id"),
                             "author_member_names": j.get("author_member_names"),
+                            "pinned_at": j.get("pinned_at"),
                         }
                     )
                 },

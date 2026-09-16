@@ -461,6 +461,158 @@ def test_journal_delete_immediate_when_off(auth_client: httpx.Client):
 
 
 # ---------------------------------------------------------------------------
+# Entry pinning
+# ---------------------------------------------------------------------------
+
+
+def test_pin_and_unpin_entry(auth_client: httpx.Client):
+    entry = auth_client.post("/v1/journals", json={"body": "x"}).json()
+    assert entry["pinned_at"] is None
+
+    resp = auth_client.post(f"/v1/journals/{entry['id']}/pin")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pinned_at"] is not None
+    assert auth_client.post(f"/v1/journals/{entry['id']}/pin").status_code == 409
+
+    resp = auth_client.post(f"/v1/journals/{entry['id']}/unpin")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pending_action_id"] is None
+    assert body["entry"]["pinned_at"] is None
+    assert auth_client.post(f"/v1/journals/{entry['id']}/unpin").status_code == 409
+
+
+def test_list_pinned_filter(auth_client: httpx.Client):
+    a = auth_client.post("/v1/journals", json={"body": "a"}).json()
+    b = auth_client.post("/v1/journals", json={"body": "b"}).json()
+    auth_client.post(f"/v1/journals/{a['id']}/pin")
+
+    pinned = auth_client.get("/v1/journals", params={"pinned": "true"}).json()
+    unpinned = auth_client.get("/v1/journals", params={"pinned": "false"}).json()
+    pinned_ids = {x["id"] for x in pinned["items"]}
+    unpinned_ids = {x["id"] for x in unpinned["items"]}
+    assert a["id"] in pinned_ids and a["id"] not in unpinned_ids
+    assert b["id"] in unpinned_ids and b["id"] not in pinned_ids
+
+
+def test_pinned_at_is_exported(auth_client: httpx.Client):
+    entry = auth_client.post("/v1/journals", json={"body": "x"}).json()
+    auth_client.post(f"/v1/journals/{entry['id']}/pin")
+    export = auth_client.get("/v1/export").json()
+    row = next(j for j in export["journals"] if j["id"] == entry["id"])
+    assert row["pinned_at"] is not None
+
+
+def test_journal_unpin_queues_when_safeguarded(client: httpx.Client):
+    email = _register(client)
+    entry = client.post("/v1/journals", json={"body": "x"}).json()
+    client.post(f"/v1/journals/{entry['id']}/pin")
+    _set_system_safety_via_db(
+        email,
+        safety_grace_period_days=7,
+        safety_applies_to_journals=True,
+    )
+
+    resp = client.post(f"/v1/journals/{entry['id']}/unpin")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pending_action_id"] is not None
+    assert body["entry"] is None
+
+    # Still pinned during grace, with the queued unpin flagged.
+    fetched = client.get(f"/v1/journals/{entry['id']}").json()
+    assert fetched["pinned_at"] is not None
+    assert fetched["pending_unpin_at"] is not None
+
+    pending = client.get("/v1/system/safety").json()["pending_actions"]
+    assert any(
+        p["action_type"] == "journal_unpin" and p["target_id"] == entry["id"]
+        for p in pending
+    )
+    assert client.post(f"/v1/journals/{entry['id']}/unpin").status_code == 409
+
+
+def test_journal_unpin_immediate_when_category_off(client: httpx.Client):
+    email = _register(client)
+    entry = client.post("/v1/journals", json={"body": "x"}).json()
+    client.post(f"/v1/journals/{entry['id']}/pin")
+    _set_system_safety_via_db(
+        email,
+        safety_grace_period_days=7,
+        safety_applies_to_journals=False,
+    )
+    resp = client.post(f"/v1/journals/{entry['id']}/unpin")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["entry"]["pinned_at"] is None
+
+
+def test_finalize_journal_unpin_clears_pin(client: httpx.Client):
+    email = _register(client)
+    entry = client.post("/v1/journals", json={"body": "x"}).json()
+    client.post(f"/v1/journals/{entry['id']}/pin")
+
+    async def _run() -> None:
+        import json
+        from datetime import UTC, datetime
+
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from sheaf.config import settings
+        from sheaf.crypto import blind_index, encrypt
+        from sheaf.models.journal_entry import JournalEntry
+        from sheaf.models.pending_action import (
+            PendingAction,
+            PendingActionStatus,
+            PendingActionType,
+        )
+        from sheaf.models.system import System
+        from sheaf.models.user import User
+        from sheaf.services.system_safety import finalize_pending_action
+
+        db_url = os.environ.get("SHEAF_TEST_DB_URL") or settings.database_url
+        engine = create_async_engine(db_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            user = (
+                await db.execute(
+                    select(User).where(User.email_hash == blind_index(email))
+                )
+            ).scalar_one()
+            system = (
+                await db.execute(select(System).where(System.user_id == user.id))
+            ).scalar_one()
+            now = datetime.now(UTC)
+            pending = PendingAction(
+                system_id=system.id,
+                action_type=PendingActionType.JOURNAL_UNPIN,
+                target_id=uuid.UUID(entry["id"]),
+                target_label=encrypt("x"),
+                requested_at=now,
+                requested_by_user_id=user.id,
+                finalize_after=now,
+                fronting_member_ids=[],
+                fronting_member_names=encrypt(json.dumps([])),
+                status=PendingActionStatus.PENDING,
+            )
+            db.add(pending)
+            await db.commit()
+
+            await finalize_pending_action(pending, db)
+            await db.commit()
+
+            row = await db.get(JournalEntry, uuid.UUID(entry["id"]))
+            assert row is not None
+            await db.refresh(row)
+            assert row.pinned_at is None
+            assert pending.status == PendingActionStatus.COMPLETED
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Image safety
 # ---------------------------------------------------------------------------
 

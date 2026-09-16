@@ -99,6 +99,7 @@ _CATEGORY_BY_ACTION: dict[str, str] = {
     PendingActionType.FIELD_DELETE: "fields",
     PendingActionType.FRONT_DELETE: "fronts",
     PendingActionType.JOURNAL_DELETE: "journals",
+    PendingActionType.JOURNAL_UNPIN: "journals",
     PendingActionType.IMAGE_DELETE: "images",
     PendingActionType.REVISION_UNPIN: "revisions",
     PendingActionType.WATCH_TOKEN_REVOKE: "notifications",
@@ -120,6 +121,7 @@ _MODEL_BY_ACTION: dict[str, type] = {
     PendingActionType.FIELD_DELETE: CustomFieldDefinition,
     PendingActionType.FRONT_DELETE: Front,
     PendingActionType.JOURNAL_DELETE: JournalEntry,
+    PendingActionType.JOURNAL_UNPIN: JournalEntry,
     PendingActionType.IMAGE_DELETE: UploadedFile,
     PendingActionType.REVISION_UNPIN: ContentRevision,
     PendingActionType.WATCH_TOKEN_REVOKE: WatchToken,
@@ -372,6 +374,7 @@ _QUEUED_SUBJECT: dict[str, tuple[str, str]] = {
     PendingActionType.FIELD_DELETE: ("custom field", "deletion"),
     PendingActionType.FRONT_DELETE: ("front", "deletion"),
     PendingActionType.JOURNAL_DELETE: ("journal entry", "deletion"),
+    PendingActionType.JOURNAL_UNPIN: ("journal entry", "unpinning"),
     PendingActionType.IMAGE_DELETE: ("file", "deletion"),
     PendingActionType.REVISION_UNPIN: ("revision", "unpinning"),
     PendingActionType.WATCH_TOKEN_REVOKE: ("watcher", "revocation"),
@@ -539,7 +542,8 @@ async def finalize_pending_action(
     """Execute the queued action. Idempotent: missing target marks completed.
 
     Most action types are deletes, with cascade/blob cleanup as needed.
-    REVISION_UNPIN clears the pin flag in place rather than deleting.
+    REVISION_UNPIN and JOURNAL_UNPIN clear the pin flag in place rather than
+    deleting.
     """
     model = _MODEL_BY_ACTION.get(pending.action_type)
     if model is None:
@@ -562,6 +566,8 @@ async def finalize_pending_action(
             from sheaf.services.journals import unpin_revision_immediate
 
             unpin_revision_immediate(target)
+        elif pending.action_type == PendingActionType.JOURNAL_UNPIN:
+            target.pinned_at = None
         elif pending.action_type == PendingActionType.WATCH_TOKEN_REVOKE:
             # Soft-revoke: matches the immediate revoke path, channels stay in
             # DB but the dispatcher skips them. Idempotent if already revoked.

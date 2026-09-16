@@ -439,6 +439,7 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
                 "image_keys": [k for k in image_keys if k],
                 "created_at": n.get("created_at"),
                 "updated_at": n.get("updated_at"),
+                "pinned_at": ext.get("pinned_at"),
             }
         )
     native["journals"] = journals

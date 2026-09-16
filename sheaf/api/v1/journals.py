@@ -8,6 +8,7 @@ history shared with member bios.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
@@ -30,6 +31,8 @@ from sheaf.schemas.journal import (
     JournalEntryDeleteConfirm,
     JournalEntryRead,
     JournalEntryReadWithCount,
+    JournalEntryUnpinConfirm,
+    JournalEntryUnpinResponse,
     JournalEntryUpdate,
     JournalListResponse,
     PinRevisionRequest,
@@ -95,6 +98,7 @@ def _label_for(entry: JournalEntry) -> str:
 async def list_journals(
     member_id: uuid.UUID | None = Query(default=None),
     system_only: bool = Query(default=False),
+    pinned: bool | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
@@ -106,6 +110,7 @@ async def list_journals(
       - system_only=true → only entries with member_id IS NULL
       - member_id=<uuid> → only that member's entries
       - neither → all entries owned by the user's system
+      - pinned=true/false narrows any of the above to pinned/unpinned entries
 
     Pagination uses an opaque (created_at, id) cursor so entries sharing
     a created_at can't be skipped or duplicated across page boundaries.
@@ -117,6 +122,10 @@ async def list_journals(
     elif member_id is not None:
         await _verify_member_in_system(member_id, system.id, db)
         stmt = stmt.where(JournalEntry.member_id == member_id)
+    if pinned is True:
+        stmt = stmt.where(JournalEntry.pinned_at.is_not(None))
+    elif pinned is False:
+        stmt = stmt.where(JournalEntry.pinned_at.is_(None))
     if cursor is not None:
         try:
             cursor_created, cursor_id = decode_cursor(cursor)
@@ -148,10 +157,14 @@ async def list_journals(
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.JOURNAL_DELETE
     )
+    pending_unpin = await pending_finalize_after_by_target(
+        db, system, PendingActionType.JOURNAL_UNPIN
+    )
     items: list[JournalEntryRead] = []
     for r in page:
         item = JournalEntryRead.model_validate(decrypt_entry_for_read(r, user.id))
         item.pending_delete_at = pending.get(r.id)
+        item.pending_unpin_at = pending_unpin.get(r.id)
         items.append(item)
     return JournalListResponse(items=items, next_cursor=next_cursor)
 
@@ -208,9 +221,13 @@ async def get_entry(
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.JOURNAL_DELETE
     )
+    pending_unpin = await pending_finalize_after_by_target(
+        db, system, PendingActionType.JOURNAL_UNPIN
+    )
     payload = JournalEntryReadWithCount.model_validate(decrypt_entry_for_read(entry, user.id))
     payload.revision_count = count
     payload.pending_delete_at = pending.get(entry.id)
+    payload.pending_unpin_at = pending_unpin.get(entry.id)
     return payload
 
 
@@ -295,6 +312,84 @@ async def delete_entry(
     await db.delete(entry)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{entry_id}/pin",
+    response_model=JournalEntryRead,
+    dependencies=[Depends(require_scope("journals:write"))],
+)
+async def pin_entry(
+    entry_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    system = await _get_user_system(user, db)
+    entry = await _get_own_entry(entry_id, system.id, db)
+    if entry.pinned_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Journal entry is already pinned",
+        )
+    entry.pinned_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(entry)
+    return JournalEntryRead.model_validate(decrypt_entry_for_read(entry, user.id))
+
+
+@router.post(
+    "/{entry_id}/unpin",
+    response_model=JournalEntryUnpinResponse,
+    dependencies=[Depends(require_scope("journals:write"))],
+)
+async def unpin_entry(
+    entry_id: uuid.UUID,
+    body: JournalEntryUnpinConfirm | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unpin an entry.
+
+    Covered by the journals safety category: when it is on, this re-auths and
+    queues a JOURNAL_UNPIN pending action instead of unpinning right away.
+    """
+    system = await _get_user_system(user, db)
+    entry = await _get_own_entry(entry_id, system.id, db)
+    if entry.pinned_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Journal entry is not pinned",
+        )
+
+    if is_safeguarded(system, PendingActionType.JOURNAL_UNPIN):
+        await verify_destructive_auth(
+            user,
+            system,
+            body.password if body else None,
+            body.totp_code if body else None,
+            db,
+        )
+        pending = await queue_pending_action(
+            db=db,
+            system=system,
+            user=user,
+            action_type=PendingActionType.JOURNAL_UNPIN,
+            target_id=entry.id,
+            target_label=_label_for(entry),
+        )
+        await db.commit()
+        await db.refresh(pending)
+        return JournalEntryUnpinResponse(
+            pending_action_id=pending.id,
+            finalize_after=pending.finalize_after,
+        )
+
+    entry.pinned_at = None
+    await db.commit()
+    await db.refresh(entry)
+    return JournalEntryUnpinResponse(
+        entry=JournalEntryRead.model_validate(decrypt_entry_for_read(entry, user.id)),
+    )
 
 
 @router.get(

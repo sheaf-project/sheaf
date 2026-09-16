@@ -60,6 +60,11 @@ class JournalEntryDeleteConfirm(BaseModel):
     totp_code: str | None = None
 
 
+class JournalEntryUnpinConfirm(BaseModel):
+    password: str | None = None
+    totp_code: str | None = None
+
+
 class JournalEntryRead(BaseModel):
     id: uuid.UUID
     system_id: uuid.UUID
@@ -72,8 +77,11 @@ class JournalEntryRead(BaseModel):
     author_member_names: list[str]
     created_at: datetime
     updated_at: datetime
+    pinned_at: datetime | None = None
     # finalize_after timestamp if queued for delete; null otherwise.
     pending_delete_at: datetime | None = None
+    # finalize_after timestamp if an unpin is queued; null otherwise.
+    pending_unpin_at: datetime | None = None
     # The account whose uploads this body may reference. Excluded from the
     # response; see MemberRead.owner_user_id for why it is required. NOT
     # `author_user_id`: that is whoever typed the entry (and is nullable on
@@ -145,5 +153,18 @@ class UnpinRevisionResponse(BaseModel):
     """
 
     revision: ContentRevisionRead | None = None
+    pending_action_id: uuid.UUID | None = None
+    finalize_after: datetime | None = None
+
+
+class JournalEntryUnpinResponse(BaseModel):
+    """Returned from /unpin.
+
+    Same shape as UnpinRevisionResponse: `pending_action_id` is set when the
+    journals safety category is on with a positive grace period, otherwise
+    the unpin is immediate and `entry` is the now-unpinned row.
+    """
+
+    entry: JournalEntryRead | None = None
     pending_action_id: uuid.UUID | None = None
     finalize_after: datetime | None = None

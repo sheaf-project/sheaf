@@ -8,6 +8,7 @@ const actionLabels: Record<PendingActionType, string> = {
   field_delete: "Delete custom field",
   front_delete: "Delete front entry",
   journal_delete: "Delete journal entry",
+  journal_unpin: "Unpin journal entry",
   image_delete: "Delete image",
   revision_unpin: "Unpin revision",
   watch_token_revoke: "Revoke watcher",

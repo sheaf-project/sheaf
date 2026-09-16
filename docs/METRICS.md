@@ -318,8 +318,8 @@ LISTEN). Mirrors `sheaf_notifications_outbox_oldest_pending_seconds`.
 | `sheaf_pending_actions_finalized_total` | counter | `category`, `outcome` ∈ {completed, cancelled, errored} |
 
 `category` ∈ pending-action type enum (member_delete, group_delete,
-tag_delete, field_delete, front_delete, journal_delete, image_delete,
-channel_delete, reminder_delete, poll_delete, message_delete,
+tag_delete, field_delete, front_delete, journal_delete, journal_unpin,
+image_delete, channel_delete, reminder_delete, poll_delete, message_delete,
 message_thread_delete, revision_unpin, watch_token_revoke).
 
 ### Public profiles / sharing

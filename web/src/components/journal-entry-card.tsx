@@ -1,4 +1,5 @@
 import { Link } from "react-router";
+import { Pin } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
@@ -42,7 +43,17 @@ export function JournalEntryCard({
       >
         <CardContent className="space-y-1 p-4">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="font-medium truncate">{titleDisplay}</p>
+            <p className="flex min-w-0 items-center gap-1.5 font-medium">
+              {entry.pinned_at && (
+                <Pin
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  aria-label={
+                    entry.pending_unpin_at ? "Pinned, unpin scheduled" : "Pinned"
+                  }
+                />
+              )}
+              <span className="truncate">{titleDisplay}</span>
+            </p>
             <span className="text-xs text-muted-foreground shrink-0">
               {formatDateTime(entry.created_at)}
             </span>

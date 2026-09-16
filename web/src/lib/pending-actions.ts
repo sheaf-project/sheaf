@@ -32,6 +32,7 @@ export const pendingActionQueryKeys: Record<
   field_delete: [fieldKeys.all],
   front_delete: [frontKeys.all],
   journal_delete: [["journals"], ["journal"]],
+  journal_unpin: [["journals"], ["journal"]],
   image_delete: [["files"]],
   // The target is a revision id, and revision histories hang off whichever
   // member / journal entry / message owns them, so there is no narrower key

@@ -3,9 +3,10 @@ import { useSearchParams } from "react-router";
 import {
   useInfiniteQuery,
   useMutation,
+  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { Pin, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { JournalEntryCard } from "@/components/journal-entry-card";
 import { JournalEntryEditor } from "@/components/journal-entry-editor";
@@ -25,6 +26,8 @@ import { createJournal, listJournals } from "@/lib/journals";
 import type { JournalListResponse, Member } from "@/types/api";
 
 const PAGE_LIMIT = 25;
+// Pinned entries load in one request above the paginated list.
+const PINNED_LIMIT = 200;
 
 type Filter = "all" | "system" | string; // member id or sentinel
 
@@ -144,15 +147,25 @@ function JournalList({
     return { limit: PAGE_LIMIT };
   }, [filter]);
 
+  const pinnedQuery = useQuery({
+    queryKey: ["journals", { ...params, pinned: true }],
+    queryFn: () =>
+      listJournals({ ...params, pinned: true, limit: PINNED_LIMIT }),
+  });
+
   const query = useInfiniteQuery<JournalListResponse>({
-    queryKey: ["journals", params],
+    queryKey: ["journals", { ...params, pinned: false }],
     queryFn: ({ pageParam }) =>
-      listJournals({ ...params, cursor: pageParam as string | undefined }),
+      listJournals({
+        ...params,
+        pinned: false,
+        cursor: pageParam as string | undefined,
+      }),
     initialPageParam: undefined,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
 
-  if (query.isLoading) {
+  if (query.isLoading || pinnedQuery.isLoading) {
     return (
       <div className="grid gap-3">
         {[1, 2, 3].map((i) => (
@@ -163,8 +176,9 @@ function JournalList({
   }
 
   const entries = query.data?.pages.flatMap((p) => p.items) ?? [];
+  const pinned = pinnedQuery.data?.items ?? [];
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && pinned.length === 0) {
     return (
       <p className="text-muted-foreground">
         No entries yet.{" "}
@@ -177,6 +191,23 @@ function JournalList({
 
   return (
     <div className="space-y-3">
+      {pinned.length > 0 && (
+        <section className="space-y-2 pb-3">
+          <h2 className="flex items-center gap-1 text-sm font-medium text-muted-foreground">
+            <Pin className="h-3.5 w-3.5" />
+            Pinned
+          </h2>
+          <div className="grid gap-3">
+            {pinned.map((entry) => (
+              <JournalEntryCard
+                key={entry.id}
+                entry={entry}
+                memberLookup={memberLookup}
+              />
+            ))}
+          </div>
+        </section>
+      )}
       <div className="grid gap-3">
         {entries.map((entry) => (
           <JournalEntryCard

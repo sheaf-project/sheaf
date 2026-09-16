@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Journal entries can be pinned.** A Pin button on an entry keeps it in a Pinned section above the rest of the journal list, and the pin travels with your backups. The Journal entries toggle in System Safety now covers unpinning as well as deleting: with it on, unpinning asks you to re-authenticate and waits out the grace period, cancellable from Settings > Safety like any other queued action. API clients can filter the list with `?pinned=true` or `?pinned=false`, and use `POST /v1/journals/{id}/pin` and `/unpin`.
+
 ### Fixed
 
 - **The quick-switch endpoint no longer slows down as your fronting history grows.** Working out who fronts most often meant loading every front from the database, even though the answer is a handful of members. If you switch a lot, or imported a long history, that was adding seconds to the wait and getting worse over time. It is now calculated by the database directly: at ~20k front entries, it went from ~2.9s to ~0.1, and a big history is no longer slower than a small one. Ordering and calculation of results is unchanged.
