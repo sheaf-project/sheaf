@@ -18,7 +18,6 @@ from sheaf.encrypted_fields import (
 from sheaf.files import owned_avatar_url, owned_description_urls
 from sheaf.middleware.rate_limit import write_rate_limit
 from sheaf.models.content_revision import ContentRevision, ContentRevisionTarget
-from sheaf.models.front import Front
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
 from sheaf.models.security_event import SecurityEventType
@@ -43,7 +42,7 @@ from sheaf.schemas.member import (
     MemberUpdate,
 )
 from sheaf.schemas.tag import TagRead
-from sheaf.services.analytics import clip_intervals, score_recent_fronters
+from sheaf.services.analytics import score_recent_fronters_sql
 from sheaf.services.journals import (
     capture_revision,
     decrypt_revision_for_read,
@@ -301,22 +300,20 @@ async def top_fronters(
     now = datetime.now(UTC)
     since = now - _TOP_FRONTERS_WINDOW
 
-    fronts_result = await db.execute(
-        select(Front)
-        .options(selectinload(Front.members))
-        .where(
-            Front.system_id == system.id,
-            Front.started_at < now,
-            (Front.ended_at.is_(None)) | (Front.ended_at > since),
-        )
-    )
-    rows = [
-        (f.started_at, f.ended_at, [m.id for m in f.members])
-        for f in fronts_result.scalars().all()
-    ]
-    intervals = clip_intervals(rows, since=since, until=now)
-    scores = score_recent_fronters(
-        intervals, now=now, half_life_days=_TOP_FRONTERS_HALF_LIFE_DAYS
+    # Scored in the database rather than by loading the window's fronts.
+    # This endpoint returns at most `limit` members, but the window is 180
+    # days: a heavy switcher, or anyone who imported a long PluralKit
+    # switch log, had every one of those fronts materialised as an ORM
+    # object with its members eager-loaded on every request, and the cost
+    # grew with their history forever. `score_recent_fronters` in
+    # services/analytics.py is still the readable definition of the
+    # scoring and the one to change first; a test pins the two together.
+    scores = await score_recent_fronters_sql(
+        db,
+        system.id,
+        now=now,
+        since=since,
+        half_life_days=_TOP_FRONTERS_HALF_LIFE_DAYS,
     )
 
     members_result = await db.execute(

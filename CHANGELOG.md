@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **The quick-switch endpoint no longer slows down as your fronting history grows.** Working out who fronts most often meant loading every front from the database, even though the answer is a handful of members. If you switch a lot, or imported a long history, that was adding seconds to the wait and getting worse over time. It is now calculated by the database directly: at ~20k front entries, it went from ~2.9s to ~0.1, and a big history is no longer slower than a small one. Ordering and calculation of results is unchanged.
+
 ## [1.5.0] - 2026-09-10
 
 ### Added
