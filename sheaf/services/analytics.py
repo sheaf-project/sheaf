@@ -34,6 +34,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import Float, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from sheaf.models.front import Front
+from sheaf.models.member import front_members
+
 
 @dataclass
 class FrontInterval:
@@ -196,6 +202,13 @@ def score_recent_fronters(
 
     Returns member_id -> score. Members with no fronting time in the
     supplied intervals are simply absent (caller treats them as 0).
+
+    THIS IS THE REFERENCE IMPLEMENTATION. `score_recent_fronters_sql`
+    computes the same thing in the database for callers that would
+    otherwise have to load every front in the window just to rank a
+    handful of members. If you change the scoring here, change it there
+    too - `test_top_fronters_sql_matches_python_reference` runs both over
+    the same fronts and fails if they disagree.
     """
     decay_per_day = math.log(2) / half_life_days
     scores: dict[uuid.UUID, float] = {}
@@ -208,6 +221,68 @@ def score_recent_fronters(
         for member_id in interval.member_ids:
             scores[member_id] = scores.get(member_id, 0.0) + weight
     return scores
+
+
+async def score_recent_fronters_sql(
+    db: AsyncSession,
+    system_id: uuid.UUID,
+    *,
+    now: datetime,
+    since: datetime,
+    half_life_days: float = 30.0,
+) -> dict[uuid.UUID, float]:
+    """`score_recent_fronters` computed in the database.
+
+    Same window, same clipping, same decay - see that function, which is
+    the readable definition of all three and the one to change first.
+    This exists because the Python version needs every front in the
+    window materialised as an object to rank what is usually a handful of
+    members: a system with a long history (or an imported switch log)
+    pays seconds of ORM work for an eight-row answer, and it grows with
+    their history forever. Aggregating in SQL makes the result set one
+    row per member who fronted, instead of one object per front.
+
+    Kept honest by `test_top_fronters_sql_matches_python_reference`,
+    which runs both over the same fronts and fails on disagreement. That
+    test is the whole reason it is safe to have the scoring written
+    twice; do not delete it to make a change pass.
+
+    Members with no fronting time in the window are absent from the
+    result, exactly as in the reference (callers treat them as 0).
+    """
+    # Clip each front to the window, mirroring `clip_intervals`: an open
+    # front is treated as ending now, and the ends are pulled inside
+    # [since, now].
+    effective_end = func.least(func.coalesce(Front.ended_at, now), now)
+    clipped_start = func.greatest(Front.started_at, since)
+    duration_s = func.extract("epoch", effective_end - clipped_start)
+    # Age is measured from the CLIPPED end, as in the reference. The
+    # GREATEST guard mirrors its max(0.0, ...): belt and braces, since the
+    # clip already puts the end at or before `now`.
+    age_days = func.greatest(
+        0.0, func.extract("epoch", now - effective_end) / 86400.0
+    )
+    decay_per_day = math.log(2) / half_life_days
+    weight = duration_s * func.exp(-decay_per_day * age_days)
+
+    result = await db.execute(
+        select(
+            front_members.c.member_id,
+            func.sum(weight).cast(Float).label("score"),
+        )
+        .select_from(Front)
+        .join(front_members, front_members.c.front_id == Front.id)
+        .where(
+            Front.system_id == system_id,
+            Front.started_at < now,
+            (Front.ended_at.is_(None)) | (Front.ended_at > since),
+            # The reference drops non-positive durations rather than
+            # letting them subtract from a score.
+            effective_end > clipped_start,
+        )
+        .group_by(front_members.c.member_id)
+    )
+    return {row.member_id: float(row.score) for row in result.all()}
 
 
 def clip_intervals(
