@@ -621,3 +621,50 @@ def test_pending_read_names_nothing(
 def test_pending_read_404s_for_an_unknown_user(admin_client: httpx.Client):
     resp = admin_client.get(f"/v1/admin/users/{uuid.uuid4()}/pending")
     assert resp.status_code == 404, resp.text
+
+
+def test_cancel_exposures_reaches_a_staged_link_preview_mode(
+    admin_client: httpx.Client, auth_client: httpx.Client
+):
+    """A newly added exposure flag is covered without anyone editing the cancel.
+
+    `link_preview_mode` and `member_link_preview_mode` landed after
+    cancel-exposures was written. They are reached because the cancel derives
+    its column list from `EXPOSURE_FLAGS` rather than naming flags by hand,
+    which is the property this test is really pinning: the drift that left
+    three safety categories out of the reset must not repeat here. If a flag
+    is ever added to that tuple without a `pending_` twin, or a staged
+    exposure appears outside it, this is where it should surface.
+    """
+    uid = _me(auth_client)
+    _go_public(auth_client)
+    vid = _view(auth_client, [_member(auth_client)])
+    attest = auth_client.post("/v1/auth/me/attest-adult")
+    assert attest.status_code == 200, attest.text
+    granted = auth_client.post(
+        "/v1/share-grants", json={"view_id": vid, "subject_type": "public"}
+    )
+    assert granted.status_code == 201, granted.text
+
+    _arm(auth_client, days=7)
+    staged = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"link_preview_mode": "system_details", "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    assert body["link_preview_mode"] == "generic", body
+    assert body["pending_link_preview_mode"] == "system_details", body
+    assert body["flags_activate_at"] is not None, body
+
+    cancelled = admin_client.post(
+        f"/v1/admin/users/{uid}/cancel-exposures", json={"reason": "audit"}
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["by_kind"].get("view_flags") == 1, cancelled.text
+
+    after = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert after["link_preview_mode"] == "generic", after
+    assert after["pending_link_preview_mode"] is None, after
+    assert after["flags_activate_at"] is None, after
+    assert _safety(auth_client)["pending_exposures"] == []

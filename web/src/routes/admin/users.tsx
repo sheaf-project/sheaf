@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/select";
 import {
   adminBypassPendingActions,
+  adminCancelStagedExposures,
+  adminGetPendingWork,
   adminResetSystemSafety,
   banUser,
   downloadDossier,
@@ -35,6 +37,7 @@ import {
   changeUserEmail,
   disableUserTotp,
   verifyUserEmail,
+  type AdminPendingWork,
   type AdminUser,
   type AdminUserPatch,
   type AdminUserSession,
@@ -526,6 +529,89 @@ function ExplainPanel({ userId }: { userId: string }) {
   );
 }
 
+/**
+ * What is queued on the account, in the three shapes it comes in.
+ *
+ * Sits above the safety levers because those levers used to be pressed blind:
+ * an admin clicked Reset safety or Drain pending and found out what had been
+ * waiting from the toast afterwards. The three rows also say plainly which
+ * lever reaches which queue, since the answer is not guessable - Drain pending
+ * reaches deletions only, and staged exposures have a button of their own.
+ *
+ * Counts and timestamps, never a name or an id: an admin screen answering "is
+ * anything waiting, and since when" has no business saying which member
+ * somebody is deleting. The endpoint enforces that too.
+ */
+function PendingWorkSummary({ userId }: { userId: string }) {
+  const { formatDateTime } = useDateFormatters();
+  const { data, isLoading } = useQuery<AdminPendingWork>({
+    queryKey: ["admin", "pending", userId],
+    queryFn: () => adminGetPendingWork(userId),
+    staleTime: 15_000,
+  });
+
+  if (isLoading || !data) return null;
+
+  const rows = [
+    {
+      one: "queued deletion",
+      many: "queued deletions",
+      count: data.pending_actions.count,
+      when: data.pending_actions.earliest_finalize_after,
+      lever: "Drain pending finishes these now. A reset leaves them queued.",
+    },
+    {
+      one: "queued safety change",
+      many: "queued safety changes",
+      count: data.pending_changes.count,
+      when: data.pending_changes.earliest_finalize_after,
+      lever: "A reset cancels these, so it cannot be undone later.",
+    },
+    {
+      one: "staged exposure",
+      many: "staged exposures",
+      count: data.pending_exposures.count,
+      when: data.pending_exposures.earliest_activates_at,
+      lever:
+        "Cancel exposures stops these. Nothing brings them forward, on purpose.",
+    },
+  ];
+
+  if (rows.every((r) => r.count === 0)) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        Nothing queued on this account.
+      </span>
+    );
+  }
+
+  return (
+    <div className="w-full rounded border bg-muted/30 px-3 py-2">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">
+        Queued on this account
+      </div>
+      <ul className="space-y-0.5 text-xs">
+        {rows
+          .filter((r) => r.count > 0)
+          .map((r) => (
+            <li key={r.many} className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-medium">
+                {r.count} {r.count === 1 ? r.one : r.many}
+              </span>
+              {r.when ? (
+                <span className="text-muted-foreground">
+                  earliest {formatDateTime(r.when)}
+                </span>
+              ) : null}
+              <span className="text-muted-foreground">{r.lever}</span>
+            </li>
+          ))}
+      </ul>
+    </div>
+  );
+}
+
+
 function UserActions({ user }: { user: AdminUser }) {
   const qc = useQueryClient();
   const { formatDateTime } = useDateFormatters();
@@ -555,8 +641,8 @@ function UserActions({ user }: { user: AdminUser }) {
       qc.invalidateQueries({ queryKey: ["admin", "audit"] });
       toast.success(
         data.changed_fields.length > 0
-          ? `Safety reset (${data.changed_fields.length} fields cleared)`
-          : "Safety already at default — no changes",
+          ? `Safety reset to defaults (${data.changed_fields.length} field(s) moved)`
+          : "Safety already at defaults, no changes",
       );
       setConfirming(null);
       setReason("");
@@ -571,6 +657,21 @@ function UserActions({ user }: { user: AdminUser }) {
         data.finalized_count > 0
           ? `Drained ${data.finalized_count} pending action(s)`
           : "No pending actions queued",
+      );
+      setConfirming(null);
+      setReason("");
+    },
+  });
+
+  const cancelExposures = useMutation({
+    mutationFn: () => adminCancelStagedExposures(user.id, reason),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      qc.invalidateQueries({ queryKey: ["admin", "pending", user.id] });
+      toast.success(
+        data.cancelled_count > 0
+          ? `Cancelled ${data.cancelled_count} staged exposure(s)`
+          : "No staged exposures waiting",
       );
       setConfirming(null);
       setReason("");
@@ -707,6 +808,7 @@ function UserActions({ user }: { user: AdminUser }) {
     verifyEmail.isPending ||
     resetSafety.isPending ||
     bypassPending.isPending ||
+    cancelExposures.isPending ||
     rotateKeys.isPending ||
     suspend.isPending ||
     unsuspend.isPending ||
@@ -890,7 +992,12 @@ function UserActions({ user }: { user: AdminUser }) {
           )
         )}
 
-        {/* Reset System Safety (clear all safeguards going forward) */}
+        {/* What is queued, before anyone presses anything below. These three
+            levers used to be pressed blind: an admin clicked and read a toast
+            afterwards. Counts and timestamps only, never a target's name. */}
+        <PendingWorkSummary userId={user.id} />
+
+        {/* Reset System Safety (back to a new account's defaults) */}
         {confirming === "reset-safety" ? (
           <div className="flex items-center gap-2">
             <Input
@@ -927,7 +1034,7 @@ function UserActions({ user }: { user: AdminUser }) {
             variant="outline"
             className="h-7 text-xs"
             onClick={() => setConfirming("reset-safety")}
-            title="Clear all System Safety toggles + zero grace period"
+            title="Put System Safety back to a new account's defaults, zero the grace period, and cancel any queued loosening. Leaves queued deletions and staged exposures alone."
           >
             Reset safety
           </Button>
@@ -970,9 +1077,55 @@ function UserActions({ user }: { user: AdminUser }) {
             variant="outline"
             className="h-7 text-xs"
             onClick={() => setConfirming("bypass-pending")}
-            title="Finalize all queued pending actions immediately"
+            title="Finalize all queued deletions immediately. Does not reach staged exposures."
           >
             Drain pending
+          </Button>
+        )}
+
+        {/* Cancel staged exposures. Its own button rather than a mode of
+            either lever above: support may always STOP a publication that has
+            not happened, and may never bring one forward, so the two
+            directions must not share a control. */}
+        {confirming === "cancel-exposures" ? (
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-7 w-64 text-xs"
+              placeholder="Reason (e.g. support ticket #123)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-7 text-xs"
+              onClick={() => cancelExposures.mutate()}
+              disabled={isPending || !reason.trim()}
+            >
+              Confirm
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => {
+                setConfirming(null);
+                setReason("");
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => setConfirming("cancel-exposures")}
+            title="Call off every staged flip-to-public raise, so nothing waiting behind the grace window goes live. Never un-publishes anything already public."
+          >
+            Cancel exposures
           </Button>
         )}
 
