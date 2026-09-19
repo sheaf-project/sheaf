@@ -118,8 +118,11 @@ SAAS_MARKS="saas"
 if [[ "${SHEAF_TEST_SAAS_FULL:-}" == "true" ]]; then SAAS_MARKS=""; fi
 add_config "saas/none" none saas 1 "$SAAS_MARKS" "" "" ""
 
-# 5. Rate limiting - low limits so tests can trigger 429s
-add_config "selfhosted/rate_limit" none selfhosted 0 "rate_limit" "" \
+# 5. Rate limiting - low limits so tests can trigger 429s. Needs the Redis URL
+# (the 4th field): its tests flush the limiter's counters from the host between
+# cases, and without the URL they fell back to a hardcoded 6380, which is only
+# the right instance on slot 1.
+add_config "selfhosted/rate_limit" none selfhosted 1 "rate_limit" "" \
     "RATE_LIMIT_ENABLED=true RATE_LIMIT_GLOBAL_PER_IP=600 RATE_LIMIT_GLOBAL_WINDOW=60" \
     "SHEAF_TEST_RATE_LIMIT=true"
 

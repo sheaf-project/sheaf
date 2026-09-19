@@ -15,16 +15,47 @@ import redis
 pytestmark = pytest.mark.rate_limit
 
 BASE_URL = os.environ.get("SHEAF_TEST_URL", "http://localhost:8000")
-# Test compose exposes Redis on 6380
-REDIS_URL = os.environ.get("SHEAF_TEST_REDIS_URL", "redis://localhost:6380/0")
 
-
+# No default. This used to fall back to a hardcoded redis://localhost:6380/0,
+# which is the right instance only on slot 1: run_tests.sh --jobs N publishes
+# slot s on 6379+s, so from slot 2 upward the flush below silently cleared a
+# DIFFERENT stack's Redis while this one's counters accumulated across configs.
+# The symptom was registration returning 429 in fixture setup - `assert 429 ==
+# 201` in conftest's client fixtures - which reads like a limiter bug and is
+# actually the test harness pointing at the wrong port. A missing URL is now a
+# hard error, because a flush that quietly does nothing is worse than no flush.
 @pytest.fixture(autouse=True)
 def flush_rate_limit_keys():
-    """Clear all rate limit keys before each test so counters start fresh."""
-    r = redis.from_url(REDIS_URL)
-    for key in r.scan_iter("sheaf:rl:*"):
-        r.delete(key)
+    """Clear all rate limit keys before each test so counters start fresh.
+
+    The URL is read here rather than at module import, and that placement is
+    load-bearing: every config that selects by marker still COLLECTS this
+    file, because pytest's `-m` filter runs after collection. A check at
+    import time therefore fires for configs that have no business talking to
+    Redis and kills their whole run, which is exactly what happened the first
+    time this guard was written.
+
+    Deletes in bulk rather than one key per round trip: the global per-IP
+    limit is 600/60s and a preceding config can leave a lot of windows
+    behind, and deleting them one at a time leaves a gap in which the app
+    keeps writing new ones.
+    """
+    url = os.environ.get("SHEAF_TEST_REDIS_URL")
+    if not url:
+        pytest.fail(
+            "SHEAF_TEST_REDIS_URL is not set. These tests flush the limiter's "
+            "counters directly, so they need the URL of the Redis THIS stack "
+            "is using. Set the rate_limit config's redis field to 1 in "
+            "run_tests.sh. Do NOT let this fall back to a hardcoded port: "
+            "run_tests.sh --jobs N puts slot s on 6379+s, so a default is "
+            "right only on slot 1 and silently flushes another stack's Redis "
+            "everywhere else.",
+            pytrace=False,
+        )
+    r = redis.from_url(url)
+    keys = list(r.scan_iter("sheaf:rl:*"))
+    if keys:
+        r.delete(*keys)
     r.close()
     yield
 
