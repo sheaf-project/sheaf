@@ -282,7 +282,7 @@ dispatcher, import runner) is stalled, which a quiet period would
 otherwise hide since the notification-backlog alert only fires when
 there's traffic to back up. 2+ is a split brain that shouldn't be
 possible by construction; the metric proves the invariant rather than
-assuming it. Only published when `LEADER_ELECTION` is enabled; with it
+assuming it. Only published when `LEADER_ELECTION_ENABLED` is on; with it
 off, every process runs the loops and this metric is absent, so the
 `!= 1` alert does not apply.
 
@@ -489,8 +489,7 @@ between the `le="1000"` series and `le="+Inf"` is how many systems have more
 than 1000 fronts, and `sheaf_system_front_count_max` is the single largest.
 `sheaf_fronts_created_total` is switch velocity (rows created), distinct from
 the HTTP request counter on `POST /v1/fronts`. These exist to ground the
-front-history retention decision in real usage data (see
-`../sheaf-design-docs/front-history-retention-and-limits.md`).
+front-history retention decision in real usage data.
 
 The `sheaf_journal_entries_total` / `sheaf_systems_by_journal_entry_count` /
 `sheaf_system_journal_entry_count_max` set and the
@@ -501,8 +500,7 @@ history) volume. `sheaf_targets_by_revision_count` is the key one for the
 journal-revision cap decision: a "target" is one journal entry / member bio /
 message, and `sheaf_target_revision_count_max` is the most-revised single
 target (the save-spam outlier signal). `sheaf_content_revisions_created_total`
-is edit velocity on the live edit path (imports excluded). See
-`../sheaf-design-docs/usage-limits-and-tiers.md`.
+is edit velocity on the live edit path (imports excluded).
 
 The board-message / poll / group / tag / custom-field / reminder sets apply
 the same lens to the remaining bulk-creatable user-content entities that
