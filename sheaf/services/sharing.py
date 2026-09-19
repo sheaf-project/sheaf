@@ -2060,3 +2060,179 @@ async def pending_exposures(
     ]
 
     return exposures
+
+
+async def cancel_pending_exposures(
+    system_id: uuid.UUID, db: AsyncSession
+) -> dict[str, int]:
+    """Call off every staged flip-to-public raise for one system.
+
+    The write-side mirror of `pending_exposures`, source for source, and the
+    inverse of `finalize_share_activations`: whatever that sweep would have
+    promoted, this stops. Returns a count per kind using the same labels the
+    read side reports, so a caller can say what it just cancelled.
+
+    Every branch does what the owner's own lowering path does, which is the
+    point: un-exposing is never gated, so cancelling a staged raise needs no
+    re-auth, honours no window, and is safe to run at any time. Staged
+    LEVELS are dropped (`pending_privacy` / `pending_visibility` /
+    `pending_<flag>` back to NULL) while the LIVE level is left exactly where
+    it is, so cancelling only ever removes a future exposure and never
+    un-publishes something already public. The two staged-membership kinds are
+    the same idea expressed differently: their rows stay PENDING with the
+    timestamp cleared, which is the resting state the sweep and the banner both
+    ignore, rather than being deleted and taking the owner's curation with
+    them. Pending grants are revoked outright, because a grant has no lower
+    level to fall back to.
+
+    Idempotent: a second call finds nothing staged and returns zeros.
+    """
+    cancelled: dict[str, int] = {}
+
+    def _count(kind: str, n: int) -> None:
+        if n:
+            cancelled[kind] = cancelled.get(kind, 0) + n
+
+    # systems.pending_privacy - the master switch raise.
+    system_result = await db.execute(
+        update(System)
+        .where(System.id == system_id, System.privacy_activates_at.is_not(None))
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("system_privacy", system_result.rowcount or 0)
+
+    # members.fronting_private_activates_at - a staged fronting-guard release.
+    # The guard itself (`fronting_private`) stays on: clearing the clock keeps
+    # the member hidden rather than revealing them.
+    guard_result = await db.execute(
+        update(Member)
+        .where(
+            Member.system_id == system_id,
+            Member.fronting_private_activates_at.is_not(None),
+        )
+        .values(fronting_private_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("member_fronting", guard_result.rowcount or 0)
+
+    # Staged member memberships. Counted per member, not per row, to match the
+    # read side's collapse - one raise cancelled is one cancellation.
+    staged_members = await db.execute(
+        select(func.count(func.distinct(ShareViewMember.member_id)))
+        .join(ShareView, ShareView.id == ShareViewMember.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+        )
+    )
+    _count("member_privacy", staged_members.scalar() or 0)
+    await db.execute(
+        update(ShareViewMember)
+        .where(
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+            ShareViewMember.view_id.in_(
+                select(ShareView.id).where(ShareView.system_id == system_id)
+            ),
+        )
+        .values(activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+    # groups.pending_privacy - a group raise.
+    group_result = await db.execute(
+        update(Group)
+        .where(
+            Group.system_id == system_id,
+            Group.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("group_privacy", group_result.rowcount or 0)
+
+    # custom_field_definitions.pending_privacy - a field-definition raise.
+    field_result = await db.execute(
+        update(CustomFieldDefinition)
+        .where(
+            CustomFieldDefinition.system_id == system_id,
+            CustomFieldDefinition.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("field_privacy", field_result.rowcount or 0)
+
+    # member_relationships.pending_visibility - a staged edge raise.
+    edge_result = await db.execute(
+        update(MemberRelationship)
+        .where(
+            MemberRelationship.system_id == system_id,
+            MemberRelationship.visibility_activates_at.is_not(None),
+        )
+        .values(pending_visibility=None, visibility_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("relationship_privacy", edge_result.rowcount or 0)
+
+    # share_views.flags_activate_at - staged exposure-flag loosenings. Every
+    # pending_<flag> is dropped alongside the clock, so a later loosening
+    # starts a fresh window instead of inheriting a half-cancelled one.
+    flag_result = await db.execute(
+        update(ShareView)
+        .where(
+            ShareView.system_id == system_id,
+            ShareView.flags_activate_at.is_not(None),
+        )
+        .values(
+            flags_activate_at=None,
+            **{f"pending_{flag}": None for flag in EXPOSURE_FLAGS},
+        )
+        .execution_options(synchronize_session=False)
+    )
+    _count("view_flags", flag_result.rowcount or 0)
+
+    # Pending grants. A grant is the one staged exposure with nothing lower to
+    # fall back to - it either serves or it does not - so cancelling it means
+    # revoking it, exactly as the owner's panic button does. Loaded rather than
+    # bulk-updated so `revoke_grant` stays the single definition of what
+    # revoking means, metrics included.
+    grants = await db.execute(
+        select(ShareGrant).where(
+            ShareGrant.system_id == system_id,
+            ShareGrant.status == ShareGrantStatus.PENDING.value,
+            ShareGrant.activates_at.is_not(None),
+        )
+    )
+    grant_rows = list(grants.scalars().all())
+    for grant in grant_rows:
+        revoke_grant(grant)
+    _count("share_grant", len(grant_rows))
+
+    # Staged field memberships, collapsed per field like the member rows above.
+    staged_fields = await db.execute(
+        select(func.count(func.distinct(ShareViewField.field_id)))
+        .join(ShareView, ShareView.id == ShareViewField.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+        )
+    )
+    _count("view_field", staged_fields.scalar() or 0)
+    await db.execute(
+        update(ShareViewField)
+        .where(
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+            ShareViewField.view_id.in_(
+                select(ShareView.id).where(ShareView.system_id == system_id)
+            ),
+        )
+        .values(activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+    return cancelled
