@@ -8,6 +8,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Added
 
+- **Apps can now read group and tag membership in one request instead of one per group.** Working out which members are in which group meant asking the server once for every group and once for every tag, which is a dozen or more requests for data that is small and rarely changes. `GET /v1/groups` and `GET /v1/tags` now take `?include_member_ids=true`, and `GET /v1/members` takes `?include_group_ids=true` and `?include_tag_ids=true` for the same information keyed the other way. All are off by default, so nothing an existing client fetches gets bigger. This is what the watch needs to scope a tile to a group without a dozen round trips over Bluetooth, and the phone and web clients stop fetching group membership one group at a time. Groups also now always report a `member_count`, so a list can say how many members a group has without fetching them all to count.
+
 - **Journal entries can be pinned.** A Pin button on an entry keeps it in a Pinned section above the rest of the journal list, and the pin travels with your backups. The Journal entries toggle in System Safety now covers unpinning as well as deleting: with it on, unpinning asks you to re-authenticate and waits out the grace period, cancellable from Settings > Safety like any other queued action. API clients can filter the list with `?pinned=true` or `?pinned=false`, and use `POST /v1/journals/{id}/pin` and `/unpin`.
 
 ### Changed

@@ -165,6 +165,22 @@ class MemberRead(BaseModel):
     # Required rather than defaulted so a construction site that forgets it
     # fails loudly instead of silently signing whatever it was handed.
     owner_user_id: uuid.UUID = Field(exclude=True)
+    # The same membership the group and tag endpoints can serve, keyed from
+    # this side so a client that starts at the member list gets it in one
+    # request. Present ONLY when asked for: `?include_group_ids=true` and
+    # `?include_tag_ids=true` respectively.
+    #
+    # Unlike `GroupRead.member_ids`, these DO need a scope the members router
+    # does not grant. `/v1/members` is gated on `members:read`, while a group
+    # is behind `groups:read`, so emitting these unasked would turn a key
+    # scoped to members alone into one that also learns the group and tag
+    # structure. A caller that asks without the scope is refused with a 403
+    # naming it, rather than served a silently thinner object.
+    #
+    # Null is "not asked for"; `[]` is "asked for, and this member is in no
+    # groups". Ordered by id, for the same encrypted-name reason.
+    group_ids: list[uuid.UUID] | None = None
+    tag_ids: list[uuid.UUID] | None = None
 
     model_config = {"from_attributes": True}
 

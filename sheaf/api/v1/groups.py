@@ -1,7 +1,15 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +35,11 @@ from sheaf.schemas.group import (
 )
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.services.members import decrypt_member_for_read
+from sheaf.services.memberships import (
+    member_counts_by_group,
+    member_ids_by_group,
+    member_ids_for_group,
+)
 from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     group_raise_exposes,
@@ -105,7 +118,9 @@ async def _get_own_group(
     return group
 
 
-async def _list_groups_read(system: System, db: AsyncSession) -> list[GroupRead]:
+async def _list_groups_read(
+    system: System, db: AsyncSession, *, include_member_ids: bool = False
+) -> list[GroupRead]:
     """The full group list as the list endpoint serves it, (order, name)
     sorted with pending-delete timestamps attached. Shared with the reorder
     endpoint so its response is exactly what the next GET would return."""
@@ -118,21 +133,44 @@ async def _list_groups_read(system: System, db: AsyncSession) -> list[GroupRead]
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.GROUP_DELETE
     )
+    # Both of these are one query for the whole list, not one per group: doing
+    # it per group would move the caller's N+1 onto the server rather than
+    # remove it, which is the entire point of the flag.
+    counts = await member_counts_by_group(db, system.id)
+    members = (
+        await member_ids_by_group(db, system.id) if include_member_ids else {}
+    )
     out: list[GroupRead] = []
     for g in groups:
         gr = GroupRead.model_validate(g)
         gr.pending_delete_at = pending.get(g.id)
+        gr.member_count = counts.get(g.id, 0)
+        if include_member_ids:
+            # `.get(..., [])` and not `.get(...)`: a group with no members
+            # asked about is an empty list, never null. Null is reserved for
+            # "you did not ask".
+            gr.member_ids = members.get(g.id, [])
         out.append(gr)
     return out
 
 
 @router.get("", response_model=list[GroupRead])
 async def list_groups(
+    include_member_ids: bool = Query(
+        default=False,
+        description=(
+            "Include each group's member ids. Off by default so existing "
+            "callers' payloads do not grow. Lets a client build a member to "
+            "groups map in one request instead of one per group."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     system = await _get_user_system(user, db)
-    return await _list_groups_read(system, db)
+    return await _list_groups_read(
+        system, db, include_member_ids=include_member_ids
+    )
 
 
 @router.post(
@@ -209,7 +247,7 @@ async def create_group(
     await db.commit()
     groups_created_total.inc()
     await db.refresh(group)
-    return group
+    return await _group_read(db, group)
 
 
 # Declared before the /{group_id} routes so "reorder" is matched as this
@@ -257,9 +295,36 @@ async def reorder_groups(
     return await _list_groups_read(system, db)
 
 
+async def _group_read(
+    db: AsyncSession,
+    group: Group,
+    *,
+    pending_delete_at: datetime | None = None,
+    include_member_ids: bool = False,
+) -> GroupRead:
+    """One group as the API serves it, member count filled in.
+
+    Every single-group response goes through here. Returning the ORM row
+    straight to FastAPI would serialise `member_count` as its default of zero,
+    so a PATCH on a group with twelve members would answer "0" while the list
+    endpoint said "12", and only one of those would be believed.
+    """
+    gr = GroupRead.model_validate(group)
+    gr.pending_delete_at = pending_delete_at
+    member_ids = await member_ids_for_group(db, group.id)
+    gr.member_count = len(member_ids)
+    if include_member_ids:
+        gr.member_ids = member_ids
+    return gr
+
+
 @router.get("/{group_id}", response_model=GroupRead)
 async def get_group(
     group_id: uuid.UUID,
+    include_member_ids: bool = Query(
+        default=False,
+        description="Include this group's member ids. Off by default.",
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -268,9 +333,12 @@ async def get_group(
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.GROUP_DELETE
     )
-    gr = GroupRead.model_validate(group)
-    gr.pending_delete_at = pending.get(group.id)
-    return gr
+    return await _group_read(
+        db,
+        group,
+        pending_delete_at=pending.get(group.id),
+        include_member_ids=include_member_ids,
+    )
 
 
 @router.patch(
@@ -435,7 +503,7 @@ async def update_group(
             user_agent=request.headers.get("user-agent"),
             detail={"source": "group_privacy", "group_id": str(group.id)},
         )
-    return group
+    return await _group_read(db, group)
 
 
 @router.delete(
