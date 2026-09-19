@@ -53,6 +53,10 @@ LoginOutcome = Literal[
     "captcha_failed",
     "email_unverified",
     "email_revalidation_required",
+    # Refusals that happen after the credential checks out, so they are
+    # login outcomes even though nothing was wrong with the password.
+    "account_suspended",
+    "account_banned",
 ]
 PasswordResetStage = Literal["requested", "completed", "expired", "abandoned"]
 EmailVerificationOutcome = Literal["sent", "completed", "expired", "resend_blocked"]

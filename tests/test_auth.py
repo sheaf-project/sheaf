@@ -45,6 +45,60 @@ def test_login(client: httpx.Client):
     assert "access_token" in resp.json()
 
 
+def test_login_issues_both_cookies_and_usable_tokens(client: httpx.Client):
+    """Login must leave the caller with a complete, working session.
+
+    Everything asserted here lives in one shared code path (`_finalise_login`),
+    which is reached by every credential that can sign someone in. The
+    equivalent assertions existed for register only, so a change that dropped
+    the refresh cookie from login would have gone unnoticed: the register test
+    would still pass and nothing pinned login.
+
+    `sheaf_refresh` is scoped to /v1/auth deliberately - it is only ever sent
+    to the refresh endpoint, so a bug elsewhere can't leak it. The trusted
+    device cookie must be absent, since it only means anything for a login
+    that exercised TOTP.
+    """
+    email = f"login-cookies-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    password = "securepassword"
+    client.post("/v1/auth/register", json={"email": email, "password": password})
+    # Register also mints a session; drop it so we assert on login's own work.
+    client.cookies.clear()
+
+    resp = client.post(
+        "/v1/auth/login", json={"email": email, "password": password}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["access_token"] and body["refresh_token"]
+
+    cookies = resp.headers.get_list("set-cookie")
+    session_header = next(
+        (h for h in cookies if h.startswith("sheaf_session=")), ""
+    )
+    refresh_header = next(
+        (h for h in cookies if h.startswith("sheaf_refresh=")), ""
+    )
+    assert session_header, "login must set sheaf_session"
+    assert refresh_header, "login must set sheaf_refresh"
+    assert "HttpOnly" in session_header and "HttpOnly" in refresh_header
+    assert "Path=/v1/auth" in refresh_header, (
+        "the refresh cookie must stay scoped to the refresh endpoint"
+    )
+    assert "Max-Age=" in refresh_header
+    assert not any(h.startswith("sheaf_trusted_device=") for h in cookies), (
+        "a login without TOTP must not mint a trusted-device cookie"
+    )
+
+    # Both credentials the response handed out actually work.
+    assert client.post("/v1/auth/refresh", json={}).status_code == 200
+    me = client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+    )
+    assert me.status_code == 200, me.text
+
+
 def test_login_wrong_password(client: httpx.Client):
     email = f"wrong-{uuid.uuid4().hex[:8]}@sheaf.dev"
     client.post("/v1/auth/register", json={"email": email, "password": "securepassword"})

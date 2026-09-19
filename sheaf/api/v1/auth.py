@@ -80,6 +80,7 @@ from sheaf.models.system import DeleteConfirmation, System
 from sheaf.models.trusted_device import TrustedDevice
 from sheaf.models.user import AccountStatus, User, UserTier
 from sheaf.observability.metrics import (
+    LoginOutcome,
     adult_attestations_total,
     auth_logins_total,
     auth_password_reset_total,
@@ -1060,6 +1061,132 @@ async def change_email(
     }
 
 
+async def _finalise_login(
+    db: AsyncSession,
+    user: User,
+    request: Request,
+    response: Response,
+    *,
+    outcome: LoginOutcome,
+    remember_device: bool = False,
+    device_nickname: str | None = None,
+    bypassed_via_trusted_device: bool = False,
+) -> TokenResponse:
+    """Everything that happens once a login has been decided.
+
+    Split out of `login()` so that any other credential able to legitimately
+    sign someone in reaches a session by this exact code rather than a copy of
+    it. Nothing here decides whether the caller is allowed in: callers must
+    have finished every check first, because this mints a session
+    unconditionally.
+
+    The ordering is load-bearing rather than stylistic:
+
+    - The session is created BEFORE the commit, so a Redis failure raises and
+      rolls the transaction back instead of leaving a user whose lockout
+      counters were cleared but who has no session.
+    - The failure-state reset therefore has to happen in the same transaction,
+      so that rollback keeps those counters intact.
+    - Exactly one outcome is recorded, as both a metric and a durable security
+      event, and both use the same label value so the counter and the log
+      agree.
+
+    `remember_device` / `device_nickname` / `bypassed_via_trusted_device`
+    describe the trusted-device cookie, which is only meaningful for a
+    credential that actually exercised TOTP - hence the defaults that skip it.
+
+    `register()` has a similar-looking tail that is deliberately NOT merged
+    into this: it interleaves `signups_total` and the REGISTER security event
+    between the commit and the cookies, and reordering those to share code
+    here would be a behaviour change dressed up as a refactor.
+    """
+    # Successful login clears any accumulated failure state.
+    user.failed_login_count = 0
+    user.locked_until = None
+    user.last_login_at = datetime.now(UTC)
+    # A successful login means the legit user has access; invalidate any
+    # outstanding password-reset token so a phished link can't be redeemed
+    # after the fact.
+    user.password_reset_token = None
+    user.password_reset_sent_at = None
+
+    # Create session before committing so a Redis failure rolls back the DB
+    session_id = await create_session(
+        user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        client_header=request.headers.get("x-sheaf-client"),
+    )
+
+    await db.commit()
+
+    response.set_cookie(
+        key="sheaf_session",
+        value=session_id,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+    )
+
+    refresh_token = await _mint_refresh_token(user.id, session_id)
+    response.set_cookie(
+        key="sheaf_refresh",
+        value=refresh_token,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        path="/v1/auth",
+    )
+
+    # Mint a trusted-device cookie if the user opted in. Only meaningful
+    # when TOTP was actually exercised (or already trusted) - without TOTP
+    # the cookie wouldn't bypass anything anyway.
+    if remember_device and user.totp_enabled and not bypassed_via_trusted_device:
+        from sheaf.auth.sessions import _parse_client_name
+
+        ua = request.headers.get("user-agent", "")
+        client_header = request.headers.get("x-sheaf-client")
+        device_token, _ = await mint_trusted_device(
+            db,
+            user.id,
+            user_agent=ua,
+            ip=client_ip(request),
+            nickname=device_nickname,
+            client_name=_parse_client_name(ua, client_header),
+        )
+        await db.commit()
+        response.set_cookie(
+            key=TRUSTED_DEVICE_COOKIE,
+            value=device_token,
+            httponly=True,
+            secure=_cookie_secure(),
+            samesite="lax",
+            max_age=TRUSTED_DEVICE_TTL_DAYS * 86400,
+            path="/v1/auth",
+        )
+
+    auth_logins_total.labels(outcome=outcome).inc()
+    if outcome == "recovery_code_used":
+        # Counted here rather than where the code is checked: the code's
+        # single-use UPDATE is only durable once the commit above lands, so
+        # burning the metric earlier would over-count codes that a failed
+        # login rolled back.
+        auth_recovery_codes_used_total.inc()
+    await record_security_event(
+        event_type=SecurityEventType.LOGIN,
+        outcome=outcome,
+        user_id=user.id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    return TokenResponse(
+        access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
+        refresh_token=refresh_token,
+    )
+
+
 @router.post(
     "/login",
     response_model=TokenResponse,
@@ -1200,94 +1327,28 @@ async def login(
                         detail=totp_error_detail(totp_result),
                     )
 
-    # Rehash if argon2 params have been upgraded
+    # Rehash if argon2 params have been upgraded. Stays here rather than in
+    # _finalise_login because it is a property of the password credential,
+    # and a credential that isn't a password has nothing to rehash.
     if needs_rehash(user.password_hash):
         user.password_hash = await hash_password(body.password)
 
-    # Successful login clears any accumulated failure state.
-    user.failed_login_count = 0
-    user.locked_until = None
-    user.last_login_at = datetime.now(UTC)
-    # A successful login means the legit user has access; invalidate any
-    # outstanding password-reset token so a phished link can't be redeemed
-    # after the fact.
-    user.password_reset_token = None
-    user.password_reset_sent_at = None
-
-    # Create session before committing so a Redis failure rolls back the DB
-    session_id = await create_session(
-        user.id,
-        ip=client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        client_header=request.headers.get("x-sheaf-client"),
-    )
-
-    await db.commit()
-
-    response.set_cookie(
-        key="sheaf_session",
-        value=session_id,
-        httponly=True,
-        secure=_cookie_secure(),
-        samesite="lax",
-    )
-
-    refresh_token = await _mint_refresh_token(user.id, session_id)
-    response.set_cookie(
-        key="sheaf_refresh",
-        value=refresh_token,
-        httponly=True,
-        secure=_cookie_secure(),
-        samesite="lax",
-        max_age=settings.jwt_refresh_token_expire_days * 86400,
-        path="/v1/auth",
-    )
-
-    # Mint a trusted-device cookie if the user opted in. Only meaningful
-    # when TOTP was actually exercised (or already trusted) — without TOTP
-    # the cookie wouldn't bypass anything anyway.
-    if (
-        body.remember_device
-        and user.totp_enabled
-        and not bypassed_via_trusted_device
-    ):
-        from sheaf.auth.sessions import _parse_client_name
-
-        ua = request.headers.get("user-agent", "")
-        client_header = request.headers.get("x-sheaf-client")
-        device_token, _ = await mint_trusted_device(
-            db,
-            user.id,
-            user_agent=ua,
-            ip=client_ip(request),
-            nickname=body.device_nickname,
-            client_name=_parse_client_name(ua, client_header),
-        )
-        await db.commit()
-        response.set_cookie(
-            key=TRUSTED_DEVICE_COOKIE,
-            value=device_token,
-            httponly=True,
-            secure=_cookie_secure(),
-            samesite="lax",
-            max_age=TRUSTED_DEVICE_TTL_DAYS * 86400,
-            path="/v1/auth",
-        )
-
     if bypassed_via_trusted_device:
-        auth_logins_total.labels(outcome="trusted_device_bypass").inc()
-        await _sec("trusted_device_bypass", user.id)
+        outcome: LoginOutcome = "trusted_device_bypass"
     elif recovery_code_used:
-        auth_logins_total.labels(outcome="recovery_code_used").inc()
-        auth_recovery_codes_used_total.inc()
-        await _sec("recovery_code_used", user.id)
+        outcome = "recovery_code_used"
     else:
-        auth_logins_total.labels(outcome="success").inc()
-        await _sec("success", user.id)
+        outcome = "success"
 
-    return TokenResponse(
-        access_token=create_token(user.id, TokenType.ACCESS, session_id=session_id),
-        refresh_token=refresh_token,
+    return await _finalise_login(
+        db,
+        user,
+        request,
+        response,
+        outcome=outcome,
+        remember_device=body.remember_device,
+        device_nickname=body.device_nickname,
+        bypassed_via_trusted_device=bypassed_via_trusted_device,
     )
 
 
