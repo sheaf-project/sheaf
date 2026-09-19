@@ -81,4 +81,5 @@ markers = [
     "external_images_disabled: requires server running with ALLOW_EXTERNAL_IMAGES=false",
     "public_profiles: requires server running with PUBLIC_PROFILES_ENABLED=true",
     "public_profiles_off: requires server running with PUBLIC_PROFILES_ENABLED=false",
+    "front_stream_disabled: requires server running with FRONT_STREAM_ENABLED=false",
 ]

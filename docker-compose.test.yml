@@ -55,6 +55,14 @@ services:
       # (selfhosted/public_profiles_off), which is where the "this instance
       # serves no public surface" contract is pinned.
       PUBLIC_PROFILES_ENABLED: "${PUBLIC_PROFILES_ENABLED:-true}"
+      # Realtime front stream. ON by default so the stream's own suite has
+      # something to connect to; the off state gets a config row of its own
+      # (selfhosted/front_stream_disabled), which pins that an operator who
+      # turns it off gets a 404 rather than a connection that hangs open.
+      # This line is what makes that row do anything: the env here is an
+      # explicit list, so a variable set by a config row but missing from it
+      # silently leaves the app on its default.
+      FRONT_STREAM_ENABLED: "${FRONT_STREAM_ENABLED:-true}"
       # Mobile push: dummy creds in the test stack so channel creation
       # for FCM / APNS_DEV / APNS_PROD passes the feature-flag gate.
       # Real dispatch is mocked in tests.
