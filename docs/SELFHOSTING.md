@@ -66,6 +66,8 @@ Everything else in this guide applies to the all-in-one too - the same env vars,
 
 ## Required configuration
 
+> **This document is not the complete settings list.** It covers the settings with a user-visible effect, a security consequence, or a part to play when something breaks. Plenty of internal tuning knobs (connection-pool sizing, worker lease and sweep intervals, per-tier caps) are deliberately left out so this stays readable. For the exhaustive list, `.env.example` carries every setting with a commented default, and `sheaf/config.py` is the source of truth behind it - each field there has the same name in upper case as its environment variable. Note that an unrecognised variable is ignored silently rather than rejected, so a typo produces no error and no effect: check the name against one of those two files if a setting appears to do nothing.
+
 ### Secrets
 
 Sheaf requires **two** stable long-lived secrets. Both must be set before going live and must remain constant across restarts for the lifetime of the install — changing them has user-facing consequences (see below). Back them up wherever you back up the rest of your deployment.
@@ -392,7 +394,11 @@ Bounce and complaint feedback (SES queue or SendGrid webhook above) drives a per
 
 - **Hard bounces and complaints block immediately** and flag the account for revalidation.
 
-- **Users are never silently locked out.** When an address is flagged, the user sees a banner on sign-in prompting them to re-verify or change their email. Re-verifying (the verification email is sent even to a currently-blocked address) clears the block. No admin intervention or manual database edit is required.
+- **A user who can still sign in is never locked out.** When an address is flagged, a banner appears in the app prompting them to re-verify or change their email. "Re-send verification" is sent even to a currently-blocked address (it is the one forced send in the codebase), and following the link clears the block. Changing the email also clears it, so a new address starts clean. No admin action needed.
+
+- **The one case that does need you: forgotten password *plus* a flagged address.** Password-reset mail goes through the same gate, and `POST /v1/auth/request-password-reset` returns success unconditionally (it must not reveal whether an address has an account), so that user requests a reset, is told it worked, and nothing is sent. Only the log line and the `blocked_recipient` metric record it. The fix is `POST /v1/admin/users/{id}/reset-password`, which returns a new password once in the response for you to hand over out of band. Note that the two admin email actions do **not** help here: `verify-email` lifts the verification gate and leaves the deliverability block in place, and `change-email` sets a new address without clearing the block, so mail to the *new* address stays suppressed until the user themselves re-verifies.
+
+- The flag is not graded. `soft_bouncing`, `hard_bounced`, and `complained` all suppress mail equally; the difference between them is only how they are reached and how they clear.
 
 Bounce/complaint feedback comes from a provider webhook or queue: the SES SQS handler, the SendGrid Event Webhook, or the SMTP2GO webhook (see [SMTP2GO bounce/complaint feedback](#smtp2go-bouncecomplaint-feedback)). If you run plain SMTP with no such channel wired up, no addresses are ever auto-flagged - the deliverability gate simply never trips, which is a safe (if unfiltered) default.
 
@@ -410,11 +416,12 @@ With `EMAIL_BACKEND=none`, email-dependent features (verification, password rese
 
 System owners can invite recipients (partners, friends, therapists, bots) to receive a notification whenever fronts change. Recipients don't need a Sheaf account — anonymous push subscriptions and webhook URLs both work. Owners pre-configure the entire channel (filters, triggers, payload sensitivity, delivery shaping); recipients only get pinged for what the owner allows.
 
-v1 supports four destination types:
-- **Web push** — browser notifications. Recipient redeems a one-time activation link, grants permission, done.
+v1 supports five destination types:
+- **Web push** - browser notifications. Recipient redeems a one-time activation link, grants permission, done.
 - **Webhook** — POST to a URL with a configurable payload format: `json` (Sheaf's structured schema, HMAC-signed), `discord` (Discord webhook shape with avatar/username), `slack` (Slack webhook shape), or `plaintext` (title + body). SSRF-guarded; private IP ranges and IMDS are rejected at request time and re-validated on every dispatch.
 - **ntfy** — POST to any [ntfy](https://ntfy.sh) server (the public one or self-hosted).
-- **Pushover** — for the [Pushover](https://pushover.net) mobile app.
+- **Pushover** - for the [Pushover](https://pushover.net) mobile app.
+- **Mobile push** - native notifications to the Sheaf phone apps via FCM (Android) and APNs (iOS). See the caveat below before you plan on this one.
 
 Notification setup is per-destination — Sheaf works fine with none configured; only the destination types you set up will be available to owners.
 
@@ -485,6 +492,52 @@ Recipients who want their own Pushover quota (or just don't want to compete for 
 
 This is the pressure-relief valve when you start hitting the shared cap regularly. Document it for power users.
 
+### Mobile push (FCM / APNs)
+
+**Read this first: you cannot push to the Play Store / App Store builds of the Sheaf apps from your own instance.** A push credential is paired to the app build, not to the server. An APNs key belongs to one Apple Developer team and its topic has to be the published app's bundle id; an FCM token is minted against the Firebase project baked into the Android build. A self-hoster holds neither. So mobile push on your own instance means publishing your own builds of the apps, with your own bundle id and Apple Developer account and your own Firebase project. Everything else about the official apps (signing in, the whole API) works against a self-hosted instance perfectly well; it is only the push transport that is build-bound. If you just want notifications on your phone without maintaining app builds, use ntfy or Pushover, which are designed for exactly this and need no app of your own.
+
+If you are publishing your own builds:
+
+```env
+# Android (FCM). Path wins if both are set.
+FCM_SERVICE_ACCOUNT_PATH=/app/data/fcm-service-account.json
+# FCM_SERVICE_ACCOUNT_JSON=  # the same JSON inline, verbatim (no \n escaping)
+
+# iOS (APNs). All four of team/key/bundle/p8 are needed.
+APNS_TEAM_ID=
+APNS_KEY_ID=
+APNS_BUNDLE_ID=com.example.yourapp
+APNS_P8_PATH=/app/data/AuthKey_XXXXXXXX.p8
+# APNS_P8_KEY=      # the .p8 inline; \n escapes ARE unescaped for this one
+
+# Accept sandbox (TestFlight / debug build) tokens as well as production ones.
+APNS_DEV_ENABLED=false
+# APNS_BUNDLE_ID_DEV=   # only if your dev build uses a different bundle id
+
+# Where mobile activation links point. The apps' associated-domains /
+# app-links entitlement is baked in at build time and trusts one origin,
+# so point this at YOUR host if you publish your own builds.
+MOBILE_LINK_BASE_URL=https://sheaf.sh
+
+NOTIFICATIONS_MOBILE_TOKENS_PER_ACCOUNT_MAX=20   # 0 = unlimited
+NOTIFICATIONS_CONCURRENCY_FCM=10
+NOTIFICATIONS_CONCURRENCY_APNS=10
+```
+
+The FCM project id is read out of the service-account JSON; there is no separate setting for it.
+
+Three sharp edges to know about, because **none of this is validated at startup**:
+
+- A `mobile_push` channel is only refused (501) when *neither* provider is configured. Either one alone is enough to make the destination type available, so on an FCM-only instance a recipient with an iPhone can create a channel that will never deliver.
+- Device registration (`POST /v1/devices/push`) does not check credentials at all, so tokens register happily against an instance with none.
+- A delivery that fails for want of credentials is classified **transient**, and transient retries are not capped: the outbox row backs off to one attempt every ~32 minutes and keeps going, and the channel is not auto-disabled. A half-configured provider therefore shows up as a slow permanent churn in the outbox rather than an error anyone notices.
+
+A partially configured APNs (team id set, no `.p8`), an unreadable key file, and malformed service-account JSON are all reported the same way: a `logger.error` from `sheaf.notifications.apns` / `sheaf.notifications.fcm` on the first delivery attempt. Send a test notification and watch the logs; nothing fails fast for you.
+
+Dead tokens are reaped automatically: APNs `410`/`BadDeviceToken`/`Unregistered`/`DeviceTokenNotForTopic` and the FCM equivalents delete the device row rather than retrying.
+
+The web app offers "Mobile push" in the channel-type picker regardless of whether you have configured it, so on an instance without credentials a user finds out at submit. If you are not setting this up, say so in your `CUSTOM_SUPPORT_TEXT_FILE`.
+
 ### Discord webhook display
 
 Owners can choose `format=discord` on a webhook channel. These two settings control how the bot renders in Discord:
@@ -528,7 +581,7 @@ Two metrics track this: `sheaf_webhook_ssrf_rejections_total` (deliveries refuse
 
 ### Realtime front-change stream (SSE)
 
-`GET /v1/fronts/stream` is a Server-Sent Events endpoint that pushes an account's own front changes as they happen, instead of making a client poll `GET /v1/fronts`. It is aimed at home-automation integrations (Home Assistant, Node-RED) and live updates in the web UI. It is authenticated like the rest of the API - an API key with the `fronts:read` scope, or a browser session - and exposes nothing a client could not already read from `GET /v1/fronts`; it is the same data, pushed. Because the client dials in and holds the connection open, it works for a LAN-only consumer with no inbound reachability, which a webhook to a private sink cannot always achieve. See the client contract in [the design docs](../../sheaf-design-docs/realtime-front-stream.md).
+`GET /v1/fronts/stream` is a Server-Sent Events endpoint that pushes an account's own front changes as they happen, instead of making a client poll `GET /v1/fronts`. It is aimed at home-automation integrations (Home Assistant, Node-RED) and live updates in the web UI. It is authenticated like the rest of the API - an API key with the `fronts:read` scope, or a browser session - and exposes nothing a client could not already read from `GET /v1/fronts`; it is the same data, pushed. Because the client dials in and holds the connection open, it works for a LAN-only consumer with no inbound reachability, which a webhook to a private sink cannot always achieve. The event shape and reconnection semantics a consumer needs are in [CLIENT_DESIGN.md](CLIENT_DESIGN.md).
 
 It is on by default. The settings:
 
@@ -573,7 +626,7 @@ Underneath the election, work items are still claimed per-row (`SELECT FOR UPDAT
 
 ```env
 # Escape hatch: run the loops in every process (the old behaviour).
-LEADER_ELECTION=false
+LEADER_ELECTION_ENABLED=false
 ```
 
 ---
@@ -615,6 +668,21 @@ When `EMAIL_VERIFICATION=required`, new users must verify their email before the
 
 **Warnings** (logged at startup):
 - `REGISTRATION_MODE=approval` + `EMAIL_BACKEND=none` — approval notification emails won't be sent
+
+### Captcha
+
+Off by default. The only provider implemented is [Altcha](https://altcha.org/), a proof-of-work challenge solved in the browser: it runs in-process, calls no third party, and sends nothing about your users to anyone. There is deliberately no hCaptcha or reCAPTCHA option.
+
+```env
+CAPTCHA_PROVIDER=altcha       # empty (default) disables it entirely
+ALTCHA_HMAC_KEY=              # required when the provider is set
+ALTCHA_COMPLEXITY=50000       # PoW difficulty; higher = slower to solve
+CAPTCHA_ON_LOGIN=false        # gate login as well as signup
+```
+
+Generate the key with `openssl rand -hex 32`. Setting `CAPTCHA_PROVIDER=altcha` without a key, or setting the provider to any value other than `altcha`, refuses to start rather than silently letting signups through ungated.
+
+With it on, signup is gated. `CAPTCHA_ON_LOGIN` additionally gates login, which is worth it if you are seeing credential stuffing (see the [security-event log](#security-event-log) for how to tell) and costly otherwise, since it puts a proof-of-work in front of every legitimate sign-in too. Challenges are valid for 10 minutes. The client learns whether it needs to draw the widget from `GET /v1/auth/config`.
 
 ---
 
@@ -759,6 +827,8 @@ Three flavours of "give me my data", differing by scope and gating:
 
 The two POST endpoints **always** require step-up auth regardless of the system's `delete_confirmation` setting — they're the highest-value reads for an attacker with a hijacked session, and we don't let users opt out.
 
+`POST /v1/export/jobs` takes a `format`, so the async path covers more than the full backup: `sheaf_native` (the `export.json` + `images/` zip), `pluralport` (a `.pluralport.zip` bundle), and `fronts_csv` / `fronts_json` / `fronts_ics` for fronting history on its own, as a single file rather than a zip. The ICS variant is a calendar file for dropping into a calendar app.
+
 ### Async export jobs
 
 The user requests a backup, the worker assembles a zip in the background, the user gets an email when it's ready (and sees the job in Settings → Data export). The file is kept for 72 hours then auto-deleted.
@@ -817,11 +887,49 @@ For MinIO with KMS configured: set bucket encryption via `mc encrypt set sse-s3 
 
 When `STORAGE_BACKEND=filesystem`, exports live at `/app/data/exports/{user_id}/{job_id}.zip`. Same cleanup worker handles pruning. No CDN concerns since bytes never leave the box.
 
-### Image re-import asymmetry
+### Re-importing an archive, images and all
 
-The export-with-images zip contains JSON references AND the image bytes. The import path accepts JSON only — it does NOT auto-restore image attachments from the zip. The export UI tells users this explicitly. Re-importing the zip into another Sheaf instance brings the text content (members, journals, etc.) but image attachments need to be re-uploaded by hand.
+The export-with-images zip carries both `export.json` and the image bytes under `images/`, and the archive importer (`source=sheaf_archive`) restores both. Every image key the JSON actually references is re-uploaded as the importing account's own file through the same pipeline a hand upload goes through (MIME sniff, Pillow re-encode with the dimension cap and EXIF strip, storage-quota check), under a fresh key namespaced to that account, and the references in members, journals and revisions are rewritten to point at it. So a zip taken off one instance restores with its avatars and bio images intact on another, including across storage backends, because the bytes travel inside the file rather than as keys into somebody else's bucket.
 
-This is intentional: auto re-import would require re-keying every image (server generates UUIDs, not filename-based), rewriting `image_keys` references across members/journals/revisions, re-running quota/dedup/virus-scan/EXIF-stripping, and handling cross-backend migration. Demand is probably low — GDPR compliance and personal backup don't need it.
+Two consequences worth knowing as an operator:
+
+- The plain JSON import (`source=sheaf_file`) has nothing to restore from, so it strips internal image references rather than leaving them pointing at keys that do not exist locally. A user who wants their images back needs the zip, not the sync JSON.
+- An archive import is the most expensive thing the import runner does: one normalisation pass per referenced image. `MAX_IMPORT_RESTORED_IMAGES` (see [Image uploads](#image-uploads)) bounds how many a single job will restore, and the account's storage quota bounds the bytes. The member cap is checked before any blob is written, blobs written by a job that then fails are deleted, and uploads that no surviving row ended up referencing are discarded (the avatar of a member the dedup pass skipped, say), so a repeated import does not quietly eat quota.
+
+---
+
+## Imports
+
+Every import runs as a background job: the upload is stored, a row goes in `import_jobs`, and an in-process runner claims it. The runner is woken by a Postgres `NOTIFY` on enqueue, so the poll interval is a safety net rather than the mechanism. Under [leader election](#multi-instance-deploys) exactly one replica runs it.
+
+```env
+IMPORT_RUNNER_ENABLED=true          # whether this process runs the import loop
+IMPORT_RUNNER_INTERVAL_SECONDS=5    # poll fallback; NOTIFY does the real waking
+IMPORT_JOB_RETENTION_DAYS=30        # how long the finished job report is kept
+IMPORT_STALE_RUNNING_MINUTES=15     # a RUNNING job idle this long is reclaimed
+```
+
+The uploaded file and any credential (a PluralKit token, a Prism passphrase) are wiped when the job finalises, independent of how long the report row lives. A job whose worker died is reset to pending by the reclaim sweep, and parked as failed after three stalled attempts rather than looping forever.
+
+Per-entity row caps bound how much of one thing a single job will process. These are parse-bomb and resource guards, not per-account product limits, and `0` disables one:
+
+```env
+IMPORT_MAX_FRONTS=100000
+IMPORT_MAX_MESSAGES=100000
+IMPORT_MAX_REVISIONS=100000
+IMPORT_MAX_MEMBER_RELATIONSHIPS=100000
+IMPORT_MAX_GROUP_RELATIONSHIPS=100000
+IMPORT_MAX_JOURNAL_ENTRIES=50000
+IMPORT_MAX_POLLS=10000
+IMPORT_MAX_GROUPS=10000
+IMPORT_MAX_TAGS=10000
+IMPORT_MAX_CUSTOM_FIELDS=10000
+IMPORT_MAX_RELATIONSHIP_TYPES=10000
+```
+
+There is no `IMPORT_MAX_MEMBERS`: the member ceiling is the tier setting (`MEMBER_LIMIT_*`, see [Member limits](#member-limits)), checked before anything is written. The preview warns about a cap before the user commits, and the message tells them to split the file or ask you to raise it, so expect that request.
+
+Uploads are capped at 100 MB. `MAX_IMPORT_RESTORED_IMAGES` bounds image restores from a with-images archive; see [Image uploads](#image-uploads).
 
 ---
 
@@ -850,18 +958,28 @@ SHEAF_MODE=selfhosted   # default
 | Feature | selfhosted | saas |
 |---------|-----------|------|
 | Insecure defaults | warning | **refuses to start** |
-| Free-tier front history pruning | disabled | enabled |
-| Tier-based feature gates | disabled | enabled |
-| Member limits | configurable per-user | tier-based |
+| Tier a new signup lands on | `selfhosted` | `free` |
+| `WEBHOOK_ALLOWED_PRIVATE_CIDRS` | honoured | ignored entirely |
+| Never-verified-account cleanup job | off | on (when `EMAIL_VERIFICATION=required`) |
 
 In `saas` mode, Sheaf will refuse to start if `JWT_SECRET_KEY` or `DATABASE_URL` contain default values.
 
-### Front history retention (saas mode only)
+The per-tier limits elsewhere in this guide (member count, storage quota, revision retention, poll caps, stream connections) are enforced by *tier*, not by mode. What the mode actually decides is which tier a new account starts on: `selfhosted` mode signs people up on the `selfhosted` tier, whose limits default to unlimited, which is why a self-host behaves as though the limits aren't there. Set a `*_SELFHOSTED` limit to a non-zero value and it is enforced on your own instance too.
+
+### Front history retention
+
+Ageing out old closed fronts is a per-system, user-opt-in privacy control (Settings -> Safety -> Fronting History Retention), not a tier limit and not a mode gate. It is off for every system until its owner turns it on, and the sweep is a no-op for systems that have not. There is no operator setting that prunes anyone's front history, on either mode.
+
+Two operator knobs exist around it:
 
 ```env
-FREE_TIER_FRONT_RETENTION_DAYS=30
-RETENTION_CHECK_INTERVAL_HOURS=6
+FRONT_RETENTION_CHECK_INTERVAL_HOURS=24  # how often the sweep runs
+FRONT_RETENTION_IMPORT_GRACE_DAYS=14     # newly imported fronts are exempt this long
 ```
+
+The import grace is deliberately not a per-system setting: a freshly imported history is never aged out until the rows have actually lived in the database that long, so restoring an archive onto a system with a short retention window does not delete it before the owner has had a chance to look at it or raise the window. The import preview warns when this is about to be relevant.
+
+The sweep is registered as a data-deleting job, so `DESTRUCTIVE_JOBS_ENABLED=false` freezes it along with the rest (see [Background jobs](#background-jobs)).
 
 ---
 
@@ -912,7 +1030,7 @@ Pending destructive actions and pending safety changes are visible in Settings -
 
 ## Member limits
 
-Per-tier member limits (0 = unlimited). These are only enforced in `saas` mode or when overridden per-user via the admin UI.
+Per-tier member limits (0 = unlimited). Enforced by tier on every deployment, not gated on `SHEAF_MODE`: a self-host looks unlimited only because new accounts there land on the `selfhosted` tier, whose default is 0. Set `MEMBER_LIMIT_SELFHOSTED` to a real number and it applies. The same cap is checked on the normal create path and on every importer, so an import cannot get around it.
 
 ```env
 MEMBER_LIMIT_FREE=512
@@ -950,6 +1068,19 @@ RATE_LIMIT_ENABLED=true
 RATE_LIMIT_GLOBAL_PER_IP=600   # max requests per window
 RATE_LIMIT_GLOBAL_WINDOW=60    # window in seconds
 ```
+
+Three other limits are worth knowing about, because they are the ones people trip over rather than the global backstop:
+
+```env
+LOGIN_MAX_FAILURES=10                    # failed logins before the account is locked
+LOGIN_LOCKOUT_MINUTES=15                 # how long the lockout lasts
+WRITE_RATE_PER_USER_PER_MIN=60           # per-account write budget
+FRONT_SWITCH_RATE_PER_SYSTEM_PER_MIN=20  # switches/min, with a burst allowance
+FRONT_SWITCH_RATE_BURST=10
+MAX_REQUEST_BODY_SIZE_MB=110             # rejected before the body is read
+```
+
+The lockout is per account and time-based, so it is a brute-force speed bump rather than something an attacker can use to lock a user out permanently by guessing at them. The write and front-switch limits are database protection rather than product limits: a system that genuinely switches more than twenty times a minute is unusual, but raise them rather than telling such a user they are wrong.
 
 ### Per-user hit history
 
@@ -1009,6 +1140,76 @@ Single-origin deployments (the normal case) need no configuration. If you legiti
 # Comma-separated. Scheme optional; the host[:port] is what is compared.
 CSRF_TRUSTED_ORIGINS=https://alt.example.net
 ```
+
+---
+
+## Shield mode (cf-shield)
+
+Off by default, and only useful if you run a **break-glass CDN posture**: normally serving your origin directly, with a CDN you put in front of it only while you are under attack. If you always use a CDN, or never do, there is nothing here to flip and you should leave this alone.
+
+```env
+SHIELD_MODE_ENABLED=false
+SHIELD_MODE_WEBHOOK_SECRET=      # required when enabled; openssl rand -hex 32
+```
+
+Enabling it without the secret refuses to start.
+
+What it does on the Sheaf side, and this is the whole of it:
+
+- `POST /v1/internal/shield-mode/state` with `{"active": true|false}` flips a Redis-held flag. The request is authenticated by an HMAC-SHA-256 of the raw body in `X-Sheaf-Signature`; a bad or missing signature is the same generic 401. With the feature off the route 404s, so nothing advertises that it exists.
+- On the **up** edge only, every account that has ticked "refuse CDN proxying" has all its sessions killed. That preference lives on the user (Settings -> Account) and the card is hidden entirely on instances where the feature is off.
+- `GET /v1/shield-mode/status` is unauthenticated and drives a banner telling everyone that traffic is currently going via the CDN.
+- Going back down flips the flag. Nothing is restored; users just sign in again.
+
+**Be clear with yourself about what enforces the promise.** Sheaf does not block those users' logins, change any rate limit, or gate any endpoint on shield state. What actually keeps an opted-out user's traffic off the CDN is *you* closing the direct path to the origin while the CDN is in front of it, which is an infrastructure action, not something the app does. Sheaf's contribution is dropping those users' sessions so they are not silently proxied mid-session, and telling everybody that the posture has changed.
+
+The webhook contract is provider-agnostic: anything that can compute the HMAC can drive it. A reference implementation of the other end, the one Sheaf's own hosted instance runs, is in [`selfhost-utils/cf-shield/`](../selfhost-utils/cf-shield/) with its own README, including the two functions to replace if you are not on AWS security groups. The metrics are in [METRICS.md](METRICS.md).
+
+---
+
+## Background jobs
+
+A single job runner wakes on a timer and runs the scheduled sweeps: account deletions and their reminder emails, orphaned-file cleanup, the front-retention and revision-retention sweeps, poll purges, un-suspends, export builds and their cleanup, repeated reminders, stale-job recovery, provider email events, and the log/event retention sweeps below. Under [leader election](#multi-instance-deploys) exactly one replica runs them.
+
+```env
+JOB_CHECK_INTERVAL_MINUTES=15    # how often the runner wakes
+JOB_LOG_RETENTION_DAYS=30        # how long per-run job logs are kept
+```
+
+### The kill switch
+
+```env
+DESTRUCTIVE_JOBS_ENABLED=true    # set false to halt ALL data-deleting jobs at once
+```
+
+This is the lever to reach for when you suspect a retention bug is eating data and you want everything to stop while you look, instead of zeroing each job's interval one at a time. It freezes every job that deletes user data: account deletions, orphaned files, front retention, revision trimming, poll purges, activity-event and job-log cleanup, unverified-account cleanup. Non-deleting jobs and operational sweeps carry on, and an admin who tries to trigger a frozen job by hand from the dashboard is told it is frozen rather than getting a silent no-op.
+
+Note that it is env-only, like every other setting here: flipping it takes an app restart. There is no runtime toggle in the admin UI, so plan on a restart being part of your incident response rather than discovering that at the worst moment.
+
+One deliberate exception: the security-event (IP) cleanup is **not** gated by it, because that sweep is what enforces the IP retention window and a blanket incident pause must not leave addresses sitting past their promised lifetime. It has its own switch:
+
+```env
+SECURITY_EVENT_CLEANUP_ENABLED=true   # only set false for a specific, considered reason
+```
+
+### Retention windows enforced by jobs
+
+```env
+SECURITY_EVENT_RETENTION_DAYS=30      # IP-bearing auth events
+ACTIVITY_EVENT_RETENTION_DAYS=365     # the user's own account activity log
+NOTIFICATION_OUTBOX_RETENTION_DAYS=30
+IMPORT_JOB_RETENTION_DAYS=30
+JOB_LOG_RETENTION_DAYS=30
+UNVERIFIED_ACCOUNT_CLEANUP_DAYS=7     # only runs in saas mode with verification required
+```
+
+### Account activity log
+
+`GET /v1/account/activity` gives each user a record of consequential things that happened to their account: password change, email change, TOTP enable/disable, recovery-code regeneration, API key created or revoked, session or trusted-device revoked, account deletion scheduled or cancelled, data export requested, plus automated entries for a completed import, a ready export, and a retention prune. Surfaced at Settings -> Account.
+
+It deliberately holds **no IP, no user agent, and no member content**, which is why its window can be a year where the security-event log's is 30 days. The email-change entry stores a redacted address rather than the address itself, because this table is not encrypted and ends up in your database dumps. It is append-only: there is no endpoint that edits or deletes a row, and the only thing that removes one is the retention sweep. API keys cannot read it; it takes a session or a JWT.
+
+It is not the same thing as the security-event log (operator-facing, IP-bearing, [below](#security-event-log)) or the admin audit log (admin actions on a user, shown to that user separately).
 
 ---
 
@@ -1195,6 +1396,40 @@ The first four are independent and optional. The operator card is hidden entirel
 `CUSTOM_SUPPORT_TEXT_FILE` points at a file of your own freeform text (FAQ, onboarding notes, house rules, whatever) shown in its own card on the Support page. Basic markdown is supported - headings, lists, links, emphasis. Any HTML in the file is stripped server-side when it's loaded, so the API never emits raw tags and nothing relies on the browser to sanitise; write markdown, not HTML. Unlike the env vars above, this file is re-read whenever its modification time or size changes, so you can edit it without restarting. Content is capped at 20,000 characters. A path that can't be read logs a warning at startup and the card is simply omitted.
 
 The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_URL` / `PRIVACY_URL`; like those, they're read at startup and changing them needs a restart (the custom-text file is the exception noted above).
+
+---
+
+## Public profiles and share links
+
+Sharing is **off by default** and is the one feature that gives your instance an anonymous surface, so it is opt-in per deployment:
+
+```env
+PUBLIC_PROFILES_ENABLED=false   # default
+SHARE_VIEWS_MAX=100             # curated views per system
+SHARE_GRANTS_MAX=100            # live grants per system (revoked ones don't count)
+```
+
+With it off, the whole surface is absent: the anonymous endpoints return nothing, no grant can be created, and the server refuses any attempt to set a member, group, field, relationship or system to Public. The web app greys Public out with an explanation rather than offering a choice that cannot work.
+
+With it on, a user builds a *view* (a curated pick of members, custom fields, groups and relationships) and points a *grant* at it: either a public profile at `/p/<system id>`, or an opaque share link at `/s/<token>`. Read the feature summary in [the changelog](../CHANGELOG.md) for what users can do with it; what follows is only what you as the operator have to decide.
+
+### Before you turn it on
+
+- **Set `PUBLIC_ABUSE_CONTACT`** (next section). It is the only route a visitor has to tell you something is wrong with a page you host, and the app logs an informational nudge at startup if sharing is on without it.
+- **Send `X-Robots-Tag: noindex` for `/p/` and `/s/`.** The pages carry an in-document `noindex` and ask the browser for no referrer, and the all-in-one image's bundled Caddy adds the header. If you run your own reverse proxy, add it there too; the meta tag alone is weaker.
+- **Keep share-link tokens out of your access logs.** The token in `/s/<token>` is the credential. If your proxy logs full request paths, your logs are a list of working share links. Strip the path, or do not log those two prefixes. Same for the public-media access tokens on image URLs.
+- **Do not put a shared cache in front of `/s/`.** Those responses are already marked private so a well-behaved CDN or corporate proxy will not store them, but a cache you have configured to ignore that would hand one visitor's page to anyone else holding the URL.
+
+### Taking a system's public surface down
+
+Two admin actions, both audited:
+
+- `POST /v1/admin/systems/{system_id}/share-grants/revoke-all` revokes every grant on one system and latches `publishing_blocked`, which refuses new grants and refuses raising the system back to public. Revocation is deliberate rather than a quiet suspension: the owner sees their grants marked revoked in their own Sharing screen, so they find out their page was taken down rather than debugging a mystery 404. It does not touch their views, curation, or member privacy levels, and they can still take *more* down while blocked.
+- `POST /v1/admin/systems/{system_id}/publishing/unblock` lifts the latch.
+
+Both need `admin:write` and a stated reason, and both are idempotent, writing an audit row even when there was nothing published.
+
+Separately, and with no operator involvement: a system whose privacy is set to anything other than public serves nothing, and an account that is suspended, banned, or scheduled for deletion serves nothing for as long as that lasts. Every one of those cases returns the same "not found" a never-published page gives.
 
 ---
 
