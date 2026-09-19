@@ -60,7 +60,7 @@ jobs:
 
   # On a PR, decide whether anything the backend suite depends on actually
   # changed. A docs-only or web-only PR then skips the whole matrix below rather
-  # than paying eleven stack spin-ups for nothing. Pushes to main / preview /
+  # than paying a stack spin-up per leg for nothing. Pushes to main / preview /
   # tags ignore this and always run the full matrix (see the `if` on `test`), so
   # it only ever trims PR feedback, never the correctness gate.
   changes:
@@ -86,10 +86,19 @@ jobs:
               - 'docker-compose*.yml'
               - '.github/workflows/ci.yml'
 
-  # Each test configuration runs as its own parallel job instead of eleven in
-  # sequence inside one run_tests.sh call, so wall-clock is the slowest single
-  # config rather than the sum of all of them. run_tests.sh already takes a
+  # Each test configuration runs as its own parallel job instead of all eleven
+  # in sequence inside one run_tests.sh call, so wall-clock is the slowest
+  # single leg rather than the sum of all of them. run_tests.sh already takes a
   # config name; run per-job on isolated runners it needs no cross-run mutex.
+  #
+  # The two configs that run the bulk of the suite are split five ways with
+  # SHEAF_TEST_SHARD so they stop being the critical path on their own: every
+  # other config is a minute or two, and an unsplit selfhosted/none is ten.
+  # saas/none is only long in its full tier (SHEAF_TEST_SAAS_FULL, set below on
+  # everything except a PR); on a PR it runs just the saas-marked tests, and
+  # run_tests.sh gives that whole tier to shard 1, so the other four legs notice
+  # in seconds that there is nothing for them and exit. The shards of one config
+  # never share a stack: each is its own job on its own runner.
   test:
     runs-on: ubuntu-latest
     needs: [lint, changes]
@@ -99,18 +108,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config:
-          - selfhosted/none
-          - selfhosted/admin_auth_password
-          - selfhosted/admin_auth_totp
-          - saas/none
-          - selfhosted/rate_limit
-          - selfhosted/uploads_disabled
-          - selfhosted/bio_uploads_disabled
-          - selfhosted/external_images_disabled
-          - selfhosted/metrics
-          - selfhosted/public_profiles
-          - selfhosted/public_profiles_off
+        include:
+          - {config: selfhosted/none, shard: 1/5}
+          - {config: selfhosted/none, shard: 2/5}
+          - {config: selfhosted/none, shard: 3/5}
+          - {config: selfhosted/none, shard: 4/5}
+          - {config: selfhosted/none, shard: 5/5}
+          - {config: saas/none, shard: 1/5}
+          - {config: saas/none, shard: 2/5}
+          - {config: saas/none, shard: 3/5}
+          - {config: saas/none, shard: 4/5}
+          - {config: saas/none, shard: 5/5}
+          - {config: selfhosted/admin_auth_password}
+          - {config: selfhosted/admin_auth_totp}
+          - {config: selfhosted/rate_limit}
+          - {config: selfhosted/uploads_disabled}
+          - {config: selfhosted/bio_uploads_disabled}
+          - {config: selfhosted/external_images_disabled}
+          - {config: selfhosted/metrics}
+          - {config: selfhosted/public_profiles}
+          - {config: selfhosted/public_profiles_off}
     steps:
       - uses: actions/checkout@v4
 
@@ -124,11 +141,13 @@ jobs:
       - name: Install test deps
         run: uv pip install --system -e ".[dev]"
 
-      - name: Run ${{ matrix.config }}
+      - name: Run ${{ matrix.config }} ${{ matrix.shard }}
         env:
           # Full both-modes saas run only on push (main / preview / tags); a PR
           # runs just the saas-marked tests. Ignored by every other config.
           SHEAF_TEST_SAAS_FULL: ${{ github.event_name != 'pull_request' }}
+          # Empty for the rows above that carry no shard, which run whole.
+          SHEAF_TEST_SHARD: ${{ matrix.shard }}
         run: ./run_tests.sh ${{ matrix.config }}
 
   # One stable status for branch protection to require: green when every matrix
