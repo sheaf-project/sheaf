@@ -303,6 +303,32 @@ def block_pending_deletion(user: User) -> None:
         )
 
 
+def has_scope(request: Request, scope: str) -> bool:
+    """Does this caller hold `scope`, by the same rules `require_scope` uses?
+
+    Split out so a field-level check - an expansion that reaches into another
+    resource, say - decides scope exactly as the router-level dependency does.
+    Two copies of "write implies read" would drift, and the copy that drifted
+    would be the one nobody was looking at.
+
+    Session/JWT auth holds everything. Write and delete both imply read;
+    nothing implies delete.
+    """
+    scopes = request.state.api_key_scopes
+    if scopes is None:
+        return True  # session/JWT: unrestricted
+
+    if scope in scopes:
+        return True
+
+    if scope.endswith(":read"):
+        resource = scope.split(":")[0]
+        if f"{resource}:write" in scopes or f"{resource}:delete" in scopes:
+            return True
+
+    return False
+
+
 def require_scope(scope: str) -> Callable:
     """Dependency factory — enforces a scope when auth is via API key.
 
@@ -312,18 +338,8 @@ def require_scope(scope: str) -> Callable:
     """
 
     async def dep(request: Request, user: User = Depends(get_current_user)) -> User:
-        scopes = request.state.api_key_scopes
-        if scopes is None:
-            return user  # session/JWT: unrestricted
-
-        if scope in scopes:
+        if has_scope(request, scope):
             return user
-
-        # write and delete both imply read; nothing implies delete
-        if scope.endswith(":read"):
-            resource = scope.split(":")[0]
-            if f"{resource}:write" in scopes or f"{resource}:delete" in scopes:
-                return user
 
         logger.info(
             "auth: API key missing required scope: scope=%s api_key_id=%s "

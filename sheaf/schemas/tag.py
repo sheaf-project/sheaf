@@ -32,6 +32,11 @@ class TagRead(BaseModel):
     # Safety's grace window; null otherwise. Drives the pending-delete
     # badge + dim styling in list views.
     pending_delete_at: datetime | None = None
+    # Present ONLY when the caller asked with `?include_member_ids=true`.
+    # Null is "not asked for"; `[]` is "asked for, and nobody carries this
+    # tag". Ordered by member id - see `GroupRead.member_ids` for why not by
+    # name.
+    member_ids: list[uuid.UUID] | None = None
 
     model_config = {"from_attributes": True}
 

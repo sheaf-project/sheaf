@@ -95,6 +95,24 @@ class GroupRead(BaseModel):
     privacy_activates_at: datetime | None = None
     # finalize_after timestamp if queued for delete; null otherwise.
     pending_delete_at: datetime | None = None
+    # How many members this group holds, always present. Cheap (one aggregate,
+    # no decryption) and it saves a list screen fetching a roster just to count
+    # it. Includes archived and pending-delete members: they are still in the
+    # group, and a count that disagreed with the roster would read as a bug.
+    member_count: int = 0
+    # The members themselves, present ONLY when the caller asked with
+    # `?include_member_ids=true`.
+    #
+    # Null and empty mean different things and a client must not conflate them:
+    # null is "not asked for", `[]` is "asked for, and this group is empty".
+    # A caller that asked but lacks the scope gets neither - the request is
+    # refused outright, so null never means "quietly withheld".
+    #
+    # Ordered by member id, deliberately not by name: member names are
+    # encrypted at rest, so no ORDER BY can reach them. A client rendering
+    # these has the member records already (a uuid is not displayable) and
+    # sorts by the names it holds.
+    member_ids: list[uuid.UUID] | None = None
 
     model_config = {"from_attributes": True}
 
