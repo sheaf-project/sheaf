@@ -17,6 +17,10 @@ These are characterisation tests. They assert what the code does today so the
 behaviour is on the record before anyone argues about what it should do; where
 today's answer looks wrong, the test says so in its docstring rather than
 pretending otherwise.
+
+The queued-deletion case is the exception: leaving those alone is a decided
+position rather than an open question, so its test is written as a decision to
+hold rather than a finding to act on.
 """
 
 from __future__ import annotations
@@ -159,6 +163,63 @@ def test_reset_leaves_three_categories_armed(
     assert after["applies_to_relationships"] is True
     assert after["applies_to_archive"] is True
     assert after["applies_to_profile_visibility"] is True
+
+
+# ---------------------------------------------------------------------------
+# Queued deletions: left queued on purpose
+# ---------------------------------------------------------------------------
+
+
+def test_reset_leaves_a_queued_delete_queued_and_a_redelete_is_instant(
+    admin_client: httpx.Client, auth_client: httpx.Client
+):
+    """The decided behaviour, not an oversight: the reset does not drain the
+    deletion queue, and it does not have to.
+
+    Anything the owner wanted gone badly enough to be the reason for the
+    support request is one cancel and one re-delete away, because the reset
+    zeroes the grace period and `is_safeguarded` short-circuits on
+    `grace <= 0` before it ever reads a category toggle. So the re-delete
+    lands immediately whatever the category flags say, which is also why the
+    three toggles the reset misses do not bite here. Cancelling is instant
+    and ungated by design.
+
+    The alternative - draining the queue as part of the reset - would finish
+    deletions the owner is still inside the window for, which is the one thing
+    the window exists to prevent. `bypass-pending` stays the lever for an
+    owner who does want the queue through now.
+    """
+    uid = _me(auth_client)
+    mid = _member(auth_client)
+    armed = auth_client.patch(
+        "/v1/system/safety",
+        json={"grace_period_days": 7, "applies_to_members": True},
+    )
+    assert armed.status_code == 200, armed.text
+
+    queued = auth_client.delete(f"/v1/members/{mid}")
+    assert queued.status_code in (200, 202), queued.text
+    actions = _safety(auth_client)["pending_actions"]
+    assert len(actions) == 1, actions
+    action_id = actions[0]["id"]
+
+    _reset(admin_client, uid)
+
+    # Still queued, still cancellable: the reset did not touch it.
+    after = _safety(auth_client)["pending_actions"]
+    assert len(after) == 1, after
+    assert after[0]["id"] == action_id
+
+    cancelled = auth_client.delete(f"/v1/system/safety/pending-actions/{action_id}")
+    assert cancelled.status_code == 204, cancelled.text
+    assert _safety(auth_client)["pending_actions"] == []
+    assert auth_client.get(f"/v1/members/{mid}").status_code == 200
+
+    # With grace at 0 the re-delete is immediate rather than queued again.
+    redone = auth_client.delete(f"/v1/members/{mid}")
+    assert redone.status_code in (200, 204), redone.text
+    assert _safety(auth_client)["pending_actions"] == []
+    assert auth_client.get(f"/v1/members/{mid}").status_code == 404
 
 
 # ---------------------------------------------------------------------------
