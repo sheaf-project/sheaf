@@ -9,6 +9,12 @@ from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("sheaf")
 
+# Escapes decoded in operator-authored multi-line settings (see
+# Settings._decode_operator_text_escapes). A deliberately short list: enough
+# for the line breaks and indentation an address block needs, and nothing
+# whose meaning is worth arguing about.
+_TEXT_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\"}
+
 
 class SheafMode(StrEnum):
     SELFHOSTED = "selfhosted"
@@ -605,6 +611,39 @@ class Settings(BaseSettings):
     # Re-read when the file's mtime/size changes, so edits land without a
     # restart. Empty = nothing extra shown.
     custom_support_text_file: str = ""
+
+    @field_validator("public_abuse_contact", "support_note")
+    @classmethod
+    def _decode_operator_text_escapes(cls, v: str) -> str:
+        r"""Turn a literal backslash-n in operator text into a real newline.
+
+        These two settings are the only multi-line prose an operator writes
+        into a single env var, and whether `\n` survives as an escape or
+        arrives as two characters depends entirely on what loaded the file.
+        Compose's own env_file parser and python-dotenv both decode it; a
+        stack manager's environment textbox, `docker run -e`, and a shell
+        export do not. So the same documented value renders as an address
+        block on one instance and as one run-on line with a printed `\n` on
+        another, which is what operators actually hit.
+
+        Decoding here makes the documented form work everywhere, and is a
+        no-op when the loader already did it (a decoded value has no
+        backslashes left to find). Deliberately not `unicode_escape`: that
+        mangles non-ASCII and throws on a trailing backslash. An operator who
+        genuinely wants the two characters writes `\\n`.
+        """
+        if "\\" not in v:
+            return v
+        out: list[str] = []
+        i = 0
+        while i < len(v):
+            if v[i] == "\\" and i + 1 < len(v) and v[i + 1] in _TEXT_ESCAPES:
+                out.append(_TEXT_ESCAPES[v[i + 1]])
+                i += 2
+                continue
+            out.append(v[i])
+            i += 1
+        return "".join(out)
 
     # Captcha (signup gate; optionally login).
     # Provider: "" (disabled) | "altcha". Altcha is in-process proof-of-work
