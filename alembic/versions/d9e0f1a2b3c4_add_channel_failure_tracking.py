@@ -14,8 +14,8 @@ Three additive columns on `notification_channels`:
   error than disabling something on the strength of history this migration
   cannot see.
 
-Revision ID: c8d9e0f1a2b3
-Revises: b7c8d9e0f1a2
+Revision ID: d9e0f1a2b3c4
+Revises: c8d9e0f1a2b3
 """
 
 from collections.abc import Sequence
@@ -23,8 +23,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "c8d9e0f1a2b3"
-down_revision: str | None = "b7c8d9e0f1a2"
+revision: str = "d9e0f1a2b3c4"
+down_revision: str | None = "c8d9e0f1a2b3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
