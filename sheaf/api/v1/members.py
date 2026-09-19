@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from sheaf.auth.dependencies import get_current_user, require_scope
+from sheaf.auth.dependencies import get_current_user, has_scope, require_scope
 from sheaf.crypto import blind_index, encrypt
 from sheaf.database import get_db
 from sheaf.encrypted_fields import (
@@ -54,6 +54,7 @@ from sheaf.services.journals import (
 from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.member_limits import count_members, get_member_limit
 from sheaf.services.members import decrypt_member_for_read, member_plaintext
+from sheaf.services.memberships import group_ids_by_member, tag_ids_by_member
 from sheaf.services.pagination import decode_cursor, encode_cursor
 from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
@@ -137,8 +138,34 @@ async def _member_has_bio_revisions(
     return result.scalar_one_or_none() is not None
 
 
+def _require_expansion_scope(request: Request, scope: str, param: str) -> None:
+    """Refuse an expansion that reaches into a resource the caller cannot read.
+
+    `/v1/members` is gated on `members:read`, but a member's groups and tags
+    belong to resources behind `groups:read` and `tags:read`. Emitting them
+    unasked would quietly turn a key scoped to members alone into one that
+    also learns the group and tag structure.
+
+    Refusing loudly rather than serving a thinner object is deliberate. A
+    silently omitted field is indistinguishable from "this member is in no
+    groups", and a client would cache that as truth; a 403 naming the missing
+    scope tells the caller exactly what to fix. It also keeps the null in
+    these fields meaning one thing only: you did not ask.
+
+    Scope is decided by `has_scope`, the same helper the router-level
+    dependency uses, so "write implies read" cannot drift between them.
+    """
+    if has_scope(request, scope):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Missing scope: {scope} (required by {param})",
+    )
+
+
 @router.get("", response_model=list[MemberRead])
 async def list_members(
+    request: Request,
     include_archived: bool = Query(
         default=True,
         description=(
@@ -148,9 +175,27 @@ async def list_members(
             "Pass false for an active-only roster."
         ),
     ),
+    include_group_ids: bool = Query(
+        default=False,
+        description=(
+            "Include each member's group ids, so a client can build its "
+            "member to groups map in one request. Requires the groups:read "
+            "scope, which this endpoint does not otherwise need."
+        ),
+    ),
+    include_tag_ids: bool = Query(
+        default=False,
+        description=(
+            "Include each member's tag ids. Requires the tags:read scope."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if include_group_ids:
+        _require_expansion_scope(request, "groups:read", "include_group_ids")
+    if include_tag_ids:
+        _require_expansion_scope(request, "tags:read", "include_tag_ids")
     system = await _get_user_system(user, db)
     # Member.name is encrypted ciphertext, so DB-side ORDER BY on it is
     # meaningless. Decrypt then sort by display_name fallback to name.
@@ -174,6 +219,16 @@ async def list_members(
         )
         for m in members
     ]
+    # One query each for the whole roster, and only when asked. Empty list
+    # rather than null for a member in nothing: null is "not asked for".
+    if include_group_ids:
+        groups_of = await group_ids_by_member(db, system.id)
+        for m in decoded:
+            m.group_ids = groups_of.get(m.id, [])
+    if include_tag_ids:
+        tags_of = await tag_ids_by_member(db, system.id)
+        for m in decoded:
+            m.tag_ids = tags_of.get(m.id, [])
     decoded.sort(key=lambda m: (m.display_name or m.name).casefold())
     return decoded
 

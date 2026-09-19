@@ -924,6 +924,85 @@ def test_finalize_job_promotes_the_two_display_flags(
     assert got["flags_activate_at"] is None
 
 
+def test_finalize_job_promotes_the_link_preview_modes(
+    auth_client: httpx.Client, admin_client: httpx.Client
+):
+    """The warning on the test above, made real by the flags below it.
+
+    These two stage through the same `flags_activate_at` as the booleans, but
+    they were not named in the sweep's UPDATE. So the sweep cleared the
+    timestamp, promoted the booleans, and left these as an orphaned pending
+    value with nothing left to promote it: the setting could never turn on for
+    anyone with a grace period, and the failure only showed up days later.
+
+    Every assertion here is on the live column after the sweep. A test that
+    only checked the staging write passed throughout.
+    """
+    vid = _shared_view(auth_client)
+    _arm_visibility_safety(auth_client)
+    staged = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={
+            "link_preview_mode": "system_details",
+            "member_link_preview_mode": "system_details",
+            "password": "testpassword123",
+        },
+    )
+    assert staged.status_code == 200, staged.text
+    # Staged, not live: that much already worked.
+    assert staged.json()["link_preview_mode"] == "generic"
+    assert staged.json()["pending_link_preview_mode"] == "system_details"
+
+    _backdate_view_flags(vid)
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["link_preview_mode"] == "system_details"
+    assert got["member_link_preview_mode"] == "system_details"
+    assert got["pending_link_preview_mode"] is None
+    assert got["pending_member_link_preview_mode"] is None
+    assert got["flags_activate_at"] is None
+
+
+def test_finalize_job_leaves_an_unstaged_preview_mode_alone(
+    auth_client: httpx.Client, admin_client: httpx.Client
+):
+    """Promotion must not overwrite a flag nobody staged.
+
+    The sweep runs over the whole row, so a mode with a null pending value has
+    to keep its live value rather than being reset to the column default. This
+    is the other half of the conditional: get it wrong and the sweep silently
+    turns a setting back off.
+    """
+    vid = _shared_view(auth_client)
+    # Turn the member one on BEFORE safety is armed, so it lands live.
+    pre = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"member_link_preview_mode": "system_details"},
+    )
+    assert pre.status_code == 200, pre.text
+    assert pre.json()["member_link_preview_mode"] == "system_details"
+
+    _arm_visibility_safety(auth_client)
+    # Now stage only the OTHER one.
+    staged = auth_client.patch(
+        f"/v1/share-views/{vid}",
+        json={"link_preview_mode": "system_details", "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+
+    _backdate_view_flags(vid)
+    run = admin_client.post("/v1/admin/jobs/finalize_share_activations/run")
+    assert run.status_code == 200, run.text
+
+    got = auth_client.get(f"/v1/share-views/{vid}").json()
+    assert got["link_preview_mode"] == "system_details"
+    assert got["member_link_preview_mode"] == "system_details", (
+        "the sweep reset a live flag that had nothing staged against it"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Member-level visibility loosenings
 # ---------------------------------------------------------------------------

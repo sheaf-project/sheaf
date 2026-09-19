@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import rehypeAutolinkHeadings from "rehype-autolink-headings";
 import rehypeHighlight from "rehype-highlight";
 import rehypeSlug from "rehype-slug";
@@ -61,11 +62,21 @@ function MarkdownPreview({
   content,
   showBadgesOverride,
   publicSurface,
+  breaks,
 }: {
   content: string;
   showBadgesOverride?: boolean;
   /** Rendering a public profile: show the hidden-image sentinel as a chip. */
   publicSurface?: boolean;
+  /**
+   * Render a single newline as a line break instead of a space, the way chat
+   * apps do. Off by default so bios, journals and revisions keep ordinary
+   * markdown paragraph semantics, where people type soft-wrapped prose and
+   * expect it to reflow. Turn it on for text somebody wrote somewhere with no
+   * preview to check against - an operator filling in an env var, say, whose
+   * newlines are the layout.
+   */
+  breaks?: boolean;
 }) {
   const [defaultBadges] = useShowImageBadges();
   // Never on a public surface: the badges are an editing aid, and a visitor
@@ -88,7 +99,7 @@ function MarkdownPreview({
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
         rehypePlugins={[
           rehypeSlug,
           [

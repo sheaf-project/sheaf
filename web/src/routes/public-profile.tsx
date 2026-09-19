@@ -1077,11 +1077,16 @@ function PoweredBy() {
               </DialogHeader>
               {/* Same rendering pipeline as a public bio: no external images,
                   and mailto:/https: links stay clickable, which is the entire
-                  point of the thing. */}
+                  point of the thing. One difference, `breaks`: a bio is
+                  written in an editor with a live preview next to it, while
+                  this is one env var typed once, and the newlines in a
+                  designated agent's name/address/phone block are the layout.
+                  Collapsing them the way markdown normally does turns that
+                  into a run-on line. */}
               <Suspense
                 fallback={<p className="text-sm whitespace-pre-wrap">{abuse}</p>}
               >
-                <MarkdownPreview content={abuse} publicSurface />
+                <MarkdownPreview content={abuse} publicSurface breaks />
               </Suspense>
             </DialogContent>
           </Dialog>

@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from sheaf.observability.metrics import tags_created_total
 from sheaf.schemas.member import MemberDeleteConfirm, MemberRead
 from sheaf.schemas.tag import TagCreate, TagMemberUpdate, TagRead, TagUpdate
 from sheaf.services.members import decrypt_member_for_read
+from sheaf.services.memberships import member_ids_by_tag, member_ids_for_tag
 from sheaf.services.system_safety import (
     is_safeguarded,
     pending_finalize_after_by_target,
@@ -37,6 +38,14 @@ async def _get_user_system(user: User, db: AsyncSession) -> System:
 
 @router.get("", response_model=list[TagRead])
 async def list_tags(
+    include_member_ids: bool = Query(
+        default=False,
+        description=(
+            "Include each tag's member ids. Off by default so existing "
+            "callers' payloads do not grow. Lets a client build a member to "
+            "tags map in one request instead of one per tag."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -48,10 +57,18 @@ async def list_tags(
     pending = await pending_finalize_after_by_target(
         db, system, PendingActionType.TAG_DELETE
     )
+    # One query for every tag, not one per tag: see the note in
+    # `sheaf/services/memberships.py`.
+    members = (
+        await member_ids_by_tag(db, system.id) if include_member_ids else {}
+    )
     out: list[TagRead] = []
     for t in tags:
         tr = TagRead.model_validate(t)
         tr.pending_delete_at = pending.get(t.id)
+        if include_member_ids:
+            # Empty list, never null: null means "you did not ask".
+            tr.member_ids = members.get(t.id, [])
         out.append(tr)
     return out
 
@@ -79,6 +96,10 @@ async def create_tag(
 @router.get("/{tag_id}", response_model=TagRead)
 async def get_tag(
     tag_id: uuid.UUID,
+    include_member_ids: bool = Query(
+        default=False,
+        description="Include this tag's member ids. Off by default.",
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -94,6 +115,8 @@ async def get_tag(
     )
     tr = TagRead.model_validate(tag)
     tr.pending_delete_at = pending.get(tag.id)
+    if include_member_ids:
+        tr.member_ids = await member_ids_for_tag(db, tag.id)
     return tr
 
 

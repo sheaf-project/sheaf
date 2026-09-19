@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from sheaf import __version__
+from sheaf.api.link_preview import router as link_preview_router
 from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
@@ -303,16 +304,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
             "magnetometer=(), microphone=(), payment=(), usb=()"
         )
-        if settings.allow_external_images:
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; img-src 'self' data: blob: https:; "
-                "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
-            )
-        else:
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; img-src 'self' data: blob:; "
-                "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
-            )
+        # A route that set its own policy keeps it. This blanket default is
+        # written for the API and for anything SPA-shaped, so it assumes scripts
+        # and styles; a route that knows it serves neither can be far stricter,
+        # and the link-preview document (sheaf/api/link_preview.py) is exactly
+        # that - `default-src 'none'`, no scripts, no styles, one image. Before
+        # this check the middleware overwrote that with the looser default, so
+        # the tightest policy on the instance was silently the one that never
+        # applied. Set-if-absent rather than overwrite: an explicit per-route
+        # decision should win over a default, and nothing else sets this today.
+        if "content-security-policy" not in response.headers:
+            if settings.allow_external_images:
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; img-src 'self' data: blob: https:; "
+                    "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+                )
+            else:
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; img-src 'self' data: blob:; "
+                    "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+                )
         return response
 
 
@@ -337,6 +348,11 @@ if settings.metrics_enabled:
     app.add_middleware(MetricsMiddleware)
 
 app.include_router(v1_router)
+# Root-level, and outside the versioned API on purpose: these are the SPA's own
+# `/p/` and `/s/` paths, served to link-unfurl crawlers only (the proxy decides
+# which of the two answers a request). See sheaf/api/link_preview.py for the
+# deployment contract. Registered after v1 so it can never shadow an API route.
+app.include_router(link_preview_router)
 
 
 @app.get("/health")
