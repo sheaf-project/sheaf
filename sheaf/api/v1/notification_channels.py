@@ -54,6 +54,10 @@ from sheaf.services.notifications.activation import (
 from sheaf.services.notifications.activation import (
     mobile_activation_url as build_mobile_activation_url,
 )
+from sheaf.services.notifications.availability import (
+    MOBILE_PUSH_UNAVAILABLE_REASON,
+    mobile_push_available,
+)
 from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.resolution import (
     build_group_name_lookup,
@@ -228,22 +232,6 @@ def _redacted_destination_config(channel: NotificationChannel) -> dict:
     return dict(channel.destination_config or {})
 
 
-def _fcm_configured() -> bool:
-    return bool(
-        settings.fcm_service_account_path or settings.fcm_service_account_json
-    )
-
-
-def _apns_configured() -> bool:
-    has_key = bool(settings.apns_p8_path or settings.apns_p8_key)
-    return bool(
-        settings.apns_team_id
-        and settings.apns_key_id
-        and settings.apns_bundle_id
-        and has_key
-    )
-
-
 def _validate_destination(body_type: str) -> None:
     if body_type in _RESERVED_TYPES:
         raise HTTPException(
@@ -264,20 +252,18 @@ def _validate_destination(body_type: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"unknown destination_type {body_type!r}",
         )
-    # Mobile push: must have at least one provider's credentials so the
-    # server can actually dispatch. Either FCM (Android) or APNs (iOS) on
-    # its own is enough — single-platform deployments still want to
-    # accept mobile_push channels and just no-op for the other platform
-    # at dispatch time.
+    # Mobile push needs at least one provider's credentials before the server
+    # can dispatch anything. The refusal explains WHY rather than just saying
+    # "not configured": on a self-hosted instance this is not a setting the
+    # operator forgot, it is a consequence of push credentials being bound to
+    # an app build, and "not configured" alone sends people off to read
+    # Firebase documentation for an afternoon to no purpose.
     if body_type == DestinationType.MOBILE_PUSH.value and not (
-        _fcm_configured() or _apns_configured()
+        mobile_push_available(settings)
     ):
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "mobile_push is not configured on this server — neither "
-                "FCM nor APNs credentials are set."
-            ),
+            detail=MOBILE_PUSH_UNAVAILABLE_REASON,
         )
 
 
@@ -1102,14 +1088,27 @@ async def get_notifications_server_config():
     Surfaces the shared-app debounce floor + whether a deployment-wide
     Pushover app token is configured. The UI uses this to set the
     debounce_seconds input's minimum and decide whether to require a BYO
-    app_token. No secrets here — just operator-set policy that recipients
+    app_token. No secrets here - just operator-set policy that recipients
     will hit at submit time anyway.
+
+    `mobile_push` is here for the same reason and answers the same shape of
+    question, with one difference worth stating: an operator who has not set
+    up Pushover could. Mobile push on a self-hosted instance is not a setting
+    someone forgot, so the reason travels with the flag rather than being
+    reworded independently by each client.
     """
+    available = mobile_push_available(settings)
     return {
         "pushover": {
             "shared_app_available": bool(settings.pushover_app_token),
             "shared_app_min_debounce_seconds": (
                 settings.pushover_shared_app_min_debounce_seconds
+            ),
+        },
+        "mobile_push": {
+            "available": available,
+            "unavailable_reason": (
+                None if available else MOBILE_PUSH_UNAVAILABLE_REASON
             ),
         },
     }

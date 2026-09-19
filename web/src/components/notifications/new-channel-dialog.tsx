@@ -41,6 +41,13 @@ export function NewChannelDialog({
   const minDebounce =
     serverCfg?.pushover.shared_app_min_debounce_seconds ?? 0;
   const sharedAppAvailable = serverCfg?.pushover.shared_app_available ?? true;
+  // Default to available while the config is still loading, and on a server
+  // too old to answer: the create endpoint is the thing that actually
+  // decides, and greying the option out on a guess would be its own kind of
+  // wrong answer. This only ever makes the UI more permissive than the
+  // backend, which fails loudly rather than silently.
+  const mobilePushAvailable = serverCfg?.mobile_push?.available ?? true;
+  const mobilePushReason = serverCfg?.mobile_push?.unavailable_reason ?? null;
 
   const [name, setName] = useState("");
   const [type, setType] = useState<DestinationType>("web_push");
@@ -136,12 +143,37 @@ export function NewChannelDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="web_push">Web push (browser)</SelectItem>
-                <SelectItem value="mobile_push">Mobile push (iOS + Android)</SelectItem>
+                {/* Rendered but disabled when unavailable rather than
+                    removed, matching how the privacy select treats a Public
+                    option the instance cannot serve: dropping it would make
+                    the feature look absent, which is a different wrong
+                    answer from the one being fixed here. */}
+                <SelectItem value="mobile_push" disabled={!mobilePushAvailable}>
+                  Mobile push (iOS + Android)
+                  {!mobilePushAvailable && " - unavailable here"}
+                </SelectItem>
                 <SelectItem value="webhook">Webhook</SelectItem>
                 <SelectItem value="ntfy">ntfy</SelectItem>
                 <SelectItem value="pushover">Pushover</SelectItem>
               </SelectContent>
             </Select>
+            {/* The explanation the greyed-out option owes the reader. Folded
+                behind a summary because on a self-hosted instance this is
+                permanently true and would otherwise be a paragraph in the
+                way of every channel anyone ever creates. The reason text
+                comes from the server rather than being written here, so the
+                picker and the create endpoint cannot end up telling
+                different stories. */}
+            {!mobilePushAvailable && mobilePushReason && (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">
+                  Why is mobile push unavailable?
+                </summary>
+                <p className="mt-1 text-muted-foreground">
+                  {mobilePushReason}
+                </p>
+              </details>
+            )}
           </div>
 
           {type === "webhook" && (

@@ -536,7 +536,7 @@ A partially configured APNs (team id set, no `.p8`), an unreadable key file, and
 
 Dead tokens are reaped automatically: APNs `410`/`BadDeviceToken`/`Unregistered`/`DeviceTokenNotForTopic` and the FCM equivalents delete the device row rather than retrying.
 
-The web app offers "Mobile push" in the channel-type picker regardless of whether you have configured it, so on an instance without credentials a user finds out at submit. If you are not setting this up, say so in your `CUSTOM_SUPPORT_TEXT_FILE`.
+If neither provider is configured, the web app greys "Mobile push" out in the channel-type picker and offers a "Why is mobile push unavailable?" note explaining that push credentials are bound to app builds, so nobody gets as far as submitting a channel that cannot work. The same explanation is the body of the 501 from `POST /v1/notification-channels`, and `GET /v1/notifications/server-config` reports it as `mobile_push.available` / `mobile_push.unavailable_reason` for other clients. That covers the "why can't I pick this" question on its own; if you want to point people at a specific alternative you run, say so in your `CUSTOM_SUPPORT_TEXT_FILE`.
 
 ### Discord webhook display
 

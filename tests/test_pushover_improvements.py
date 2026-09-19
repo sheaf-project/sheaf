@@ -189,6 +189,32 @@ def test_server_config_surfaces_min_debounce(auth_client: httpx.Client):
     assert isinstance(body["pushover"]["shared_app_min_debounce_seconds"], int)
 
 
+def test_server_config_reports_mobile_push_availability(
+    auth_client: httpx.Client,
+):
+    """The channel picker reads this to decide whether to offer mobile push.
+
+    The test stack injects dummy FCM and APNs credentials, so the branch
+    reachable here is the available one, and what it has to prove is the
+    invariant rather than the value: a reason accompanies unavailability and
+    never accompanies availability. A reason alongside `available: true`
+    would put a "this does not work" note under a working option.
+
+    The unavailable branch is covered host-side in
+    tests/test_notifications_availability.py, which can construct the
+    settings the stack cannot.
+    """
+    body = auth_client.get("/v1/notifications/server-config").json()
+    assert "mobile_push" in body
+    available = body["mobile_push"]["available"]
+    assert isinstance(available, bool)
+    reason = body["mobile_push"]["unavailable_reason"]
+    if available:
+        assert reason is None
+    else:
+        assert isinstance(reason, str) and reason
+
+
 # ---------------------------------------------------------------------------
 # Per-user usage endpoint
 # ---------------------------------------------------------------------------
