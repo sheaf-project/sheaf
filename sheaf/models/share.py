@@ -45,6 +45,22 @@ class ShareSubjectType(StrEnum):
     LINK = "link"
 
 
+class LinkPreviewMode(StrEnum):
+    """What a chat client shows when somebody pastes a view's URL.
+
+    `String(16)` on the column rather than a Postgres ENUM, for exactly the
+    reason `subject_type` and the statuses here are: a third mode (name and
+    avatar but no description text, say) then needs no type migration, only a new
+    member here. Same precedent, same reasoning.
+    """
+
+    # Names nobody: "a public system profile powered by Sheaf". The default, and
+    # what every view that existed before this column reads as.
+    GENERIC = "generic"
+    # The system's name, avatar and a short snippet of its description.
+    SYSTEM_DETAILS = "system_details"
+
+
 class ShareGrantStatus(StrEnum):
     # Created but not yet live: the System Safety grace window has not elapsed.
     # A pending grant reads exactly like a revoked one from the public surface.
@@ -139,7 +155,71 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         Boolean, default=False, server_default="false", nullable=False
     )
 
-    # Staged flag flips. Turning one of the six exposure flags ON while the
+    # What a chat client shows when somebody pastes this view's URL. See
+    # `LinkPreviewMode`: `generic` (the default) names nobody, `system_details`
+    # adds the system's name, avatar and a short snippet of its description, so
+    # the link looks like a profile rather than an anonymous blob. Both are
+    # legitimate wants - one hides who the link belongs to, the other makes a
+    # deliberately-public page look like the page it is - which is why it is a
+    # setting and not a decision, and why it defaults to the quiet one.
+    #
+    # It IS one of the EXPOSURE_FLAGS, unlike `member_permalinks` above, and the
+    # difference is worth being exact about. Permalinks give an address to data
+    # the roster already published, so nobody learns anything new. This flag
+    # pushes the system's name and picture into a third party's cache, on the
+    # strength of one paste, with no reader having chosen to open anything - the
+    # cache keeps it whether or not the recipient ever clicks, and keeps it after
+    # the profile goes dark. That is strictly more exposure than the page alone,
+    # even though every FIELD on the card is a field the page already serves, so
+    # turning it on gets the same re-auth and the same grace window as any other
+    # way of showing more.
+    #
+    # Only a `public` grant ever acts on it. A share LINK is a secret in its own
+    # right - the opaque token exists so the system behind it is not learnable -
+    # so a rich card on a `/s/` URL would hand a chat service exactly what
+    # keeping the URL quiet was protecting. The link routes therefore never read
+    # this column; see `sheaf/api/link_preview.py`. It still lives on the view
+    # rather than the grant because every other display decision does, and
+    # because a view commonly backs both a public profile and some links: the
+    # setting is the owner's answer for the public one, and the links are
+    # unaffected by construction rather than by a second setting to forget.
+    link_preview_mode: Mapped[str] = mapped_column(
+        String(16),
+        default=LinkPreviewMode.GENERIC,
+        server_default=LinkPreviewMode.GENERIC.value,
+        nullable=False,
+    )
+
+    # The same choice for a MEMBER PERMALINK's URL, and a separate column rather
+    # than a third rung on the one above, because the two exposures do not contain
+    # one another. A system card reveals the system's name, avatar and description
+    # snippet; a member card reveals one specific member's name and avatar. Neither
+    # is a superset of the other, so an ordered dial would have forced system
+    # details on as the price of member cards - a constraint invented by the column
+    # rather than by anything about privacy. Wanting a member permalink you
+    # deliberately handed someone to unfurl properly while the system-level card
+    # stays anonymous is a coherent position, and so is the reverse (the common
+    # one).
+    #
+    # Same shape as its sibling in every other respect: `generic` default, its own
+    # pending twin, its own slot in EXPOSURE_FLAGS, so raising it takes the same
+    # re-auth and the same grace window.
+    #
+    # Two gates beyond the mode itself, both enforced in the preview route and
+    # neither reimplemented there: the view has to be publishing permalinks at all
+    # (`member_permalinks`, or the URL is a 404 and a card for it would be
+    # advertising a page that does not exist), and the member has to be one this
+    # view actually serves under their own privacy level - decided by asking
+    # `share_projection.project_members`, never by a second copy of the visibility
+    # rule. A private member inside a public view previews generic.
+    member_link_preview_mode: Mapped[str] = mapped_column(
+        String(16),
+        default=LinkPreviewMode.GENERIC,
+        server_default=LinkPreviewMode.GENERIC.value,
+        nullable=False,
+    )
+
+    # Staged flag flips. Turning one of the eight exposure flags ON while the
     # view is already shared exposes more, so the new value parks here and the
     # finalize sweep copies it onto the live flag once `flags_activate_at`
     # passes - the same PENDING lifecycle the member and field rows carry,
@@ -163,6 +243,15 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
     )
     pending_include_groups: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True
+    )
+    # The one pending twin that is not a Boolean, because its live column is not
+    # either. `promote_view_flags` copies whatever is parked here onto the live
+    # column and never inspects the value, so it needed no change for this.
+    pending_link_preview_mode: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    pending_member_link_preview_mode: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
     )
     # Shared activation time for whatever is staged above. NULL whenever no
     # pending value is set.

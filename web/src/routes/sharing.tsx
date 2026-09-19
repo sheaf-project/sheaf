@@ -72,7 +72,11 @@ import {
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { ReasonBadge } from "@/components/reason-badge";
 import { PageHeader } from "@/components/page-header";
-import type { DeleteConfirmation, DestructiveConfirm } from "@/types/api";
+import type {
+  DeleteConfirmation,
+  DestructiveConfirm,
+  PreviewMode,
+} from "@/types/api";
 
 /**
  * Sharing lives at the top level rather than under Settings: it is somewhere
@@ -249,6 +253,12 @@ const EXPOSURE_FLAGS = [
   "fronting_show_count",
   "include_relationships",
   "include_groups",
+  // The two string-valued ones ("generic" | "system_details"). They stage and
+  // step up exactly like the booleans above - the server asks "is this a raise"
+  // of an ordering rather than of `=== true`, so nothing here needs to know which
+  // flags are which. The pending badge below is already value-agnostic.
+  "link_preview_mode",
+  "member_link_preview_mode",
 ] as const;
 
 // `member_permalinks` is deliberately NOT in that list. It stages nothing
@@ -261,6 +271,18 @@ const EXPOSURE_FLAGS = [
 // itself rather than here, since it is not a staging question.
 
 type ExposureFlag = (typeof EXPOSURE_FLAGS)[number];
+
+/** The value side of an exposure change. Most flags are booleans; the two
+ *  link-preview modes are strings. */
+type ExposureValue = boolean | PreviewMode;
+
+/** Checkbox state for a mode, and back. Only two modes exist, so a checkbox is
+ *  the honest control and it keeps these rows looking like their siblings. If a
+ *  third mode ever lands this becomes a select, and only these two helpers and
+ *  the rows that call them change. */
+const modeChecked = (mode: PreviewMode | undefined) => mode === "system_details";
+const modeFor = (checked: boolean): PreviewMode =>
+  checked ? "system_details" : "generic";
 
 /** Why nothing on this page is reaching anybody, or null when it is.
  *
@@ -696,6 +718,8 @@ function NewViewCard() {
   const [includeRelationships, setIncludeRelationships] = useState(false);
   const [includeGroups, setIncludeGroups] = useState(false);
   const [memberPermalinks, setMemberPermalinks] = useState(false);
+  const [linkPreviewMode, setLinkPreviewMode] = useState(false);
+  const [memberLinkPreviewMode, setMemberLinkPreviewMode] = useState(false);
 
   function reset() {
     setName("");
@@ -706,6 +730,8 @@ function NewViewCard() {
     setIncludeRelationships(false);
     setIncludeGroups(false);
     setMemberPermalinks(false);
+    setLinkPreviewMode(false);
+    setMemberLinkPreviewMode(false);
   }
 
   function handleSubmit(e: FormEvent) {
@@ -720,6 +746,8 @@ function NewViewCard() {
       include_relationships: includeRelationships,
       include_groups: includeGroups,
       member_permalinks: memberPermalinks,
+      link_preview_mode: modeFor(linkPreviewMode),
+      member_link_preview_mode: modeFor(memberLinkPreviewMode),
     };
     create.mutate(data, { onSuccess: reset });
   }
@@ -803,6 +831,28 @@ function NewViewCard() {
               label="Member permalinks"
               desc="Give each member this view shows their own stable link, so you can point someone at one member. It reveals nothing the view does not already show, so it applies immediately - on and off alike."
               disabled={!includeMembers}
+            />
+          </div>
+          {/* Offered here as well as in the view editor, so this form covers the
+              same settings the editor does. Both take effect only once the view
+              has a published public profile on it - a brand-new view has no
+              grant at all - and the editor is where that is explained. */}
+          <div className="space-y-2 border-t pt-4">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+              Link previews
+            </Label>
+            <CheckboxRow
+              checked={linkPreviewMode}
+              onChange={setLinkPreviewMode}
+              label="Show the system name and avatar in profile link previews"
+              desc="When someone pastes this view's public profile link into a chat, the preview card shows your system name, avatar and a short piece of your description instead of a generic card. Unlisted share links always preview generically, whatever this is set to."
+            />
+            <CheckboxRow
+              checked={memberLinkPreviewMode}
+              onChange={setMemberLinkPreviewMode}
+              label="Show the member name and avatar in member link previews"
+              desc="The same for a link to one member's page, if you turn on member permalinks above. The card shows that member's name and avatar and nothing else. A separate choice from the profile card, so you can have one without the other."
+              disabled={!memberPermalinks}
             />
           </div>
           <Button type="submit" disabled={create.isPending || !name.trim()}>
@@ -1066,7 +1116,10 @@ const LOOSEN_OFF_REASON =
 function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext }) {
   const off = useSharingOff();
   const update = useUpdateShareView();
-  const [reauth, setReauth] = useState<null | { field: ExposureFlag; value: boolean }>(null);
+  const [reauth, setReauth] = useState<null | {
+    field: ExposureFlag;
+    value: ExposureValue;
+  }>(null);
 
   /** A box that is currently OFF would be a loosening to tick, which the API
    *  refuses while the instance's public surface is off; a box that is ON can
@@ -1077,8 +1130,11 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
   // Turning an option ON while the view is shared is a loosening; when the
   // safety category is armed it needs re-auth, whether or not a grace period
   // then stages it. Turning off is always immediate.
-  function change(field: ExposureFlag, value: boolean) {
-    const loosening = value && view.is_shared;
+  function change(field: ExposureFlag, value: ExposureValue) {
+    // A raise is `true` for a boolean flag and "system_details" for a mode. Both
+    // are the only value either flag can be raised TO, so one test covers them.
+    const raising = value === true || value === "system_details";
+    const loosening = raising && view.is_shared;
     if (loosening && safety.stepUp && safety.tier !== "none") {
       setReauth({ field, value });
       return;
@@ -1201,6 +1257,78 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
           disabled={membersOff || lockedOn(view.member_permalinks)}
           title={lockedOn(view.member_permalinks) ? LOOSEN_OFF_REASON : undefined}
         />
+      </div>
+
+      {/* Its own section, because these are about what a LINK to this view looks
+          like rather than what the page shows - a different axis from
+          everything above, and the reason they are not in the "What this view
+          shows" block. They go through `change()` like the flags up there,
+          though, not through a bypass like permalinks: a rich card is a real
+          loosening, so it stages and steps up exactly as they do.
+
+          Two separate rows rather than one three-way control, because the two
+          exposures do not contain one another: a profile card names the system,
+          a member card names one specific member. Neither implies the other, so
+          wanting one without the other has to be expressible. */}
+      <div className="space-y-2 border-t pt-3">
+        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+          Link previews
+        </Label>
+        <CheckboxRow
+          checked={modeChecked(view.link_preview_mode)}
+          onChange={(v) => change("link_preview_mode", modeFor(v))}
+          label="Show the system name and avatar in profile link previews"
+          desc="When someone pastes this view's public profile link into a chat, the preview card shows your system name, avatar and a short piece of your description instead of a generic 'a public system profile' card. Everything on the card is already on the page itself, but the card reaches everyone in the channel without them opening anything, and chat services keep their own copy of it. Off by default. Share links (the unlisted /s/ ones) always get the generic card, whatever this is set to."
+          disabled={lockedOn(modeChecked(view.link_preview_mode))}
+          title={
+            lockedOn(modeChecked(view.link_preview_mode))
+              ? LOOSEN_OFF_REASON
+              : undefined
+          }
+        />
+        {/* The setting is on but nothing is actually unfurling rich. Shown
+            rather than silently tolerated: the commonest cause is a view that
+            only has share links on it, where a rich card is refused by design
+            and no amount of fiddling with this checkbox will change that. The
+            server computes the answer (`link_preview_effective`); the copy here
+            names the cause an owner can act on. */}
+        {modeChecked(view.link_preview_mode) &&
+          view.link_preview_effective === "generic" && (
+            <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
+              {view.pending_link_preview_mode != null
+                ? "This is still waiting out the grace period, so links to this view preview as the generic card until it activates."
+                : "Links to this view still preview as the generic card. Rich previews only apply to a published public profile - an unlisted share link always previews generically, because its address is the secret."}
+            </p>
+          )}
+
+        <CheckboxRow
+          checked={modeChecked(view.member_link_preview_mode)}
+          onChange={(v) => change("member_link_preview_mode", modeFor(v))}
+          label="Show the member name and avatar in member link previews"
+          desc="The same for a link to one member's page, when this view publishes member permalinks. The card shows that member's name and avatar and nothing else - no pronouns, no bio, no fields. It is a separate choice from the profile card above, so you can have one without the other. A member who is not shown in this view, or whose own privacy keeps them off it, always previews generically."
+          disabled={
+            membersOff ||
+            !view.member_permalinks ||
+            lockedOn(modeChecked(view.member_link_preview_mode))
+          }
+          title={
+            lockedOn(modeChecked(view.member_link_preview_mode))
+              ? LOOSEN_OFF_REASON
+              : !view.member_permalinks
+                ? "Turn on member permalinks first - without them a member has no link to preview."
+                : undefined
+          }
+        />
+        {modeChecked(view.member_link_preview_mode) &&
+          view.member_link_preview_effective === "generic" && (
+            <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
+              {view.pending_member_link_preview_mode != null
+                ? "This is still waiting out the grace period, so member links preview as the generic card until it activates."
+                : !view.member_permalinks
+                  ? "Member permalinks are off, so there are no member links to preview. Turn them on above."
+                  : "Member links still preview as the generic card. Rich previews only apply to a published public profile - an unlisted share link always previews generically, because its address is the secret."}
+            </p>
+          )}
       </div>
       {reauth && (
         <DestructiveConfirmDialog

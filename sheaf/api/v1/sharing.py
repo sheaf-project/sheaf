@@ -99,7 +99,11 @@ from sheaf.services.sharing import (
     add_member_to_view,
     create_grant,
     expand_group_into_view,
+    flag_direction,
     grant_live_clause,
+    link_preview_effective,
+    member_link_preview_effective,
+    public_serving_view_ids,
     reject_mixed_exposure_directions,
     revoke_grant,
     rotate_grant_token,
@@ -237,7 +241,11 @@ async def _step_up_if_required(
 
 
 async def _view_to_read(
-    db: AsyncSession, view: ShareView, *, is_shared: bool
+    db: AsyncSession,
+    view: ShareView,
+    *,
+    is_shared: bool,
+    serves_public: bool | None = None,
 ) -> ShareViewRead:
     """The owner's picture of one view, including what it is REALLY serving.
 
@@ -247,8 +255,16 @@ async def _view_to_read(
     inference was member privacy, and only member privacy, so an archived
     member and one queued for deletion both looked like they were on the page
     when the public surface had already dropped them.
+
+    `serves_public` is the same idea one level up, for `link_preview_effective`:
+    whether a `public` grant on this view is serving right now, which is the other
+    half of whether a rich link preview is actually being produced. Passed in by
+    the list endpoint (which resolves every view in one query) and looked up here
+    when a single-view caller has not already got the answer.
     """
     states = await member_service_states(db, view, list(view.members))
+    if serves_public is None:
+        serves_public = view.id in await public_serving_view_ids(db, view.system_id)
     return ShareViewRead(
         id=view.id,
         name=view.name,
@@ -258,6 +274,14 @@ async def _view_to_read(
         fronting_show_count=view.fronting_show_count,
         include_relationships=view.include_relationships,
         include_groups=view.include_groups,
+        link_preview_mode=view.link_preview_mode,
+        member_link_preview_mode=view.member_link_preview_mode,
+        link_preview_effective=link_preview_effective(
+            view, serves_public_grant=serves_public
+        ),
+        member_link_preview_effective=member_link_preview_effective(
+            view, serves_public_grant=serves_public
+        ),
         member_permalinks=view.member_permalinks,
         created_at=view.created_at,
         is_shared=is_shared,
@@ -267,6 +291,8 @@ async def _view_to_read(
         pending_include_relationships=view.pending_include_relationships,
         pending_include_members=view.pending_include_members,
         pending_include_groups=view.pending_include_groups,
+        pending_link_preview_mode=view.pending_link_preview_mode,
+        pending_member_link_preview_mode=view.pending_member_link_preview_mode,
         flags_activate_at=view.flags_activate_at,
         members=[
             {
@@ -341,8 +367,18 @@ async def list_share_views(
         )
     )
     shared = set(shared_rows.scalars().all())
+    # One query for the whole list rather than one per view. At most one id comes
+    # back (`uq_share_grants_one_public`), but resolving it in bulk keeps the
+    # list endpoint's query count flat as views are added.
+    serving_public = await public_serving_view_ids(db, system.id)
     return [
-        await _view_to_read(db, v, is_shared=v.id in shared) for v in views
+        await _view_to_read(
+            db,
+            v,
+            is_shared=v.id in shared,
+            serves_public=v.id in serving_public,
+        )
+        for v in views
     ]
 
 
@@ -395,6 +431,8 @@ async def create_share_view(
         fronting_show_count=body.fronting_show_count,
         include_relationships=body.include_relationships,
         include_groups=body.include_groups,
+        link_preview_mode=body.link_preview_mode,
+        member_link_preview_mode=body.member_link_preview_mode,
         member_permalinks=body.member_permalinks,
     )
     db.add(view)
@@ -407,7 +445,10 @@ async def create_share_view(
             detail="A share view with that name already exists.",
         ) from None
     await db.refresh(view, ["members", "fields", "groups"])
-    return await _view_to_read(db, view, is_shared=False)
+    # A view created a moment ago has no grant of any kind, so nothing is serving
+    # and the effective preview mode is generic whatever was asked for. Passed
+    # explicitly rather than looked up: the answer is known.
+    return await _view_to_read(db, view, is_shared=False, serves_public=False)
 
 
 @router.get("/share-views/{view_id}", response_model=ShareViewRead)
@@ -477,11 +518,15 @@ async def update_share_view(
     # not in the view is fronting, which is strictly more than before, so it
     # counts as a loosening alongside the two include_* flags.
     requested = {flag: getattr(body, flag) for flag in EXPOSURE_FLAGS}
-    loosening = {
-        flag
-        for flag, value in requested.items()
-        if value is True and not getattr(view, flag)
+    # `flag_direction` rather than `value is True`, because not every flag here is
+    # a boolean any more: `link_preview_mode` is a string enum, so "is this a
+    # raise" has to be asked of an ordering. One function answers it for both
+    # kinds (see `services.sharing._FLAG_ORDER`), which is what kept the enum from
+    # needing a staging path of its own.
+    directions = {
+        flag: flag_direction(view, flag, value) for flag, value in requested.items()
     }
+    loosening = {flag for flag, d in directions.items() if d > 0}
     # `member_permalinks` skips the staging machinery but not this gate. It
     # publishes no new member, which is why it never stages and never steps up,
     # but it does hand every member on the roster their own address, and an
@@ -500,6 +545,17 @@ async def update_share_view(
     # reach a reader (the view is shared). Staging behind the grace window is a
     # separate question answered by `visibility_grace_days`: with a window the
     # flip parks pending, with none it lands live once the re-auth clears.
+    #
+    # `shared` is any live-or-pending grant of EITHER subject type, which for
+    # `link_preview_mode` over-gates on purpose: that flag only ever acts on a
+    # `public` grant, so turning it on for a view reachable only by share link is
+    # gated for an exposure that cannot happen. The alternative - asking the
+    # narrower "is a public grant live or pending" question - buys the owner one
+    # skipped re-auth in a corner case and adds a second definition of "would this
+    # reach anybody" that has to stay in step with the first. Over-gating is the
+    # only direction worth being wrong in here, and `link_preview_effective` on
+    # the view read is what keeps it honest, by telling the owner the card is
+    # still generic rather than leaving them to infer it from a flag that is on.
     exposing = bool(loosening) and shared
     step_up = exposing and visibility_step_up_required(system)
     # One body may not both loosen and tighten. Refused before the step-up
@@ -507,10 +563,7 @@ async def update_share_view(
     # tightening with it - see `reject_mixed_exposure_directions`.
     reject_mixed_exposure_directions(
         raises=step_up,
-        lowers=any(
-            value is False and getattr(view, flag)
-            for flag, value in requested.items()
-        ),
+        lowers=any(d < 0 for d in directions.values()),
     )
     await _step_up_if_required(
         db=db,
@@ -533,7 +586,11 @@ async def update_share_view(
         if value is None:
             continue
         if stage and flag in loosening:
-            setattr(view, f"pending_{flag}", True)
+            # The REQUESTED value, not a hardcoded True. For the booleans those
+            # are the same thing (the only value that can be staged is True), but
+            # `link_preview_mode` can stage a real value, and `promote_view_flags`
+            # copies whatever is parked here without inspecting it.
+            setattr(view, f"pending_{flag}", value)
             # One clock for the whole view; a later loosening restarts it.
             view.flags_activate_at = activates_at
         else:
