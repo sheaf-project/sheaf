@@ -109,16 +109,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {config: selfhosted/none, shard: 1/5}
-          - {config: selfhosted/none, shard: 2/5}
-          - {config: selfhosted/none, shard: 3/5}
-          - {config: selfhosted/none, shard: 4/5}
-          - {config: selfhosted/none, shard: 5/5}
-          - {config: saas/none, shard: 1/5}
-          - {config: saas/none, shard: 2/5}
-          - {config: saas/none, shard: 3/5}
-          - {config: saas/none, shard: 4/5}
-          - {config: saas/none, shard: 5/5}
+          - {config: selfhosted/none, shard: 1/4}
+          - {config: selfhosted/none, shard: 2/4}
+          - {config: selfhosted/none, shard: 3/4}
+          - {config: selfhosted/none, shard: 4/4}
+          - {config: saas/none, shard: 1/4}
+          - {config: saas/none, shard: 2/4}
+          - {config: saas/none, shard: 3/4}
+          - {config: saas/none, shard: 4/4}
           - {config: selfhosted/admin_auth_password}
           - {config: selfhosted/admin_auth_totp}
           - {config: selfhosted/rate_limit}

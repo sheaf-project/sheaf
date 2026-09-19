@@ -17,8 +17,8 @@
 # once all slots finish, so nothing interleaves on the terminal. --jobs 1
 # (the default) is the classic single-stack sequential run.
 #
-# SHEAF_TEST_SHARD=3/5 runs only the third of five slices of the long configs
-# (see SHARDABLE below), so CI can spread one config over five jobs that each
+# SHEAF_TEST_SHARD=3/4 runs only the third of four slices of the long configs
+# (see SHARDABLE below), so CI can spread one config over several jobs that each
 # get their own runner and their own stack. Unset - the local default - runs
 # everything. A config that is not sharded runs whole under shard 1 and is
 # skipped by the other shards, so whatever the selector, shards 1..N together
@@ -195,7 +195,7 @@ if [[ -n "${SHEAF_TEST_SHARD:-}" ]]; then
         SHARD_INDEX="${BASH_REMATCH[1]}"
         SHARD_TOTAL="${BASH_REMATCH[2]}"
     else
-        echo "SHEAF_TEST_SHARD must look like 3/5, got '$SHEAF_TEST_SHARD'" >&2
+        echo "SHEAF_TEST_SHARD must look like 3/4, got '$SHEAF_TEST_SHARD'" >&2
         exit 2
     fi
     if [[ "$SHARD_TOTAL" -lt 1 || "$SHARD_INDEX" -lt 1 || "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]]; then
