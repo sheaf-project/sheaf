@@ -535,11 +535,16 @@ def test_integration_stream_reclaims_dead_slots(auth_client: httpx.Client):
         r.close()
 
 
-@pytest.mark.skipif(
-    os.environ.get("SHEAF_TEST_FRONT_STREAM_DISABLED", "false").lower() != "true",
-    reason="requires server running with FRONT_STREAM_ENABLED=false",
-)
+@pytest.mark.front_stream_disabled
 def test_integration_stream_disabled_returns_404(auth_client: httpx.Client):
+    """An operator who turned the stream off gets a 404, not a hanging connection.
+
+    Marked rather than `skipif`-ed on a bare env var. The var this used to read
+    was set by nothing in the repository - no config row, no compose file, no
+    CI - so the skip was unconditional and this test had never run. Going
+    through the marker system means the row that exercises it is declared in
+    `run_tests.sh` next to its siblings, where a missing one is visible.
+    """
     key = _create_key(auth_client, ["fronts:read"])
     headers = {"Authorization": f"Bearer {key}"}
     with httpx.Client(base_url=BASE_URL) as c:
