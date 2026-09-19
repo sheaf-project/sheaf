@@ -154,7 +154,7 @@ Open an issue. Include:
 
 Open an issue tagged as a feature request. Describe the use case — what are you trying to do and why?
 
-If you're coming from SimplyPlural, we're especially interested in hearing about features you relied on, workflows that worked well, and things you wished were different.
+If you've come to Sheaf from another tracker, we're especially interested in hearing about features you relied on, workflows that worked well, and things you wished were different.
 
 ### Submitting code
 

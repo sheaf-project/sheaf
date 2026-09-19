@@ -10,7 +10,7 @@
 
 > *noun*: a bundle; in mathematics, a structure that describes how local pieces fit together into a coherent whole.
 
-Open-source plural system tracking. A self-hostable replacement for SimplyPlural, built with data security and sustainability in mind.
+Open-source, self-hostable plural system tracking, built with data security and sustainability in mind.
 
 > **Status:** selfhostable; hosted at [app.sheaf.sh](https://app.sheaf.sh), free with open signups. [test.sheaf.sh](https://test.sheaf.sh) remains a public sandbox where data may be wiped at any time. Feedback welcome via [issues](https://github.com/sheaf-project/sheaf/issues) or our [Discord](https://sheaf.sh/discord).
 
@@ -20,7 +20,7 @@ Sheaf supports the [PluralPort](https://github.com/PluralPort/spec) data standar
 
 ## Why
 
-SimplyPlural is shutting down. Many alternatives are either incomplete, closed-source, local-only, or lack credible infrastructure foundations. Sheaf is built by people who are actually paid to run things at scale, with a focus on:
+A plural system's records are among the most sensitive data a person can keep, and they need a tracker that will still be running next year and whose data handling they can inspect for themselves. Many of the options are incomplete, closed-source, local-only, or lack credible infrastructure foundations. Sheaf is built by people who are actually paid to run things at scale, with a focus on:
 
 - **Data security** — Email and TOTP secrets are encrypted at rest (application-level). All data is GDPR Article 9 special category data and is treated accordingly.
 - **Self-hosting first** — `docker compose up` and you have your own instance
@@ -30,7 +30,7 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 ## Features
 
 - **Web, mobile, and wearable apps** - Sheaf also supports first-class API support for custom clients and integrations, and development of custom or alternative clients for the Sheaf API is encouraged.
-- **Members** — Profiles with name, pronouns, description, colour, birthday, avatar, emoji, privacy levels, optional PluralKit ID
+- **Members** - Profiles with name, pronouns, description, colour, birthday, avatar, wide banner image, emoji, privacy levels, optional PluralKit ID
 - **Custom fronts** — Mark non-counting fronting entities like "Asleep" or "Away" so they show up in the fronter list without inflating member counts
 - **Front tracking** — Log switches with cofronters and an optional encrypted free-text status per fronting period
 - **Analytics** — Per-member front time, percent of window, session count, longest session, and hour-of-day distribution over a configurable window (7d / 30d / 90d / 1 year). Co-fronting double-counts so individual member stats are accurate.
@@ -38,18 +38,19 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Polls** — Run a vote across the system. Each vote is attributed to a specific member who must be in the current front, with a full audit log of cast / change / withdraw events plus a fronting snapshot. Single or multi-choice, results live or hidden until close, hard deadline at creation with auto-purge after retention.
 - **Notes** — Lightweight scratchpad per member and per system. Markdown, encrypted at rest, intentionally without revision history or System Safety protection - for "trigger list / fav drink / current med doses" quick reference where journals' versioning is overkill.
 - **Messages** — Global system message board plus a per-member wall, so headmates can leave each other notes inside the system. Replies chain (no nested threads), edits keep revision history, deletes are soft and gated by System Safety. Per-member unread counts power the sidebar badge and an opt-in "you have N unread" prompt when you start fronting.
-- **Groups** — Organize members into groups, nested up to 8 levels (subsystems), with a drag-to-reparent tree and subtree-inclusive group filtering
+- **Groups** - Organize members into groups, nested up to 8 levels (subsystems), with a drag-to-reparent tree and subtree-inclusive group filtering. Arrows reorder a group among its siblings; the order you set is what every list shows, and it travels with your backups.
 - **Relationships** - Typed relationships between members and between subsystems (partner, parent/child, protector, or your own types), with symmetric / directional / either direction modes, mapped as a self-arranging system graph you can pan, zoom, and build on directly
 - **Archived members** - Soft-hide a member from lists, pickers, and the front switcher without losing their name anywhere it already appears in history
 - **Tags** — Flexible member tagging
-- **Custom fields** — Define your own fields (text, number, date, boolean, select) with per-field privacy
+- **Custom fields** - Define your own fields (text, number, date, boolean, select), reorderable, with a per-field privacy level that governs whether the field can appear on anything you share
 - **Journals** — Per-member or system-wide markdown journal entries with edit history
 - **Revision history** — Member bios and journal entries are versioned, with tier-aware retention caps
 - **Revision pinning** — Pin specific revisions to protect them from automatic trim, with optional re-auth + grace on unpin
-- **Front-history retention** - Opt-in per-system window that ages out old closed fronts. A privacy control rather than a tier limit: off by default, with a fixed 14-day import grace so a freshly restored archive is never abruptly deleted, and tightening it takes a deferred, re-auth-gated countdown.
+- **Front-history retention** - Opt-in per-system window that ages out old closed fronts. A privacy control rather than a tier limit: off by default, with a 14-day import grace (operator-configurable) so a freshly restored archive is never abruptly deleted, and tightening it takes a deferred, re-auth-gated countdown.
+- **Public profiles and share links** - Show part of your system to people outside it, if your instance's operator has turned sharing on. Sharing is built around *views*: a named, curated pick of exactly which members, custom fields, groups and relationships are shown, pointed at an audience by a *grant* - either a public profile at `/p/<system id>`, or an opaque share link at `/s/<token>` that carries nothing identifying the system and can be revoked or rotated whenever you like. Nothing is shown that was not deliberately added to a view, and nothing is reachable until a grant exists. A member can be marked never shareable (can never appear in any view, at all) or fronting-private (may appear, but their front state is never shown). Every way of showing *more* waits out your System Safety grace period, needs re-auth, and needs a one-off "I am 18 or older" confirmation; showing less always takes effect at once. "Preview as visitor" renders the real server-side projection so you can see a view before anyone else does. Backups round-trip your views but never your grants, so restoring one never republishes anything.
 - **System Safety** — Optional grace period and re-auth (password / TOTP) on destructive actions (member/journal/group/etc deletion, revision unpin)
 - **Realtime front stream** - `GET /v1/fronts/stream` pushes your front changes over Server-Sent Events instead of making you poll, aimed at home automation (Home Assistant, Node-RED) and live UI updates. The client dials out and holds the connection open, so a LAN-only consumer works with no inbound reachability at all. There is an official [Home Assistant integration](https://github.com/sheaf-project/sheaf-ha) built on it.
-- **Imports** - SimplyPlural, PluralKit (export file or live via your `pk;token`), Tupperbox, PluralSpace, Prism, Ampersand, PluralPort, and Sheaf's own exports. Granular control over what to bring across; PK switch log is converted to Sheaf front intervals, and the preview tells you what will be deduplicated, shortened, or capped before you commit to it. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
+- **Imports** - SimplyPlural, PluralKit (export file or live via your `pk;token`), Tupperbox, PluralSpace, Prism, Ampersand, PluralPort, Octocon and compatible forks (via their PluralKit-shaped export), and Sheaf's own exports (the JSON, or the with-images zip, which restores your uploaded images too). Granular control over what to bring across; PK switch log is converted to Sheaf front intervals, and the preview tells you what will be deduplicated, shortened, or capped before you commit to it. The import itself runs in the background, so a big file does not tie up your browser, and finishes with a report of what it did. See **[docs/IMPORT.md](docs/IMPORT.md)** for the full migration guide.
 - **PluralPort** - Import and export for [PluralPort](https://github.com/PluralPort/spec) v0.1 (formerly OpenPlural; files written against the old name still import), as either a single JSON document or a `.pluralport.zip` bundle carrying image bytes. Sheaf data the draft spec doesn't model yet rides in a namespaced extensions key so a round-trip is lossless, and other apps' unmodellable data is preserved on import and re-emitted on the next export rather than dropped. See **[docs/PLURALPORT.md](docs/PLURALPORT.md)**.
 - **File storage** — File uploads with filesystem or S3-compatible backends
 - **Data export** — sync JSON (Article 20 portability), async zip with image bytes that imports back as-is, and a separate Article 15 endpoint covering everything we know about your account
@@ -65,7 +66,8 @@ SimplyPlural is shutting down. Many alternatives are either incomplete, closed-s
 - **Email verification** — Optional required verification with configurable flow
 - **Account deletion** — Self-service with configurable grace period
 - **Field-level encryption** — Member names/bios, journal titles/bodies, and revision history encrypted at rest with XChaCha20-Poly1305
-- **Eye-friendly** — Default dark, with Dark Reader compatibility and a clear light toggle
+- **Appearance** - 15 colour palettes (Classic, OLED, Sepia, Ocean, several pride flags, and more) crossed with light / dark / follow-my-system, defaulting to dark, with Dark Reader compatibility. Your pick can sync across your devices through your account or stay local to one browser, your choice.
+- **Image uploads** - Avatars, member banners, and images embedded in bios and journals. An in-browser cropper (with zoom and rotate) frames the image before it is sent, and every accepted upload is re-encoded server-side: EXIF stripped, dimensions capped, decompression bombs refused, animation flattened unless the operator allows it.
 
 ## FAQ
 
@@ -145,7 +147,7 @@ sheaf/
 ├── web/                    # React + TypeScript + Vite + Tailwind
 ├── alembic/                # Database migrations
 ├── tests/                  # pytest test suite
-├── docs/                   # Self-hosting and client development guides
+├── docs/                   # Self-hosting, client dev, import, metrics, PluralPort, build verification
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
@@ -176,6 +178,7 @@ Key endpoints:
 | `GET /v1/fronts/current` | Who's fronting now |
 | `GET /v1/fronts/stream` | Live front changes over Server-Sent Events |
 | `GET/POST /v1/groups` | Groups |
+| `PUT /v1/groups/reorder` | Reorder groups |
 | `GET /v1/relationship-types` | Relationship types (partner, parent/child, your own) |
 | `POST /v1/member-relationships` | Relate two members |
 | `POST /v1/group-relationships` | Relate two groups (subsystems) |
@@ -183,14 +186,22 @@ Key endpoints:
 | `GET/POST /v1/tags` | Tags |
 | `GET/POST /v1/fields` | Custom field definitions |
 | `PUT /v1/members/{id}/fields` | Set custom field values |
+| `PUT /v1/fields/reorder` | Reorder custom fields |
 | `GET/POST /v1/journals` | List/create journal entries |
 | `GET /v1/journals/{id}/revisions` | Edit history for an entry |
 | `POST /v1/journals/{id}/pin-revision` | Pin a revision (exempt from trim) |
 | `POST /v1/journals/{id}/unpin-revision` | Unpin (immediate or queued behind grace) |
 | `GET/PATCH /v1/system/safety` | System Safety settings + pending actions |
-| `POST /v1/imports/file` | Import an export file (`source=` picks the format) |
-| `POST /v1/imports/api` | Import a PluralKit system live via `pk;token` |
-| `GET /v1/imports` | Import job history and status |
+| `GET/POST /v1/share-views` | List/create a curated view for sharing |
+| `GET/POST /v1/share-grants` | List/create a grant (public profile or share link) |
+| `GET /v1/sharing/audit` | What is currently visible to whom, per view |
+| `GET /v1/public/systems/{id}` | Anonymous: a published public profile |
+| `GET /v1/public/shared/{token}` | Anonymous: a share link |
+| `GET /v1/account/activity` | Your account activity log |
+| `POST /v1/imports/file` | Queue an import from an export file (`source=` picks the format) |
+| `POST /v1/imports/api` | Queue an import of a PluralKit system live via `pk;token` |
+| `GET /v1/imports` | Import job history |
+| `GET /v1/imports/{id}` | One job's status, counts, and full event report |
 | `POST /v1/import/{source}/preview` | Preview a file before committing to it |
 | `GET /v1/export` | Export plural system content (sync JSON; `format=pluralport` for PluralPort) |
 | `POST /v1/export/jobs` | Queue an async export: full backup with image bytes, a `.pluralport.zip` bundle, or front history as CSV / JSON / ICS |
@@ -215,7 +226,7 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - Admin access and step-up authentication
 - Optional dependencies (S3, SMTP, SES, SendGrid)
 - Email configuration (SMTP / AWS SES / SendGrid) with bounce/complaint handling
-- Registration modes (open / approval / invite / closed) and email verification
+- Registration modes (open / approval / invite / closed), email verification, and the optional Altcha captcha
 - Account deletion with configurable grace period
 - File storage (filesystem / S3) with hotlink protection
 - Storage quotas and upload limits
@@ -225,6 +236,11 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 - Reverse proxy setup (nginx, Caddy) and the `SHEAF_BASE_URL` / cookie-Secure relationship
 - Rate limiting, per-tier limits, and trusted proxies
 - Delivering webhooks and ntfy to your own LAN (`WEBHOOK_ALLOWED_PRIVATE_CIDRS`), and why it is off by default
+- Mobile push (FCM / APNs), and why it needs your own app builds
+- Public profiles and share links (`PUBLIC_PROFILES_ENABLED`), plus the proxy and log hygiene an anonymous surface needs
+- Background jobs, the data-deletion kill switch, and every retention window
+- Import job runner and the per-job import caps
+- Shield mode (cf-shield), for a break-glass CDN posture
 - Custom Support-page text for your own FAQ or house rules (`CUSTOM_SUPPORT_TEXT_FILE`)
 - The all-in-one image, including the Cloudflare Tunnel path
 - Proxy directives the realtime front stream needs (do not compress SSE)
@@ -279,7 +295,7 @@ Shipped items are listed here for context; the [CHANGELOG](CHANGELOG.md) has the
 - [x] Account activity log
 - [x] Global display-timezone preference
 - [ ] Friend/trust system (cross-system visibility controls)
-- [ ] Public profiles and share links - curated views plus revocable/rotatable grants (landed behind `PUBLIC_PROFILES_ENABLED`, not yet in a tagged release)
+- [x] Public profiles and share links - curated views plus revocable/rotatable grants, off unless the operator sets `PUBLIC_PROFILES_ENABLED`
 - [ ] Per-field-per-member privacy overrides
 - [x] Storage quotas (per-tier account-wide budget)
 - [x] Orphaned file cleanup (images uploaded but never attached to a member/system)

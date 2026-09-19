@@ -206,7 +206,15 @@ API key scopes control access. Session/JWT auth has full access (no scope restri
 | `groups:read/write/delete` | Same pattern |
 | `tags:read/write/delete` | Same pattern |
 | `fields:read/write/delete` | Custom fields, same pattern |
-| `export:read` | Export data |
+| `journals:read/write/delete` | Journal entries, their revisions, and pinning |
+| `relationships:read/write/delete` | Relationship types, member and group edges, the graph |
+| `polls:read/write/delete` | Polls and votes |
+| `messages:read/write/delete` | The system board and per-member walls |
+| `notifications:read/write/delete` | Notification channels and their rules |
+| `sharing:read/write/delete` | Share views and grants |
+| `settings:read/write/delete` | Per-client settings storage |
+| `import:write` | Queue imports (there is no `import:read`) |
+| `export:read` | Export data. **Broader than it looks** - see below |
 | `admin:read` | Read admin endpoints (requires `is_admin`) |
 | `admin:write` | Write admin endpoints (requires `is_admin`) |
 
@@ -214,6 +222,8 @@ API key scopes control access. Session/JWT auth has full access (no scope restri
 - `write` implies `read` — having `members:write` satisfies `members:read`
 - `delete` is explicit — `members:write` does NOT grant `members:delete`
 - `admin:*` scopes can only be created by admin users
+- `export:read` reaches the **whole** account export - every member, journal, board message, poll and setting - no matter how narrowly the other scopes on the same key are set. It is not "read the export endpoint", it is "read everything". The web UI warns inline when it is selected and asks for a confirmation, and a client that builds keys should do something equivalent rather than offering it in a flat checkbox list. Each export served to an API key also records a security event with the time and originating address, so a key later found to have leaked can be checked.
+- Some endpoints are session-only and reject API keys outright regardless of scope: `GET /account/activity`, `POST /account/data`, and setting the 18-or-older attestation on the sharing surface.
 
 ## Session Management
 
@@ -322,14 +332,50 @@ All resource endpoints require authentication. With API keys, the appropriate sc
 | POST | `/fields` | `fields:write` |
 | PATCH | `/fields/{id}` | `fields:write` |
 | DELETE | `/fields/{id}` | `fields:delete` |
-| PUT | `/members/{id}/fields/{field_id}` | `members:write` |
+| PUT | `/fields/reorder` | `fields:write` |
+| GET | `/members/{id}/fields` | `fields:read` |
+| PUT | `/members/{id}/fields` | `fields:write` |
+| PUT | `/groups/reorder` | `groups:write` |
+| GET | `/journals` | `journals:read` |
+| POST | `/journals` | `journals:write` |
+| GET/PATCH | `/journals/{id}` | `journals:read` / `journals:write` |
+| DELETE | `/journals/{id}` | `journals:delete` |
+| POST | `/journals/{id}/pin`, `/unpin` | `journals:write` |
+| GET | `/journals/{id}/revisions` | `journals:read` |
+| POST | `/journals/{id}/restore-revision` | `journals:write` |
+| POST | `/journals/{id}/pin-revision`, `/unpin-revision` | `journals:write` |
+| GET | `/relationship-types` | `relationships:read` |
+| POST/PATCH | `/relationship-types`, `/relationship-types/{id}` | `relationships:write` |
+| DELETE | `/relationship-types/{id}` | `relationships:delete` |
+| GET | `/members/{id}/relationships`, `/groups/{id}/relationships` | `relationships:read` |
+| POST/PATCH | `/member-relationships`, `/group-relationships` | `relationships:write` |
+| DELETE | `/member-relationships/{id}`, `/group-relationships/{id}` | `relationships:delete` |
+| GET | `/relationships/graph` | `relationships:read` |
+| GET/PATCH | `/retention` | `system:read` / `system:write` |
 | GET | `/export` | `export:read` |
+
+`PUT /members/{id}/fields` takes a **list** of `{field_id, value}` entries and is the only
+way to write custom-field values. Sending `value: null` clears that field; so does omitting
+`value` entirely, which is there because several client JSON serialisers drop null fields
+rather than writing them. Fields you do not name are left alone, so clearing one means
+sending it explicitly rather than leaving it out.
+
+The two `reorder` endpoints take `{"group_ids": [...]}` / `{"field_ids": [...]}` and set each
+named item's order to its index, in one transaction, returning the full re-sorted list. Items
+you do not name keep the order they had, so sending the whole list is the reliable way to
+reproduce what is on screen. Group order is a single flat sequence with no parent scoping:
+if you present groups as a tree and move one among its siblings, send the full depth-first
+ordering. Unordered groups fall back to alphabetical; unordered custom fields do not, so
+their relative order is unspecified until somebody sets one.
+
+`GET /account/activity` returns the account's own activity log. It **refuses API keys** with
+403 and needs a session or JWT, as does `POST /account/data`.
 
 ### Files
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/files/upload?purpose=avatar\|bio` | Upload image (requires `members:write`) |
+| POST | `/files/upload?purpose=avatar\|bio\|banner` | Upload image (requires `members:write`) |
 | GET | `/files/usage` | Storage usage and quota |
 | GET | `/files/list` | List uploaded files |
 | DELETE | `/files/{id}` | Delete file (requires `members:write`) |
@@ -413,7 +459,7 @@ data: {"system_id":"...","before":[...],"after":[...],"fronts":[...],"changed_at
 
 `member_since` is the per-member effective fronting-since timestamp (coalesced across contiguous fronts exactly as `/current` computes it). An empty `fronts` array means nobody is fronting.
 
-There is no replay buffer: SSE auto-reconnects and the server re-sends a fresh `snapshot`, so a reconnecting client is always correct (re-apply the snapshot rather than resuming from `Last-Event-ID`). Responses: `404` if the operator disabled the stream (`FRONT_STREAM_ENABLED`), `403` if the key lacks `fronts:read`, `429` if the account is over its concurrent-connection cap (back off and retry). Full contract: `sheaf-design-docs/realtime-front-stream.md`.
+There is no replay buffer: SSE auto-reconnects and the server re-sends a fresh `snapshot`, so a reconnecting client is always correct (re-apply the snapshot rather than resuming from `Last-Event-ID`). Responses: `404` if the operator disabled the stream (`FRONT_STREAM_ENABLED`), `403` if the key lacks `fronts:read`, `429` if the account is over its concurrent-connection cap (back off and retry).
 
 ### Notes
 

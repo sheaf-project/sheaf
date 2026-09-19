@@ -4,7 +4,7 @@
 
 ### What is Sheaf?
 
-Sheaf is an open-source plural system tracker. It lets you track members, switches (fronting), groups, custom fields, and more. It's a self-hostable replacement for SimplyPlural.
+Sheaf is an open-source plural system tracker. It lets you track members, switches (fronting), groups, custom fields, and more. You can self-host it or use the hosted service, and you can bring your data across from most other trackers.
 
 ### Is Sheaf free?
 
@@ -24,16 +24,19 @@ Yes. Export your data, then use the import feature in Sheaf. You can choose exac
 
 We currently support imports from:
 
-* Simply Plural
+* SimplyPlural
 * PluralKit
 * Tupperbox
-* Octocon and compatible forks
+* Octocon and compatible forks (via their PluralKit-shaped export)
 * Plural Space
 * Prism Plural
+* Ampersand
+* Any app that writes [PluralPort](https://github.com/PluralPort/spec) v0.1
+* Sheaf itself, for restoring a backup or moving between instances
 
 ### Does Sheaf have mobile apps?
 
-Yes, iOS and Android apps are available, and also include wearables (WearOS/WatchOS support)?
+Yes, iOS and Android apps are available, and both include a wearable companion (Wear OS and watchOS).
 
 ### What about a client for $insert_platform_here? 
 

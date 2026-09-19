@@ -370,8 +370,7 @@ silently dropping them.
 Much of what currently round-trips via `extensions.sheaf.*` should move to core
 records or dedicated modules if the matching upstream work lands. Sheaf filed
 issues #2 through #9 against
-[PluralPort/spec](https://github.com/PluralPort/spec) toward
-that (drafts live in `../sheaf-design-docs/pluralport-adoption/`):
+[PluralPort/spec](https://github.com/PluralPort/spec) toward that:
 
 - **#2 - Add nullable `parent_post_id` to `BoardPost`.** Board posts carry a
   single-level reply pointer (`parent_message_id`) with no core field today; it
