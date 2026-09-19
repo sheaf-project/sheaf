@@ -69,6 +69,11 @@ class AdminAuditAction(enum.StrEnum):
     # Lift the publishing_blocked latch set by the revoke-all takedown. Admin
     # only, reason required; an owner can never clear it themselves.
     SYSTEM_PUBLISHING_UNBLOCK = "system_publishing_unblock"
+    # Call off every staged flip-to-public raise on one system, so nothing
+    # parked behind the visibility grace window ever goes live. The
+    # un-exposing counterpart to user_pending_bypass, which has no exposing
+    # counterpart on purpose.
+    USER_EXPOSURES_CANCELLED = "user_exposures_cancelled"
 
 
 class AdminAuditTargetType(enum.StrEnum):
