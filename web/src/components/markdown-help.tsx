@@ -46,11 +46,22 @@ function Section({
 
 /**
  * A help button + dialog documenting the markdown the editor supports.
- * Reusable anywhere the BioEditor (or its preview) is mounted. The trigger
- * is a ghost icon button; pass `className` to match the surrounding toolbar
- * (the BioEditor toolbar uses `h-7 w-7 p-0`).
+ * The trigger is a ghost icon button; pass `className` to match the
+ * surrounding toolbar (the BioEditor toolbar uses `h-7 w-7 p-0`).
+ *
+ * Set `plain` where the field is a bare textarea rather than a BioEditor.
+ * The dialog otherwise tells the reader to use the Preview tab and the
+ * toolbar's image button, neither of which exists on those fields - the help
+ * has to describe the editor it is actually attached to, or it is worse than
+ * no help at all.
  */
-export function MarkdownHelp({ className }: { className?: string }) {
+export function MarkdownHelp({
+  className,
+  plain = false,
+}: {
+  className?: string;
+  plain?: boolean;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -72,7 +83,10 @@ export function MarkdownHelp({ className }: { className?: string }) {
           <DialogTitle>Formatting with markdown</DialogTitle>
           <DialogDescription>
             These fields use markdown. Type the syntax on the left to get the
-            result on the right; switch to the Preview tab to see it rendered.
+            result on the right
+            {plain
+              ? "."
+              : "; switch to the Preview tab to see it rendered."}
           </DialogDescription>
         </DialogHeader>
 
@@ -129,7 +143,11 @@ export function MarkdownHelp({ className }: { className?: string }) {
             />
             <Row
               syntax={"![description](https://example.com/pic.png)"}
-              description="An image. Use the image button in the toolbar to upload one (hosted images get a green badge in the preview, external ones a yellow badge)."
+              description={
+                plain
+                  ? "An image, by URL."
+                  : "An image. Use the image button in the toolbar to upload one (hosted images get a green badge in the preview, external ones a yellow badge)."
+              }
             />
           </Section>
 

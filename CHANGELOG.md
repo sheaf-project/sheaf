@@ -12,6 +12,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Fixed
 
+- **Group descriptions can now be read and written in the app.** A group has always had a description: the API accepts one, every importer fills it in from the file you brought over, and public profiles and share links render it as markdown to visitors. There was simply no field for it anywhere in the app, so an imported description was published to anyone with your link while being invisible to you, and there was no way to edit or remove it without calling the API yourself. The create and edit forms now both have a Description box, using the same markdown editor as member bios, so it previews exactly what a visitor will see.
+
+- **The formatting help button now appears on every field that takes markdown.** It was only on the bio editor, which covers member bios and journal entries; member notes and system notes say "Markdown supported" and had no help. Both now have the button. Its wording adapts to where it is: those two fields are plain text boxes with no preview tab and no image-upload button, so the help no longer tells you to use either.
+
 - **The quick-switch endpoint no longer slows down as your fronting history grows.** Working out who fronts most often meant loading every front from the database, even though the answer is a handful of members. If you switch a lot, or imported a long history, that was adding seconds to the wait and getting worse over time. It is now calculated by the database directly: at ~20k front entries, it went from ~2.9s to ~0.1, and a big history is no longer slower than a small one. Ordering and calculation of results is unchanged.
 
 ## [1.5.0] - 2026-09-10
