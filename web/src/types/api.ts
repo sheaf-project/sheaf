@@ -814,6 +814,9 @@ export interface NotificationChannel {
   name: string;
   destination_type: DestinationType;
   destination_state: DestinationState;
+  /** Set when the server disabled this channel rather than the owner or the
+   *  recipient. Currently only "delivery_failed". */
+  disabled_reason: string | null;
   destination_config: Record<string, unknown>;
   event_type: string;
   activation_code_expires_at: string | null;
@@ -914,6 +917,11 @@ export interface ManageChannelView {
    *  recipient unsubscribing). Lets the recipient UI render "Paused by
    *  sender" instead of "Unsubscribed". */
   paused_by_sender: boolean;
+  /** Set when the SERVER disabled the channel, which is neither of the two
+   *  cases above. Currently only "delivery_failed". Null otherwise, so
+   *  `disabled` still means "unsubscribed" when both this and
+   *  paused_by_sender are empty. */
+  disabled_reason: string | null;
 }
 
 export interface ReceivingChannelView {
@@ -924,6 +932,8 @@ export interface ReceivingChannelView {
   destination_state: string;
   /** See ManageChannelView.paused_by_sender. */
   paused_by_sender: boolean;
+  /** See ManageChannelView.disabled_reason. */
+  disabled_reason: string | null;
   redeemed_at: string | null;
   last_delivered_at: string | null;
 }

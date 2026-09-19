@@ -483,6 +483,13 @@ CLASSIFICATION: dict[type, dict] = {
             # _channel_dict docstring in export.py for the rationale.
             "destination_state": "recipient registration state, instance-local",
             "paused_by_sender": "runtime pause flag, instance-local",
+            "disabled_reason": (
+                "why THIS instance switched the channel off, instance-local: "
+                "a destination that was failing here says nothing about the "
+                "one the import lands on"
+            ),
+            "consecutive_failures": "delivery bookkeeping, runtime state",
+            "failing_since": "delivery bookkeeping, runtime state",
             "activation_code_hash": "recipient activation secret, instance-local",
             "activation_code_expires_at": "activation expiry, instance-local",
             "redeemed_at": "recipient redemption state, instance-local",

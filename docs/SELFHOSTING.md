@@ -530,7 +530,7 @@ Three sharp edges to know about, because **none of this is validated at startup*
 
 - A `mobile_push` channel is only refused (501) when *neither* provider is configured. Either one alone is enough to make the destination type available, so on an FCM-only instance a recipient with an iPhone can create a channel that will never deliver.
 - Device registration (`POST /v1/devices/push`) does not check credentials at all, so tokens register happily against an instance with none.
-- A delivery that fails for want of credentials is classified **transient**, and transient retries are not capped: the outbox row backs off to one attempt every ~32 minutes and keeps going, and the channel is not auto-disabled. A half-configured provider therefore shows up as a slow permanent churn in the outbox rather than an error anyone notices.
+- A delivery that fails for want of credentials is classified **transient**, so it backs off to one attempt every ~32 minutes rather than killing the channel on its first send: a provider you are halfway through setting up gets the chance to start working. If it is still failing a day later the channel is switched off with `disabled_reason = delivery_failed`, which the owner sees as a banner on the watcher and an entry in their account activity. A half-configured provider therefore costs a day of quiet retries and then says so, instead of churning in the outbox indefinitely where nobody notices.
 
 A partially configured APNs (team id set, no `.p8`), an unreadable key file, and malformed service-account JSON are all reported the same way: a `logger.error` from `sheaf.notifications.apns` / `sheaf.notifications.fcm` on the first delivery attempt. Send a test notification and watch the logs; nothing fails fast for you.
 
