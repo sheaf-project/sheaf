@@ -49,6 +49,18 @@ class DestinationState(enum.StrEnum):
     DECLINED_OR_EXPIRED = "declined_or_expired"  # email-only; reserved
 
 
+class DisabledReason(enum.StrEnum):
+    """Why the SERVER switched a channel off.
+
+    Only for causes the server decided. An owner pausing a channel and a
+    recipient unsubscribing are both already expressed by
+    `paused_by_sender` alongside `destination_state`, and this stays NULL
+    for both of them.
+    """
+
+    DELIVERY_FAILED = "delivery_failed"
+
+
 class CofrontRedaction(enum.StrEnum):
     COUNT = "count"
     SOMEONE = "someone"
@@ -101,6 +113,38 @@ class NotificationChannel(UUIDMixin, TimestampMixin, Base):
     # Forward-compat: only "front_change" in v1.
     event_type: Mapped[str] = mapped_column(
         String(32), nullable=False, default="front_change", server_default="front_change"
+    )
+
+    # Why this channel is in DISABLED, when the cause was neither the owner
+    # pausing it nor the recipient unsubscribing. NULL for both of those and
+    # for every channel that is not disabled.
+    #
+    # It exists because `destination_state = DISABLED` already carried two
+    # meanings, split by `paused_by_sender`, and the recipient-facing label
+    # reads the difference. A channel the SERVER switched off is a third
+    # meaning, and without somewhere to record it the UI would have called it
+    # "Unsubscribed" - telling the owner their recipient opted out when in
+    # fact their endpoint died.
+    disabled_reason: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+
+    # Consecutive delivery failures, counted on the CHANNEL rather than on a
+    # message. The outbox row's `failed_attempts` counts retries of one
+    # message, which is not the same question: twelve messages that each
+    # failed twice say something different about a destination than one
+    # message that failed twelve times. Reset to zero by any success.
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # When the current unbroken run of failures started, or NULL if the
+    # channel is not currently failing. The disable rule is expressed in TIME
+    # rather than in attempts on purpose: attempts only mean something
+    # relative to the backoff schedule, so a count that means "about a day"
+    # today would quietly mean "about an hour" the moment anyone retunes the
+    # backoff. This survives that.
+    failing_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Activation (push types only)

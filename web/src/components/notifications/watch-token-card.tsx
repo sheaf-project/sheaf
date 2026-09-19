@@ -52,6 +52,13 @@ export function WatchTokenCard({
   systemId: string;
 }) {
   const { data: channels } = useChannels(token.id);
+  // Only the server-stopped ones. A channel the owner paused themselves needs
+  // no warning: they know, they did it.
+  const stoppedChannels = (channels ?? []).filter(
+    (c) =>
+      c.destination_state === "disabled" &&
+      c.disabled_reason === "delivery_failed",
+  );
   const { data: system } = useQuery({
     queryKey: ["system", "me"],
     queryFn: getMySystem,
@@ -106,6 +113,29 @@ export function WatchTokenCard({
             </div>
           )}
         </div>
+
+        {stoppedChannels.length > 0 && (
+          /* The whole point of the disabled_reason column. A channel the
+             server switched off used to say nothing anywhere the owner
+             looks: notifications simply stopped, and not receiving a
+             notification is indistinguishable from nothing having happened.
+             Named rather than counted, because "one of your channels" sends
+             you hunting through the list. */
+          <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+            <p className="font-medium text-amber-700 dark:text-amber-400">
+              {stoppedChannels.length === 1
+                ? `"${stoppedChannels[0].name}" stopped sending`
+                : `${stoppedChannels.length} channels stopped sending`}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {stoppedChannels.length === 1
+                ? "Deliveries kept failing for a day, so it was switched off. Check the destination is still reachable, then turn it back on."
+                : `Deliveries to ${stoppedChannels
+                    .map((c) => `"${c.name}"`)
+                    .join(", ")} kept failing for a day, so they were switched off. Check each destination is still reachable, then turn them back on.`}
+            </p>
+          </div>
+        )}
 
         {channels && channels.length > 0 ? (
           <div className="space-y-1.5">

@@ -168,6 +168,11 @@ class ChannelRead(BaseModel):
     # pausing the channel (not the recipient unsubscribing). Lets the
     # recipient UI render "Paused by sender" instead of "Unsubscribed".
     paused_by_sender: bool = False
+    # Set when the SERVER switched the channel off, which is a third cause
+    # alongside the two above and needs its own label: without it a channel
+    # stopped for failing deliveries reads as "Unsubscribed", which blames a
+    # person for a broken endpoint. NULL whenever the server did not decide it.
+    disabled_reason: str | None = None
     # destination_config is echoed back for non-secret types (ntfy server URL,
     # webhook URL minus secret, pushover user key). Secrets never leak here.
     destination_config: dict[str, Any]
@@ -278,6 +283,8 @@ class ManageChannelView(BaseModel):
     destination_type: str
     destination_state: str
     paused_by_sender: bool = False
+    # See ChannelRead.disabled_reason: the third cause of `disabled`.
+    disabled_reason: str | None = None
 
 
 class ReceivingChannelView(BaseModel):
@@ -295,5 +302,7 @@ class ReceivingChannelView(BaseModel):
     destination_type: str
     destination_state: str
     paused_by_sender: bool = False
+    # See ChannelRead.disabled_reason: the third cause of `disabled`.
+    disabled_reason: str | None = None
     redeemed_at: datetime | None
     last_delivered_at: datetime | None

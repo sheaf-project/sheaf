@@ -27,10 +27,12 @@ from sqlalchemy.orm import selectinload
 
 from sheaf.config import settings
 from sheaf.database import async_session_factory
+from sheaf.models.activity_event import ActivityAction, ActivityActorType
 from sheaf.models.member import Member
 from sheaf.models.notification_channel import (
     DestinationState,
     DestinationType,
+    DisabledReason,
     NotificationChannel,
 )
 from sheaf.models.notification_outbox import NotificationOutboxRow
@@ -39,6 +41,7 @@ from sheaf.observability.metrics import (
     notifications_dispatch_lag_seconds,
     notifications_dispatched_total,
 )
+from sheaf.services.activity_log import log_activity
 from sheaf.services.members import member_name_plaintext
 from sheaf.services.notifications.handlers import deliver
 from sheaf.services.notifications.payload import RenderedMessage
@@ -48,6 +51,79 @@ logger = logging.getLogger("sheaf.notifications.dispatcher")
 
 _BATCH_SIZE = 32
 _BACKOFF_BASE_SECONDS = 30
+
+# How long a channel may fail continuously before it is switched off.
+#
+# A day is deliberately generous. The common self-hosted case is a webhook
+# pointing at a box on the owner's own LAN, and a box that is off overnight
+# must still be there in the morning: anything tight enough to catch a broken
+# endpoint quickly would also punish a laptop that was asleep. Any single
+# success resets the clock, so this only ever fires on an unbroken run.
+_FAILING_DISABLE_AFTER = timedelta(hours=24)
+
+
+def has_been_failing_too_long(
+    failing_since: datetime | None, now: datetime
+) -> bool:
+    """Has this channel been failing continuously for longer than we allow?
+
+    A predicate rather than an inline comparison so the rule can be tested
+    without a database, an outbox row and a stack. `None` means the channel is
+    not currently in a failing run, which is never grounds to disable it.
+    """
+    if failing_since is None:
+        return False
+    return now - failing_since >= _FAILING_DISABLE_AFTER
+
+
+async def _disable_channel(
+    db: AsyncSession,
+    channel: NotificationChannel,
+    *,
+    reason: DisabledReason,
+    detail: str | None,
+    channel_type: str,
+) -> None:
+    """Switch a channel off, and tell its owner that it happened.
+
+    The telling is the point. Before this, a channel going quiet left a
+    `logger.warning` on the server and a `last_error` column, neither of which
+    the owner can see - so the feature whose job is to tell you things would
+    stop being able to, silently, and the only way to find out was to notice
+    the absence of notifications you were not expecting anyway.
+
+    `disabled_reason` is recorded because `DISABLED` already meant two things
+    (owner paused, recipient unsubscribed) and the recipient-facing label
+    reads the difference. Without a third value this would have rendered as
+    "Unsubscribed", which would be a lie about a person.
+    """
+    channel.destination_state = DestinationState.DISABLED.value
+    channel.disabled_reason = reason.value
+
+    owner_user_id, _ = await _resolve_channel_owner(db, channel)
+    if owner_user_id is not None:
+        await log_activity(
+            db,
+            user_id=owner_user_id,
+            action=ActivityAction.NOTIFICATION_CHANNEL_DISABLED,
+            actor_type=ActivityActorType.SYSTEM,
+            target_label=channel.name,
+            detail={
+                "channel_type": channel_type,
+                "reason": reason.value,
+                "consecutive_failures": channel.consecutive_failures,
+            },
+        )
+
+    logger.warning(
+        "notification channel disabled: channel=%s type=%s reason=%s "
+        "failures=%s error=%s",
+        channel.id,
+        channel_type,
+        reason.value,
+        channel.consecutive_failures,
+        detail,
+    )
 
 
 def _semaphores() -> dict[str, asyncio.Semaphore]:
@@ -325,6 +401,11 @@ async def _deliver_or_retry(
     if outcome.ok:
         row.delivered_at = datetime.now(UTC)
         channel.last_delivered_at = row.delivered_at
+        # Any success ends the run. Without this the counter would be a
+        # lifetime total and a channel that failed occasionally for a year
+        # would eventually be switched off for being briefly unreachable.
+        channel.consecutive_failures = 0
+        channel.failing_since = None
         await db.commit()
         notifications_dispatched_total.labels(
             channel_type=ct, outcome="success",
@@ -335,19 +416,39 @@ async def _deliver_or_retry(
         )
         return
 
+    now = datetime.now(UTC)
+    channel.consecutive_failures += 1
+    if channel.failing_since is None:
+        channel.failing_since = now
+
     if outcome.permanent:
-        channel.destination_state = DestinationState.DISABLED.value
-        # A user's channel is being turned off; the reason lived only in the
-        # metric (channel_type) + the row's last_error column before.
-        logger.warning(
-            "notification channel disabled after permanent failure: "
-            "channel=%s type=%s error=%s",
-            channel.id,
-            ct,
-            outcome.error,
+        await _disable_channel(
+            db, channel, reason=DisabledReason.DELIVERY_FAILED,
+            detail=outcome.error, channel_type=ct,
         )
         await _drop(
             db, row, f"permanent: {outcome.error}",
+            channel_type=ct, outcome="permanent_failure",
+        )
+        return
+
+    # Transient, but not forever. A destination that has been refusing every
+    # delivery for a solid day is not having a bad minute, and the backoff
+    # below tops out at half an hour, so without this it would retry at that
+    # cadence indefinitely against something nobody is going to fix.
+    #
+    # The rule is expressed in elapsed time rather than in attempts because
+    # attempts only mean something relative to the backoff schedule: a count
+    # tuned to mean "about a day" would quietly come to mean "about an hour"
+    # the moment anyone changed the curve.
+    if has_been_failing_too_long(channel.failing_since, now):
+        await _disable_channel(
+            db, channel, reason=DisabledReason.DELIVERY_FAILED,
+            detail=outcome.error, channel_type=ct,
+        )
+        await _drop(
+            db, row,
+            f"gave up after {_FAILING_DISABLE_AFTER}: {outcome.error}",
             channel_type=ct, outcome="permanent_failure",
         )
         return
@@ -364,15 +465,14 @@ async def _deliver_or_retry(
     notifications_dispatched_total.labels(
         channel_type=ct, outcome="transient_failure",
     ).inc()
-    # Attempts are not capped, so a permanently-broken target churns forever;
-    # logging the attempt count makes that visible (a rising attempt= is the
-    # signal to look at the channel). A hard retry cap is a separate decision.
     logger.warning(
         "notification delivery failed (will retry): channel=%s type=%s "
-        "attempt=%s backoff=%ss error=%s",
+        "attempt=%s channel_failures=%s failing_for=%s backoff=%ss error=%s",
         channel.id,
         ct,
         row.failed_attempts,
+        channel.consecutive_failures,
+        now - channel.failing_since,
         backoff,
         outcome.error,
     )
