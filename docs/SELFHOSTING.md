@@ -1395,6 +1395,8 @@ The first four are independent and optional. The operator card is hidden entirel
 
 `CUSTOM_SUPPORT_TEXT_FILE` points at a file of your own freeform text (FAQ, onboarding notes, house rules, whatever) shown in its own card on the Support page. Basic markdown is supported - headings, lists, links, emphasis. Any HTML in the file is stripped server-side when it's loaded, so the API never emits raw tags and nothing relies on the browser to sanitise; write markdown, not HTML. Unlike the env vars above, this file is re-read whenever its modification time or size changes, so you can edit it without restarting. Content is capped at 20,000 characters. A path that can't be read logs a warning at startup and the card is simply omitted.
 
+Being a markdown file, it follows ordinary markdown rules, which is the one place it differs from `PUBLIC_ABUSE_CONTACT`: a single line break inside a paragraph is whitespace, not a line break, so separate paragraphs need a blank line between them and a list needs list syntax. That is deliberate. It is a file you can open in an editor and preview, where markdown semantics are what you would expect, whereas the abuse contact is one env var typed blind and its line breaks are its layout. No escape decoding here either: a file holds real newlines already, so write them rather than `\n`.
+
 The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_URL` / `PRIVACY_URL`; like those, they're read at startup and changing them needs a restart (the custom-text file is the exception noted above).
 
 ---
