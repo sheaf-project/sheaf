@@ -1323,6 +1323,11 @@ export interface ShareViewGroupRow {
   synced_at: string;
 }
 
+/** What a chat client shows when somebody pastes a share view's URL.
+ *  A string enum rather than a boolean so a third mode (name and avatar but no
+ *  description text, say) costs a new value instead of a column migration. */
+export type PreviewMode = "generic" | "system_details";
+
 export interface ShareView {
   id: string;
   name: string;
@@ -1336,6 +1341,31 @@ export interface ShareView {
   include_relationships: boolean;
   /** Whether the view serves the system's public groups. */
   include_groups: boolean;
+  /** What a chat client shows when somebody pastes this view's URL. false (the
+   *  default) is the generic card, naming nobody; true adds the system's name,
+   *  avatar and a snippet of its description. An exposure flag, unlike
+   *  `member_permalinks` below: a rich card reaches people who never opened the
+   *  page and lands in a cache that outlives it, so it stages and steps up like
+   *  the flags above. */
+  link_preview_mode: PreviewMode;
+  /** The same choice for a MEMBER PERMALINK's link. A separate setting, not a
+   *  third value of the one above: a profile card names the system, a member card
+   *  names one specific member, and neither exposure contains the other. Also
+   *  needs `member_permalinks` on before it can do anything. */
+  member_link_preview_mode: PreviewMode;
+  /** What this view's URLs ACTUALLY unfurl as right now - "generic" or
+   *  "system_details". Not a second setting: it is `link_preview_mode`
+   *  composed with everything else that has to be true first, so the screen can
+   *  say the card is still generic instead of showing a switch that is on and
+   *  doing nothing. Reads "generic" while the flip is staged, while the grant is
+   *  in its grace window, when the system isn't public, when the account or
+   *  instance is suppressed, and - the case that surprises people - whenever the
+   *  view is reachable only by share LINK, because a link URL is itself the
+   *  secret and never gets a rich card. */
+  link_preview_effective?: PreviewMode;
+  /** The same, for member permalink links. Also reads "generic" when
+   *  `member_permalinks` is off, because then there is no member link at all. */
+  member_link_preview_effective?: PreviewMode;
   /** Stable per-member URLs for members this view already shows. Deliberately
    *  NOT an exposure flag: it publishes no data that the roster doesn't
    *  already publish, only an address for it. So it has no pending twin,
@@ -1350,6 +1380,8 @@ export interface ShareView {
   pending_fronting_show_count?: boolean | null;
   pending_include_relationships?: boolean | null;
   pending_include_groups?: boolean | null;
+  pending_link_preview_mode?: PreviewMode | null;
+  pending_member_link_preview_mode?: PreviewMode | null;
   /** When the queued flag change above becomes live. */
   flags_activate_at?: string | null;
   created_at: string;
@@ -1369,6 +1401,8 @@ export interface ShareViewCreate {
   fronting_show_count?: boolean;
   include_relationships?: boolean;
   include_groups?: boolean;
+  link_preview_mode?: PreviewMode;
+  member_link_preview_mode?: PreviewMode;
   member_permalinks?: boolean;
 }
 
@@ -1380,6 +1414,8 @@ export interface ShareViewUpdate {
   fronting_show_count?: boolean;
   include_relationships?: boolean;
   include_groups?: boolean;
+  link_preview_mode?: PreviewMode;
+  member_link_preview_mode?: PreviewMode;
   member_permalinks?: boolean;
   password?: string;
   totp_code?: string;

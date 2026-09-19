@@ -1483,6 +1483,37 @@ sheaf.example.com {
     handle /v1/* {
         reverse_proxy localhost:8000
     }
+    # RFC 9116 security.txt is served by the backend. Matched by exact path, not
+    # as /.well-known/*, so Caddy keeps handling /.well-known/acme-challenge/*
+    # for certificate issuance. Without these two lines the request falls through
+    # to the SPA below and a researcher gets index.html.
+    handle /.well-known/security.txt {
+        reverse_proxy localhost:8000
+    }
+    handle /security.txt {
+        reverse_proxy localhost:8000
+    }
+    # Link-unfurl crawlers on a public profile (/p/) or share link (/s/) get a
+    # small server-rendered document carrying that URL's Open Graph tags; every
+    # other request falls through to the SPA unchanged. Crawlers do not run
+    # JavaScript, so without this they only ever see the static shell's tags -
+    # one generic card for every URL on the instance. Whether a given profile
+    # unfurls with its name and avatar or with a generic card is the owner's
+    # per-view setting; an unlisted /s/ link is always generic.
+    #
+    # Matching on User-Agent (rather than sending all of /p/ and /s/ to the
+    # backend) fails safe in three ways: a crawler this list misses gets the
+    # generic static card, real visitors never touch the preview code, and a
+    # backend outage does not take profile pages down. These responses carry
+    # their own headers from the backend, so they do not need the @profiles set
+    # below.
+    @preview {
+        path /p/* /s/*
+        header_regexp User-Agent (?i)(discordbot|facebookexternalhit|facebot|twitterbot|slackbot|telegrambot|whatsapp|linkedinbot|skypeuripreview|redditbot|mastodon|bluesky|cardyb|synapse|iframely|embedly|vkshare|pinterest|applebot|googlebot|bingbot|duckduckbot|qwantify|tumblr|flipboard|snapchat|viber|nuzzel|opengraph|metauri)
+    }
+    handle @preview {
+        reverse_proxy localhost:8000
+    }
     handle {
         root * /path/to/web/dist
         try_files {path} /index.html
@@ -1533,6 +1564,18 @@ map $request_uri $sheaf_robots {
 map $request_uri $sheaf_csp {
     default    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
     ~^/[ps]/   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+}
+
+# Link-unfurl crawlers. Requests for /p/ and /s/ from one of these go to the
+# backend, which renders that URL's Open Graph tags; everything else gets the SPA
+# as before. Crawlers do not run JavaScript, so without this they only ever see
+# the static shell's tags - one generic card for every URL on the instance.
+# Matching on User-Agent fails safe: an unmatched crawler gets the generic static
+# card, real visitors never reach the preview code, and a backend outage does not
+# take profile pages down.
+map $http_user_agent $sheaf_link_unfurler {
+    default 0;
+    ~*(discordbot|facebookexternalhit|facebot|twitterbot|slackbot|telegrambot|whatsapp|linkedinbot|skypeuripreview|redditbot|mastodon|bluesky|cardyb|synapse|iframely|embedly|vkshare|pinterest|applebot|googlebot|bingbot|duckduckbot|qwantify|tumblr|flipboard|snapchat|viber|nuzzel|opengraph|metauri) 1;
 }
 
 # /s/{token} and its API route both carry the unlisted share-link bearer.
@@ -1599,6 +1642,51 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # RFC 9116 security.txt is served by the backend. Exact paths, so
+    # /.well-known/acme-challenge/ stays with whatever issues your certificates.
+    location = /.well-known/security.txt {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /security.txt {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Public profiles and share links. A link-unfurl crawler is handed off to
+    # @unfurl; everyone else gets the SPA with the headers below.
+    #
+    # The `return 418` / `error_page` pair is doing real work and is not just a
+    # flourish: putting `proxy_pass` directly inside the `if` would leave this
+    # location's `add_header` directives applying to the proxied response, so the
+    # SPA's `default-src 'self'` CSP would land on top of the preview document's
+    # own `default-src 'none'`. Browsers intersect multiple CSP headers, and the
+    # intersection blocks the avatar fetch. Bouncing into a named location gives
+    # the proxied response only the backend's own headers.
+    location ~ ^/[ps]/ {
+        error_page 418 = @unfurl;
+        if ($sheaf_link_unfurler) {
+            return 418;
+        }
+        root /path/to/web/dist;
+        try_files $uri /index.html;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy $sheaf_csp always;
+        add_header X-Robots-Tag $sheaf_robots always;
+    }
+
+    location @unfurl {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # Frontend SPA. Sheaf only sets security headers on its own /v1/*
     # responses; the SPA document is served by nginx and needs them here.
     location / {
@@ -1612,6 +1700,37 @@ server {
     }
 }
 ```
+
+#### Updating an existing proxy for link previews and security.txt
+
+Both of the examples above gained two route groups. If you are running an older config, these are the changes to make; neither is required for Sheaf to work, and you can make them independently.
+
+**Link previews (`/p/` and `/s/`).** Add the User-Agent-matched route that sends link-unfurl crawlers to the backend. Without it, a crawler that fetches a profile URL gets the static SPA shell, so every Sheaf link on your instance unfurls with the same generic site card no matter what a profile owner has chosen. The per-view **Show the system name and avatar in link previews** setting on the Sharing screen has no effect until this route exists. Nothing breaks without it - the setting simply does nothing, which is the safe direction.
+
+If you would rather not add it, you can leave it out permanently and every link keeps unfurling generically. There is no partial state to worry about: the backend decides per URL, and an unlisted `/s/` link is served a generic card whether or not the route is present.
+
+**security.txt.** Add the two exact-path routes for `/.well-known/security.txt` and `/security.txt`. The backend has always served RFC 9116 there, but both example configs routed only `/v1/*` and `/health` to it, so the request fell through to the SPA and anyone looking for the file got the web app's `index.html` instead. Match by **exact path** rather than proxying all of `/.well-known/*`, or you will hand `/.well-known/acme-challenge/*` to the backend and break certificate issuance.
+
+To check either one, ask for it the way a crawler or a researcher would:
+
+```bash
+# Should be the security.txt body, not HTML
+curl -s https://your-instance/.well-known/security.txt | head -3
+
+# Should be a small HTML document whose og: tags describe that profile
+curl -s -A 'Discordbot/2.0' https://your-instance/p/<system-id> | grep 'og:'
+
+# Same URL without the crawler User-Agent: the SPA shell, as before
+curl -s https://your-instance/p/<system-id> | grep -c 'id="root"'
+```
+
+You can also confirm what the backend *would* say without touching your proxy at all, because every preview route has a `/v1/link-preview/...` alias that your existing `/v1/*` rule already forwards:
+
+```bash
+curl -s https://your-instance/v1/link-preview/p/<system-id> | grep 'og:title'
+```
+
+Set `SHEAF_BASE_URL` if you have not already. The preview document builds its absolute `og:image` and `og:url` from it, and falls back to the request's own `Host` header when it is unset.
 
 #### Keep share-link tokens out of your access logs
 

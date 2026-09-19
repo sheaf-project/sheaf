@@ -90,6 +90,7 @@ from sheaf.models.safety_change_request import (
     SafetyChangeStatus,
 )
 from sheaf.models.share import (
+    LinkPreviewMode,
     ShareItemStatus,
     ShareView,
     ShareViewField,
@@ -166,6 +167,7 @@ logger = logging.getLogger("sheaf.import.sheaf")
 
 
 _VALID_PRIVACY = {e.value for e in PrivacyLevel}
+_VALID_LINK_PREVIEW_MODES = {e.value for e in LinkPreviewMode}
 _VALID_FIELD_TYPE = {e.value for e in FieldType}
 
 
@@ -194,6 +196,29 @@ def _symmetry(val: object) -> RelationshipSymmetry:
     if isinstance(val, str) and val in _VALID_SYMMETRY:
         return RelationshipSymmetry(val)
     return RelationshipSymmetry.SYMMETRIC
+
+
+def _link_preview_mode(val: object) -> str:
+    """Coerce a view's link-preview mode out of an import file.
+
+    Same shape and same reasoning as `_group_privacy`'s coercion half: anything
+    that is not exactly a mode we recognise lands on `generic`, because the failure
+    mode of a garbled file must be "names nobody", never "published the system
+    name". `True`, `1`, `"SYSTEM_DETAILS"`, a dict and a missing key all read as
+    generic.
+
+    Deliberately NOT the `would_show` treatment `_group_privacy` gets. A group
+    arriving `public` is held back because a live view could publish it the instant
+    the import commits, with no step-up and no grace window in front of it. A
+    preview mode cannot do that: it only acts through a `public` GRANT, and grants
+    are never imported, so a restored view is addressed by nobody until the owner
+    deliberately publishes it - and that publish carries its own gate and its own
+    window. Restoring the owner's stored choice is therefore safe here in a way it
+    is not for a group.
+    """
+    if isinstance(val, str) and val in _VALID_LINK_PREVIEW_MODES:
+        return val
+    return LinkPreviewMode.GENERIC.value
 
 
 def _group_privacy(
@@ -1859,6 +1884,15 @@ async def run_import(
                 v_data.get("include_relationships", False)
             ),
             include_groups=bool(v_data.get("include_groups", False)),
+            # Absent in a file written before link previews existed, and anything
+            # that is not a mode we recognise, both read as the generic card - the
+            # right restore for a view whose owner never made this choice, and the
+            # safe coercion for a garbled one. Never trusted as a raw string: an
+            # unknown value in this column would decide an exposure.
+            link_preview_mode=_link_preview_mode(v_data.get("link_preview_mode")),
+            member_link_preview_mode=_link_preview_mode(
+                v_data.get("member_link_preview_mode")
+            ),
             member_permalinks=bool(v_data.get("member_permalinks", False)),
         )
         db.add(view)
