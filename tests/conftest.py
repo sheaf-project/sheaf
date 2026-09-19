@@ -37,6 +37,11 @@ _PUBLIC_PROFILES = (
 _PUBLIC_PROFILES_OFF = (
     os.environ.get("SHEAF_TEST_PUBLIC_PROFILES_OFF", "false").lower() == "true"
 )
+# Same shape as the two above: the stack runs with the realtime front stream ON,
+# so "off" is its own config row.
+_FRONT_STREAM_DISABLED = (
+    os.environ.get("SHEAF_TEST_FRONT_STREAM_DISABLED", "false").lower() == "true"
+)
 
 
 def pytest_collection_modifyitems(items):
@@ -62,6 +67,10 @@ def pytest_collection_modifyitems(items):
         if "public_profiles_off" in item.keywords and not _PUBLIC_PROFILES_OFF:
             item.add_marker(
                 pytest.mark.skip("requires SHEAF_TEST_PUBLIC_PROFILES_OFF=true")
+            )
+        if "front_stream_disabled" in item.keywords and not _FRONT_STREAM_DISABLED:
+            item.add_marker(
+                pytest.mark.skip("requires SHEAF_TEST_FRONT_STREAM_DISABLED=true")
             )
 
 
