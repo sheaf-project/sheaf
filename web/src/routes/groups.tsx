@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, Suspense, lazy, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, ChevronUp, GripVertical } from "lucide-react";
 import {
   useGroups,
@@ -20,6 +20,12 @@ import {
   flattenGroupTree,
   getDescendantIds,
 } from "@/lib/group-tree";
+// Same editor the member bio and system description use: a group description
+// is markdown rendered on public profiles, so it gets the same writing surface
+// rather than a bare textarea that cannot preview what visitors will see.
+const BioEditor = lazy(() =>
+  import("@/components/bio-editor").then((m) => ({ default: m.BioEditor })),
+);
 import { PageHeader } from "@/components/page-header";
 import { ColorDot } from "@/components/color-dot";
 import { MemberSelect } from "@/components/member-select";
@@ -151,6 +157,7 @@ export function GroupsPage() {
   const [deleting, setDeleting] = useState<Group | null>(null);
 
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [color, setColor] = useState("#6366f1");
   const [parentId, setParentId] = useState("");
   // A group says something about everyone in it, so a new one starts private
@@ -189,6 +196,7 @@ export function GroupsPage() {
 
   function resetForm() {
     setName("");
+    setDescription("");
     setColor("#6366f1");
     setParentId("");
     setPrivacy("private");
@@ -206,6 +214,7 @@ export function GroupsPage() {
     e.preventDefault();
     const data: GroupCreate = {
       name,
+      description: description || null,
       color: color || null,
       parent_id: parentId || null,
       privacy,
@@ -241,6 +250,7 @@ export function GroupsPage() {
     const id = editing.id;
     const data: GroupUpdate = {
       name,
+      description: description || null,
       color: color || null,
       parent_id: parentId || null,
       privacy,
@@ -262,6 +272,7 @@ export function GroupsPage() {
 
   function openEdit(group: Group) {
     setName(group.name);
+    setDescription(group.description ?? "");
     setColor(group.color ?? "#6366f1");
     setParentId(group.parent_id ?? "");
     setPrivacy(group.privacy);
@@ -506,6 +517,12 @@ export function GroupsPage() {
               <Input id="group-create-name" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="space-y-2">
+              <Label>Description</Label>
+              <Suspense fallback={<div className="h-[120px] rounded-md border border-input" />}>
+                <BioEditor value={description} onChange={setDescription} />
+              </Suspense>
+            </div>
+            <div className="space-y-2">
               <Label htmlFor="group-create-parent">Parent group</Label>
               <ParentSelect
                 id="group-create-parent"
@@ -564,6 +581,12 @@ export function GroupsPage() {
             <div className="space-y-2">
               <Label htmlFor="group-edit-name">Name</Label>
               <Input id="group-edit-name" value={name} onChange={(e) => setName(e.target.value)} required />
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Suspense fallback={<div className="h-[120px] rounded-md border border-input" />}>
+                <BioEditor value={description} onChange={setDescription} />
+              </Suspense>
             </div>
             <div className="space-y-2">
               <Label htmlFor="group-edit-parent">Parent group</Label>
