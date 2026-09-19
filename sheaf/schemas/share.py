@@ -11,7 +11,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from sheaf.models.share import ShareSubjectType
+from sheaf.models.share import LinkPreviewMode, ShareSubjectType
 from sheaf.schemas.public_profile import (
     PublicFrontingView,
     PublicGroupsView,
@@ -36,6 +36,15 @@ class ShareViewCreate(BaseModel):
     fronting_show_count: bool = True
     include_relationships: bool = False
     include_groups: bool = False
+    # Defaults to the generic card. See `ShareView.link_preview_mode`: this one IS
+    # an exposure flag, because a rich card reaches people who never opened the
+    # page and lands in a cache that outlives it. Typed as the enum so an unknown
+    # mode is a 422 here rather than a string that reaches the column.
+    link_preview_mode: LinkPreviewMode = LinkPreviewMode.GENERIC
+    # Independent of the one above: a member card reveals one member's name and
+    # avatar, which is neither a subset nor a superset of the system card. Also
+    # needs `member_permalinks` on before it can do anything.
+    member_link_preview_mode: LinkPreviewMode = LinkPreviewMode.GENERIC
     # Not an exposure flag (see services/sharing.EXPOSURE_FLAGS): it addresses
     # members the roster already shows rather than showing anyone new.
     member_permalinks: bool = False
@@ -49,6 +58,8 @@ class ShareViewUpdate(BaseModel):
     fronting_show_count: bool | None = None
     include_relationships: bool | None = None
     include_groups: bool | None = None
+    link_preview_mode: LinkPreviewMode | None = None
+    member_link_preview_mode: LinkPreviewMode | None = None
     member_permalinks: bool | None = None
 
     password: str | None = _PASSWORD
@@ -103,6 +114,24 @@ class ShareViewRead(BaseModel):
     fronting_show_count: bool
     include_relationships: bool
     include_groups: bool
+    link_preview_mode: LinkPreviewMode
+    member_link_preview_mode: LinkPreviewMode
+    # What this view's URLs ACTUALLY unfurl as right now: "generic" or
+    # "system_details". Not a second setting - it is `link_preview_mode`
+    # composed with everything else that has to be true before a rich card is
+    # produced, so the owner is told the truth rather than shown a switch that is
+    # on and doing nothing. It reads "generic" while the flip is still staged,
+    # while the grant is inside its grace window, when the system is not public,
+    # when the account or instance is suppressed, and - the case that surprises
+    # people - whenever this view is only reachable by share LINK, because a link
+    # URL is itself the secret and never gets a rich card.
+    link_preview_effective: LinkPreviewMode = LinkPreviewMode.GENERIC
+    # The same, for member permalink URLs. Reads "generic" for every reason its
+    # sibling does, plus one of its own: `member_permalinks` being off, which
+    # makes the permalink URL a 404 and so leaves nothing to put a card on. A
+    # member who is private in an otherwise public view is decided per request,
+    # not here, because one view can serve one member and withhold another.
+    member_link_preview_effective: LinkPreviewMode = LinkPreviewMode.GENERIC
     # Instant in both directions and never staged, so it has no pending twin
     # below: it exposes no new data, only a stable address for members the
     # roster already shows.
@@ -120,6 +149,8 @@ class ShareViewRead(BaseModel):
     pending_include_relationships: bool | None = None
     pending_include_members: bool | None = None
     pending_include_groups: bool | None = None
+    pending_link_preview_mode: LinkPreviewMode | None = None
+    pending_member_link_preview_mode: LinkPreviewMode | None = None
     flags_activate_at: datetime | None = None
     members: list[ShareViewMemberRead]
     fields: list[ShareViewFieldRead]

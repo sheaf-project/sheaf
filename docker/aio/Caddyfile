@@ -51,8 +51,49 @@
 
 	# API + health check -> the backend on loopback. /metrics is deliberately
 	# NOT proxied: it is unauthenticated and stays in-container.
-	@backend path /v1/* /health
+	#
+	# security.txt is in here by exact path, not as /.well-known/*. The backend
+	# serves RFC 9116 at both /.well-known/security.txt and /security.txt, and
+	# without these two entries the request fell through to the SPA handler below
+	# and a researcher looking for it got the web app's index.html. Matched
+	# exactly on purpose: /.well-known/* as a prefix would also capture
+	# /.well-known/acme-challenge/*, and that belongs to Caddy's own certificate
+	# issuance, which is the entire reason this image uses Caddy.
+	@backend path /v1/* /health /.well-known/security.txt /security.txt
 	handle @backend {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Link-unfurl crawlers on a public profile (/p/) or share link (/s/) -> the
+	# backend, which renders a small HTML document carrying that URL's Open Graph
+	# tags. Everybody else falls through to the SPA handler below and gets the
+	# app exactly as before.
+	#
+	# Crawlers do not run JavaScript, so a single-page app cannot answer them: the
+	# static shell's tags are all they ever see, which is one generic card for
+	# every URL on the instance. The per-URL card therefore has to be rendered
+	# server-side, and this is the split that routes to it.
+	#
+	# Matching on User-Agent rather than sending all of /p/ and /s/ to the backend
+	# is deliberate, and it fails in the safe direction three ways over: a crawler
+	# this list misses gets the generic static card (which is the safe answer, not
+	# a broken one); a real visitor is never served by the preview code, so there
+	# is no server-rendered copy of the app to drift from the real one; and if the
+	# backend is down, profiles still load for people.
+	#
+	# Whether a given profile gets a RICH card (system name, avatar, description
+	# snippet) or the generic one is the profile owner's per-view setting, decided
+	# in the backend. Nothing here makes that choice, and an unlisted /s/ link is
+	# refused a rich card regardless.
+	#
+	# The header set for these responses comes from the backend itself (noindex,
+	# a `default-src 'none'` CSP, no-referrer), NOT from the @profiles block
+	# below: this handler answers the request, so that block never runs for it.
+	@preview {
+		path /p/* /s/*
+		header_regexp User-Agent (?i)(discordbot|facebookexternalhit|facebot|twitterbot|slackbot|telegrambot|whatsapp|linkedinbot|skypeuripreview|redditbot|mastodon|bluesky|cardyb|synapse|iframely|embedly|vkshare|pinterest|applebot|googlebot|bingbot|duckduckbot|qwantify|tumblr|flipboard|snapchat|viber|nuzzel|opengraph|metauri)
+	}
+	handle @preview {
 		reverse_proxy 127.0.0.1:8000
 	}
 

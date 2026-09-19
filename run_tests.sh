@@ -165,6 +165,14 @@ add_config "selfhosted/public_profiles_off" none selfhosted 1 "public_profiles_o
     "PUBLIC_PROFILES_ENABLED=false" \
     "SHEAF_TEST_PUBLIC_PROFILES_OFF=true"
 
+# 12. Realtime front stream disabled. The stack runs with the stream ON, so the
+# refusal an operator gets after turning it off had no row to run in: the one
+# test for it was gated on an environment variable that nothing in this
+# repository set, so it was skipped in every config and had never executed.
+add_config "selfhosted/front_stream_disabled" none selfhosted 0 "front_stream_disabled" "" \
+    "FRONT_STREAM_ENABLED=false" \
+    "SHEAF_TEST_FRONT_STREAM_DISABLED=true"
+
 # ---------------------------------------------------------------------------
 # Sharding
 # ---------------------------------------------------------------------------

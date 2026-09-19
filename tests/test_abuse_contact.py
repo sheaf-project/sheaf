@@ -10,9 +10,10 @@ carries the key.
 import asyncio
 
 import httpx
+import pytest
 
 from sheaf.api.v1.auth import get_auth_config
-from sheaf.config import settings
+from sheaf.config import Settings, settings
 
 
 def _config() -> dict:
@@ -32,6 +33,49 @@ def test_present_when_set(monkeypatch):
     # Passed through verbatim: it is markdown the operator wrote, rendered by
     # the same pipeline as a public bio, not something the API reformats.
     assert _config()["abuse_contact"] == text
+
+
+@pytest.mark.parametrize("field", ["public_abuse_contact", "support_note"])
+def test_literal_newline_escape_is_decoded(field):
+    """A `\\n` typed into an env var becomes a real newline.
+
+    Regression: the docs tell operators to write the multi-line form as a
+    quoted string with `\\n` escapes, but whether those survive as escapes
+    depends on what loaded the env (compose's env_file parser and
+    python-dotenv decode them; a stack manager's environment textbox and
+    `docker run -e` do not). Instances on the second kind rendered a literal
+    backslash-n in the abuse/DMCA popup.
+    """
+    raw = "Report abuse: abuse@example.net\\nDMCA agent: Someone, somewhere."
+    value = getattr(Settings(**{field: raw}), field)
+    assert value == "Report abuse: abuse@example.net\nDMCA agent: Someone, somewhere."
+
+
+@pytest.mark.parametrize("field", ["public_abuse_contact", "support_note"])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Already decoded by the loader: nothing left to find, so unchanged.
+        # This is the property that makes the decode safe to apply blind.
+        ("real\nnewlines\nhere", "real\nnewlines\nhere"),
+        # Escaping the backslash is how an operator asks for the two
+        # characters, so that must survive.
+        ("literal \\\\n please", "literal \\n please"),
+        # Tabs for an indented address block; carriage returns because
+        # someone will paste from Windows.
+        ("name\\tvalue", "name\tvalue"),
+        # Not in the table: left exactly as typed rather than swallowed.
+        ("50% off \\q things", "50% off \\q things"),
+        # A trailing backslash is a syntax error to unicode_escape, which is
+        # why this does not use it.
+        ("ends with a backslash \\", "ends with a backslash \\"),
+        # Non-ASCII passes through intact (the other unicode_escape hazard).
+        ("café ✨\\nnext line", "café ✨\nnext line"),
+        ("", ""),
+    ],
+)
+def test_escape_decoding_edge_cases(field, raw, expected):
+    assert getattr(Settings(**{field: raw}), field) == expected
 
 
 def test_config_endpoint_exposes_key(client: httpx.Client):

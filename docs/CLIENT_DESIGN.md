@@ -371,6 +371,40 @@ their relative order is unspecified until somebody sets one.
 `GET /account/activity` returns the account's own activity log. It **refuses API keys** with
 403 and needs a session or JWT, as does `POST /account/data`.
 
+#### Reading membership without one request per group
+
+Building a "which members are in which group or tag" map used to cost `1 + N + M` requests,
+one per group and one per tag. Four query flags collapse that to two requests, or one if you
+only need it keyed one way:
+
+| Request | Adds | Extra scope |
+|---------|------|-------------|
+| `GET /groups?include_member_ids=true` | `member_ids` on each group | none |
+| `GET /tags?include_member_ids=true` | `member_ids` on each tag | none |
+| `GET /members?include_group_ids=true` | `group_ids` on each member | `groups:read` |
+| `GET /members?include_tag_ids=true` | `tag_ids` on each member | `tags:read` |
+
+All four are off by default, so an existing client's payloads do not grow. The detail
+endpoints (`/groups/{id}`, `/tags/{id}`) take the same flag.
+
+**Null and `[]` are not the same.** Null means you did not ask for the field; `[]` means you
+asked and the group is empty. A client must not treat a missing field as an empty group.
+
+**The members-side flags need a scope this endpoint does not otherwise require**, because a
+member's groups belong to a resource behind `groups:read`. Asking without it is refused with
+`403 Missing scope: groups:read (required by include_group_ids)` rather than served an object
+with the field quietly missing, so a thin response can never be mistaken for "in no groups".
+A key holding `groups:write` satisfies this, the same way it does at the router.
+
+**Ids are ordered by id, not by name.** Member names are encrypted at rest, so the server
+cannot sort by them without decrypting every member, which would defeat the point of a cheap
+bulk read. Sort client-side using the member records you already hold.
+
+`GroupRead` also always carries `member_count`, with no flag needed, so a list screen can say
+"12 members" without fetching twelve members to count them. Counts and id lists both include
+archived and pending-delete members: they are still in the group, and a count that disagreed
+with the roster below it would look like a bug.
+
 ### Files
 
 | Method | Path | Description |

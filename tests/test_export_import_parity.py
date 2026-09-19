@@ -324,6 +324,14 @@ CLASSIFICATION: dict[type, dict] = {
             # Not a staged flag (it exposes nothing new, so it never waits),
             # but it IS the owner's setting, so it round-trips like the rest.
             "member_permalinks",
+            # The two generic-vs-system-details link preview choices, one for the
+            # profile card and one for member permalink cards. Exported: each is a
+            # deliberate publishing decision the owner made, and a restore that
+            # silently reverted it to generic would be a surprise in the safe
+            # direction but a surprise all the same. Coerced on the way back in
+            # (`sheaf_import._link_preview_mode`), never trusted as a raw string.
+            "link_preview_mode",
+            "member_link_preview_mode",
         },
         "excluded": {
             "id": _SURROGATE_PK,
@@ -336,6 +344,8 @@ CLASSIFICATION: dict[type, dict] = {
             "pending_include_relationships": _SHARE_FLAG_STAGING,
             "pending_include_members": _SHARE_FLAG_STAGING,
             "pending_include_groups": _SHARE_FLAG_STAGING,
+            "pending_link_preview_mode": _SHARE_FLAG_STAGING,
+            "pending_member_link_preview_mode": _SHARE_FLAG_STAGING,
             "flags_activate_at": _SHARE_FLAG_STAGING,
         },
     },

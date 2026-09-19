@@ -1391,9 +1391,11 @@ STATUS_URL=https://status.example.com  # your status / uptime page
 CUSTOM_SUPPORT_TEXT_FILE=/etc/sheaf/support.md  # markdown file, see below
 ```
 
-The first four are independent and optional. The operator card is hidden entirely if you set none of them, so a bare self-host shows only the project section. `STATUS_URL` lives here (rather than in the static project section) because a self-hosted instance's status page is the operator's, not the project's.
+The first four are independent and optional. The operator card is hidden entirely if you set none of them, so a bare self-host shows only the project section. `SUPPORT_NOTE` is plain text rather than markdown, and like `PUBLIC_ABUSE_CONTACT` it takes `\n` for a line break regardless of how your env is loaded. `STATUS_URL` lives here (rather than in the static project section) because a self-hosted instance's status page is the operator's, not the project's.
 
 `CUSTOM_SUPPORT_TEXT_FILE` points at a file of your own freeform text (FAQ, onboarding notes, house rules, whatever) shown in its own card on the Support page. Basic markdown is supported - headings, lists, links, emphasis. Any HTML in the file is stripped server-side when it's loaded, so the API never emits raw tags and nothing relies on the browser to sanitise; write markdown, not HTML. Unlike the env vars above, this file is re-read whenever its modification time or size changes, so you can edit it without restarting. Content is capped at 20,000 characters. A path that can't be read logs a warning at startup and the card is simply omitted.
+
+Being a markdown file, it follows ordinary markdown rules, which is the one place it differs from `PUBLIC_ABUSE_CONTACT`: a single line break inside a paragraph is whitespace, not a line break, so separate paragraphs need a blank line between them and a list needs list syntax. That is deliberate. It is a file you can open in an editor and preview, where markdown semantics are what you would expect, whereas the abuse contact is one env var typed blind and its line breaks are its layout. No escape decoding here either: a file holds real newlines already, so write them rather than `\n`.
 
 The env vars are surfaced read-only via `GET /v1/auth/config`, alongside `TERMS_URL` / `PRIVACY_URL`; like those, they're read at startup and changing them needs a restart (the custom-text file is the exception noted above).
 
@@ -1438,12 +1440,12 @@ Separately, and with no operator involvement: a system whose privacy is set to a
 The Support page above is for people with an account. Public profiles and share links are the only pages someone without one can reach, so if you serve them, set `PUBLIC_ABUSE_CONTACT`: it is the only route a visitor has to tell you something is wrong with a page you host.
 
 ```env
-PUBLIC_ABUSE_CONTACT="Report abuse: abuse@example.net"
+PUBLIC_ABUSE_CONTACT="Report abuse: abuse@example.net\nDMCA agent: Jane Doe, 1 Example St, Exampleton\nPhone: +1 555 0100"
 ```
 
 The value is markdown you write, shown to anonymous visitors behind an "Abuse / DMCA" item in the public profile footer, next to "Powered by Sheaf". Nothing is submitted or stored: it renders your text and gets out of the way, so what to put in it is up to you. At minimum, some way to reach a person - an email address, a chat contact, a link to a form you run elsewhere. Operators subject to the DMCA (broadly, anyone hosting in the US or serving US users who wants the safe harbour) should include their designated agent's details here as well: name, address, phone, email. Registering that agent with the Copyright Office is a separate step this setting does not do for you; check what your jurisdiction actually requires rather than taking a config comment's word for it.
 
-Multi-line values work if your compose manager supports them; the usual way is a quoted string with `\n` escapes, or setting it from a file in your own entrypoint. It renders through the same pipeline as a public bio: markdown, no HTML, no external images, and `mailto:` and `https:` links stay clickable. Empty (the default) means no footer item at all and nothing rendered. It is read at startup, so changes need a restart, and it is served in the public `GET /v1/auth/config` payload - treat it as information you are publishing, and put a role address in it rather than someone's personal one.
+Multi-line values work everywhere: write `\n` where you want a line break (and `\t` for a tab, `\\n` if you ever want the two characters themselves) and Sheaf decodes it at startup, whether your env came from a `.env`, a stack manager's environment box, or `docker run -e`. If your loader already turns `\n` into a real newline, that is fine too - the value arrives with nothing left to decode. Single line breaks are rendered as line breaks, so an address block stays an address block. Otherwise it renders through the same pipeline as a public bio: markdown, no HTML, no external images, and `mailto:` and `https:` links stay clickable. Empty (the default) means no footer item at all and nothing rendered. It is read at startup, so changes need a restart, and it is served in the public `GET /v1/auth/config` payload - treat it as information you are publishing, and put a role address in it rather than someone's personal one.
 
 ---
 
@@ -1479,6 +1481,37 @@ sheaf.example.com {
         }
     }
     handle /v1/* {
+        reverse_proxy localhost:8000
+    }
+    # RFC 9116 security.txt is served by the backend. Matched by exact path, not
+    # as /.well-known/*, so Caddy keeps handling /.well-known/acme-challenge/*
+    # for certificate issuance. Without these two lines the request falls through
+    # to the SPA below and a researcher gets index.html.
+    handle /.well-known/security.txt {
+        reverse_proxy localhost:8000
+    }
+    handle /security.txt {
+        reverse_proxy localhost:8000
+    }
+    # Link-unfurl crawlers on a public profile (/p/) or share link (/s/) get a
+    # small server-rendered document carrying that URL's Open Graph tags; every
+    # other request falls through to the SPA unchanged. Crawlers do not run
+    # JavaScript, so without this they only ever see the static shell's tags -
+    # one generic card for every URL on the instance. Whether a given profile
+    # unfurls with its name and avatar or with a generic card is the owner's
+    # per-view setting; an unlisted /s/ link is always generic.
+    #
+    # Matching on User-Agent (rather than sending all of /p/ and /s/ to the
+    # backend) fails safe in three ways: a crawler this list misses gets the
+    # generic static card, real visitors never touch the preview code, and a
+    # backend outage does not take profile pages down. These responses carry
+    # their own headers from the backend, so they do not need the @profiles set
+    # below.
+    @preview {
+        path /p/* /s/*
+        header_regexp User-Agent (?i)(discordbot|facebookexternalhit|facebot|twitterbot|slackbot|telegrambot|whatsapp|linkedinbot|skypeuripreview|redditbot|mastodon|bluesky|cardyb|synapse|iframely|embedly|vkshare|pinterest|applebot|googlebot|bingbot|duckduckbot|qwantify|tumblr|flipboard|snapchat|viber|nuzzel|opengraph|metauri)
+    }
+    handle @preview {
         reverse_proxy localhost:8000
     }
     handle {
@@ -1531,6 +1564,18 @@ map $request_uri $sheaf_robots {
 map $request_uri $sheaf_csp {
     default    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
     ~^/[ps]/   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+}
+
+# Link-unfurl crawlers. Requests for /p/ and /s/ from one of these go to the
+# backend, which renders that URL's Open Graph tags; everything else gets the SPA
+# as before. Crawlers do not run JavaScript, so without this they only ever see
+# the static shell's tags - one generic card for every URL on the instance.
+# Matching on User-Agent fails safe: an unmatched crawler gets the generic static
+# card, real visitors never reach the preview code, and a backend outage does not
+# take profile pages down.
+map $http_user_agent $sheaf_link_unfurler {
+    default 0;
+    ~*(discordbot|facebookexternalhit|facebot|twitterbot|slackbot|telegrambot|whatsapp|linkedinbot|skypeuripreview|redditbot|mastodon|bluesky|cardyb|synapse|iframely|embedly|vkshare|pinterest|applebot|googlebot|bingbot|duckduckbot|qwantify|tumblr|flipboard|snapchat|viber|nuzzel|opengraph|metauri) 1;
 }
 
 # /s/{token} and its API route both carry the unlisted share-link bearer.
@@ -1597,6 +1642,51 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # RFC 9116 security.txt is served by the backend. Exact paths, so
+    # /.well-known/acme-challenge/ stays with whatever issues your certificates.
+    location = /.well-known/security.txt {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /security.txt {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Public profiles and share links. A link-unfurl crawler is handed off to
+    # @unfurl; everyone else gets the SPA with the headers below.
+    #
+    # The `return 418` / `error_page` pair is doing real work and is not just a
+    # flourish: putting `proxy_pass` directly inside the `if` would leave this
+    # location's `add_header` directives applying to the proxied response, so the
+    # SPA's `default-src 'self'` CSP would land on top of the preview document's
+    # own `default-src 'none'`. Browsers intersect multiple CSP headers, and the
+    # intersection blocks the avatar fetch. Bouncing into a named location gives
+    # the proxied response only the backend's own headers.
+    location ~ ^/[ps]/ {
+        error_page 418 = @unfurl;
+        if ($sheaf_link_unfurler) {
+            return 418;
+        }
+        root /path/to/web/dist;
+        try_files $uri /index.html;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy $sheaf_csp always;
+        add_header X-Robots-Tag $sheaf_robots always;
+    }
+
+    location @unfurl {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # Frontend SPA. Sheaf only sets security headers on its own /v1/*
     # responses; the SPA document is served by nginx and needs them here.
     location / {
@@ -1610,6 +1700,37 @@ server {
     }
 }
 ```
+
+#### Updating an existing proxy for link previews and security.txt
+
+Both of the examples above gained two route groups. If you are running an older config, these are the changes to make; neither is required for Sheaf to work, and you can make them independently.
+
+**Link previews (`/p/` and `/s/`).** Add the User-Agent-matched route that sends link-unfurl crawlers to the backend. Without it, a crawler that fetches a profile URL gets the static SPA shell, so every Sheaf link on your instance unfurls with the same generic site card no matter what a profile owner has chosen. The per-view **Show the system name and avatar in link previews** setting on the Sharing screen has no effect until this route exists. Nothing breaks without it - the setting simply does nothing, which is the safe direction.
+
+If you would rather not add it, you can leave it out permanently and every link keeps unfurling generically. There is no partial state to worry about: the backend decides per URL, and an unlisted `/s/` link is served a generic card whether or not the route is present.
+
+**security.txt.** Add the two exact-path routes for `/.well-known/security.txt` and `/security.txt`. The backend has always served RFC 9116 there, but both example configs routed only `/v1/*` and `/health` to it, so the request fell through to the SPA and anyone looking for the file got the web app's `index.html` instead. Match by **exact path** rather than proxying all of `/.well-known/*`, or you will hand `/.well-known/acme-challenge/*` to the backend and break certificate issuance.
+
+To check either one, ask for it the way a crawler or a researcher would:
+
+```bash
+# Should be the security.txt body, not HTML
+curl -s https://your-instance/.well-known/security.txt | head -3
+
+# Should be a small HTML document whose og: tags describe that profile
+curl -s -A 'Discordbot/2.0' https://your-instance/p/<system-id> | grep 'og:'
+
+# Same URL without the crawler User-Agent: the SPA shell, as before
+curl -s https://your-instance/p/<system-id> | grep -c 'id="root"'
+```
+
+You can also confirm what the backend *would* say without touching your proxy at all, because every preview route has a `/v1/link-preview/...` alias that your existing `/v1/*` rule already forwards:
+
+```bash
+curl -s https://your-instance/v1/link-preview/p/<system-id> | grep 'og:title'
+```
+
+Set `SHEAF_BASE_URL` if you have not already. The preview document builds its absolute `og:image` and `og:url` from it, and falls back to the request's own `Host` header when it is unset.
 
 #### Keep share-link tokens out of your access logs
 

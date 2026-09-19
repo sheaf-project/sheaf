@@ -185,6 +185,22 @@ export function SystemSafetyCard() {
           Tightening applies immediately; loosening waits the current grace
           period before taking effect.
         </p>
+        {/* The asymmetry above has a sharp edge in it: a long grace period
+            makes shortening that same grace period wait out the old one, so
+            somebody who picks a week and then regrets it is stuck with their
+            own setting for a week. That is the correct rule (a stolen session
+            must not be able to switch safety off and act in the same sitting)
+            and we are not weakening it, but it should not be a trap either.
+            Saying support can undo it, here, where the decision is made,
+            costs an attacker nothing: reaching support is not something a
+            hijacked session can do. */}
+        <p className="text-sm text-muted-foreground">
+          Set a long grace period and it applies to changing these settings
+          too, so shortening it later waits out the period you are shortening.
+          That is deliberate, and it is reversible: ask the people running this
+          instance and they can put System Safety back to its defaults for you
+          straight away, without the wait.
+        </p>
         <SafetyForm settings={data.settings} />
         {data.pending_actions.length > 0 && (
           <>

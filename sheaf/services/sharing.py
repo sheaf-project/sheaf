@@ -55,6 +55,7 @@ from sheaf.models.member import Member, group_members
 from sheaf.models.relationship import MemberRelationship
 from sheaf.models.security_event import SecurityEventType
 from sheaf.models.share import (
+    LinkPreviewMode,
     ShareGrant,
     ShareGrantStatus,
     ShareItemStatus,
@@ -120,6 +121,14 @@ def require_adult_attestation(user: User) -> None:
 # demand step-up and a grace window for a change that reveals nobody. Flags in
 # this tuple are the ones where flipping to True means a stranger can read
 # something they could not read before.
+# `link_preview_mode` IS in here, and the contrast with `member_permalinks`
+# is the whole reason the tuple needs a comment per entry. Permalinks address
+# data the roster already published. The preview flag pushes the system's name
+# and picture into a chat service's cache on the strength of one paste, with no
+# reader having opened anything - so although every field on that card is a field
+# the page already serves, the card reaches people the page never would, and
+# outlives the page in a cache nobody here controls. That is a real loosening and
+# it takes the real door.
 EXPOSURE_FLAGS: tuple[str, ...] = (
     "include_bio",
     "include_fronting",
@@ -127,7 +136,61 @@ EXPOSURE_FLAGS: tuple[str, ...] = (
     "include_relationships",
     "include_members",
     "include_groups",
+    "link_preview_mode",
+    "member_link_preview_mode",
 )
+
+# How exposing each flag's values are, least first.
+#
+# Every flag here used to be a boolean, so "is this request a raise" was just
+# `value is True and not current`. `link_preview_mode` is a string enum (so that a
+# third mode costs a new enum member rather than a type migration), which makes
+# that test meaningless for it - `"system_details" is True` is False. Rather than
+# special-casing one flag at each of the three places that ask the question, the
+# question itself is now asked of an ORDERING, and booleans simply have the
+# obvious two-value one.
+#
+# Anything not listed here is a boolean. Adding a flag with more than two values
+# means adding its order here and nothing else: `flag_direction` below is the
+# single place that reads it, and `promote_view_flags` never inspects a value at
+# all.
+_BOOLEAN_ORDER: tuple[object, ...] = (False, True)
+_MODE_ORDER: tuple[object, ...] = (
+    LinkPreviewMode.GENERIC.value,
+    LinkPreviewMode.SYSTEM_DETAILS.value,
+)
+_FLAG_ORDER: dict[str, tuple[object, ...]] = {
+    "link_preview_mode": _MODE_ORDER,
+    "member_link_preview_mode": _MODE_ORDER,
+}
+
+
+def flag_direction(view: ShareView, flag: str, value: object) -> int:
+    """+1 if this value exposes MORE than the view's current one, -1 if less, 0 if
+    neither.
+
+    The one definition of "which way is this change going", used by the update
+    endpoint for all three of its decisions: whether to refuse the change while
+    publishing is unavailable, whether to demand step-up and stage it, and whether
+    the body mixes directions. Having one function answer it for booleans and for
+    the mode enum alike is what kept the enum from needing a staging path of its
+    own.
+
+    A value that is None (the field was not sent) or not in the flag's ordering at
+    all returns 0 - "no change in either direction". Unrecognised is deliberately
+    treated as a non-raise rather than an error: the schema has already rejected
+    anything outside the enum by the time this runs, so a 0 here can only come
+    from a value that is not a change, and answering "not a raise" for something
+    that cannot reach a reader is the safe reading.
+    """
+    if value is None:
+        return 0
+    order = _FLAG_ORDER.get(flag, _BOOLEAN_ORDER)
+    current = getattr(view, flag)
+    if value not in order or current not in order:
+        return 0
+    delta = order.index(value) - order.index(current)
+    return (delta > 0) - (delta < 0)
 
 
 def visibility_step_up_required(system: System) -> bool:
@@ -389,6 +452,99 @@ async def view_is_shared(db: AsyncSession, view_id: uuid.UUID) -> bool:
         ).limit(1)
     )
     return result.scalar_one_or_none() is not None
+
+
+async def public_serving_view_ids(
+    db: AsyncSession, system_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """The views this system is serving a `public` grant from RIGHT NOW.
+
+    Narrower than `view_is_shared` on both axes, and deliberately so, because it
+    answers a different question: not "is this view exposed" but "would a rich
+    link preview on this view actually be produced". Two differences:
+
+    - `subject_type == public` only. A share LINK never gets a rich card however
+      the view is configured (the token is itself the secret), so a link-only view
+      previews generic and the owner should be told that rather than shown a
+      setting that is on and doing nothing.
+    - `include_pending=False`. A grant inside its grace window serves nobody, and
+      a preview that named the system while the profile behind it was still parked
+      would defeat the window it was waiting out.
+
+    Returns a set rather than a bool so the list endpoint costs one query instead
+    of one per view. The set holds at most one id in practice - the
+    `uq_share_grants_one_public` partial index allows a single live public grant
+    per system - so the "bulk" form is no more expensive than the single-view one
+    would have been, and there is only one function to keep correct.
+
+    Owner-facing only, for `ShareViewRead.link_preview_effective`. It is NOT the
+    gate on the anonymous side: that is `resolve_public_grant`, which the preview
+    route goes through regardless, so this being wrong could make the owner's
+    screen pessimistic but could never publish anything.
+    """
+    result = await db.execute(
+        select(ShareGrant.view_id)
+        .join(System, System.id == ShareGrant.system_id)
+        .join(User, User.id == System.user_id)
+        .where(
+            ShareGrant.system_id == system_id,
+            ShareGrant.subject_type == ShareSubjectType.PUBLIC.value,
+            grant_live_clause(include_pending=False),
+            profile_serving_clause(),
+        )
+        .distinct()
+    )
+    return set(result.scalars().all())
+
+
+def link_preview_effective(view: ShareView, *, serves_public_grant: bool) -> str:
+    """What this view's URLs actually unfurl as: "generic" or "system_details".
+
+    One definition, so the owner's screen and the anonymous route cannot disagree
+    about what is being published. Both conditions are required, and each is a
+    different invariant:
+
+    - the LIVE flag, never the pending twin, because a staged flip has not
+      happened yet and a grace window that held the profile back while leaking its
+      name into a chat would have defeated itself;
+    - a `public` grant actually serving, because a share link never gets a rich
+      card and a view reachable only by link therefore previews generic whatever
+      the flag says.
+
+    Deliberately a string pair rather than a bool: it is the answer to "which of
+    the two modes", and the two modes are what the owner picked between.
+    """
+    return _effective_mode(view.link_preview_mode, serves_public_grant)
+
+
+def member_link_preview_effective(
+    view: ShareView, *, serves_public_grant: bool
+) -> str:
+    """What this view's MEMBER PERMALINK urls unfurl as: "generic" or
+    "system_details".
+
+    The sibling of `link_preview_effective`, with one extra condition that has no
+    equivalent on the system card: `member_permalinks` has to be on. With it off
+    the permalink URL is a 404, so a rich card there would be advertising a page
+    that does not exist.
+
+    Deliberately NOT also asking whether any particular member is visible. That is
+    a per-member question, answered per request by `project_members` in the preview
+    route, and it cannot be folded into a per-view answer: a view can serve one
+    member and withhold another. So this reports what the VIEW permits, and the
+    route still decides per member. Being permissive here is safe because the route
+    is the gate; being permissive in the route would not be.
+    """
+    if not view.member_permalinks:
+        return LinkPreviewMode.GENERIC.value
+    return _effective_mode(view.member_link_preview_mode, serves_public_grant)
+
+
+def _effective_mode(mode: str, serves_public_grant: bool) -> str:
+    """Shared tail of the two `*_effective` helpers above."""
+    if mode == LinkPreviewMode.SYSTEM_DETAILS.value and serves_public_grant:
+        return LinkPreviewMode.SYSTEM_DETAILS.value
+    return LinkPreviewMode.GENERIC.value
 
 
 async def shared_view_memberships(
@@ -1495,12 +1651,30 @@ async def finalize_share_activations(db: AsyncSession) -> int:
                  ShareView.pending_include_groups),
                 else_=ShareView.include_groups,
             ),
+            # The two link-preview modes stage through the same timestamp as
+            # the booleans above, so they promote here or they never promote
+            # at all: this statement clears `flags_activate_at`, and nothing
+            # else looks at these columns. Left out, a staged preview mode sat
+            # as an orphaned pending value with no activation time, and the
+            # setting could not be turned on by anyone with a grace period.
+            link_preview_mode=case(
+                (ShareView.pending_link_preview_mode.is_not(None),
+                 ShareView.pending_link_preview_mode),
+                else_=ShareView.link_preview_mode,
+            ),
+            member_link_preview_mode=case(
+                (ShareView.pending_member_link_preview_mode.is_not(None),
+                 ShareView.pending_member_link_preview_mode),
+                else_=ShareView.member_link_preview_mode,
+            ),
             pending_include_bio=None,
             pending_include_fronting=None,
             pending_fronting_show_count=None,
             pending_include_relationships=None,
             pending_include_members=None,
             pending_include_groups=None,
+            pending_link_preview_mode=None,
+            pending_member_link_preview_mode=None,
             flags_activate_at=None,
         )
         .returning(ShareView.id, ShareView.system_id)
@@ -1886,3 +2060,179 @@ async def pending_exposures(
     ]
 
     return exposures
+
+
+async def cancel_pending_exposures(
+    system_id: uuid.UUID, db: AsyncSession
+) -> dict[str, int]:
+    """Call off every staged flip-to-public raise for one system.
+
+    The write-side mirror of `pending_exposures`, source for source, and the
+    inverse of `finalize_share_activations`: whatever that sweep would have
+    promoted, this stops. Returns a count per kind using the same labels the
+    read side reports, so a caller can say what it just cancelled.
+
+    Every branch does what the owner's own lowering path does, which is the
+    point: un-exposing is never gated, so cancelling a staged raise needs no
+    re-auth, honours no window, and is safe to run at any time. Staged
+    LEVELS are dropped (`pending_privacy` / `pending_visibility` /
+    `pending_<flag>` back to NULL) while the LIVE level is left exactly where
+    it is, so cancelling only ever removes a future exposure and never
+    un-publishes something already public. The two staged-membership kinds are
+    the same idea expressed differently: their rows stay PENDING with the
+    timestamp cleared, which is the resting state the sweep and the banner both
+    ignore, rather than being deleted and taking the owner's curation with
+    them. Pending grants are revoked outright, because a grant has no lower
+    level to fall back to.
+
+    Idempotent: a second call finds nothing staged and returns zeros.
+    """
+    cancelled: dict[str, int] = {}
+
+    def _count(kind: str, n: int) -> None:
+        if n:
+            cancelled[kind] = cancelled.get(kind, 0) + n
+
+    # systems.pending_privacy - the master switch raise.
+    system_result = await db.execute(
+        update(System)
+        .where(System.id == system_id, System.privacy_activates_at.is_not(None))
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("system_privacy", system_result.rowcount or 0)
+
+    # members.fronting_private_activates_at - a staged fronting-guard release.
+    # The guard itself (`fronting_private`) stays on: clearing the clock keeps
+    # the member hidden rather than revealing them.
+    guard_result = await db.execute(
+        update(Member)
+        .where(
+            Member.system_id == system_id,
+            Member.fronting_private_activates_at.is_not(None),
+        )
+        .values(fronting_private_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("member_fronting", guard_result.rowcount or 0)
+
+    # Staged member memberships. Counted per member, not per row, to match the
+    # read side's collapse - one raise cancelled is one cancellation.
+    staged_members = await db.execute(
+        select(func.count(func.distinct(ShareViewMember.member_id)))
+        .join(ShareView, ShareView.id == ShareViewMember.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+        )
+    )
+    _count("member_privacy", staged_members.scalar() or 0)
+    await db.execute(
+        update(ShareViewMember)
+        .where(
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+            ShareViewMember.view_id.in_(
+                select(ShareView.id).where(ShareView.system_id == system_id)
+            ),
+        )
+        .values(activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+    # groups.pending_privacy - a group raise.
+    group_result = await db.execute(
+        update(Group)
+        .where(
+            Group.system_id == system_id,
+            Group.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("group_privacy", group_result.rowcount or 0)
+
+    # custom_field_definitions.pending_privacy - a field-definition raise.
+    field_result = await db.execute(
+        update(CustomFieldDefinition)
+        .where(
+            CustomFieldDefinition.system_id == system_id,
+            CustomFieldDefinition.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("field_privacy", field_result.rowcount or 0)
+
+    # member_relationships.pending_visibility - a staged edge raise.
+    edge_result = await db.execute(
+        update(MemberRelationship)
+        .where(
+            MemberRelationship.system_id == system_id,
+            MemberRelationship.visibility_activates_at.is_not(None),
+        )
+        .values(pending_visibility=None, visibility_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("relationship_privacy", edge_result.rowcount or 0)
+
+    # share_views.flags_activate_at - staged exposure-flag loosenings. Every
+    # pending_<flag> is dropped alongside the clock, so a later loosening
+    # starts a fresh window instead of inheriting a half-cancelled one.
+    flag_result = await db.execute(
+        update(ShareView)
+        .where(
+            ShareView.system_id == system_id,
+            ShareView.flags_activate_at.is_not(None),
+        )
+        .values(
+            flags_activate_at=None,
+            **{f"pending_{flag}": None for flag in EXPOSURE_FLAGS},
+        )
+        .execution_options(synchronize_session=False)
+    )
+    _count("view_flags", flag_result.rowcount or 0)
+
+    # Pending grants. A grant is the one staged exposure with nothing lower to
+    # fall back to - it either serves or it does not - so cancelling it means
+    # revoking it, exactly as the owner's panic button does. Loaded rather than
+    # bulk-updated so `revoke_grant` stays the single definition of what
+    # revoking means, metrics included.
+    grants = await db.execute(
+        select(ShareGrant).where(
+            ShareGrant.system_id == system_id,
+            ShareGrant.status == ShareGrantStatus.PENDING.value,
+            ShareGrant.activates_at.is_not(None),
+        )
+    )
+    grant_rows = list(grants.scalars().all())
+    for grant in grant_rows:
+        revoke_grant(grant)
+    _count("share_grant", len(grant_rows))
+
+    # Staged field memberships, collapsed per field like the member rows above.
+    staged_fields = await db.execute(
+        select(func.count(func.distinct(ShareViewField.field_id)))
+        .join(ShareView, ShareView.id == ShareViewField.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+        )
+    )
+    _count("view_field", staged_fields.scalar() or 0)
+    await db.execute(
+        update(ShareViewField)
+        .where(
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+            ShareViewField.view_id.in_(
+                select(ShareView.id).where(ShareView.system_id == system_id)
+            ),
+        )
+        .values(activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+    return cancelled
