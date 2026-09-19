@@ -165,6 +165,15 @@ export interface NotificationsServerConfig {
     shared_app_available: boolean;
     shared_app_min_debounce_seconds: number;
   };
+  /** Whether this instance holds credentials for at least one mobile push
+   *  provider. False on essentially every self-hosted instance: a push
+   *  credential is bound to an app build rather than to a server. The
+   *  server sends the explanation with the flag so the picker does not
+   *  have to keep its own copy of the reasoning. */
+  mobile_push?: {
+    available: boolean;
+    unavailable_reason: string | null;
+  };
 }
 
 export function getNotificationsServerConfig() {

@@ -555,7 +555,7 @@ The platform enum has three values: `fcm`, `apns_dev`, `apns_prod`. FCM has no e
 | DELETE | `/devices/push` | Body: `{token}`. Drop a token. Called by the client on logout. Idempotent: returns 204 even if the row is already gone (e.g. evicted by the LRU cap, or lazily reaped via 410 on a previous delivery). |
 | GET | `/devices/push` | List the calling account's registered devices. Returns metadata only — never the token bytes. Used by the in-app "your devices" management screen. |
 
-Channels of type `fcm` / `apns_dev` / `apns_prod` are created with the same shape as web-push channels (the owner provides triggers / filters / payload sensitivity / debounce / quiet hours; `destination_config` stays `{}`). Channel creation rejects with 501 when the deployment hasn't configured the relevant credentials.
+Channels of type `fcm` / `apns_dev` / `apns_prod` are created with the same shape as web-push channels (the owner provides triggers / filters / payload sensitivity / debounce / quiet hours; `destination_config` stays `{}`). Channel creation rejects with 501 when the deployment hasn't configured the relevant credentials. Clients should not wait until then to find out: `GET /v1/notifications/server-config` (no auth) returns `mobile_push.available` and, when false, `mobile_push.unavailable_reason` - a ready-to-display explanation of why a self-hosted instance cannot push to a published app build. Use it to disable the option in your channel picker rather than writing your own wording, so every client says the same thing and a later change to the reasoning reaches all of them.
 
 Redemption differs from web push:
 
