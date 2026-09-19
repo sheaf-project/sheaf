@@ -33,6 +33,7 @@ from sheaf.services.link_preview import (
     absolute_url,
     build_link_preview,
     build_member_preview,
+    generic_image_url,
     generic_preview,
     plain_text_snippet,
     render_preview_html,
@@ -165,6 +166,43 @@ def test_generic_card_says_nothing_about_the_system():
     assert card.title == GENERIC_TITLE
     assert card.description == GENERIC_DESCRIPTION
     assert card.image_url is None
+
+
+def test_generic_card_can_carry_the_instance_logo():
+    """The logo is the instance's, not the subject's.
+
+    It stops a generic link unfurling as a bare line of text, and it reveals
+    nothing: the same bytes for every URL on the instance, so it cannot
+    distinguish a profile that exists from one that does not. That is why it is
+    a static asset rather than the per-subject image route.
+    """
+    logo = "https://example.test/og-image.png"
+    card = generic_preview("https://example.test/p/abc", image_url=logo)
+    assert card.image_url == logo
+    # Still generic in every other respect: a picture is not a disclosure.
+    assert card.rich is False
+    assert card.title == GENERIC_TITLE
+    assert card.description == GENERIC_DESCRIPTION
+
+    # And a made-up URL gets the identical card, logo included.
+    invented = generic_preview("https://example.test/p/nope", image_url=logo)
+    assert invented.image_url == card.image_url
+    assert invented.title == card.title
+    assert invented.description == card.description
+
+
+def test_generic_image_url_needs_an_origin():
+    """No configured base URL means no absolute URL to build, so no image,
+    rather than a relative one every crawler would drop."""
+    assert generic_image_url(None) is None
+    assert generic_image_url("") is None
+    assert generic_image_url("https://example.test") == (
+        "https://example.test/og-image.png"
+    )
+    # A trailing slash must not produce a doubled one.
+    assert generic_image_url("https://example.test/") == (
+        "https://example.test/og-image.png"
+    )
 
 
 def test_rich_card_uses_the_projection_fields():

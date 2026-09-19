@@ -232,12 +232,44 @@ def plain_text_snippet(
 # --- building ---------------------------------------------------------------
 
 
-def generic_preview(page_url: str | None) -> LinkPreview:
-    """The card that says only "this is a Sheaf profile"."""
+# The instance's own logo, served by the web app as a static asset and already
+# used as the `og:image` of the app's shell. The generic card carries it so a
+# link still unfurls as a card with a picture rather than a bare line of text,
+# which several clients render as barely a link at all.
+#
+# It reveals nothing: it is the same bytes for every URL on the instance,
+# whether that URL resolves or not, so it cannot be used to tell an existing
+# profile from an invented one. That is the same property the generic title and
+# description already have, and the reason this is a static asset rather than
+# the per-view image route, which answers only for a real, published subject.
+GENERIC_IMAGE_PATH = "/og-image.png"
+
+
+def generic_image_url(origin: str | None) -> str | None:
+    """Absolute URL of the instance logo, or None if there is no origin.
+
+    Absolute because crawlers overwhelmingly ignore a relative `og:image`; the
+    app's own shell carries this path root-relative, which is why the shell's
+    card has never had a picture in a chat client.
+    """
+    if not origin:
+        return None
+    return f"{origin.rstrip('/')}{GENERIC_IMAGE_PATH}"
+
+
+def generic_preview(
+    page_url: str | None, *, image_url: str | None = None
+) -> LinkPreview:
+    """The card that says only "this is a Sheaf profile".
+
+    `image_url` is the instance logo when the caller knows the origin. It stays
+    optional so a caller with no origin still gets a valid card rather than a
+    broken image.
+    """
     return LinkPreview(
         title=GENERIC_TITLE,
         description=GENERIC_DESCRIPTION,
-        image_url=None,
+        image_url=image_url,
         page_url=page_url,
         rich=False,
     )
@@ -249,6 +281,7 @@ def build_link_preview(
     rich: bool,
     page_url: str | None,
     image_url: str | None = None,
+    logo_url: str | None = None,
 ) -> LinkPreview:
     """Turn a resolved projection into a card, or fall back to the generic one.
 
@@ -270,7 +303,7 @@ def build_link_preview(
     and it meant a card whose picture died with the capability behind it.
     """
     if projection is None or not rich or not projection.name.strip():
-        return generic_preview(page_url)
+        return generic_preview(page_url, image_url=logo_url)
     return LinkPreview(
         title=projection.name.strip(),
         # Falling back to the generic blurb rather than to an empty string: a
@@ -284,7 +317,11 @@ def build_link_preview(
 
 
 def build_member_preview(
-    *, name: str | None, image_url: str | None, page_url: str | None
+    *,
+    name: str | None,
+    image_url: str | None,
+    page_url: str | None,
+    logo_url: str | None = None,
 ) -> LinkPreview:
     """A member permalink's card: their name and their avatar, and nothing else.
 
@@ -306,7 +343,7 @@ def build_member_preview(
     """
     clean = (name or "").strip()
     if not clean:
-        return generic_preview(page_url)
+        return generic_preview(page_url, image_url=logo_url)
     return LinkPreview(
         title=clean,
         description=MEMBER_CARD_DESCRIPTION,

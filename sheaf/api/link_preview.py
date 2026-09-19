@@ -71,6 +71,7 @@ from sheaf.services.link_preview import (
     absolute_url,
     build_link_preview,
     build_member_preview,
+    generic_image_url,
     generic_preview,
     render_preview_html,
 )
@@ -166,8 +167,31 @@ def _document(preview: LinkPreview, *, token_keyed: bool) -> Response:
     )
 
 
+def _logo() -> str | None:
+    """The instance logo for a generic card, or None if there is no base URL.
+
+    Deliberately read from the SETTING rather than from the request, unlike
+    `_origin`. The generic card has to be identical for `/p/` and `/s/` alike,
+    and the `/s/` handler takes no request on purpose - it takes nothing at
+    all, so that there is no path from a share link to anything about the
+    system behind it. Deriving the logo per request would have meant giving it
+    one.
+    """
+    return generic_image_url(settings.sheaf_base_url)
+
+
 def _generic(page_url: str | None, *, token_keyed: bool) -> Response:
-    return _document(generic_preview(page_url), token_keyed=token_keyed)
+    """The generic card, carrying the instance logo.
+
+    The logo is the same bytes for every URL on the instance, one that resolves
+    and one that does not alike, so it does not make the card an oracle. It
+    just stops a link unfurling as a bare line of text, which some clients
+    render as barely a link at all.
+    """
+    return _document(
+        generic_preview(page_url, image_url=_logo()),
+        token_keyed=token_keyed,
+    )
 
 
 def _no_image() -> HTTPException:
@@ -380,6 +404,7 @@ async def system_link_preview(
             rich=True,
             page_url=page_url,
             image_url=image_url,
+            logo_url=_logo(),
         ),
         token_keyed=False,
     )
@@ -461,7 +486,10 @@ async def member_link_preview(
     image_url = f"{page_url}/preview-image" if rich.card.avatar_url else None
     return _document(
         build_member_preview(
-            name=rich.card.name, image_url=image_url, page_url=page_url
+            name=rich.card.name,
+            image_url=image_url,
+            page_url=page_url,
+            logo_url=_logo(),
         ),
         token_keyed=False,
     )

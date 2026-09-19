@@ -1651,12 +1651,30 @@ async def finalize_share_activations(db: AsyncSession) -> int:
                  ShareView.pending_include_groups),
                 else_=ShareView.include_groups,
             ),
+            # The two link-preview modes stage through the same timestamp as
+            # the booleans above, so they promote here or they never promote
+            # at all: this statement clears `flags_activate_at`, and nothing
+            # else looks at these columns. Left out, a staged preview mode sat
+            # as an orphaned pending value with no activation time, and the
+            # setting could not be turned on by anyone with a grace period.
+            link_preview_mode=case(
+                (ShareView.pending_link_preview_mode.is_not(None),
+                 ShareView.pending_link_preview_mode),
+                else_=ShareView.link_preview_mode,
+            ),
+            member_link_preview_mode=case(
+                (ShareView.pending_member_link_preview_mode.is_not(None),
+                 ShareView.pending_member_link_preview_mode),
+                else_=ShareView.member_link_preview_mode,
+            ),
             pending_include_bio=None,
             pending_include_fronting=None,
             pending_fronting_show_count=None,
             pending_include_relationships=None,
             pending_include_members=None,
             pending_include_groups=None,
+            pending_link_preview_mode=None,
+            pending_member_link_preview_mode=None,
             flags_activate_at=None,
         )
         .returning(ShareView.id, ShareView.system_id)

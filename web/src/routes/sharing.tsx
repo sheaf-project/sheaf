@@ -1292,7 +1292,12 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
             and no amount of fiddling with this checkbox will change that. The
             server computes the answer (`link_preview_effective`); the copy here
             names the cause an owner can act on. */}
-        {modeChecked(view.link_preview_mode) &&
+        {/* Staged counts as "on" for this note. Guarding on the live value
+            alone made the grace-period branch below unreachable: while a raise
+            is staged the live value is still `generic`, so the checkbox
+            reverts and the one line explaining why never rendered. */}
+        {(modeChecked(view.link_preview_mode) ||
+          view.pending_link_preview_mode != null) &&
           view.link_preview_effective === "generic" && (
             <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
               {view.pending_link_preview_mode != null
@@ -1319,7 +1324,8 @@ function ViewSettings({ view, safety }: { view: ShareView; safety: SafetyContext
                 : undefined
           }
         />
-        {modeChecked(view.member_link_preview_mode) &&
+        {(modeChecked(view.member_link_preview_mode) ||
+          view.pending_member_link_preview_mode != null) &&
           view.member_link_preview_effective === "generic" && (
             <p className="ml-6 text-[11px] text-amber-600 dark:text-amber-500">
               {view.pending_member_link_preview_mode != null
