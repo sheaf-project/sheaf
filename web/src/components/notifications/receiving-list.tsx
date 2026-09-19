@@ -28,6 +28,16 @@ const PAUSED_BY_SENDER_LABEL = {
   tone: "text-amber-600 dark:text-amber-400",
 };
 
+// The third cause of `disabled`, and the reason it needs its own entry: the
+// server stopped the channel because deliveries to it kept failing. Falling
+// back to the "Unsubscribed" label here would tell the sender that this
+// person opted out, when what actually happened is that their endpoint went
+// away - two very different things to read about someone.
+const DELIVERY_FAILED_LABEL = {
+  label: "Stopped: deliveries failing",
+  tone: "text-amber-600 dark:text-amber-400",
+};
+
 export function ReceivingList() {
   const { data, isLoading } = useReceiving();
   const unsub = useUnsubscribeReceiving();
@@ -74,13 +84,17 @@ function ReceivingRow({
   onUnsubscribe: (channelId: string) => void;
 }) {
   const { formatDateTime } = useDateFormatters();
-  const state =
-    channel.destination_state === "disabled" && channel.paused_by_sender
+  const disabled = channel.destination_state === "disabled";
+  const state = disabled
+    ? channel.paused_by_sender
       ? PAUSED_BY_SENDER_LABEL
-      : (STATE_LABELS[channel.destination_state] ?? {
-          label: channel.destination_state,
-          tone: "text-muted-foreground",
-        });
+      : channel.disabled_reason === "delivery_failed"
+        ? DELIVERY_FAILED_LABEL
+        : STATE_LABELS.disabled
+    : (STATE_LABELS[channel.destination_state] ?? {
+        label: channel.destination_state,
+        tone: "text-muted-foreground",
+      });
   return (
     <Card>
       <CardContent className="flex items-center gap-4 p-4">

@@ -23,6 +23,12 @@ const ACTION_LABELS: Record<string, string> = {
   data_export_requested: "Data export requested",
   import_completed: "Import completed",
   export_ready: "Export ready",
+  // Emitted by the retention sweep since it shipped, but never labelled, so
+  // it rendered as the raw enum string. Added here rather than left for a
+  // tidy-up pass because this file is the whole reason the new entry below
+  // does not have the same problem.
+  retention_pruned: "Old front history removed",
+  notification_channel_disabled: "Notification channel stopped",
 };
 
 function actorLabel(actorType: AccountActivityEvent["actor_type"]): string {
