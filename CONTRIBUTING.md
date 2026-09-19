@@ -43,18 +43,28 @@ The API runs on `http://localhost:8000` (docs at `/v1/docs`), and the web UI on 
 
 #### Full test suite (recommended)
 
-Use `run_tests.sh` to spin up a dedicated isolated Docker stack, run tests against every server configuration in sequence, then tear everything down:
+Use `run_tests.sh` to spin up dedicated isolated Docker stacks, run tests against every server configuration, then tear everything down:
 
 ```bash
 ./run_tests.sh
 ```
 
-This runs nine configurations in sequence: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and five selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, and the metrics endpoint enabled). Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack. Configurations spread over parallel stacks (two by default, each on its own port block); pass `--jobs N` to widen or `--jobs 1` to force the classic serial run. Each config's output is still printed one at a time at the end.
+This runs eleven configurations: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and seven selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, the metrics endpoint enabled, and public profiles on and off).
+
+They are spread over parallel stacks, two by default: pass `--jobs N` to widen or `--jobs 1` for a single sequential stack. Each slot gets its own compose project and its own port block, slot `s` on app `8000+s`, database `5432+s` and Redis `6379+s`, so slot 1 lands on the classic 8001/5433/6380 and nothing collides with a running dev stack. Output is captured per configuration and replayed one at a time at the end, so parallel runs do not interleave on the terminal.
+
+Whatever `--jobs` you pass, the whole run holds one system-wide lock (`/tmp/sheaf-test-stack.lock`, override with `SHEAF_TEST_LOCK`). A second `./run_tests.sh` started while one is going will print that it is waiting and then block until the first finishes, rather than fighting it for Docker and ports. It is not wedged: a run that sits silent for a long time is usually queued behind another one, so check for a second run before debugging it.
 
 ```bash
 # Skip rebuilding the image if you haven't changed backend code:
 ./run_tests.sh --no-build
+
+# Run one configuration by name (full name or the part after the slash):
+./run_tests.sh metrics
+./run_tests.sh --list
 ```
+
+CI splits the two long configurations (`selfhosted/none`, and `saas/none` when it runs its full tier) over four jobs each by setting `SHEAF_TEST_SHARD=3/4`, which runs the third of four slices. Locally the variable is normally unset, which runs everything; set it if you want to reproduce one CI shard, remembering that a shard selector is not the same as `--jobs` (sharding splits one configuration's tests across separate runs, while `--jobs` spreads whole configurations across stacks inside a single run). A configuration that isn't split runs whole under shard 1 and is skipped by the other three, so shards 1 to 4 of any selection add up to exactly one full run with nothing run twice. Shard counts live in the CI matrix rather than in the script, so changing them means editing `.github/workflows/ci.yml` and this paragraph together.
 
 #### Quick run against a local server
 
