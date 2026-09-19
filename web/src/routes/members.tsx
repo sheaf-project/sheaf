@@ -34,6 +34,7 @@ import { AvatarUpload } from "@/components/avatar-upload";
 import { BannerUpload } from "@/components/banner-upload";
 import { Badge } from "@/components/ui/badge";
 import { ColorDot } from "@/components/color-dot";
+import { MarkdownHelp } from "@/components/markdown-help";
 import { ContentRevisionList } from "@/components/content-revision-list";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { RelationshipsEditor } from "@/components/relationships-editor";
@@ -253,7 +254,10 @@ function MemberForm({
         </Suspense>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="member-note">Notes</Label>
+        <div className="flex items-center gap-1">
+          <Label htmlFor="member-note">Notes</Label>
+          <MarkdownHelp plain />
+        </div>
         <textarea
           id="member-note"
           className="w-full rounded-md border bg-background p-2 text-sm font-mono"

@@ -29,6 +29,12 @@ The crucial gap Layer 3 closes: a malicious operator can't ship modified fronten
 
 For Sheaf specifically, this matters because the frontend handles the interesting things: passwords, TOTP codes, the bio-editor textarea, and so on. Pinning the frontend means malicious operator behaviour around those surfaces is detectable.
 
+### Why there is no Layer 2
+
+The gap in the numbering is deliberate, not a section that went missing. Layer 1 proves a published image exists and was signed. Layer 3 proves the code your browser loaded is that published frontend. The missing middle rung would prove that the backend *running right now* is the image it claims to be, and nothing in this design can establish that: `/v1/version` is the server's own word for it, and an operator with host access can make it say anything. Closing that rung needs a trusted execution environment attesting the running workload, which Sheaf does not have and cannot offer on ordinary hosting (the last row of the table above is the same limitation seen from the hardware side).
+
+It is left as a numbered hole rather than renumbered so that the missing guarantee stays visible. Renumbering Layer 3 to Layer 2 would quietly imply the backend-attestation problem was solved or never existed. If a Layer 2 ever ships, it will be that attestation.
+
 ---
 
 ## Layer 1: image verifiability

@@ -28,6 +28,7 @@ import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { dateFormatLabels } from "@/lib/date-format";
 import { isStepUpRequiredError, showApiErrorToast } from "@/lib/api-errors";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
+import { MarkdownHelp } from "@/components/markdown-help";
 import type {
   DateFormat,
   DestructiveConfirm,
@@ -174,7 +175,10 @@ function SystemSettingsForm({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="system-note">Notes</Label>
+            <div className="flex items-center gap-1">
+              <Label htmlFor="system-note">Notes</Label>
+              <MarkdownHelp plain />
+            </div>
             <textarea
               id="system-note"
               className="w-full rounded-md border bg-background p-2 text-sm font-mono"
