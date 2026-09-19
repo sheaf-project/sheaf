@@ -16,6 +16,13 @@
 # config's output is captured to a file and replayed one config at a time
 # once all slots finish, so nothing interleaves on the terminal. --jobs 1
 # (the default) is the classic single-stack sequential run.
+#
+# SHEAF_TEST_SHARD=3/4 runs only the third of four slices of the long configs
+# (see SHARDABLE below), so CI can spread one config over several jobs that each
+# get their own runner and their own stack. Unset - the local default - runs
+# everything. A config that is not sharded runs whole under shard 1 and is
+# skipped by the other shards, so whatever the selector, shards 1..N together
+# are exactly one full run of everything selected, with nothing run twice.
 
 set -euo pipefail
 
@@ -167,6 +174,45 @@ add_config "selfhosted/front_stream_disabled" none selfhosted 0 "front_stream_di
     "SHEAF_TEST_FRONT_STREAM_DISABLED=true"
 
 # ---------------------------------------------------------------------------
+# Sharding
+# ---------------------------------------------------------------------------
+# The configs worth splitting: the two that run the bulk of the suite and take
+# roughly ten minutes each in CI, against one to two minutes for every other
+# row. saas/none only qualifies in its full tier - with SHEAF_TEST_SAAS_FULL
+# unset its marks expression leaves a single saas-marked test, and splitting
+# one test five ways gets you four empty jobs.
+SHARDABLE=("selfhosted/none")
+if [[ "${SHEAF_TEST_SAAS_FULL:-}" == "true" ]]; then
+    SHARDABLE+=("saas/none")
+fi
+
+is_shardable() {
+    local candidate="$1" c
+    for c in "${SHARDABLE[@]}"; do
+        [[ "$c" == "$candidate" ]] && return 0
+    done
+    return 1
+}
+
+# Validated here rather than left to pytest, so a typo fails in a second
+# instead of after a stack spin-up.
+SHARD_INDEX=""
+SHARD_TOTAL=""
+if [[ -n "${SHEAF_TEST_SHARD:-}" ]]; then
+    if [[ "$SHEAF_TEST_SHARD" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+        SHARD_INDEX="${BASH_REMATCH[1]}"
+        SHARD_TOTAL="${BASH_REMATCH[2]}"
+    else
+        echo "SHEAF_TEST_SHARD must look like 3/4, got '$SHEAF_TEST_SHARD'" >&2
+        exit 2
+    fi
+    if [[ "$SHARD_TOTAL" -lt 1 || "$SHARD_INDEX" -lt 1 || "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]]; then
+        echo "SHEAF_TEST_SHARD is out of range: '$SHEAF_TEST_SHARD'" >&2
+        exit 2
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Argument parsing / config selection
 # ---------------------------------------------------------------------------
 # No config args = run everything (the CI path). Named configs run alone,
@@ -241,6 +287,28 @@ for c in "${ALL_CONFIGS[@]}"; do
         done
     fi
 done
+# Shards past the first drop the configs that are not split, before anything
+# starts a stack: an unsharded config belongs to shard 1 and the others have
+# nothing to do for it. A shard left with no configs at all - CI's saas legs
+# whenever the tier is thin - exits here, in seconds, rather than building an
+# image to run nothing against.
+if [[ -n "$SHARD_TOTAL" && "$SHARD_INDEX" != "1" ]]; then
+    RUNNABLE=()
+    for c in "${ORDERED[@]}"; do
+        if is_shardable "$c"; then
+            RUNNABLE+=("$c")
+        else
+            echo "Skipping $c: not a sharded config; shard 1 of $SHARD_TOTAL runs it whole."
+        fi
+    done
+    ORDERED=("${RUNNABLE[@]}")
+fi
+
+if [[ ${#ORDERED[@]} -eq 0 ]]; then
+    echo "Nothing for shard $SHARD_INDEX/$SHARD_TOTAL to run."
+    exit 0
+fi
+
 TOTAL_CONFIGS=${#ORDERED[@]}
 
 # Each config keeps its canonical position for the "[N/TOTAL]" banner no
@@ -319,10 +387,14 @@ run_one() {
     local index="$2"
     local admin="${CFG_ADMIN[$name]}"
     local mode="${CFG_MODE[$name]}"
+    local shard=""
+    if [[ -n "$SHARD_TOTAL" ]] && is_shardable "$name"; then
+        shard="$SHARD_INDEX/$SHARD_TOTAL"
+    fi
 
     echo ""
     echo "================================================================"
-    echo "[${index}/${TOTAL_CONFIGS}] Config: $name  (ADMIN_AUTH_LEVEL=$admin  SHEAF_MODE=$mode)"
+    echo "[${index}/${TOTAL_CONFIGS}] Config: $name  (ADMIN_AUTH_LEVEL=$admin  SHEAF_MODE=$mode)${shard:+  shard $shard}"
     echo "================================================================"
 
     # Reconfigure the app in place: compose recreates only the app container
@@ -354,6 +426,9 @@ run_one() {
         SHEAF_TEST_ADMIN_AUTH_LEVEL="$admin"
         SHEAF_TEST_MODE="$mode"
         SHEAF_TEST_COMPOSE_PROJECT="$COMPOSE_PROJECT"
+        # Set either way: the inherited value must not reach the conftest for a
+        # config this run decided not to split.
+        SHEAF_TEST_SHARD="$shard"
     )
     if [[ -n "${CFG_PYTEST_EXTRA[$name]}" ]]; then
         read -r -a extra <<< "${CFG_PYTEST_EXTRA[$name]}"

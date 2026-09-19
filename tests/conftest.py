@@ -44,7 +44,32 @@ _FRONT_STREAM_DISABLED = (
 )
 
 
-def pytest_collection_modifyitems(items):
+def _shard_selector() -> tuple[int, int] | None:
+    """Parse SHEAF_TEST_SHARD ("3/5" = third of five slices). None = run everything.
+
+    run_tests.sh sets this when a config is split over several CI jobs; an
+    unset or empty value is the normal local case.
+    """
+    raw = os.environ.get("SHEAF_TEST_SHARD", "").strip()
+    if not raw:
+        return None
+    index_str, _, total_str = raw.partition("/")
+    if not index_str.isdigit() or not total_str.isdigit():
+        raise SystemExit(f"SHEAF_TEST_SHARD must look like 3/5, got {raw!r}")
+    index, total = int(index_str), int(total_str)
+    if total < 1 or not 1 <= index <= total:
+        raise SystemExit(f"SHEAF_TEST_SHARD is out of range: {raw!r}")
+    return index, total
+
+
+# trylast matters. pytest's own -m deselection lives in a builtin plugin, and
+# builtin plugins are called after conftest ones, so an undecorated hook here
+# would see the whole suite - sharding it would slice 2242 tests five ways and
+# then let the mark filter carve holes in each slice, which is how you get
+# lopsided shards. At the end of the chain the split sees exactly the tests
+# that were going to run. The skip marking below does not care either way.
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
     for item in items:
         if "admin_auth_password" in item.keywords and _ADMIN_AUTH_LEVEL != "password":
             item.add_marker(pytest.mark.skip("requires SHEAF_TEST_ADMIN_AUTH_LEVEL=password"))
@@ -72,6 +97,22 @@ def pytest_collection_modifyitems(items):
             item.add_marker(
                 pytest.mark.skip("requires SHEAF_TEST_FRONT_STREAM_DISABLED=true")
             )
+
+    shard = _shard_selector()
+    if shard is None:
+        return
+    index, total = shard
+    # Stride, not a contiguous block: tests in one file tend to cost about the
+    # same, so taking every Nth item spreads each file's cost evenly over the
+    # shards instead of handing one shard all the slow files. Every item lands
+    # in exactly one shard, so the five shards reassemble into the whole run.
+    keep = set(range(index - 1, len(items), total))
+    dropped = [item for position, item in enumerate(items) if position not in keep]
+    items[:] = [item for position, item in enumerate(items) if position in keep]
+    if dropped:
+        # Report them, so the run's own summary line accounts for every test
+        # rather than silently collecting a fifth of the suite.
+        config.hook.pytest_deselected(items=dropped)
 
 
 @pytest.fixture

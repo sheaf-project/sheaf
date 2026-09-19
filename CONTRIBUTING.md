@@ -49,12 +49,18 @@ Use `run_tests.sh` to spin up a dedicated isolated Docker stack, run tests again
 ./run_tests.sh
 ```
 
-This runs nine configurations in sequence: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and five selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, and the metrics endpoint enabled). Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack. Configurations spread over parallel stacks (two by default, each on its own port block); pass `--jobs N` to widen or `--jobs 1` to force the classic serial run. Each config's output is still printed one at a time at the end.
+This runs eleven configurations in sequence: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and seven selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, the metrics endpoint enabled, and public profiles on and off). Uses ports 8001/5433/6380 so it doesn't conflict with a running dev stack. Configurations spread over parallel stacks (two by default, each on its own port block); pass `--jobs N` to widen or `--jobs 1` to force the classic serial run. Each config's output is still printed one at a time at the end.
 
 ```bash
 # Skip rebuilding the image if you haven't changed backend code:
 ./run_tests.sh --no-build
+
+# Run one configuration by name (full name or the part after the slash):
+./run_tests.sh metrics
+./run_tests.sh --list
 ```
+
+CI splits the two long configurations (`selfhosted/none`, and `saas/none` when it runs its full tier) over five jobs each by setting `SHEAF_TEST_SHARD=3/5`. Locally the variable is normally unset, which runs everything; set it if you want to reproduce one CI shard. A configuration that isn't split runs whole under shard 1 and is skipped by the other four, so shards 1 to 5 of any selection add up to exactly one full run.
 
 #### Quick run against a local server
 
