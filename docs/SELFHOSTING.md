@@ -1391,7 +1391,7 @@ STATUS_URL=https://status.example.com  # your status / uptime page
 CUSTOM_SUPPORT_TEXT_FILE=/etc/sheaf/support.md  # markdown file, see below
 ```
 
-The first four are independent and optional. The operator card is hidden entirely if you set none of them, so a bare self-host shows only the project section. `STATUS_URL` lives here (rather than in the static project section) because a self-hosted instance's status page is the operator's, not the project's.
+The first four are independent and optional. The operator card is hidden entirely if you set none of them, so a bare self-host shows only the project section. `SUPPORT_NOTE` is plain text rather than markdown, and like `PUBLIC_ABUSE_CONTACT` it takes `\n` for a line break regardless of how your env is loaded. `STATUS_URL` lives here (rather than in the static project section) because a self-hosted instance's status page is the operator's, not the project's.
 
 `CUSTOM_SUPPORT_TEXT_FILE` points at a file of your own freeform text (FAQ, onboarding notes, house rules, whatever) shown in its own card on the Support page. Basic markdown is supported - headings, lists, links, emphasis. Any HTML in the file is stripped server-side when it's loaded, so the API never emits raw tags and nothing relies on the browser to sanitise; write markdown, not HTML. Unlike the env vars above, this file is re-read whenever its modification time or size changes, so you can edit it without restarting. Content is capped at 20,000 characters. A path that can't be read logs a warning at startup and the card is simply omitted.
 
@@ -1438,12 +1438,12 @@ Separately, and with no operator involvement: a system whose privacy is set to a
 The Support page above is for people with an account. Public profiles and share links are the only pages someone without one can reach, so if you serve them, set `PUBLIC_ABUSE_CONTACT`: it is the only route a visitor has to tell you something is wrong with a page you host.
 
 ```env
-PUBLIC_ABUSE_CONTACT="Report abuse: abuse@example.net"
+PUBLIC_ABUSE_CONTACT="Report abuse: abuse@example.net\nDMCA agent: Jane Doe, 1 Example St, Exampleton\nPhone: +1 555 0100"
 ```
 
 The value is markdown you write, shown to anonymous visitors behind an "Abuse / DMCA" item in the public profile footer, next to "Powered by Sheaf". Nothing is submitted or stored: it renders your text and gets out of the way, so what to put in it is up to you. At minimum, some way to reach a person - an email address, a chat contact, a link to a form you run elsewhere. Operators subject to the DMCA (broadly, anyone hosting in the US or serving US users who wants the safe harbour) should include their designated agent's details here as well: name, address, phone, email. Registering that agent with the Copyright Office is a separate step this setting does not do for you; check what your jurisdiction actually requires rather than taking a config comment's word for it.
 
-Multi-line values work if your compose manager supports them; the usual way is a quoted string with `\n` escapes, or setting it from a file in your own entrypoint. It renders through the same pipeline as a public bio: markdown, no HTML, no external images, and `mailto:` and `https:` links stay clickable. Empty (the default) means no footer item at all and nothing rendered. It is read at startup, so changes need a restart, and it is served in the public `GET /v1/auth/config` payload - treat it as information you are publishing, and put a role address in it rather than someone's personal one.
+Multi-line values work everywhere: write `\n` where you want a line break (and `\t` for a tab, `\\n` if you ever want the two characters themselves) and Sheaf decodes it at startup, whether your env came from a `.env`, a stack manager's environment box, or `docker run -e`. If your loader already turns `\n` into a real newline, that is fine too - the value arrives with nothing left to decode. Single line breaks are rendered as line breaks, so an address block stays an address block. Otherwise it renders through the same pipeline as a public bio: markdown, no HTML, no external images, and `mailto:` and `https:` links stay clickable. Empty (the default) means no footer item at all and nothing rendered. It is read at startup, so changes need a restart, and it is served in the public `GET /v1/auth/config` payload - treat it as information you are publishing, and put a role address in it rather than someone's personal one.
 
 ---
 
