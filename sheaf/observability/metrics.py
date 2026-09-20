@@ -748,6 +748,66 @@ auth_sessions_by_client = _G(
     "name and lands as `other` until it expires.",
     ["client_family"],
 )
+
+# Account age at the time of the request, in four fixed buckets. Daily only:
+# the retention question this answers ("are today's active accounts mostly
+# new or mostly long-standing?") does not need a monthly union, and a
+# signup-week cohort label would grow by 52 series a year for the same shape.
+AccountAgeBucket = Literal["lt7d", "lt30d", "lt90d", "older"]
+active_accounts_daily_by_age = _G(
+    "sheaf_active_accounts_daily_by_age",
+    "Estimated distinct accounts active today, by how long ago the account was "
+    "created (under 7 days / under 30 / under 90 / older), from the same id-free "
+    "HLL machinery as sheaf_active_accounts_daily. The four buckets partition "
+    "the day, so they sum (within HLL error) to active_accounts_daily{auth_kind=any}.",
+    ["account_age"],
+)
+
+# Feature adoption: which features systems actually use. One bounded label,
+# one COUNT(DISTINCT system_id) per feature, no content. `public_profile`
+# is the same number as sheaf_systems_with_public_profile, which stays as
+# an alias so existing dashboards keep working.
+FeatureLabel = Literal[
+    "journals", "polls", "relationships", "reminders", "share_views",
+    "custom_fields", "groups", "tags", "public_profile",
+]
+systems_with_feature = _G(
+    "sheaf_systems_with_feature",
+    "Distinct systems with at least one row of a feature (journals / polls / "
+    "relationships / reminders / share_views / custom_fields / groups / tags) or "
+    "a live public profile. Adoption, not volume: a system with one journal entry "
+    "and one with a thousand both count once. Refreshed on the slow gauge pass.",
+    ["feature"],
+)
+
+# Share-view option adoption, over views that have at least one live grant
+# (a view nothing points at is a draft and its options mean nothing yet).
+ShareViewOption = Literal[
+    "member_permalinks", "include_fronting", "include_bio",
+    "link_preview_detailed", "member_preview_detailed",
+]
+share_views_with_option = _G(
+    "sheaf_share_views_with_option",
+    "Live share views (at least one live grant) with each option on: member "
+    "permalinks, fronting shown, bios shown, a detailed system preview card, a "
+    "detailed member preview card. Not a partition - one view can have several.",
+    ["option"],
+)
+
+# How many views an adopter keeps. FRONT_COUNT_BUCKETS thresholds are reused
+# (plain counts); the low buckets are the ones that matter here.
+systems_by_share_view_count = _G(
+    "sheaf_systems_by_share_view_count",
+    "Number of systems whose share-view count is <= the `le` bucket (point-in-time "
+    "cumulative distribution, re-set each refresh). Answers whether adopters keep "
+    "one view or many, which is what decides whether a linked 'all public "
+    "members' selection is a convenience or a necessity.",
+    ["le"],
+)
+system_share_view_count_max = _G(
+    "sheaf_system_share_view_count_max",
+    "Largest single system's share-view count.",
+)
 systems_with_public_profile = _G(
     "sheaf_systems_with_public_profile",
     "Systems with at least one live public or unlisted-link share grant right "

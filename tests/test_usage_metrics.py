@@ -467,3 +467,96 @@ def test_record_active_writes_the_family_sketch_alongside_the_kind(monkeypatch):
     assert client == 1 and web == 1, (client, web)
     assert api == 1
     assert api_family_key_exists is False, "api must not get a family sketch"
+
+
+# ---------------------------------------------------------------------------
+# Account-age buckets: daily only, never persisted
+# ---------------------------------------------------------------------------
+
+
+def test_age_bucket_boundaries_are_half_open_and_total():
+    """Each edge belongs to the bucket ABOVE it (7 days old is lt30d, not lt7d),
+    every age lands somewhere, and the two ways a timestamp can be awkward
+    (future, naive) are handled rather than raised."""
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    cases = [
+        (timedelta(0), "lt7d"),
+        (timedelta(days=6, hours=23), "lt7d"),
+        (timedelta(days=7), "lt30d"),
+        (timedelta(days=29, hours=23), "lt30d"),
+        (timedelta(days=30), "lt90d"),
+        (timedelta(days=89, hours=23), "lt90d"),
+        (timedelta(days=90), "older"),
+        (timedelta(days=3000), "older"),
+    ]
+    for age, expected in cases:
+        assert usage.age_bucket(now - age, now) == expected, age
+    assert {expected for _, expected in cases} == set(usage.AGE_BUCKETS)
+    # Clock skew between nodes: a creation time in the future is brand new.
+    assert usage.age_bucket(now + timedelta(hours=1), now) == "lt7d"
+    # A naive timestamp is read as UTC; a missing one is simply no bucket.
+    assert usage.age_bucket(datetime(2026, 9, 19, 12, 0), now) == "lt7d"
+    assert usage.age_bucket(None, now) is None
+
+
+def test_age_key_scheme_is_id_free_and_outside_the_persisted_set():
+    """Age sketches live under `age:` and are DAILY ONLY: not a SketchRef, not
+    flushed, not restored. Nothing about them needs to survive a Redis replace
+    because only today's key is ever read."""
+    from datetime import date
+
+    from sheaf.observability.usage import age_day_key
+
+    assert (
+        age_day_key(usage.SCOPE_ACCOUNT, "lt7d", date(2026, 9, 1))
+        == "sheaf:hll:acct:age:lt7d:2026-09-01"
+    )
+    persisted_segments = {family for _, family in usage._refs_for_scope(usage.SCOPE_ACCOUNT)}
+    assert not persisted_segments & set(usage.AGE_BUCKETS)
+    assert usage.AGE_KEY_TTL_SECONDS < usage.HLL_KEY_TTL_SECONDS
+
+
+def test_record_active_writes_the_age_sketch_for_every_auth_kind(monkeypatch):
+    """An interactive request and an automation request each land in their age
+    bucket: an API key's account has an age too. The key carries the short
+    TTL, not the 31-day one."""
+    from sheaf.observability.usage import age_day_key
+
+    scope = _scope()
+    monkeypatch.setattr(usage, "SCOPE_ACCOUNT", scope)
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+    async def _fake_get_redis():
+        return r
+
+    async def _no_system(_user_id):
+        return None
+
+    import sheaf.auth.sessions as sessions
+
+    monkeypatch.setattr(sessions, "get_redis", _fake_get_redis)
+    monkeypatch.setattr(usage, "_system_id_for", _no_system)
+
+    today = datetime.now(UTC).date()
+    k_new = age_day_key(scope, "lt7d", today)
+    k_old = age_day_key(scope, "older", today)
+    k_client = day_key(scope, usage.KIND_CLIENT, today)
+    k_api = day_key(scope, usage.KIND_API, today)
+
+    async def body() -> tuple[int, int, int]:
+        try:
+            await r.delete(k_new, k_old, k_client, k_api)
+            await usage._record_active(uuid.uuid4(), usage.KIND_CLIENT, "web", "lt7d")
+            await usage._record_active(uuid.uuid4(), usage.KIND_API, "api", "older")
+            return (
+                int(await r.pfcount(k_new)),
+                int(await r.pfcount(k_old)),
+                int(await r.ttl(k_new)),
+            )
+        finally:
+            await r.delete(k_new, k_old, k_client, k_api)
+            await r.aclose()
+
+    new, old, ttl = asyncio.run(body())
+    assert new == 1 and old == 1, (new, old)
+    assert 0 < ttl <= usage.AGE_KEY_TTL_SECONDS, ttl
