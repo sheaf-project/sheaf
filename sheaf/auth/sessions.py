@@ -54,10 +54,26 @@ def _parse_client_name(user_agent: str, client_header: str | None = None) -> str
 
     If X-Sheaf-Client is set (e.g. "Sheaf Android/1.2.0"), use it directly.
     Otherwise parse browser name from User-Agent.
+
+    The web app is the one client whose header alone tells a person LESS than
+    the User-Agent did: "Sheaf Web/1.5.0" says nothing about which of their
+    browsers a session belongs to, where "Firefox" did. So for that family the
+    browser is kept alongside: "Sheaf Web/1.5.0 (Firefox)". The phone apps'
+    User-Agents name nothing a person would recognise, so they stay verbatim.
     """
     if client_header:
-        return client_header.strip()
+        name = client_header.strip()
+        if name.lower().startswith("sheaf web/"):
+            browser = _browser_from_user_agent(user_agent)
+            if browser != "Unknown":
+                return f"{name} ({browser})"
+        return name
 
+    return _browser_from_user_agent(user_agent)
+
+
+def _browser_from_user_agent(user_agent: str) -> str:
+    """Best-effort browser name from a User-Agent, or "Unknown"."""
     if not user_agent:
         return "Unknown"
 

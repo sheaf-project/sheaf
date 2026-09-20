@@ -20,10 +20,15 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.observability.client_family import (
+    CLIENT_FAMILIES,
+    client_family_from_name,
+)
 from sheaf.observability.metrics import (
     FRONT_COUNT_BUCKETS,
     auth_lockouts_active,
     auth_sessions_active,
+    auth_sessions_by_client,
     auth_totp_enabled,
     auth_trusted_devices_active,
     cf_shield_active,
@@ -44,6 +49,7 @@ from sheaf.observability.metrics import (
     open_polls_total,
     pending_actions_active,
     polls_total,
+    push_devices,
     redis_up,
     reminders_total,
     requests_per_account_per_minute,
@@ -172,6 +178,22 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
 
     mem_count = await db.scalar(select(func.count(Member.id)))
     members_total.set(int(mem_count or 0))
+
+    # Installed mobile base by platform. Every platform gets set, including
+    # to zero, so a platform whose last device deregistered reads as 0 rather
+    # than freezing at its final count.
+    from sheaf.models.push_device_token import PushDeviceToken, PushPlatform
+
+    rows = await db.execute(
+        select(PushDeviceToken.platform, func.count(PushDeviceToken.id)).group_by(
+            PushDeviceToken.platform
+        )
+    )
+    by_platform = {platform: int(n) for platform, n in rows.all()}
+    for platform in PushPlatform:
+        push_devices.labels(platform=platform.value).set(
+            by_platform.get(platform.value, 0)
+        )
 
     custom_fronts = await db.scalar(
         select(func.count(Member.id)).where(Member.is_custom_front.is_(True))
@@ -751,11 +773,41 @@ async def _refresh_rate_distribution() -> None:
     except Exception:
         return
 
-    # Active sessions. SCAN with COUNT hint; bail if it gets long.
+    # Active sessions. SCAN with COUNT hint; bail if it gets long. The same
+    # walk reads each session's stored client_name (pipelined, in batches) to
+    # split the total by client family; the family is derived by the same
+    # bounded parser the request path uses, so a stored name can never become
+    # a label. `sheaf:session:*` matches only the session hashes: the child
+    # registrations live under `sheaf:session_children:` and do not match.
     sessions = 0
-    async for _ in _scan(r, "sheaf:session:*", _MAX_RATE_LIMIT_KEYS_PER_REFRESH):
+    by_family: dict[str, int] = dict.fromkeys(CLIENT_FAMILIES, 0)
+    batch: list[str] = []
+
+    async def _count_batch() -> None:
+        if not batch:
+            return
+        pipe = r.pipeline(transaction=False)
+        for key in batch:
+            pipe.hget(key, "client_name")
+        try:
+            names = await pipe.execute(raise_on_error=False)
+        except Exception:
+            names = [None] * len(batch)
+        for name in names:
+            # A per-key error (a key that expired mid-walk, say) comes back as
+            # an exception object in the list; it is simply an unknown client.
+            by_family[client_family_from_name(name if isinstance(name, str) else None)] += 1
+        batch.clear()
+
+    async for key in _scan(r, "sheaf:session:*", _MAX_RATE_LIMIT_KEYS_PER_REFRESH):
         sessions += 1
+        batch.append(key)
+        if len(batch) >= 500:
+            await _count_batch()
+    await _count_batch()
     auth_sessions_active.set(sessions)
+    for family, count in by_family.items():
+        auth_sessions_by_client.labels(client_family=family).set(count)
 
     # Per-IP request distribution from the global rate-limit counters.
     # Each key is one IP for one window; the value is request count in

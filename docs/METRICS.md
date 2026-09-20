@@ -126,6 +126,7 @@ deliberately not a label).
 | `sheaf_auth_lockouts_active` | gauge | - |
 | `sheaf_auth_trusted_devices_active` | gauge | - |
 | `sheaf_auth_sessions_active` | gauge | - |
+| `sheaf_auth_sessions_by_client` | gauge | `client_family` |
 | `sheaf_auth_totp_enabled` | gauge | - |
 
 Useful alerts: a sustained `password_incorrect` rate per hour (credential
@@ -569,6 +570,11 @@ distributions ride the hourly distribution job.
 | `sheaf_active_systems_daily` | gauge | `auth_kind` |
 | `sheaf_active_accounts_monthly` | gauge | `auth_kind` |
 | `sheaf_active_systems_monthly` | gauge | `auth_kind` |
+| `sheaf_active_accounts_daily_by_client` | gauge | `client_family` |
+| `sheaf_active_accounts_monthly_by_client` | gauge | `client_family` |
+| `sheaf_active_accounts_monthly_overlap` | gauge | `families` |
+| `sheaf_requests_by_client_total` | counter | `client_family` |
+| `sheaf_push_devices` | gauge | `platform` ∈ {fcm, apns_dev, apns_prod} |
 | `sheaf_systems_with_public_profile` | gauge | - |
 
 `sheaf_signups_total` is new-account velocity (the flow signal), incremented
@@ -609,6 +615,46 @@ are irreversibly folded into HLL registers) and is deliberately excluded from
 the user-data export. If Redis is down the gauges hold their last value rather
 than zeroing (a blip is not "activity dropped to zero"); `sheaf_redis_up` covers
 visibility.
+
+**Client families.** `client_family` ∈ {web, android, ios, watch, api, other}
+splits the `client` auth kind by platform. It is derived once per request at
+the auth choke point from the credential and the `X-Sheaf-Client` header: an
+API key is `api` whatever its header says, an official app prefix
+(`Sheaf Web/`, `Sheaf Android/`, `Sheaf iOS/`, `Sheaf watchOS/`, `Sheaf Wear/`)
+maps to its family, and anything else is `other`. The raw header never reaches
+a label or a key, so a third-party client cannot mint series by changing it.
+There is deliberately no User-Agent fallback for `web`: "a browser talked to
+the API" is not "the Sheaf web app". The watchOS app currently sends the phone's
+header and lands as `ios` until its watch target identifies itself.
+
+The family sketches are **additive**: an interactive request is PFADDed into
+the `client` auth-kind sketch exactly as before AND into
+`sheaf:hll:acct:fam:<family>:<day>`, so the DAU/MAU series above never depend
+on the family sketches and did not move when they were introduced. `api` has
+no family sketch (the api auth-kind sketch is the api family), and families are
+kept for the account scope only. Persisted alongside the auth-kind sketches in
+`usage_daily_sketches` under a `client_family` column ('' for the auth-kind
+rows) with the same restore-after-Redis-replace path.
+
+`active_accounts_{daily,monthly}_by_client` are per-family cardinalities; an
+account active on two families counts in both, and the deduped total is
+`active_accounts_*{auth_kind=any}`. Platform share is the family gauge over
+that total. `active_accounts_monthly_overlap{families="a+b"}` is the
+estimated number of accounts active on BOTH families in the trailing 30 days,
+by inclusion-exclusion over the sketch unions (`|A| + |B| - |A u B|`), one
+series per unordered pair. It needs no per-account state at all, which is the
+point; the cost is that three HLL estimates' errors compound, so it answers
+"is it 3% or 30%", not "3% or 4%", and a small true overlap can read as 0.
+
+`sheaf_requests_by_client_total` counts authenticated requests by family and
+deliberately carries no route: it exists for the hour-of-day and day-of-week
+shape per platform. Route x family belongs behind the extended-metrics gate
+when that exists. `sheaf_auth_sessions_by_client` splits the live session
+count by the family of the `client_name` stored at mint time; a web session
+minted before the web app sent the header carries a browser name and reads as
+`other` until it expires. `sheaf_push_devices` is the *installed* mobile base
+(registered push tokens by platform), as opposed to the *active* base the
+sketches count.
 
 `sheaf_systems_with_public_profile` is the public-profiles adoption signal:
 distinct systems with at least one live public or unlisted-link share grant

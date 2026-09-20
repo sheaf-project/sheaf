@@ -23,6 +23,14 @@ class UsageDailySketch(Base):
     distinct count cannot be sliced out of a merged sketch after the fact; the
     published "any" total is their read-time union and is never stored.
 
+    client_family is '' for the auth-kind sketch itself, or one of the
+    interactive families (web / android / ios / watch / other) for the
+    per-platform sketch under auth_kind "client". The family sketches are
+    additive - the auth-kind sketch is still written on every request - so
+    the DAU/MAU series never depend on them; they exist for platform share
+    and, by inclusion-exclusion over their unions, cross-platform overlap.
+    There is no "api" family row: the api auth-kind sketch IS the api family.
+
     Why persist the SKETCH BYTES and not just a daily count: a 30-day MAU is the
     cardinality of the UNION of 30 daily sketches, which cannot be reconstructed
     by summing daily unique counts (that double-counts returning users). Redis
@@ -33,11 +41,15 @@ class UsageDailySketch(Base):
 
     __tablename__ = "usage_daily_sketches"
 
-    # Composite natural key: one sketch per (day, scope, auth_kind). No surrogate
-    # UUID - the triple IS the identity, and the flush job UPSERTs on it.
+    # Composite natural key: one sketch per (day, scope, auth_kind,
+    # client_family). No surrogate UUID - the tuple IS the identity, and the
+    # flush job UPSERTs on it.
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     scope: Mapped[str] = mapped_column(String(8), primary_key=True)
     auth_kind: Mapped[str] = mapped_column(String(8), primary_key=True)
+    client_family: Mapped[str] = mapped_column(
+        String(16), primary_key=True, default="", server_default=""
+    )
 
     # Raw HLL register bytes as GET off the Redis day-key. Round-trips through
     # SET back into Redis to become a mergeable sketch again after a replace.
