@@ -109,6 +109,7 @@ function MemberForm({
   const [isCustomFront, setIsCustomFront] = useState(
     initial?.is_custom_front ?? false,
   );
+  const { formatDate } = useDateFormatters();
   const [privacy, setPrivacy] = useState<PrivacyLevel>(initial?.privacy ?? "private");
   const [neverShareable, setNeverShareable] = useState(
     initial?.never_shareable ?? false,
@@ -301,6 +302,16 @@ function MemberForm({
           savedValue={initial?.privacy}
         />
         <PublishingOffNote savedValue={initial?.privacy} />
+        {/* A raise is staged, so the live level is still the old one until
+            the grace window elapses; say which is which, as the group form
+            does. */}
+        {initial?.privacy_activates_at && (
+          <p className="text-[11px] text-amber-600 dark:text-amber-500">
+            {initial.pending_privacy ?? "public"} - activates{" "}
+            {formatDate(initial.privacy_activates_at)}. Until then this member
+            stays {initial.privacy}.
+          </p>
+        )}
       </div>
       {shareGuardsVisible && (
         <div className="space-y-3 rounded-md border border-dashed p-3">

@@ -666,6 +666,26 @@ async def update_member(
             else:
                 member.fronting_private = value
                 member.fronting_private_activates_at = None
+        elif key == "privacy":
+            if (
+                value == PrivacyLevel.PUBLIC
+                and exposing_rows
+                and visibility_activates_at is not None
+            ):
+                # Staged, the way a group or a field is: the live ceiling stays
+                # where it was and the raise parks on the member until the
+                # finalizer promotes it. The projection keeps hiding them by
+                # their live ceiling, so this holds for every kind of view,
+                # curated or not - no membership rows have to be demoted.
+                member.pending_privacy = PrivacyLevel.PUBLIC
+                member.privacy_activates_at = visibility_activates_at
+            else:
+                # Immediate: lowering, an ungated raise, or a re-auth'd raise
+                # with no grace window. A lowering also cancels any raise that
+                # was staged - going dark always wins and never waits.
+                member.privacy = value
+                member.pending_privacy = None
+                member.privacy_activates_at = None
         else:
             setattr(member, key, value)
 
@@ -680,13 +700,13 @@ async def update_member(
         # Nothing left to demote - the rows are gone, which is stricter still.
         exposing_rows = []
 
-    # With a grace window, the privacy change itself is immediate but the
-    # exposure it would cause is not: demote the membership rows so the
-    # projection keeps hiding this member until the finalize sweep promotes
-    # them, exactly as if they had just been added to the view. With no window
-    # (grace 0) the rows stay live and the member is exposed now - the re-auth
-    # above was the whole gate.
-    stage_membership_exposure(exposing_rows, visibility_activates_at)
+    # The staged raise lives on the member's own `pending_privacy` (set in the
+    # loop above), not in demoted membership rows: the live ceiling is what
+    # every projection filters on, so leaving it unmoved hides the member from
+    # curated and live rosters alike until the finalize sweep promotes it. The
+    # rows are left exactly as they were. With no window (grace 0) the ceiling
+    # moved at once above and the member is exposed now - the re-auth was the
+    # whole gate.
 
     await db.commit()
     await db.refresh(member)

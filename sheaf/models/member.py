@@ -118,6 +118,26 @@ class Member(UUIDMixin, TimestampMixin, Base):
         default=PrivacyLevel.PRIVATE,
         nullable=False,
     )
+    # Staged raise, the same pair System, Group and CustomFieldDefinition
+    # carry. Raising a member to public while a view would actually serve them
+    # is a loosening, so the new level parks here, `privacy` above stays put,
+    # and the share finalizer promotes it once `privacy_activates_at` passes.
+    # Lowering meanwhile cancels the staged raise outright: going dark always
+    # wins and never waits.
+    #
+    # Before this pair existed the raise flipped `privacy` at once and staged
+    # the exposure by demoting the member's ShareViewMember rows instead. That
+    # only works while every roster is a curated list of rows; a view that
+    # selects members by their live ceiling has no rows to demote, and a
+    # grace-period bypass in the exposure surface is the one place that cannot
+    # have one. The column is what makes the ceiling itself wait.
+    pending_privacy: Mapped[PrivacyLevel | None] = mapped_column(
+        Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),
+        nullable=True,
+    )
+    privacy_activates_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Free-text scratchpad note. Encrypted at rest like description.
     # Deliberately lightweight: no revisions, no System Safety protection,

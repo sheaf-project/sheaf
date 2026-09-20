@@ -334,17 +334,20 @@ def stage_membership_exposure(
 ) -> None:
     """Park a member's share-view rows PENDING until `activates_at`.
 
-    A member has no `pending_privacy` twin to hold a staged raise, so their
+    For a member whose ceiling is ALREADY public and who is being put back on
+    a published roster - unarchiving - there is no level to stage, so the
     staging lives in the membership rows themselves: demoted to PENDING, the
     projection keeps hiding them exactly as if they had just been added to the
     view, and `finalize_share_activations` promotes them when the window
     elapses. `pending_exposures` reads the same rows back for the owner's
     banner.
 
-    Called by every path that re-exposes an existing member - raising them to
-    `public`, and unarchiving one who is still sitting in a published view -
-    so the two cannot drift over what "staged" means. A None `activates_at`
-    (grace 0) leaves the rows live: there is no window to wait out.
+    A privacy RAISE no longer comes through here. It stages on the member's
+    own `pending_privacy` / `privacy_activates_at`, the pair the other three
+    privacy-carrying entities have, so the ceiling itself waits and the member
+    stays hidden from every kind of roster, curated or live, without a row to
+    demote. A None `activates_at` (grace 0) leaves the rows live: there is no
+    window to wait out.
     """
     if activates_at is None:
         return
@@ -1826,6 +1829,37 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             ("group_privacy", system_id, {"group_id": str(group_id)})
         )
 
+    # Staged member raises, same atomic shape and the same reasoning: a
+    # lowering that lands mid-sweep clears `privacy_activates_at` and so either
+    # falls outside the predicate or writes last, and the `case()` covers the
+    # ordering where the timestamp survived but the staged level did not. This
+    # is the block that makes a member's ceiling wait; without it the pair on
+    # the model would stage forever (see the link-preview finalizer bug for
+    # what a column left out of this sweep looks like from the outside).
+    member_raises = await db.execute(
+        update(Member)
+        .where(
+            Member.privacy_activates_at.is_not(None),
+            Member.privacy_activates_at <= now,
+        )
+        .values(
+            privacy=case(
+                (Member.pending_privacy.is_not(None), Member.pending_privacy),
+                else_=Member.privacy,
+            ),
+            pending_privacy=None,
+            privacy_activates_at=None,
+        )
+        .returning(Member.id, Member.system_id)
+        .execution_options(synchronize_session=False)
+    )
+    for member_id, system_id in member_raises.all():
+        promoted += 1
+        share_grants_finalized_total.labels(kind="member_raise").inc()
+        raised_direct.append(
+            ("member_privacy", system_id, {"member_id": str(member_id)})
+        )
+
     # Staged custom-field definition raises. Same atomic shape and the same
     # reasoning once more: a lowering that lands mid-sweep clears
     # `privacy_activates_at` and so either falls outside the predicate or
@@ -1988,12 +2022,14 @@ async def pending_exposures(
     authenticated owner. Every query is a single scoped predicate on that id
     (the share-view children reach it through their parent view).
 
-    Member raises have no dedicated `pending_*` column - they stage by demoting
-    the member's `ShareViewMember` rows to PENDING (`stage_membership_exposure`,
-    called by the privacy raise in update_member and by unarchive_member), so
-    those pending rows ARE the staged member exposure, whichever of the two put
-    them there. They are collapsed per member here so one raise counts once
-    rather than once per view the member sits in.
+    A member raise stages on `members.pending_privacy`, the same pair the
+    other privacy-carrying entities carry. An UNARCHIVE of an already-public
+    member back onto a published view has no level to stage and parks in the
+    member's `ShareViewMember` rows instead (`stage_membership_exposure`), so
+    those pending rows are also a staged member exposure; they are collapsed
+    per member here so one unarchive counts once rather than once per view.
+    Both report as `member_privacy`: to the owner they are the same thing, a
+    member on their way onto a shared page.
     """
     exposures: list[PendingExposure] = []
 
@@ -2019,10 +2055,21 @@ async def pending_exposures(
         PendingExposure("member_fronting", ts) for ts in guard_rows.scalars()
     ]
 
-    # A member raised to public, or unarchived back onto a published view:
-    # their share-view memberships were demoted to PENDING. Collapse per member
-    # (earliest activation) so one raise counts as one pending exposure, not
-    # once per view the member appears in.
+    # members.pending_privacy - a member raise.
+    member_raise_rows = await db.execute(
+        select(Member.privacy_activates_at).where(
+            Member.system_id == system_id,
+            Member.privacy_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("member_privacy", ts) for ts in member_raise_rows.scalars()
+    ]
+
+    # A member unarchived back onto a published view: their share-view
+    # memberships were demoted to PENDING. Collapse per member (earliest
+    # activation) so one unarchive counts as one pending exposure, not once per
+    # view the member appears in.
     member_rows = await db.execute(
         select(func.min(ShareViewMember.activates_at))
         .join(ShareView, ShareView.id == ShareViewMember.view_id)
@@ -2171,8 +2218,22 @@ async def cancel_pending_exposures(
     )
     _count("member_fronting", guard_result.rowcount or 0)
 
-    # Staged member memberships. Counted per member, not per row, to match the
-    # read side's collapse - one raise cancelled is one cancellation.
+    # members.pending_privacy - a member raise. The live ceiling stays where it
+    # is; only the future exposure is dropped.
+    member_raise_result = await db.execute(
+        update(Member)
+        .where(
+            Member.system_id == system_id,
+            Member.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("member_privacy", member_raise_result.rowcount or 0)
+
+    # Staged member memberships (an unarchive back onto a published view).
+    # Counted per member, not per row, to match the read side's collapse - one
+    # unarchive cancelled is one cancellation.
     staged_members = await db.execute(
         select(func.count(func.distinct(ShareViewMember.member_id)))
         .join(ShareView, ShareView.id == ShareViewMember.view_id)

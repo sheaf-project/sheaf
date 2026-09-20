@@ -154,6 +154,12 @@ export interface Member {
   /** A requested release of the fronting guard is waiting out the System
    *  Safety grace period until this timestamp. */
   fronting_private_activates_at: string | null;
+  /** A raise to public still waiting out the System Safety grace window.
+   *  `privacy` above is still the live truth; this is what it becomes when
+   *  `privacy_activates_at` passes. null = nothing staged. The same pair
+   *  groups and custom fields carry. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** True iff at least one ContentRevision exists for this member's

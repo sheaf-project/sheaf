@@ -213,7 +213,25 @@ def _backdate_view_flags(view_id: str) -> None:
     _in_db(_work)
 
 
+def _backdate_member_raise(member_id: str) -> None:
+    """A member's staged privacy raise, made due for the finalize sweep. The
+    raise lives on the member's own `privacy_activates_at` (the pair groups
+    and fields carry), not in demoted membership rows."""
+
+    async def _work(db) -> None:
+        from sheaf.models.member import Member
+
+        member = await db.get(Member, uuid.UUID(member_id))
+        assert member is not None and member.privacy_activates_at is not None
+        member.privacy_activates_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
 def _backdate_pending_membership(member_id: str) -> None:
+    """Rows demoted to PENDING: how an unarchive back onto a published view
+    stages, since an already-public member has no level left to raise."""
+
     async def _work(db) -> None:
         from sqlalchemy import select
 
@@ -612,7 +630,9 @@ def test_fronting_member_external_avatar_is_withheld():
 @pytest.mark.public_profiles
 def test_raising_a_member_to_public_waits_for_the_sweep(admin_client: httpx.Client):
     """Flipping a member in a published view to public does not publish them
-    on the spot; their membership row is demoted until the window elapses."""
+    on the spot: their live level stays where it was with the raise staged on
+    the member, and the roster keeps filtering on that live level until the
+    window elapses. No membership row is touched."""
     owner = _register()
     m = _member(owner, "Riser", privacy="private")
     system_id, _ = _published_system(owner, members=[m])
@@ -622,9 +642,11 @@ def test_raising_a_member_to_public_waits_for_the_sweep(admin_client: httpx.Clie
         f"/v1/members/{m}", json={"privacy": "public", "password": "testpassword123"}
     )
     assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "private"
+    assert r.json()["pending_privacy"] == "public"
     assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
 
-    _backdate_pending_membership(m)
+    _backdate_member_raise(m)
     assert (
         admin_client.post(
             "/v1/admin/jobs/finalize_share_activations/run"
