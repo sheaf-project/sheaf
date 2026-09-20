@@ -15,7 +15,7 @@ from sheaf.database import get_db
 from sheaf.models.user import AccountStatus, User
 from sheaf.observability.client_family import client_family_from
 from sheaf.observability.metrics import requests_by_client_total
-from sheaf.observability.usage import record_active_account
+from sheaf.observability.usage import age_bucket, record_active_account
 from sheaf.request import client_ip
 from sheaf.request_context import set_request_origin
 
@@ -257,7 +257,7 @@ async def get_current_user(
     _family = client_family_from(
         request.headers.get("x-sheaf-client"), is_api_key=_is_api_key
     )
-    record_active_account(user.id, _usage_kind, _family)
+    record_active_account(user.id, _usage_kind, _family, age_bucket(user.created_at))
     requests_by_client_total.labels(client_family=_family).inc()
 
     return user

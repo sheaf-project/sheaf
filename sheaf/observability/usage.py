@@ -125,6 +125,51 @@ def overlap_from_counts(a: int, b: int, union: int) -> int:
     return max(0, a + b - union)
 
 
+# Account-age buckets: how long ago the account was created, at the time of the
+# request. Four fixed buckets rather than a signup-week cohort label, which
+# would grow by 52 series a year; this gives the retention shape ("are the
+# people active today mostly new, or mostly long-standing?") at fixed
+# cardinality. DAILY ONLY, and deliberately so: a monthly union over age
+# buckets would need the persistence and restore machinery the auth-kind and
+# family sketches have, and a daily gauge answers the question. So these are
+# Redis day-keys with a short TTL, never persisted, never restored, and not
+# part of the SketchRef scheme above.
+AGE_BUCKETS: tuple[str, ...] = ("lt7d", "lt30d", "lt90d", "older")
+_AGE_EDGES: tuple[tuple[timedelta, str], ...] = (
+    (timedelta(days=7), "lt7d"),
+    (timedelta(days=30), "lt30d"),
+    (timedelta(days=90), "lt90d"),
+)
+# Two days: today's key is the only one ever read, and the extra day covers a
+# gauge refresh that runs just after midnight reading "today" as yesterday.
+AGE_KEY_TTL_SECONDS = 2 * 24 * 3600
+
+
+def age_bucket(created_at: datetime | None, now: datetime | None = None) -> str | None:
+    """Which age bucket an account created at `created_at` is in right now.
+
+    Pure, so the boundaries can be tested without a clock. A naive timestamp
+    is read as UTC (the column is timezone-aware, but be forgiving). A
+    creation time in the future - clock skew between nodes - is treated as
+    brand new rather than raising.
+    """
+    if created_at is None:
+        return None
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    age = (now or datetime.now(UTC)) - created_at
+    for edge, bucket in _AGE_EDGES:
+        if age < edge:
+            return bucket
+    return "older"
+
+
+def age_day_key(scope: str, bucket: str, day: date) -> str:
+    """Redis key for a scope's day-sketch of one account-age bucket, e.g.
+    sheaf:hll:acct:age:lt7d:2026-09-01."""
+    return f"sheaf:hll:{scope}:age:{bucket}:{_day_str(day)}"
+
+
 # Day-keys live ~31 days: one past the 30-day MAU window so the trailing 30
 # days are always present in Redis on a box that hasn't been replaced.
 HLL_KEY_TTL_SECONDS = 31 * 24 * 3600
@@ -210,11 +255,14 @@ def _recent_days(n: int) -> list[date]:
 
 
 def record_active_account(
-    user_id: uuid.UUID, auth_kind: str, client_family: str | None = None
+    user_id: uuid.UUID,
+    auth_kind: str,
+    client_family: str | None = None,
+    account_age: str | None = None,
 ) -> None:
     """Record an authenticated account (and its system) as active today, under
-    the given auth kind (`client` or `api`), and for an interactive request
-    under its client family as well.
+    the given auth kind (`client` or `api`), for an interactive request under
+    its client family as well, and under its account-age bucket.
 
     Called from the auth dependency once a request has authenticated. Synchronous
     and non-blocking: it only schedules a background task and returns immediately,
@@ -235,7 +283,9 @@ def record_active_account(
             logger.debug("usage: in-flight task cap hit, dropping activity sample")
             return
         loop = asyncio.get_running_loop()
-        task = loop.create_task(_record_active(user_id, auth_kind, client_family))
+        task = loop.create_task(
+            _record_active(user_id, auth_kind, client_family, account_age)
+        )
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
     except Exception:
@@ -245,7 +295,10 @@ def record_active_account(
 
 
 async def _record_active(
-    user_id: uuid.UUID, auth_kind: str, client_family: str | None
+    user_id: uuid.UUID,
+    auth_kind: str,
+    client_family: str | None,
+    account_age: str | None = None,
 ) -> None:
     """Fire-and-forget body: PFADD the account id into today's acct sketch and
     the system id into today's sys sketch for this auth kind, refreshing the
@@ -275,6 +328,13 @@ async def _record_active(
             fam_key = family_day_key(SCOPE_ACCOUNT, client_family, today)
             pipe.pfadd(fam_key, _active_token(SCOPE_ACCOUNT, str(user_id)))
             pipe.expire(fam_key, HLL_KEY_TTL_SECONDS)
+        # The age bucket, for every auth kind: an automation account has an
+        # age too. Same membership guard, same token, a shorter TTL because
+        # only today's key is ever read.
+        if account_age in AGE_BUCKETS:
+            age_key = age_day_key(SCOPE_ACCOUNT, account_age, today)
+            pipe.pfadd(age_key, _active_token(SCOPE_ACCOUNT, str(user_id)))
+            pipe.expire(age_key, AGE_KEY_TTL_SECONDS)
         await asyncio.wait_for(pipe.execute(), timeout=_REDIS_OP_TIMEOUT_S)
     except Exception:
         # Best-effort: a down or slow Redis just means this activity isn't
@@ -465,6 +525,19 @@ async def family_daily_count(family: str) -> int | None:
         return None
 
 
+async def age_daily_count(bucket: str) -> int | None:
+    """Estimated distinct accounts active today whose account is in one age
+    bucket. Daily only; see AGE_BUCKETS for why there is no monthly twin."""
+    try:
+        from sheaf.auth.sessions import get_redis_bytes
+
+        rb = await get_redis_bytes()
+        return await _merge_count(rb, [age_day_key(SCOPE_ACCOUNT, bucket, _today())])
+    except Exception:
+        logger.debug("usage: age daily count failed for %s", bucket, exc_info=True)
+        return None
+
+
 async def family_monthly_count(db: AsyncSession, family: str) -> int | None:
     """Estimated distinct accounts active on one client family over the trailing
     30 days: the union of that family's daily sketches, restore path included."""
@@ -606,6 +679,7 @@ async def refresh_usage_gauges(db: AsyncSession) -> None:
     """
     from sheaf.observability.metrics import (
         active_accounts_daily,
+        active_accounts_daily_by_age,
         active_accounts_daily_by_client,
         active_accounts_monthly,
         active_accounts_monthly_by_client,
@@ -626,6 +700,11 @@ async def refresh_usage_gauges(db: AsyncSession) -> None:
         if monthly is not None:
             fam_monthly[family] = monthly
             active_accounts_monthly_by_client.labels(client_family=family).set(monthly)
+    for bucket in AGE_BUCKETS:
+        by_age = await age_daily_count(bucket)
+        if by_age is not None:
+            active_accounts_daily_by_age.labels(account_age=bucket).set(by_age)
+
     for a, b in itertools.combinations(CLIENT_FAMILIES, 2):
         if a not in fam_monthly or b not in fam_monthly:
             continue

@@ -454,3 +454,53 @@ def test_leader_transitions_total_present():
     val = _series_value(body, "sheaf_leader_transitions_total")
     # At least one acquisition happened at startup.
     assert val is not None and val >= 1.0, val
+
+
+# ---------------------------------------------------------------------------
+# Shape: feature adoption, share-view options, account age
+# ---------------------------------------------------------------------------
+
+
+def test_feature_adoption_and_age_gauges_populate(admin_client: httpx.Client):
+    """One slow-gauge pass exposes every feature-adoption series, every
+    share-view option series, and the four age buckets. The admin account
+    registered moments ago, so today's under-7-days bucket has at least one
+    member; and `public_profile` under the feature gauge must be the same
+    number as the bare adoption gauge it aliases."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+
+    for feature in (
+        "journals", "polls", "relationships", "reminders", "share_views",
+        "custom_fields", "groups", "tags", "public_profile",
+    ):
+        val = _series_value(body, "sheaf_systems_with_feature", {"feature": feature})
+        assert val is not None and val >= 0, feature
+    assert _series_value(
+        body, "sheaf_systems_with_feature", {"feature": "public_profile"}
+    ) == _series_value(body, "sheaf_systems_with_public_profile")
+
+    for option in (
+        "member_permalinks", "include_fronting", "include_bio",
+        "link_preview_detailed", "member_preview_detailed",
+    ):
+        val = _series_value(body, "sheaf_share_views_with_option", {"option": option})
+        assert val is not None and val >= 0, option
+
+    newest = _series_value(body, "sheaf_active_accounts_daily_by_age", {"account_age": "lt7d"})
+    assert newest is not None and newest >= 1, newest
+    for bucket in ("lt30d", "lt90d", "older"):
+        val = _series_value(body, "sheaf_active_accounts_daily_by_age", {"account_age": bucket})
+        assert val is not None and val >= 0, bucket
+
+
+def test_share_view_distribution_populates(admin_client: httpx.Client):
+    """The hourly distributions job sets the per-system share-view CDF; its
+    +Inf bucket is the system count, so it is at least the admin's own."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauge_distributions/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+    total = _series_value(body, "sheaf_systems_by_share_view_count", {"le": "+Inf"})
+    assert total is not None and total >= 1, total
+    assert _series_value(body, "sheaf_system_share_view_count_max") is not None

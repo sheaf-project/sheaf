@@ -339,6 +339,9 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 | `sheaf_adult_attestations_total` | counter | - |
 | `sheaf_watch_redemptions_total` | counter | `destination_type`, `outcome` |
 | `sheaf_share_projection_duration_seconds` | histogram | `projection` ∈ {members} |
+| `sheaf_share_views_with_option` | gauge | `option` ∈ {member_permalinks, include_fronting, include_bio, link_preview_detailed, member_preview_detailed} |
+| `sheaf_systems_by_share_view_count` | gauge | `le` |
+| `sheaf_system_share_view_count_max` | gauge | - |
 
 `kind` (both the finalize counter and the pending gauge) ∈ {grant,
 view_member, view_field, view_flags, member_guard, edge_raise, group_raise,
@@ -377,6 +380,20 @@ because no channel resolved. Only the reachable combinations are pre-warmed
 projection - the privacy-ceiling roster query plus the decrypt-and-render
 pass. The other `project_*` surfaces are near-duplicates of HTTP RED and are
 left to it.
+
+`sheaf_share_views_with_option{option}` counts LIVE share views (at least one
+grant satisfying `grant_live_clause`, the resolver's own predicate) with each
+option on: member permalinks, fronting shown, bios shown, a detailed system
+preview card, a detailed member preview card. Not a partition - a view can
+have every option on - so the series do not sum to anything. A view nothing
+points at is a draft and is not counted; its options are intentions, not
+exposures. `sheaf_systems_by_share_view_count{le}` and
+`sheaf_system_share_view_count_max` are the per-system view-count
+distribution in the same CDF shape as the other data-shape gauges (hourly,
+`FRONT_COUNT_BUCKETS` thresholds, `+Inf` = all systems). Most systems have
+zero; the interesting comparison is `le="1"` against `le="5"` among the ones
+that publish, which is what decides whether a linked "all public members"
+selection is a convenience or a necessity.
 
 ### cf-shield
 
@@ -535,6 +552,8 @@ distributions ride the hourly distribution job.
 | `sheaf_active_accounts_monthly_overlap` | gauge | `families` |
 | `sheaf_requests_by_client_total` | counter | `client_family` |
 | `sheaf_push_devices` | gauge | `platform` ∈ {fcm, apns_dev, apns_prod} |
+| `sheaf_active_accounts_daily_by_age` | gauge | `account_age` ∈ {lt7d, lt30d, lt90d, older} |
+| `sheaf_systems_with_feature` | gauge | `feature` |
 | `sheaf_systems_with_public_profile` | gauge | - |
 
 `sheaf_signups_total` is new-account velocity (the flow signal), incremented
@@ -615,6 +634,31 @@ minted before the web app sent the header carries a browser name and reads as
 `other` until it expires. `sheaf_push_devices` is the *installed* mobile base
 (registered push tokens by platform), as opposed to the *active* base the
 sketches count.
+
+**Account age.** `sheaf_active_accounts_daily_by_age{account_age}` splits
+today's active accounts by how long ago the account was created: under 7
+days, under 30, under 90, older. The four buckets partition the day, so they
+sum (within HLL error) to `active_accounts_daily{auth_kind=any}`, and the
+shape is the retention signal: a healthy instance has a fat `older` and a
+steady `lt7d`; a leaky one has a fat `lt7d` and not much else. Four fixed
+buckets rather than a signup-week cohort label, which would add 52 series a
+year for the same shape. **Daily only, on purpose**: a monthly union over age
+buckets would need the persistence and restore machinery the other sketches
+have, and the daily gauge answers the question, so these are Redis day-keys
+(`sheaf:hll:acct:age:<bucket>:<day>`, two-day TTL) that are never persisted
+and never restored. The bucket is decided at the auth choke point from the
+account's creation timestamp and, like the family, only the bounded bucket
+name ever becomes a key.
+
+**Feature adoption.** `sheaf_systems_with_feature{feature}` is one
+`COUNT(DISTINCT system_id)` per feature - journals, polls, relationships,
+reminders, share_views, custom_fields, groups, tags - plus `public_profile`,
+which is the same number as `sheaf_systems_with_public_profile` (kept as an
+alias so existing dashboards keep working). Adoption, not volume: a system
+with one journal entry and one with a thousand both count once, and the
+data-shape distributions cover the volume side. Refreshed on the slow gauge
+pass. It answers "which features do people actually use", which is the
+question that decides where the next month goes.
 
 `sheaf_systems_with_public_profile` is the public-profiles adoption signal:
 distinct systems with at least one live public or unlisted-link share grant
