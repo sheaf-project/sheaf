@@ -1,4 +1,4 @@
-import { apiFetch } from "./api-client";
+import { apiFetch, instanceHeaders } from "./api-client";
 
 export interface AdminStats {
   total_users: number;
@@ -648,10 +648,14 @@ export async function downloadDossier(
   // apiFetch coerces JSON; for a file download we want the raw blob,
   // so call fetch directly with the same credentials behaviour as the
   // shared client.
-  const resp = await fetch(`/v1/admin/users/${userId}/dossier`, {
+  const dossierPath = `/v1/admin/users/${userId}/dossier`;
+  const resp = await fetch(dossierPath, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...instanceHeaders(dossierPath),
+    },
     body: JSON.stringify({ reason }),
   });
   if (!resp.ok) {

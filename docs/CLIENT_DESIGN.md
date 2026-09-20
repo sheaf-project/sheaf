@@ -250,6 +250,8 @@ X-Sheaf-Client: My Custom App/0.5
 
 If not set, the server falls back to parsing the User-Agent (Firefox, Chrome, Safari, Edge, or "Unknown").
 
+The server also folds the header into a bounded *client family* for aggregate usage metrics (never the raw value, so it is safe to put anything here): `Sheaf Web/`, `Sheaf Android/`, `Sheaf iOS/`, `Sheaf watchOS/` and `Sheaf Wear/` prefixes map to `web`, `android`, `ios`, `watch`, `watch`; any other value, or no header, is `other`; and a request authenticated by API key is `api` regardless of the header. The official web app sends `Sheaf Web/<version>` on requests to its own instance only. If you are building a companion for a platform that already has an official app, use that platform's prefix so usage is attributed to the platform rather than to `other`; if you are building something else, any name you like is fine and lands in `other` by design.
+
 ## Client Settings Storage
 
 Per-client JSON blob storage — lets your client persist preferences server-side without needing a schema per setting.
