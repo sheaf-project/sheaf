@@ -71,6 +71,7 @@ from sheaf.observability.metrics import (
     systems_by_tag_count,
     systems_total,
     systems_with_public_profile,
+    systems_with_public_profile_by_subject,
     tags_total,
     target_revision_count_max,
     targets_by_revision_count,
@@ -679,6 +680,35 @@ async def _refresh_public_profile_adoption(db: AsyncSession) -> None:
         )
     )
     systems_with_public_profile.set(int(count or 0))
+
+    # The same adopters, partitioned by how they share. One row per system
+    # saying whether it has a live public grant and whether it has a live
+    # link grant, then a count per combination. Every combination is set,
+    # including to zero, so a bucket that empties reads as empty.
+    per_system = (
+        select(
+            func.bool_or(ShareGrant.subject_type == "public").label("has_public"),
+            func.bool_or(ShareGrant.subject_type == "link").label("has_link"),
+        )
+        .where(grant_live_clause())
+        .group_by(ShareGrant.system_id)
+        .subquery()
+    )
+    rows = await db.execute(
+        select(per_system.c.has_public, per_system.c.has_link, func.count()).group_by(
+            per_system.c.has_public, per_system.c.has_link
+        )
+    )
+    partition = {"public": 0, "link": 0, "both": 0}
+    for has_public, has_link, n in rows.all():
+        if has_public and has_link:
+            partition["both"] += int(n)
+        elif has_public:
+            partition["public"] += int(n)
+        elif has_link:
+            partition["link"] += int(n)
+    for subject_type, n in partition.items():
+        systems_with_public_profile_by_subject.labels(subject_type=subject_type).set(n)
 
 
 async def _refresh_redis_up_only() -> None:

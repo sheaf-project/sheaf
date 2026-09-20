@@ -65,6 +65,8 @@ from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.share import LinkPreviewMode, ShareView
 from sheaf.models.system import System
+from sheaf.observability.metrics import link_previews_total
+from sheaf.observability.unfurler import unfurler_from
 from sheaf.schemas.public_profile import PublicMemberView, PublicSystemView
 from sheaf.services.link_preview import (
     LinkPreview,
@@ -157,6 +159,19 @@ def _origin(request: Request) -> str:
     if settings.sheaf_base_url:
         return settings.sheaf_base_url.rstrip("/")
     return str(request.base_url).rstrip("/")
+
+
+def _count_card(request: Request, card: str) -> None:
+    """One increment per document served: which card, and which service asked.
+
+    The UA is folded into a bounded set before it goes anywhere near a label
+    (`unfurler_from`), so a crawler cannot mint series by lying about itself.
+    Documents only: the image a rich card points at is fetched as a
+    consequence of the card and would double-count the paste.
+    """
+    link_previews_total.labels(
+        card=card, unfurler=unfurler_from(request.headers.get("user-agent"))
+    ).inc()
 
 
 def _document(preview: LinkPreview, *, token_keyed: bool) -> Response:
@@ -393,8 +408,10 @@ async def system_link_preview(
 
     rich = await _resolve_rich_system(db, raw_system_id)
     if rich is None:
+        _count_card(request, "generic")
         return _generic(page_url, token_keyed=False)
 
+    _count_card(request, "system_details")
     image_url = (
         f"{page_url}/preview-image" if rich.projection.avatar_url else None
     )
@@ -481,8 +498,10 @@ async def member_link_preview(
 
     rich = await _resolve_rich_member(db, raw_system_id, raw_member_id)
     if rich is None:
+        _count_card(request, "generic")
         return _generic(page_url, token_keyed=False)
 
+    _count_card(request, "member")
     image_url = f"{page_url}/preview-image" if rich.card.avatar_url else None
     return _document(
         build_member_preview(
@@ -537,14 +556,16 @@ async def member_preview_image(
 @router.get(
     "/v1/link-preview/s/{raw_token}/member/{raw_member_id}", dependencies=[_RATE]
 )
-async def shared_link_preview() -> Response:
+async def shared_link_preview(request: Request) -> Response:
     """Every `/s/` URL, system or member: the generic card, with nothing looked up.
 
     This is the "a secret URL never gets a rich preview" rule expressed as code
     that cannot be wrong: the handler takes no path parameters, no database session
     and no view, so there is no path from a share link to a system's name or a
     member's name however that view is configured. The token and member id are in
-    the route patterns only so the routes match.
+    the route patterns only so the routes match. The one thing it does take is the
+    request, to read WHICH service is asking for the metric; that is a fact about
+    the crawler, not about the link, and the token is never read off it.
 
     A share link's URL is itself the secret - the opaque token exists precisely so
     the system behind it is not learnable from the link - and an unfurl happens on
@@ -561,6 +582,7 @@ async def shared_link_preview() -> Response:
     No `og:url`: it would copy the bearer token into the card's own metadata, and
     some unfurlers render that text to everyone in the channel.
     """
+    _count_card(request, "generic")
     return _generic(None, token_keyed=True)
 
 

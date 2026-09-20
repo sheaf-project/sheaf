@@ -338,6 +338,9 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 | `sheaf_adult_attestations_total` | counter | - |
 | `sheaf_watch_redemptions_total` | counter | `destination_type`, `outcome` |
 | `sheaf_share_projection_duration_seconds` | histogram | `projection` ∈ {members} |
+| `sheaf_public_requests_total` | counter | `surface`, `subject_type` ∈ {public, link}, `outcome` |
+| `sheaf_link_previews_total` | counter | `card` ∈ {generic, system_details, member}, `unfurler` |
+| `sheaf_systems_with_public_profile_by_subject` | gauge | `subject_type` ∈ {public, link, both} |
 
 `kind` (both the finalize counter and the pending gauge) ∈ {grant,
 view_member, view_field, view_flags, member_guard, edge_raise, group_raise,
@@ -376,6 +379,43 @@ because no channel resolved. Only the reachable combinations are pre-warmed
 projection - the privacy-ceiling roster query plus the decrypt-and-render
 pass. The other `project_*` surfaces are near-duplicates of HTTP RED and are
 left to it.
+
+**Demand side.** Everything above counts what owners publish; the last three
+count what visitors and crawlers ask for.
+
+`sheaf_public_requests_total` counts every anonymous JSON request to the
+public surface. `surface` ∈ {system, members, member, fronting,
+relationships, groups}; `subject_type` is how the visitor addressed it
+(`public` by system id, `link` by share token); `outcome` ∈ {served,
+withheld, pending, dark, not_found, feature_off}. The visitor still gets one
+uniform 404 for every non-served outcome - the no-oracle rule is unchanged;
+the split exists only in this counter. `withheld` is a live grant whose view
+does not publish that surface (no roster, no fronting, no permalinks). `pending`
+is a grant inside its grace window. `dark` is a grant that exists but may not
+serve: revoked, or the account suppressed (system private, publishing latch,
+suspended, banned, pending deletion) - the same set `public_media_serves_total`
+calls `dark_account`, decided by the same two SQL clauses the resolver uses so
+the two cannot disagree. `not_found` is no grant at all; a rotated link's old
+token reads as this, since its hash matches nothing once rotated. The
+classification runs only on the miss path (one extra lookup behind a 404) and
+its answer never reaches the response. Reading it: `dark` and `not_found`
+climbing on `subject_type=link` is somebody probing dead tokens; `served`
+on `member` says deep links are being used at all; `withheld` on `fronting`
+says visitors want something the owner chose not to show.
+
+`sheaf_link_previews_total` counts crawler-facing preview documents by `card`
+(generic / system_details / member) and `unfurler` ∈ {discord, slack, telegram,
+mastodon, matrix, bluesky, twitter, facebook, whatsapp, other}, folded from the
+User-Agent by a bounded substring match (`sheaf/observability/unfurler.py`) so a
+crawler cannot mint series by lying about itself. It answers where people paste
+their links and whether the detailed modes see use. Documents only: the image
+a rich card points at is fetched as a consequence of the card and is not
+counted again.
+
+`sheaf_systems_with_public_profile_by_subject` partitions the adopters by how
+they publish: `public` = only a public grant live, `link` = only share links,
+`both` = at least one of each. The three sum to
+`sheaf_systems_with_public_profile`, which keeps its unlabelled shape.
 
 ### cf-shield
 

@@ -1453,6 +1453,61 @@ async def resolve_link_grant(
     return (row[0], row[1]) if row else None
 
 
+async def explain_public_miss(db: AsyncSession, system_id: uuid.UUID) -> str:
+    """Why `resolve_public_grant` returned None, for the metric and nothing else.
+
+    One of `pending`, `dark`, `not_found`. Runs only on the miss path, and its
+    answer never reaches the response: the visitor's 404 stays uniform. It
+    reuses the resolver's own two clauses rather than restating them, so the
+    reason recorded and the reason the page 404'd cannot disagree:
+
+    - a grant that passes `grant_live_clause(include_pending=True)` AND
+      `profile_serving_clause()` when the resolver (which excludes pending)
+      found nothing can only be PENDING;
+    - otherwise any grant at all for this subject means something existed and
+      is not serving - revoked, or suppressed - which is `dark`;
+    - otherwise there is nothing here.
+    """
+    return await _explain_miss(
+        db,
+        (ShareGrant.system_id == system_id)
+        & (ShareGrant.subject_type == ShareSubjectType.PUBLIC.value),
+    )
+
+
+async def explain_link_miss(db: AsyncSession, raw_token: str) -> str:
+    """The link twin of `explain_public_miss`. A rotated link's old token hashes
+    to nothing and so reads as `not_found`, not `dark`: after a rotate there
+    is genuinely no row for it."""
+    if not raw_token:
+        return "not_found"
+    return await _explain_miss(
+        db,
+        (ShareGrant.token_hash == hash_share_token(raw_token))
+        & (ShareGrant.subject_type == ShareSubjectType.LINK.value),
+    )
+
+
+async def _explain_miss(db: AsyncSession, subject) -> str:
+    would_serve_when_live = await db.scalar(
+        select(ShareGrant.id)
+        .join(System, System.id == ShareGrant.system_id)
+        .join(User, User.id == System.user_id)
+        .where(
+            subject,
+            grant_live_clause(include_pending=True),
+            profile_serving_clause(),
+        )
+        .limit(1)
+    )
+    if would_serve_when_live is not None:
+        return "pending"
+    exists_at_all = await db.scalar(select(ShareGrant.id).where(subject).limit(1))
+    if exists_at_all is not None:
+        return "dark"
+    return "not_found"
+
+
 async def account_serving_public_media(
     db: AsyncSession, owner_user_id: str
 ) -> bool:
