@@ -37,8 +37,14 @@ member is referenced (by id, never by decrypted name) in the job report
 (`Resolution.privacy_held_member_id`). The hold does NOT consult the
 profile_visibility safety category - see `_privacy_raise_exposes` for why
 a gate the same file can switch off is no gate.
-Lowering is the un-exposing direction and stays ungated, and a CREATE is
-in no view yet, so neither is gated.
+Lowering is the un-exposing direction and stays ungated.
+
+A CREATE used to need no gate at all, because a brand new member is in no
+view. That stopped being true when a view could be set to serve every
+member whose privacy is `public`: under one of those, a member created
+public by a file is published the moment the import commits, with the
+file having chosen it. So the same hold covers creates - see
+`_all_public_view_would_publish`.
 
 The caller is responsible for three things based on the disposition:
   * db.add() the candidate ONLY when disposition == "created";
@@ -65,7 +71,10 @@ from sheaf.encrypted_fields import (
 )
 from sheaf.models.member import Member
 from sheaf.models.system import PrivacyLevel, System
-from sheaf.services.sharing import shared_view_memberships
+from sheaf.services.sharing import (
+    member_privacy_raise_exposes,
+    view_serves_all_public_members,
+)
 
 
 class ImportConflictStrategy(enum.StrEnum):
@@ -124,6 +133,22 @@ class MemberMatchIndex:
     by_pk_id: dict[str, Member] = field(default_factory=dict)
     by_name_hash: dict[tuple[bool, str], Member] = field(default_factory=dict)
 
+    # Memoised answer to "does this system publish every public member right
+    # now" (`view_serves_all_public_members`). It is a property of the system's
+    # VIEWS, identical for every candidate in the file, so asking per member
+    # would be one query per row of a roster that can run to hundreds. Cached on
+    # the index because the index is already the per-job snapshot of exactly
+    # this kind of fact, and it lives for exactly one import. None means "not
+    # asked yet".
+    #
+    # Staleness cannot hurt: the flag only ever makes the importer hold a
+    # privacy raise back, so a cached True holds a raise that may have become
+    # safe (the owner turned the view off mid-import), which is the direction
+    # this module is deliberately wrong in. A cached False cannot be wrong in
+    # the other direction either - turning the flag ON is a loosening that goes
+    # through step-up and a grace window of its own.
+    all_public_view: bool | None = None
+
     def find(
         self,
         *,
@@ -164,8 +189,11 @@ async def load_member_match_index(
 class Resolution:
     member: Member
     disposition: str  # "created" | "skipped" | "updated"
-    # The matched member's id when UPDATE declined to raise their privacy to
-    # public, else None. Callers count it and reference the member in the job
+    # The member's id when the import declined to give them the `public` level
+    # the file asked for - either UPDATE declining to raise a matched member, or
+    # CREATE declining to insert a new one already public under a view that
+    # serves every public member. Else None. Callers count it and reference
+    # the member in the job
     # report so a withheld flip is never silent. Deliberately the id and NOT the
     # decrypted name: job events are stored as plaintext JSONB, while member
     # names live in encrypted columns, so a report must not downgrade a name
@@ -184,10 +212,10 @@ def privacy_hold_warning(member_id: uuid.UUID) -> str:
     roster; the id also drops straight into the members-page URL.
     """
     return (
-        f"Kept a member (id {member_id}) at their current privacy setting - the "
-        "file makes them public and they are already in a shared view, so "
-        "publishing them needs re-authentication. Change it from the members "
-        "page if that is what you want."
+        f"Kept a member (id {member_id}) private - the file makes them public "
+        "and a shared view would publish them straight away, so publishing "
+        "them needs re-authentication. Change it from the members page if that "
+        "is what you want."
     )
 
 
@@ -222,18 +250,54 @@ async def _privacy_raise_exposes(
       the file that wants the raise. A gate an attacker's input can disarm is
       not a gate.
 
-    So the hold applies whenever the file raises a member who is already sitting
-    in a view a live-or-pending grant points at: keep the existing lower level
-    and report it, rather than silently publishing somebody from a file. That is
-    the conservative reading, and the worst an import can do to visibility is
-    leave it where it was.
+    So the hold applies whenever the raise would actually put the member in
+    front of somebody: keep the existing lower level and report it, rather than
+    silently publishing somebody from a file. That is the conservative reading,
+    and the worst an import can do to visibility is leave it where it was.
+
+    "Actually" is `member_privacy_raise_exposes`, the same function the API's
+    step-up decision goes through, called rather than re-expressed. The comment
+    in members.py says these two must not drift, and they cannot now: when the
+    interactive gate learned that a view with `include_all_public_members`
+    publishes a member with no membership row at all, this learned it in the
+    same edit. Re-deriving it here from a membership-row lookup would have left
+    the import path silently publishing from a file in exactly the case the
+    owner-side path had just been taught to stop.
     """
     if (
         candidate.privacy != PrivacyLevel.PUBLIC
         or existing.privacy == PrivacyLevel.PUBLIC
     ):
         return False
-    return bool(await shared_view_memberships(db, system, existing.id))
+    return await member_privacy_raise_exposes(db, system, existing.id)
+
+
+async def _all_public_view_would_publish(
+    db: AsyncSession, system: System, index: MemberMatchIndex
+) -> bool:
+    """Would a member CREATED public by this file be published on commit?
+
+    The create-side twin of `_privacy_raise_exposes`, and it exists because
+    `include_all_public_members` deleted the assumption the create path rested
+    on. "A new member is in no view" was a complete answer while a view's
+    roster was an allowlist; under a view that serves every public member there
+    is no view to be in, and a file that says `privacy: public` publishes the
+    member it just created, with no step-up and no grace window in front of it.
+
+    Gated identically to the update hold and for the same two reasons: an
+    import cannot perform a step-up, and the safety category rides in the same
+    payload so consulting it would let the file disarm the gate. The answer is
+    memoised on the match index - it is one fact about the system's views, the
+    same for every row in the file.
+
+    Creating the member is never refused, only their PUBLICITY: they land at
+    the model default (private) and the job report names them, so the owner
+    makes the publish decision on a screen instead of a file making it for
+    them.
+    """
+    if index.all_public_view is None:
+        index.all_public_view = await view_serves_all_public_members(db, system)
+    return index.all_public_view
 
 
 def _apply_update(
@@ -271,6 +335,33 @@ def _apply_update(
             )
 
 
+async def _resolve_created(
+    candidate: Member,
+    *,
+    index: MemberMatchIndex,
+    db: AsyncSession,
+    system: System,
+) -> Resolution:
+    """A candidate that is being inserted, with its publicity vetted.
+
+    Both create paths (`CREATE` outright, and `SKIP`/`UPDATE` finding no match)
+    land here so neither can be the cheap way past the other. The only thing
+    vetted is `privacy == public`, and only against
+    `_all_public_view_would_publish` - the member is genuinely in no view, so
+    nothing else about them can be exposed by inserting them.
+
+    The candidate is demoted in place rather than refused: the row still
+    imports, with everything else the file said about it, and only the level
+    the owner never confirmed is dropped to the model's own default.
+    """
+    if candidate.privacy != PrivacyLevel.PUBLIC:
+        return Resolution(candidate, "created")
+    if not await _all_public_view_would_publish(db, system, index):
+        return Resolution(candidate, "created")
+    candidate.privacy = PrivacyLevel.PRIVATE
+    return Resolution(candidate, "created", privacy_held_member_id=candidate.id)
+
+
 async def resolve_member(
     candidate: Member,
     *,
@@ -284,10 +375,12 @@ async def resolve_member(
     On "created" the candidate is registered in the index so a later
     intra-import row with the same key dedups against it too. UPDATE hits the
     DB only when the file would raise a matched member to public, which is the
-    one overwrite that can publish somebody.
+    one overwrite that can publish somebody - and a CREATE hits it only when the
+    file wants the new member public, which under an all-public view is the
+    same publish by a different door.
     """
     if strategy == ImportConflictStrategy.CREATE:
-        return Resolution(candidate, "created")
+        return await _resolve_created(candidate, index=index, db=db, system=system)
     existing = index.find(
         name_hash=candidate.name_hash,
         is_custom_front=bool(candidate.is_custom_front),
@@ -295,7 +388,7 @@ async def resolve_member(
     )
     if existing is None:
         index.register(candidate)
-        return Resolution(candidate, "created")
+        return await _resolve_created(candidate, index=index, db=db, system=system)
     if strategy == ImportConflictStrategy.SKIP:
         return Resolution(existing, "skipped")
     # Lock and re-read the matched row before evaluating (and possibly applying)

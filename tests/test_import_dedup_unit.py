@@ -61,22 +61,31 @@ def _system(*, safeguarded: bool):
 
 
 class _StubSession:
-    """Stands in for the session the exposure query runs on.
+    """Stands in for the session the exposure queries run on.
 
-    Every execute() returns `rows`, which is all `shared_view_memberships`
-    reads, and `queries` counts the round trips so a test can assert the
-    gate short-circuits before touching the DB at all.
+    Every execute() answers BOTH shapes the gate uses: `.scalars().all()` for
+    `shared_view_memberships` (the membership-row path) and
+    `.scalar_one_or_none()` for `view_serves_all_public_members` (the
+    all-public-view path). `rows` drives the first, `all_public` the second, so
+    a test can put the system in either state - or neither - independently.
+    `queries` counts the round trips so a test can assert the gate
+    short-circuits before touching the DB at all.
     """
 
-    def __init__(self, rows=()):
+    def __init__(self, rows=(), *, all_public=False):
         self._rows = list(rows)
+        self._all_public = all_public
         self.queries = 0
         self.refreshes = 0
 
     async def execute(self, _stmt):
         self.queries += 1
         rows = self._rows
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+        found = uuid.uuid4() if self._all_public else None
+        return SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: rows),
+            scalar_one_or_none=lambda: found,
+        )
 
     async def refresh(self, _instance, _attrs=None, *, with_for_update=None):
         # The privacy gate locks + re-reads the matched row FOR UPDATE before it
@@ -341,6 +350,115 @@ async def test_update_does_not_gate_an_already_public_member():
     assert existing.privacy == PrivacyLevel.PUBLIC
     assert res.privacy_held_member_id is None
     assert db.queries == 0  # nothing moves, so nothing to check
+
+
+# --- the all-public-view hold ----------------------------------------------
+#
+# A view set to serve every public member deleted the assumption both halves of
+# this module rested on. UPDATE's old test was "does the matched member sit in a
+# granted view", which is False for somebody with no membership row - exactly
+# the person that flag publishes. CREATE had no test at all, because "a new
+# member is in no view" was a complete answer while a roster was an allowlist.
+
+
+async def test_update_holds_a_raise_published_only_by_an_all_public_view():
+    """No membership rows at all, and the raise still publishes them."""
+    existing = _m("ren", privacy=PrivacyLevel.PRIVATE, display_name="old")
+    db = _StubSession(rows=[], all_public=True)
+    res = await _update(
+        existing,
+        _m("ren", privacy=PrivacyLevel.PUBLIC, display_name="new"),
+        db=db,
+        system=_system(safeguarded=True),
+    )
+    assert existing.privacy == PrivacyLevel.PRIVATE  # withheld
+    assert existing.display_name == "new"            # everything else applied
+    assert res.privacy_held_member_id == existing.id
+
+
+async def test_create_holds_a_public_member_under_an_all_public_view():
+    """The file cannot be the thing that decides to publish somebody. The row
+    still imports - only the level it asked for is dropped to the default."""
+    cand = _m("newcomer", privacy=PrivacyLevel.PUBLIC, display_name="Newcomer")
+    idx = MemberMatchIndex()
+    res = await resolve_member(
+        cand,
+        index=idx,
+        strategy=ImportConflictStrategy.SKIP,
+        db=_StubSession(rows=[], all_public=True),
+        system=_system(safeguarded=True),
+    )
+    assert res.disposition == "created"
+    assert res.member is cand
+    assert cand.privacy == PrivacyLevel.PRIVATE
+    assert cand.display_name == "Newcomer"
+    assert res.privacy_held_member_id == cand.id
+
+
+async def test_create_holds_under_the_create_strategy_too():
+    """CREATE bypasses matching entirely, so it would otherwise be the way
+    round the hold the other two strategies apply."""
+    cand = _m("newcomer", privacy=PrivacyLevel.PUBLIC)
+    res = await resolve_member(
+        cand,
+        index=MemberMatchIndex(),
+        strategy=ImportConflictStrategy.CREATE,
+        db=_StubSession(rows=[], all_public=True),
+        system=_system(safeguarded=True),
+    )
+    assert cand.privacy == PrivacyLevel.PRIVATE
+    assert res.privacy_held_member_id == cand.id
+
+
+async def test_create_keeps_public_when_no_view_would_publish_them():
+    """The hold must not flatten every import: with no such view, a new public
+    member was never an exposure and their level stands."""
+    cand = _m("newcomer", privacy=PrivacyLevel.PUBLIC)
+    res = await resolve_member(
+        cand,
+        index=MemberMatchIndex(),
+        strategy=ImportConflictStrategy.SKIP,
+        db=_StubSession(rows=[], all_public=False),
+        system=_system(safeguarded=True),
+    )
+    assert cand.privacy == PrivacyLevel.PUBLIC
+    assert res.privacy_held_member_id is None
+
+
+async def test_create_never_asks_about_a_member_that_is_not_public():
+    """Only `public` is served, so a private or friends candidate is not an
+    exposure and must not cost a query per row of the file."""
+    db = _StubSession(rows=[], all_public=True)
+    for level in (PrivacyLevel.PRIVATE, PrivacyLevel.FRIENDS):
+        cand = _m("q", privacy=level)
+        res = await resolve_member(
+            cand,
+            index=MemberMatchIndex(),
+            strategy=ImportConflictStrategy.CREATE,
+            db=db,
+            system=_system(safeguarded=True),
+        )
+        assert cand.privacy == level
+        assert res.privacy_held_member_id is None
+    assert db.queries == 0
+
+
+async def test_the_all_public_answer_is_asked_once_per_import():
+    """It is one fact about the system's VIEWS, identical for every row, so a
+    file with a hundred public members must not be a hundred queries."""
+    idx = MemberMatchIndex()
+    db = _StubSession(rows=[], all_public=True)
+    system = _system(safeguarded=True)
+    for i in range(5):
+        await resolve_member(
+            _m(f"m{i}", privacy=PrivacyLevel.PUBLIC),
+            index=idx,
+            strategy=ImportConflictStrategy.CREATE,
+            db=db,
+            system=system,
+        )
+    assert db.queries == 1
+    assert idx.all_public_view is True
 
 
 # --- count_new_members (cap sizing) ----------------------------------------

@@ -25,7 +25,12 @@ from sheaf.schemas.public_profile import (
     PublicGroupView,
     PublicSystemView,
 )
-from sheaf.schemas.share import ShareAuditEntry, ShareViewCreate, ShareViewUpdate
+from sheaf.schemas.share import (
+    ShareAuditEntry,
+    ShareViewCreate,
+    ShareViewRead,
+    ShareViewUpdate,
+)
 from sheaf.services.sharing import EXPOSURE_FLAGS, promote_view_flags
 from sheaf.services.sheaf_import import _group_privacy
 
@@ -163,6 +168,42 @@ def test_the_two_new_display_flags_are_staged_exposures(flag: str):
     assert getattr(view, flag) is True
     assert getattr(view, f"pending_{flag}") is None
     assert view.flags_activate_at is None
+
+
+def test_the_all_public_roster_rule_is_off_by_default_and_stages():
+    """The one flag here that changes WHO is in the view rather than what is
+    shown about them. Off by default like every other capability that widens
+    the page, and staged like every other one that widens it: turning it on
+    while the view is published exposes everybody who is already public."""
+    assert ShareView.__table__.c.include_all_public_members.default.arg is False
+    assert (
+        ShareView.__table__.c.include_all_public_members.server_default.arg
+        == "false"
+    )
+    assert ShareViewCreate(name="V").include_all_public_members is False
+    assert "include_all_public_members" in EXPOSURE_FLAGS
+
+    view = ShareView(name="V", include_all_public_members=False)
+    view.pending_include_all_public_members = True
+    promote_view_flags(view)
+    assert view.include_all_public_members is True
+    assert view.pending_include_all_public_members is None
+    assert view.flags_activate_at is None
+
+
+def test_the_all_public_rule_travels_on_every_view_body():
+    """Create, update and read all carry it, and the read carries the staged
+    twin - otherwise the owner's screen could not tell them a flip is waiting
+    (which is the only thing standing between them and a surprise)."""
+    assert "include_all_public_members" in ShareViewCreate.model_fields
+    assert "include_all_public_members" in ShareViewUpdate.model_fields
+    assert {
+        "include_all_public_members",
+        "pending_include_all_public_members",
+    } <= set(ShareViewRead.model_fields)
+    # And the audit says so, because with it on the curated `member_count` is
+    # no longer the rule the page follows.
+    assert "include_all_public_members" in ShareAuditEntry.model_fields
 
 
 def test_member_permalinks_is_not_an_exposure_flag():

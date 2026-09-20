@@ -3,8 +3,11 @@
 Every anonymous read goes through here and nowhere else builds public payloads.
 Two rules are enforced in the QUERY, not just trusted to the caller:
 
-1. `ShareViewMember` with `status == active` is the sole source of who appears.
-   A pending row (still inside its grace window) is not visible yet.
+1. `ShareViewMember` with `status == active` is the source of who appears - or,
+   for a view with `include_all_public_members` set, every member whose privacy
+   ceiling is `public`, evaluated live (see `_active_member_filter`, which is
+   the only place either rule is written down). A pending row (still inside its
+   grace window) is not visible yet, and neither is a staged flag flip.
 2. `Member.never_shareable` is filtered out again here, on top of being rejected
    when a member is added to a view - "we remembered not to add them" is not a
    guarantee, so the projection refuses them regardless.
@@ -118,10 +121,38 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
 
     The one place the "who is in this view AND allowed at this audience" rule
     lives, so the full-row list, the id set, and the count can never drift apart.
-    Two independent guards, both in SQL:
+
+    Who is IN the view is one of two rules, and the view picks which:
+
+    - the default - an ACTIVE `ShareViewMember` row, the owner's explicit
+      allowlist. A pending row (still inside its grace window) is not visible
+      yet;
+    - `include_all_public_members` - the roster is every member whose privacy
+      ceiling is `public`, evaluated right here, right now. That is what makes
+      it LIVE: a member raised to public appears without the view being
+      re-edited, and one dropped back to private disappears the instant they
+      are, because the ceiling below is the same test either way.
+
+    With the flag on, the membership rows are not consulted AT ALL, and nothing
+    is lost by that: every curated member who would have been served is public
+    (the ceiling) and so is already included, and the rows are left on disk so
+    switching the flag back off restores the curated roster exactly. Only the
+    LIVE flag is read - a staged flip (`pending_include_all_public_members`)
+    must serve nobody until the finalize sweep promotes it, which is the whole
+    point of the grace window.
+
+    Deliberately NOT gated on `include_members` here: that flag is the roster
+    SURFACE's switch and is applied by the callers that publish a roster
+    (`project_members`, `project_system`'s count, the group rosters, the edges),
+    exactly as it already was for curated members. `project_fronting` composes
+    this filter without it, on purpose, so a public member fronting is named by
+    a fronting-only view - identical to what a curated member does today.
+
+    Then the guards every member passes whichever rule let them in, all in SQL:
 
     - `never_shareable` - a secret member never projects, even if a stale
-      membership row survives.
+      membership row survives, and the flag above is NOT an override: this
+      predicate is on the member, not on how they got here.
     - `privacy == public` - `member.privacy` is the member's exposure CEILING.
       Every grant that exists today (public profile and unlisted link) is
       PUBLIC-tier, so only members the owner marked public appear; a member left
@@ -156,9 +187,9 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
     An archived member therefore cannot survive as the endpoint of a published
     edge or as a name in a group's roster.
     """
-    return stmt.join(ShareViewMember, ShareViewMember.member_id == Member.id).where(
-        ShareViewMember.view_id == view.id,
-        ShareViewMember.status == ShareItemStatus.ACTIVE.value,
+    # The exposure CEILING, applied to whoever the rule above let in. Every
+    # predicate here is on the member themselves, so neither rule can dodge one.
+    ceiling = (
         Member.system_id == view.system_id,
         Member.never_shareable.is_(False),
         Member.privacy == PrivacyLevel.PUBLIC,
@@ -166,6 +197,13 @@ def _active_member_filter(stmt: Select, view: ShareView) -> Select:
         _not_deletion_queued(
             PendingActionType.MEMBER_DELETE, Member.id, view.system_id
         ),
+    )
+    if view.include_all_public_members:
+        return stmt.where(*ceiling)
+    return stmt.join(ShareViewMember, ShareViewMember.member_id == Member.id).where(
+        ShareViewMember.view_id == view.id,
+        ShareViewMember.status == ShareItemStatus.ACTIVE.value,
+        *ceiling,
     )
 
 
@@ -266,6 +304,13 @@ async def member_service_states(
     `_active_member_filter` had drifted apart, so it is left as None rather
     than guessed at - the client then says the member will not show without
     inventing a reason for it.
+
+    With `include_all_public_members` on, a row's own PENDING status stops
+    meaning anything: the served set is every public member, so a curated row
+    still inside its grace window describes somebody the flag is already
+    serving, and this correctly reports them as served. The owner-side client
+    drops the row's "pending" marker in that case rather than telling them
+    somebody is waiting when they are live.
     """
     served = await _active_member_ids(db, view)
     states: dict[uuid.UUID, MemberServiceState] = {}

@@ -38,10 +38,11 @@ export function getMemberLimit() {
   return apiFetch<MemberLimitStatus>("/v1/members/limit");
 }
 
-export function createMember(data: MemberCreate) {
+export function createMember(data: MemberCreate, skipErrorToast = false) {
   return apiFetch<Member>("/v1/members", {
     method: "POST",
     body: JSON.stringify(data),
+    skipErrorToast,
   });
 }
 
