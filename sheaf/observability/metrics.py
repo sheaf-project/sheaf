@@ -36,6 +36,7 @@ from sheaf.observability.buckets import (
     REALTIME_LAG_BUCKETS,
 )
 from sheaf.observability.registry import get_metric_registry
+from sheaf.observability.unfurler import UNFURLERS
 
 # ---------------------------------------------------------------------------
 # Label-value type aliases
@@ -1160,6 +1161,65 @@ public_media_serves_total = _C(
     "RED; this is only the outcome breakdown.",
     ["outcome"],
 )
+# The demand side of public profiles. Everything above counts what owners
+# publish; these count what visitors and crawlers actually ask for.
+#
+# The visitor still gets one uniform 404 for every refusal - that no-oracle
+# rule is unchanged - but an aggregate counter is not an oracle, and the
+# operator needs the split: a `link` surface with `dark` and `not_found`
+# climbing is somebody probing dead tokens, while `served` climbing on
+# `member` says deep links are being used at all.
+PublicSurface = Literal[
+    "system", "members", "member", "fronting", "relationships", "groups",
+]
+PublicRequestOutcome = Literal[
+    # A 200 with a payload.
+    "served",
+    # The grant is live but this view does not publish this surface (no roster,
+    # no fronting, no permalinks, ...). The visitor's 404 is deliberate.
+    "withheld",
+    # A grant exists and would serve, but is inside its grace window.
+    "pending",
+    # A grant exists but nothing may come out: revoked, or the account behind
+    # it is suppressed (system private, publishing latch, suspended, banned,
+    # pending deletion). The same set `public_media_serves_total` calls
+    # dark_account.
+    "dark",
+    # No grant for that id or token at all. A rotated link's OLD token reads as
+    # this too: its hash matches nothing once rotated.
+    "not_found",
+    # public_profiles_enabled is off.
+    "feature_off",
+]
+public_requests_total = _C(
+    "sheaf_public_requests_total",
+    "Anonymous public-profile JSON requests by surface (system / members / member "
+    "/ fronting / relationships / groups), grant subject type (public / link) and "
+    "outcome. The visitor sees one uniform 404 for every non-served outcome; the "
+    "split exists only here. Raw volume and latency stay in HTTP RED.",
+    ["surface", "subject_type", "outcome"],
+)
+
+LinkPreviewCard = Literal["generic", "system_details", "member"]
+link_previews_total = _C(
+    "sheaf_link_previews_total",
+    "Crawler-facing preview documents served, by which card (generic / "
+    "system_details / member) and which unfurling service asked, folded from "
+    "the User-Agent into a bounded set. Answers where people paste their links "
+    "and whether the detailed preview modes see use. Counts documents only, not "
+    "the image fetches a rich card triggers.",
+    ["card", "unfurler"],
+)
+
+systems_with_public_profile_by_subject = _G(
+    "sheaf_systems_with_public_profile_by_subject",
+    "Adopters split by HOW they publish: `public` = systems with only a public "
+    "grant live, `link` = only share links, `both` = at least one of each. A "
+    "partition, so the three sum to sheaf_systems_with_public_profile; kept as "
+    "its own gauge so the unlabelled total keeps its shape.",
+    ["subject_type"],
+)
+
 share_publish_blocked_total = _C(
     "sheaf_share_publish_blocked_total",
     "Publish attempts refused, by reason: missing 18+ attestation, operator "
@@ -1319,6 +1379,16 @@ def prewarm_metrics() -> None:
         "grant_cap", "duplicate_public",
     ):
         share_publish_blocked_total.labels(reason=reason).inc(0)
+
+    for surface in get_args(PublicSurface):
+        for subject_type in ("public", "link"):
+            for outcome in get_args(PublicRequestOutcome):
+                public_requests_total.labels(
+                    surface=surface, subject_type=subject_type, outcome=outcome,
+                ).inc(0)
+    for card in get_args(LinkPreviewCard):
+        for unfurler in UNFURLERS:
+            link_previews_total.labels(card=card, unfurler=unfurler).inc(0)
 
     # Only the reachable destination/outcome combinations: web push never
     # demands auth, mobile push always does, and invalid_code has no channel

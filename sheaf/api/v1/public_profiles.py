@@ -23,6 +23,7 @@ instance that never wants a public surface never has one.
 
 from __future__ import annotations
 
+import functools
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -33,6 +34,7 @@ from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.share import ShareView
 from sheaf.models.system import System
+from sheaf.observability.metrics import public_requests_total
 from sheaf.schemas.public_profile import (
     PublicFrontingView,
     PublicGroupsView,
@@ -47,7 +49,12 @@ from sheaf.services.share_projection import (
     project_relationships,
     project_system,
 )
-from sheaf.services.sharing import resolve_link_grant, resolve_public_grant
+from sheaf.services.sharing import (
+    explain_link_miss,
+    explain_public_miss,
+    resolve_link_grant,
+    resolve_public_grant,
+)
 
 # One shared per-IP throttle across every public-profile route. A fixed bucket
 # means varying system ids or bearer tokens cannot create fresh quotas, and raw
@@ -65,10 +72,54 @@ from sheaf.services.sharing import resolve_link_grant, resolve_public_grant
 _RATE = rate_limit(60, 60, fail_closed=True, bucket="public_profiles")
 
 
-def _not_found() -> HTTPException:
+class _PublicRefusal(HTTPException):
+    """The uniform 404, carrying its reason on the INSIDE only.
+
+    `outcome` never reaches the response: status and body are identical for
+    every value. It exists so the counting decorator below can record why a
+    request was refused without the handlers having to say so twice, and
+    without the visitor being told anything.
+    """
+
+    def __init__(self, outcome: str) -> None:
+        super().__init__(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        self.outcome = outcome
+
+
+def _not_found(outcome: str = "not_found") -> HTTPException:
     # One error shape for every reason a profile is not visible. Deliberately
-    # says nothing about which reason.
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    # says nothing about which reason. The reason is kept for the metric.
+    return _PublicRefusal(outcome)
+
+
+def _counted(surface: str, subject_type: str):
+    """Count every request to one public surface by how it ended.
+
+    `served` for a payload; otherwise the refusal's own reason. The label set
+    is bounded by construction (six surfaces, two subject types, six
+    outcomes), so this can never mint a series from anything in the request.
+    Wraps with `functools.wraps`, which `inspect.signature` follows, so
+    FastAPI still sees the handler's real parameters for injection.
+    """
+
+    def wrap(handler):
+        @functools.wraps(handler)
+        async def counted(*args, **kwargs):
+            try:
+                result = await handler(*args, **kwargs)
+            except _PublicRefusal as exc:
+                public_requests_total.labels(
+                    surface=surface, subject_type=subject_type, outcome=exc.outcome
+                ).inc()
+                raise
+            public_requests_total.labels(
+                surface=surface, subject_type=subject_type, outcome="served"
+            ).inc()
+            return result
+
+        return counted
+
+    return wrap
 
 
 def _reject_query_params(request: Request) -> None:
@@ -113,10 +164,13 @@ async def _resolve_system(
     system_id: uuid.UUID, db: AsyncSession
 ) -> tuple[ShareView, System]:
     if not settings.public_profiles_enabled:
-        raise _not_found()
+        raise _not_found("feature_off")
     resolved = await resolve_public_grant(db, system_id)
     if resolved is None:
-        raise _not_found()
+        # The miss is explained for the metric only (pending / dark /
+        # not_found), one extra lookup on the 404 path. The response is the
+        # same 404 whatever the answer.
+        raise _not_found(await explain_public_miss(db, system_id))
     _, view = resolved
     system = await db.get(System, system_id)
     if system is None:
@@ -141,7 +195,7 @@ def _require_roster(view: ShareView) -> None:
     rule is one call, not one per endpoint's memory of it.
     """
     if not view.include_members:
-        raise _not_found()
+        raise _not_found("withheld")
 
 
 async def _member_permalink(
@@ -158,22 +212,24 @@ async def _member_permalink(
     without being restated, which is the point.
     """
     if not view.member_permalinks:
-        raise _not_found()
+        raise _not_found("withheld")
     _require_roster(view)
     cards = await project_members(
         db, view, owner_id=system.user_id, only_id=member_id
     )
     if not cards:
+        # Not one this view projects, or no such member: the same thing from
+        # out here, and `not_found` is the honest bucket for both.
         raise _not_found()
     return cards[0]
 
 
 async def _resolve_link(token: str, db: AsyncSession) -> tuple[ShareView, System]:
     if not settings.public_profiles_enabled:
-        raise _not_found()
+        raise _not_found("feature_off")
     resolved = await resolve_link_grant(db, token)
     if resolved is None:
-        raise _not_found()
+        raise _not_found(await explain_link_miss(db, token))
     grant, view = resolved
     system = await db.get(System, grant.system_id)
     if system is None:
@@ -191,6 +247,7 @@ async def _resolve_link(token: str, db: AsyncSession) -> tuple[ShareView, System
     response_model=PublicSystemView,
     dependencies=[_RATE],
 )
+@_counted("system", "public")
 async def public_system(
     system_id: uuid.UUID,
     response: Response,
@@ -208,6 +265,7 @@ async def public_system(
     response_model=list[PublicMemberView],
     dependencies=[_RATE],
 )
+@_counted("members", "public")
 async def public_system_members(
     system_id: uuid.UUID,
     response: Response,
@@ -224,6 +282,7 @@ async def public_system_members(
     response_model=PublicMemberView,
     dependencies=[_RATE],
 )
+@_counted("member", "public")
 async def public_system_member(
     system_id: uuid.UUID,
     member_id: uuid.UUID,
@@ -248,6 +307,7 @@ async def public_system_member(
     response_model=PublicFrontingView,
     dependencies=[_RATE],
 )
+@_counted("fronting", "public")
 async def public_system_fronting(
     system_id: uuid.UUID,
     response: Response,
@@ -259,7 +319,7 @@ async def public_system_fronting(
     # than returning an empty body, so "is fronting shared?" is not probeable
     # separately from "is the profile public?".
     if not view.include_fronting:
-        raise _not_found()
+        raise _not_found("withheld")
     return await project_fronting(db, view, system)
 
 
@@ -268,6 +328,7 @@ async def public_system_fronting(
     response_model=PublicRelationshipsView,
     dependencies=[_RATE],
 )
+@_counted("relationships", "public")
 async def public_system_relationships(
     system_id: uuid.UUID,
     response: Response,
@@ -279,7 +340,7 @@ async def public_system_relationships(
     # than returning an empty list, so "does this profile share relationships?"
     # cannot be answered separately from "is this profile public?".
     if not view.include_relationships:
-        raise _not_found()
+        raise _not_found("withheld")
     # The roster gates edges as well (see `projectable_relationships`: an edge
     # needs two endpoints this view publishes in full, so with the roster off
     # nothing can ever clear the bar). Serving the empty list that would come
@@ -295,6 +356,7 @@ async def public_system_relationships(
     response_model=PublicGroupsView,
     dependencies=[_RATE],
 )
+@_counted("groups", "public")
 async def public_system_groups(
     system_id: uuid.UUID,
     response: Response,
@@ -306,7 +368,7 @@ async def public_system_groups(
     # 404s rather than returning an empty list, so "does this profile show
     # groups?" cannot be answered separately from "is this profile public?".
     if not view.include_groups:
-        raise _not_found()
+        raise _not_found("withheld")
     return await project_groups(db, view, owner_id=system.user_id)
 
 
@@ -320,6 +382,7 @@ async def public_system_groups(
     response_model=PublicSystemView,
     dependencies=[_RATE],
 )
+@_counted("system", "link")
 async def public_shared(
     token: str,
     response: Response,
@@ -339,6 +402,7 @@ async def public_shared(
     response_model=list[PublicMemberView],
     dependencies=[_RATE],
 )
+@_counted("members", "link")
 async def public_shared_members(
     token: str,
     response: Response,
@@ -355,6 +419,7 @@ async def public_shared_members(
     response_model=PublicMemberView,
     dependencies=[_RATE],
 )
+@_counted("member", "link")
 async def public_shared_member(
     token: str,
     member_id: uuid.UUID,
@@ -371,6 +436,7 @@ async def public_shared_member(
     response_model=PublicFrontingView,
     dependencies=[_RATE],
 )
+@_counted("fronting", "link")
 async def public_shared_fronting(
     token: str,
     response: Response,
@@ -379,7 +445,7 @@ async def public_shared_fronting(
     _public_headers(response, token_keyed=True)
     view, system = await _resolve_link(token, db)
     if not view.include_fronting:
-        raise _not_found()
+        raise _not_found("withheld")
     return await project_fronting(db, view, system)
 
 
@@ -388,6 +454,7 @@ async def public_shared_fronting(
     response_model=PublicRelationshipsView,
     dependencies=[_RATE],
 )
+@_counted("relationships", "link")
 async def public_shared_relationships(
     token: str,
     response: Response,
@@ -396,7 +463,7 @@ async def public_shared_relationships(
     _public_headers(response, token_keyed=True)
     view, _ = await _resolve_link(token, db)
     if not view.include_relationships:
-        raise _not_found()
+        raise _not_found("withheld")
     # Roster off means no edge could project either - 404, not an empty list.
     # See the public-grant twin for why.
     _require_roster(view)
@@ -408,6 +475,7 @@ async def public_shared_relationships(
     response_model=PublicGroupsView,
     dependencies=[_RATE],
 )
+@_counted("groups", "link")
 async def public_shared_groups(
     token: str,
     response: Response,
@@ -416,5 +484,5 @@ async def public_shared_groups(
     _public_headers(response, token_keyed=True)
     view, system = await _resolve_link(token, db)
     if not view.include_groups:
-        raise _not_found()
+        raise _not_found("withheld")
     return await project_groups(db, view, owner_id=system.user_id)
