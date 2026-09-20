@@ -23,7 +23,7 @@ Adding a new metric:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -692,6 +692,61 @@ active_systems_monthly = _G(
     "kind, the cardinality of the UNION of 30 daily HLL sketches.",
     ["auth_kind"],
 )
+
+# Client families split the `client` auth kind by platform. Bounded by
+# construction: the raw X-Sheaf-Client header never reaches a label, only the
+# family it folds into (sheaf/observability/client_family.py). `api` is a family
+# too, decided by the credential rather than the header, so the six together
+# cover every authenticated request. Kept as a separate set of series rather
+# than a second label on the DAU/MAU gauges so nothing already charted changes
+# shape.
+ClientFamilyLabel = Literal["web", "android", "ios", "watch", "api", "other"]
+
+active_accounts_daily_by_client = _G(
+    "sheaf_active_accounts_daily_by_client",
+    "Estimated distinct accounts active today on each client family (web / "
+    "android / ios / watch / api / other), from the same id-free HLL machinery "
+    "as sheaf_active_accounts_daily. An account active on two families counts "
+    "in both; the deduped total is active_accounts_daily{auth_kind=any}.",
+    ["client_family"],
+)
+active_accounts_monthly_by_client = _G(
+    "sheaf_active_accounts_monthly_by_client",
+    "Estimated distinct accounts active on each client family over the trailing "
+    "30 days: the cardinality of the UNION of that family's 30 daily sketches. "
+    "Platform share is this over active_accounts_monthly{auth_kind=any}.",
+    ["client_family"],
+)
+active_accounts_monthly_overlap = _G(
+    "sheaf_active_accounts_monthly_overlap",
+    "Estimated distinct accounts active on BOTH of a pair of client families in "
+    "the trailing 30 days, by inclusion-exclusion over the HLL unions "
+    "(|A| + |B| - |A union B|). `families` is the pair as 'a+b'. Three estimates' "
+    "errors compound, so read it as a proportion, not a census; a small true "
+    "overlap can read as 0.",
+    ["families"],
+)
+requests_by_client_total = _C(
+    "sheaf_requests_by_client_total",
+    "Authenticated requests by client family. Deliberately without route: the "
+    "hour-of-day and day-of-week shape per platform is what this is for, and "
+    "route x family belongs behind the extended-metrics gate.",
+    ["client_family"],
+)
+push_devices = _G(
+    "sheaf_push_devices",
+    "Registered mobile push device tokens by platform (fcm / apns_dev / "
+    "apns_prod): the installed base the notification fan-out can reach, as "
+    "opposed to the active base the usage sketches count.",
+    ["platform"],
+)
+auth_sessions_by_client = _G(
+    "sheaf_auth_sessions_by_client",
+    "Live sessions by the client family of the name stored at mint time. A "
+    "session minted before the web app sent X-Sheaf-Client carries a browser "
+    "name and lands as `other` until it expires.",
+    ["client_family"],
+)
 systems_with_public_profile = _G(
     "sheaf_systems_with_public_profile",
     "Systems with at least one live public or unlisted-link share grant right "
@@ -1156,6 +1211,9 @@ def prewarm_metrics() -> None:
     auth_recovery_codes_used_total.inc(0)
     cf_shield_session_revocations_total.inc(0)
     signups_total.inc(0)
+
+    for family in get_args(ClientFamilyLabel):
+        requests_by_client_total.labels(client_family=family).inc(0)
 
     for reason in (
         "client_closed", "auth_revoked", "auth_expired", "backpressure",

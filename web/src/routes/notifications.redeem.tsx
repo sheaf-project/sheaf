@@ -9,6 +9,7 @@ import {
   previewActivation,
   redeemActivation,
 } from "@/lib/notification-redemption";
+import { instanceHeaders } from "@/lib/api-client";
 import type { DestinationType, RedeemPreview } from "@/types/api";
 
 type Phase =
@@ -57,7 +58,9 @@ async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
   // service error", so guard it explicitly with a clearer message.
   let appKey: BufferSource | undefined;
   try {
-    const resp = await fetch("/v1/version");
+    const resp = await fetch("/v1/version", {
+      headers: instanceHeaders("/v1/version"),
+    });
     if (resp.ok) {
       const data = await resp.json();
       if (data.vapid_public_key) {
