@@ -44,6 +44,10 @@ import {
   previewImport as previewAmpersand,
 } from "@/lib/ampersand-import";
 import {
+  type BerrytreePreviewSummary,
+  previewImport as previewBerrytree,
+} from "@/lib/berrytree-import";
+import {
   createApiImport,
   createFileImport,
   newIdempotencyKey,
@@ -59,7 +63,8 @@ type Source =
   | "ps"
   | "prism"
   | "op"
-  | "amp";
+  | "amp"
+  | "bt";
 // "importing" shows a brief spinner while the enqueue POST is in
 // flight; on success the flow navigates to /imports/:id, which owns
 // the running/done UI. There's no "done" step here any more.
@@ -100,6 +105,9 @@ export function ImportPage() {
       )}
       {source === "amp" && (
         <AmpersandImportFlow onBack={() => setSource("choose")} />
+      )}
+      {source === "bt" && (
+        <BerrytreeImportFlow onBack={() => setSource("choose")} />
       )}
     </>
   );
@@ -231,6 +239,30 @@ function SourcePicker({ onSelect }: { onSelect: (s: Source) => void }) {
             and decodes the embedded avatars. Each Ampersand system becomes
             a Sheaf group; the shared asset library and cosmetic name/avatar
             styling have no Sheaf equivalent and are dropped.
+          </p>
+        </CardContent>
+      </Card>
+      <Card
+        className="cursor-pointer hover:border-primary transition-colors"
+        onClick={() => onSelect("bt")}
+      >
+        <CardHeader>
+          <CardTitle className="text-base">
+            Import from BerryTree
+            <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 align-middle text-xs font-normal text-amber-700 dark:text-amber-400">
+              Experimental
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Upload a BerryTree JSON export. Brings across members, custom
+            statuses, fronting history and folders. We built this from a
+            single sample export, so the rest of the format (journals, notes,
+            chat, polls, reminders, relationships, places) is counted and
+            reported rather than guessed at. The upload step tells you exactly
+            what your file holds and what would be left behind before you
+            commit to anything.
           </p>
         </CardContent>
       </Card>
@@ -2150,6 +2182,265 @@ function AmpersandImportFlow({ onBack }: { onBack: () => void }) {
 
       {step === "importing" && <ImportingCard />}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BerryTree import flow
+// ---------------------------------------------------------------------------
+
+function BerrytreeImportFlow({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<BerrytreePreviewSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [idemKey] = useState(newIdempotencyKey);
+
+  const [conflictStrategy, setConflictStrategy] =
+    useState<ConflictStrategy>("skip");
+  const [customFronts, setCustomFronts] = useState(true);
+  const [customFields, setCustomFields] = useState(true);
+  const [tags, setTags] = useState(true);
+  const [folders, setFolders] = useState(true);
+  const [frontHistory, setFrontHistory] = useState(true);
+  const [templates, setTemplates] = useState(false);
+
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setError(null);
+    try {
+      const p = await previewBerrytree(f);
+      setPreview(p);
+      setStep("preview");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to parse export"));
+    }
+  }
+
+  async function handleImport() {
+    if (!file) return;
+    setStep("importing");
+    setError(null);
+    try {
+      const job = await createFileImport({
+        source: "berrytree_file",
+        file,
+        idempotencyKey: idemKey,
+        options: {
+          conflict_strategy: conflictStrategy,
+          custom_fronts: customFronts,
+          custom_fields: customFields,
+          tags,
+          folders,
+          front_history: frontHistory,
+          templates,
+        },
+      });
+      navigate(`/imports/${job.id}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Import failed"));
+      setStep("preview");
+    }
+  }
+
+  return (
+    <>
+      {error && <ErrorBanner message={error} />}
+
+      {step === "upload" && (
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle className="text-base">Upload BerryTree export</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              In BerryTree, export your data as JSON and upload the resulting{" "}
+              <code>.json</code> here.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              BerryTree support is experimental. We were only able to get hold
+              of one example export, so this importer covers members, custom
+              statuses, fronting history and folders, and deliberately does not
+              guess at the rest. Nothing is dropped quietly: the next step
+              lists every section in your file we cannot read yet, with counts.
+              If that list has something you need in it, please get in touch
+              and bring the export. That is genuinely what lets us fix it.
+            </p>
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileSelect}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            />
+            <Button variant="outline" size="sm" onClick={onBack}>
+              Back
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "preview" && preview && (
+        <div className="grid gap-4 max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+              <div>Members: <strong>{preview.member_count}</strong></div>
+              <div>
+                Custom statuses: <strong>{preview.custom_front_count}</strong>
+              </div>
+              <div>
+                Fronting entries:{" "}
+                <strong>{preview.front_history_count}</strong>
+              </div>
+              <div>
+                Folders (as groups): <strong>{preview.folder_count}</strong>
+              </div>
+              <div>Tags: <strong>{preview.tag_count}</strong></div>
+              <div>
+                Custom fields: <strong>{preview.custom_field_count}</strong>
+              </div>
+              {preview.template_count > 0 && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  {preview.template_count} template member
+                  {preview.template_count === 1 ? "" : "s"} in the file.
+                  Templates are scaffolding for making new members rather than
+                  members themselves, and they count against your member limit,
+                  so they are left out unless you turn them on below.
+                </div>
+              )}
+              {preview.fronting_type_count > 0 && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  {preview.fronting_type_count} fronting type
+                  {preview.fronting_type_count === 1 ? "" : "s"} (
+                  {"“"}Co-conscious{"”"} and friends). Sheaf has no
+                  separate fronting-type list, so the name is kept on each
+                  fronting entry's status text instead.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <BerrytreeGaps preview={preview} />
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Import options</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Checkbox
+                label="Custom statuses (as custom fronts)"
+                checked={customFronts}
+                onChange={setCustomFronts}
+              />
+              <Checkbox
+                label="Folders (as groups, keeping nesting)"
+                checked={folders}
+                onChange={setFolders}
+              />
+              <Checkbox label="Tags" checked={tags} onChange={setTags} />
+              <Checkbox
+                label="Custom fields (and member role/mood)"
+                checked={customFields}
+                onChange={setCustomFields}
+              />
+              <Checkbox
+                label="Fronting history"
+                checked={frontHistory}
+                onChange={setFrontHistory}
+              />
+              <Checkbox
+                label="Template members"
+                checked={templates}
+                onChange={setTemplates}
+              />
+
+              <ConflictStrategyField
+                value={conflictStrategy}
+                onChange={setConflictStrategy}
+              />
+
+              <p className="text-xs text-muted-foreground">
+                Members are matched by name. Importing the same file twice
+                reuses the members, folders and tags it already created rather
+                than duplicating them.
+              </p>
+
+              <ImportLimitWarnings warnings={preview.limit_warnings} />
+
+              <ImportSubmit
+                incoming={
+                  preview.member_count +
+                  (customFronts ? preview.custom_front_count : 0) +
+                  (templates ? preview.template_count : 0)
+                }
+                onImport={handleImport}
+              />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {step === "importing" && <ImportingCard />}
+    </>
+  );
+}
+
+// What the file holds that this importer cannot read yet, plus anything
+// BerryTree's own exporter reported failing to write. Shown before the
+// options rather than after, because it is the thing most likely to change
+// someone's mind about importing at all. Renders nothing when the file is
+// fully covered.
+function BerrytreeGaps({ preview }: { preview: BerrytreePreviewSummary }) {
+  const { unsupported_sections: sections, export_errors: errors } = preview;
+  if (sections.length === 0 && errors.length === 0) return null;
+  return (
+    <Card className="border-amber-500/40 bg-amber-500/5">
+      <CardHeader>
+        <CardTitle className="text-base">What would be left behind</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {sections.length > 0 && (
+          <>
+            <p className="text-muted-foreground">
+              Your export has these, and this importer cannot read them yet:
+            </p>
+            <ul className="list-disc pl-5">
+              {sections.map((s) => (
+                <li key={s.name}>
+                  <strong>{s.count}</strong> {s.name}
+                </li>
+              ))}
+            </ul>
+            <p className="text-muted-foreground">
+              They stay in your export file, so nothing is lost by importing
+              now and bringing them across later. If you need any of them,
+              please get in touch and bring this export with you. One real
+              file is what turns a section on this list into a supported one.
+            </p>
+          </>
+        )}
+        {errors.length > 0 && (
+          <>
+            <p className="text-muted-foreground">
+              BerryTree also recorded {errors.length} section
+              {errors.length === 1 ? "" : "s"} its own exporter could not
+              write, so this file was already incomplete before it reached
+              Sheaf:
+            </p>
+            <ul className="list-disc pl-5 font-mono text-xs">
+              {errors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
