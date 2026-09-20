@@ -3,7 +3,15 @@
 .env.*
 !.env.example
 
-web/node_modules/
+# Anchored to any depth, not just the root: a parallel localdev checkout
+# (a git worktree, a second clone for a bisect) sitting under the context
+# root brings its own node_modules and .venv with it, and a root-only
+# pattern lets all of that into the build context. One such checkout is
+# ~550MB; the symptom is a build that spends its first minute on
+# "transferring context".
+**/node_modules/
+**/.venv/
+**/worktrees/
 web/dist/
 docs/
 tests/
@@ -11,10 +19,9 @@ data/
 certs/
 notes/
 nginx/
-# sheaf_dev/ intentionally NOT ignored — needs to be in build context
+# sheaf_dev/ intentionally NOT ignored - needs to be in build context
 # so the INCLUDE_DEV_TOOLS build arg can conditionally install it.
 # It is only installed when INCLUDE_DEV_TOOLS=true; otherwise deleted.
-.venv
 
 __pycache__
 *.pyc
