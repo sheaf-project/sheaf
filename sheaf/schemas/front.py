@@ -114,3 +114,31 @@ class FrontRead(BaseModel):
     pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class CompactFronter(BaseModel):
+    """One member currently fronting, flattened out of the front entries.
+
+    `name` is the display name when set, else the member's name. `since` is
+    the effective per-member fronting-since: the chain-aware `member_since`
+    when the system coalesces contiguous fronts, else the entry's
+    `started_at`. Both mirror what the phone hands the Wear app, so the two
+    watch platforms render identical text.
+    """
+
+    id: uuid.UUID
+    name: str
+    since: datetime
+
+
+class CompactFronters(BaseModel):
+    """Object wrapper around the fronter list.
+
+    Deliberately an object rather than a bare array. Connect IQ's
+    `makeWebRequest` cannot deliver a top-level JSON array: the callback's
+    `data` is typed Dictionary/String/Iterator/Null, and in practice a
+    multi-element top-level array arrives as null even on a 200. Wrapping
+    is what makes this consumable from a Garmin watch at all.
+    """
+
+    fronters: list[CompactFronter] = []

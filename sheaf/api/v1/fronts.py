@@ -20,6 +20,8 @@ from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.observability.metrics import fronts_created_total
 from sheaf.schemas.front import (
+    CompactFronter,
+    CompactFronters,
     FrontAuditEventRead,
     FrontCreate,
     FrontRead,
@@ -29,6 +31,7 @@ from sheaf.schemas.front import (
 )
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.front_stream import publish_front_change
+from sheaf.services.members import member_name_plaintext
 from sheaf.services.notifications.events import (
     emit_front_change,
     snapshot_front_state,
@@ -460,6 +463,54 @@ async def get_current_fronts(
         )
         for f in fronts
     ]
+
+
+@router.get("/current/compact", response_model=CompactFronters)
+async def get_current_fronters_compact(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Flattened, object-wrapped view of who is fronting right now.
+
+    For watch clients that cannot consume `GET /v1/fronts/current`. Two
+    reasons it exists rather than the caller projecting the full payload:
+    Connect IQ cannot receive a top-level JSON array (see `CompactFronters`),
+    and the full view carries `member_ids` without names, so a watch would
+    have to fetch the roster too, which is a larger bare array with the
+    same problem.
+
+    Name and `since` semantics deliberately match what the phone pushes to
+    the Wear app, so both watch platforms show the same thing.
+    """
+    system = await _get_user_system(user, db)
+    result = await db.execute(
+        select(Front)
+        .options(selectinload(Front.members))
+        .where(Front.system_id == system.id, Front.ended_at.is_(None))
+        .order_by(Front.started_at.desc())
+    )
+    fronts = list(result.scalars().all())
+    member_since_map = await _build_coalesced_member_since(db, system, fronts)
+
+    # A member can sit in more than one open front. Keep the first hit:
+    # fronts are ordered newest-first, and member_since already resolves
+    # the chain-aware start, so the first is the one to show.
+    seen: set[uuid.UUID] = set()
+    fronters: list[CompactFronter] = []
+    for f in fronts:
+        since_map = member_since_map[f.id][0]
+        for m in f.members:
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            fronters.append(
+                CompactFronter(
+                    id=m.id,
+                    name=m.display_name or member_name_plaintext(m),
+                    since=since_map.get(str(m.id), f.started_at),
+                )
+            )
+    return CompactFronters(fronters=fronters)
 
 
 @router.post(
