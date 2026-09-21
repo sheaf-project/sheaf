@@ -109,6 +109,13 @@ _FIELD_RAISE_STAGING = (
     "staged privacy raise waiting out the grace window; the export carries the "
     "definition's live privacy, so an import never restores a half-applied raise"
 )
+# And for a member, now that a member raise stages on the member itself the
+# way the other three do: the export carries the member's LIVE privacy, so an
+# import never restores a half-applied raise.
+_MEMBER_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "member's live privacy, so an import never restores a half-applied raise"
+)
 # And for the system-level master switch, same reason: the export carries the
 # system's LIVE privacy, so an import never restores a half-applied raise.
 _SYSTEM_RAISE_STAGING = (
@@ -281,6 +288,8 @@ CLASSIFICATION: dict[type, dict] = {
                 "live System Safety staging state; imports restore the guard "
                 "itself but never resume an in-flight release"
             ),
+            "pending_privacy": _MEMBER_RAISE_STAGING,
+            "privacy_activates_at": _MEMBER_RAISE_STAGING,
         },
     },
     Front: {

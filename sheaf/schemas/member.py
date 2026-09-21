@@ -130,6 +130,11 @@ class MemberRead(BaseModel):
     emoji: str | None
     is_custom_front: bool
     privacy: PrivacyLevel
+    # A raise waiting out the grace window: `privacy` above is still the truth,
+    # and this says what it will become when `privacy_activates_at` passes.
+    # Null = nothing staged. The same pair groups and custom fields report.
+    pending_privacy: PrivacyLevel | None = None
+    privacy_activates_at: datetime | None = None
     note: str | None
     quick_switch_pin: int | None = None
     never_shareable: bool = False

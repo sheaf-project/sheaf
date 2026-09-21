@@ -347,9 +347,12 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 | `sheaf_systems_with_public_profile_by_subject` | gauge | `subject_type` ∈ {public, link, both} |
 
 `kind` (both the finalize counter and the pending gauge) ∈ {grant,
-view_member, view_field, view_flags, member_guard, edge_raise, group_raise,
-field_raise, system_privacy} - one per promotion category the finalize sweep
-handles. `sheaf_share_grants_finalized_total` counts staged exposures the
+view_member, view_field, view_flags, member_guard, member_raise, edge_raise,
+group_raise, field_raise, system_privacy} - one per promotion category the
+finalize sweep handles. `member_raise` is a member's own ceiling waiting to go
+public (the `members.pending_privacy` pair); `view_member` is a membership row
+waiting, which after this split is how an unarchive back onto a published
+view stages. `sheaf_share_grants_finalized_total` counts staged exposures the
 sweep has promoted live; `sheaf_share_pending_exposures` is the point-in-time
 depth still waiting behind a grace window (the operator mirror of the owner's
 exposure banner). member/field kinds collapse per entity, matching the banner.

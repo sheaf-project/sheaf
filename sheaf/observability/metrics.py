@@ -150,6 +150,7 @@ ShareExposureKind = Literal[
     "view_field",
     "view_flags",
     "member_guard",
+    "member_raise",
     "edge_raise",
     "group_raise",
     "field_raise",
@@ -1364,7 +1365,8 @@ def prewarm_metrics() -> None:
 
     for kind in (
         "grant", "view_member", "view_field", "view_flags", "member_guard",
-        "edge_raise", "group_raise", "field_raise", "system_privacy",
+        "member_raise", "edge_raise", "group_raise", "field_raise",
+        "system_privacy",
     ):
         share_grants_finalized_total.labels(kind=kind).inc(0)
 
