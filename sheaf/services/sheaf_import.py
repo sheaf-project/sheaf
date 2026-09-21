@@ -1893,6 +1893,13 @@ async def run_import(
             member_link_preview_mode=_link_preview_mode(
                 v_data.get("member_link_preview_mode")
             ),
+            # Restores as the owner had it. Safe despite being a live rule:
+            # no grant is ever imported (see the export's own note), so the
+            # restored view serves nobody until they deliberately publish it,
+            # and at that point the grant carries its own step-up and window.
+            include_all_public_members=bool(
+                v_data.get("include_all_public_members", False)
+            ),
             member_permalinks=bool(v_data.get("member_permalinks", False)),
         )
         db.add(view)

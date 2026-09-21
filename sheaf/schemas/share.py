@@ -45,6 +45,9 @@ class ShareViewCreate(BaseModel):
     # avatar, which is neither a subset nor a superset of the system card. Also
     # needs `member_permalinks` on before it can do anything.
     member_link_preview_mode: LinkPreviewMode = LinkPreviewMode.GENERIC
+    # Track `privacy == public` live instead of curating a member list. Off by
+    # default like everything else that widens the page: an owner asks for it.
+    include_all_public_members: bool = False
     # Not an exposure flag (see services/sharing.EXPOSURE_FLAGS): it addresses
     # members the roster already shows rather than showing anyone new.
     member_permalinks: bool = False
@@ -60,6 +63,7 @@ class ShareViewUpdate(BaseModel):
     include_groups: bool | None = None
     link_preview_mode: LinkPreviewMode | None = None
     member_link_preview_mode: LinkPreviewMode | None = None
+    include_all_public_members: bool | None = None
     member_permalinks: bool | None = None
 
     password: str | None = _PASSWORD
@@ -132,6 +136,11 @@ class ShareViewRead(BaseModel):
     # member who is private in an otherwise public view is decided per request,
     # not here, because one view can serve one member and withhold another.
     member_link_preview_effective: LinkPreviewMode = LinkPreviewMode.GENERIC
+    # When true, `members` below is not the roster: the view serves every member
+    # set to public, live, and those rows are curation kept for the day the flag
+    # goes back off. The client says so rather than listing a roster that is not
+    # the one being served.
+    include_all_public_members: bool
     # Instant in both directions and never staged, so it has no pending twin
     # below: it exposes no new data, only a stable address for members the
     # roster already shows.
@@ -151,6 +160,7 @@ class ShareViewRead(BaseModel):
     pending_include_groups: bool | None = None
     pending_link_preview_mode: LinkPreviewMode | None = None
     pending_member_link_preview_mode: LinkPreviewMode | None = None
+    pending_include_all_public_members: bool | None = None
     flags_activate_at: datetime | None = None
     members: list[ShareViewMemberRead]
     fields: list[ShareViewFieldRead]
@@ -256,6 +266,10 @@ class ShareAuditEntry(BaseModel):
     include_fronting: bool
     include_relationships: bool
     include_groups: bool
+    # Whether the curated `member_count` above is even the rule any more: with
+    # this on the view serves every public member and `served_member_count` is
+    # the only one of the two that describes what a visitor gets.
+    include_all_public_members: bool
     member_permalinks: bool
     # Edges this view would actually serve right now, computed with the same
     # query the projection uses. Zero whenever include_relationships is off, and

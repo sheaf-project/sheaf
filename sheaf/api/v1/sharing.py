@@ -282,6 +282,7 @@ async def _view_to_read(
         member_link_preview_effective=member_link_preview_effective(
             view, serves_public_grant=serves_public
         ),
+        include_all_public_members=view.include_all_public_members,
         member_permalinks=view.member_permalinks,
         created_at=view.created_at,
         is_shared=is_shared,
@@ -293,6 +294,9 @@ async def _view_to_read(
         pending_include_groups=view.pending_include_groups,
         pending_link_preview_mode=view.pending_link_preview_mode,
         pending_member_link_preview_mode=view.pending_member_link_preview_mode,
+        pending_include_all_public_members=(
+            view.pending_include_all_public_members
+        ),
         flags_activate_at=view.flags_activate_at,
         members=[
             {
@@ -433,6 +437,7 @@ async def create_share_view(
         include_groups=body.include_groups,
         link_preview_mode=body.link_preview_mode,
         member_link_preview_mode=body.member_link_preview_mode,
+        include_all_public_members=body.include_all_public_members,
         member_permalinks=body.member_permalinks,
     )
     db.add(view)
@@ -1382,6 +1387,7 @@ async def sharing_audit(
                 include_fronting=view.include_fronting,
                 include_relationships=view.include_relationships,
                 include_groups=view.include_groups,
+                include_all_public_members=view.include_all_public_members,
                 member_permalinks=view.member_permalinks,
                 relationship_count=len(edges),
                 group_count=len(groups),

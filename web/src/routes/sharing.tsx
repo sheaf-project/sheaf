@@ -253,6 +253,7 @@ const EXPOSURE_FLAGS = [
   "fronting_show_count",
   "include_relationships",
   "include_groups",
+  "include_all_public_members",
   // The two string-valued ones ("generic" | "system_details"). They stage and
   // step up exactly like the booleans above - the server asks "is this a raise"
   // of an ordering rather than of `=== true`, so nothing here needs to know which
@@ -616,7 +617,11 @@ function SharingManager() {
                     curated total only appears when the two differ, as "3 of
                     5", because that gap is the thing worth knowing. */}
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {e.include_members ? servedMembersLabel(e) : "no member list"}
+                  {e.include_members
+                    ? e.include_all_public_members
+                      ? `${servedMembersLabel(e)} (everyone set to public)`
+                      : servedMembersLabel(e)
+                    : "no member list"}
                   {e.field_count > 0 && `, ${e.field_count} field${e.field_count === 1 ? "" : "s"}`}
                   {e.include_members && e.include_bio && ", bios"}
                   {e.include_fronting && ", live fronting"}
@@ -717,6 +722,7 @@ function NewViewCard() {
   const [frontingShowCount, setFrontingShowCount] = useState(true);
   const [includeRelationships, setIncludeRelationships] = useState(false);
   const [includeGroups, setIncludeGroups] = useState(false);
+  const [includeAllPublic, setIncludeAllPublic] = useState(false);
   const [memberPermalinks, setMemberPermalinks] = useState(false);
   const [linkPreviewMode, setLinkPreviewMode] = useState(false);
   const [memberLinkPreviewMode, setMemberLinkPreviewMode] = useState(false);
@@ -729,6 +735,7 @@ function NewViewCard() {
     setFrontingShowCount(true);
     setIncludeRelationships(false);
     setIncludeGroups(false);
+    setIncludeAllPublic(false);
     setMemberPermalinks(false);
     setLinkPreviewMode(false);
     setMemberLinkPreviewMode(false);
@@ -745,6 +752,7 @@ function NewViewCard() {
       fronting_show_count: frontingShowCount,
       include_relationships: includeRelationships,
       include_groups: includeGroups,
+      include_all_public_members: includeAllPublic,
       member_permalinks: memberPermalinks,
       link_preview_mode: modeFor(linkPreviewMode),
       member_link_preview_mode: modeFor(memberLinkPreviewMode),
@@ -786,6 +794,14 @@ function NewViewCard() {
                 is separate: leave it on and it still names whoever it shows.
               </p>
             )}
+            <CheckboxRow
+              checked={includeAllPublic}
+              onChange={setIncludeAllPublic}
+              label="Show everyone set to Public"
+              desc="Instead of picking members one by one, show every member whose privacy is Public - worked out fresh on every visit, so somebody you make Public later appears on their own. Members marked never shareable are never shown, whatever this says."
+              disabled={!includeMembers}
+              indent
+            />
             <CheckboxRow
               checked={includeBio}
               onChange={setIncludeBio}
@@ -1366,11 +1382,56 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
   const addMember = useAddViewMember();
   const removeMember = useRemoveViewMember();
   const addGroup = useAddViewGroup();
+  const update = useUpdateShareView();
   const [pendingAdd, setPendingAdd] = useState<string | null>(null);
   const [pendingGroupAdd, setPendingGroupAdd] = useState<string | null>(null);
+  const [pendingAllPublic, setPendingAllPublic] = useState<boolean | null>(null);
   const [groupToRemove, setGroupToRemove] = useState<ShareViewGroupRow | null>(
     null,
   );
+
+  // Whether the roster is a live rule rather than the picked list below it.
+  const allPublic = view.include_all_public_members;
+  // The roster's own on/off switch lives in the settings block above. With it
+  // off nothing member-shaped is served, so choosing WHO is in the roster has
+  // nothing to attach to - the same way bios and permalinks go inert.
+  const membersOff = !view.include_members;
+  /** A box that is currently OFF would be a loosening to tick, which the API
+   *  refuses while the instance's public surface is off. Same mirror as the
+   *  settings block's `lockedOn`. */
+  const lockedOn = off && !allPublic;
+
+  /** Same shape as `ViewSettings.change`: it is an exposure flag like any
+   *  other, so turning it ON while the view is shared re-auths (and stages, if
+   *  a grace period is set) and turning it off is immediate. It lives here
+   *  rather than up with the other flags because it is a decision about WHO is
+   *  in the view, and this is where that is decided. */
+  function changeAllPublic(value: boolean) {
+    const loosening = value && view.is_shared;
+    if (loosening && safety.stepUp && safety.tier !== "none") {
+      setPendingAllPublic(value);
+      return;
+    }
+    // Bare first, re-prompt if the server disagrees - the same fallback the
+    // other exposure flags use, for the same reason: this gate is a mirror of
+    // the server's predicate and a mirror can drift.
+    update.mutate(
+      {
+        id: view.id,
+        data: { include_all_public_members: value },
+        skipErrorToast: true,
+      },
+      {
+        onError: (err) => {
+          if (isStepUpRequiredError(err)) {
+            setPendingAllPublic(value);
+            return;
+          }
+          showApiErrorToast(err, "Couldn't update this view.", { force: true });
+        },
+      },
+    );
+  }
 
   const groupById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1473,6 +1534,22 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
       <Label className="text-xs uppercase tracking-wide text-muted-foreground">
         Members
       </Label>
+      <CheckboxRow
+        checked={allPublic}
+        onChange={changeAllPublic}
+        label="Show everyone set to Public"
+        desc="Show every member whose privacy is Public instead of picking them one by one. It is worked out fresh on every visit, so somebody you make Public later appears here on their own, and somebody you make private again drops off straight away. Members marked never shareable are never shown, whatever this says."
+        disabled={membersOff || lockedOn}
+        title={lockedOn ? LOOSEN_OFF_REASON : undefined}
+      />
+      {allPublic && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-500">
+          This view shows everyone set to Public, so the list below isn&apos;t
+          what decides who appears - it&apos;s kept for when you switch this
+          back off. While it is on, setting a member&apos;s privacy to Public
+          publishes them here.
+        </p>
+      )}
       {view.members.length === 0 ? (
         <p className="text-sm text-muted-foreground">No members yet.</p>
       ) : (
@@ -1504,11 +1581,16 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
                     reason={notServed.title}
                   />
                 )}
-                {/* Unchanged, and deliberately separate from the badge above:
-                    a member can be both waiting out a grace window AND held
-                    back by something that will still be true afterwards, and
-                    the owner needs to be told both. */}
-                {row.status === "pending" && (
+                {/* Deliberately separate from the badge above: a member can be
+                    both waiting out a grace window AND held back by something
+                    that will still be true afterwards, and the owner needs to
+                    be told both. Dropped when the view shows everyone set to
+                    Public and this member is being served - the row's own
+                    window stopped deciding anything the moment the flag went
+                    on, so "pending" would claim they are still hidden while
+                    they are live, which is the wrong direction to be wrong
+                    in. */}
+                {row.status === "pending" && !(allPublic && !notServed) && (
                   <span className="text-[9px] opacity-70">pending</span>
                 )}
                 <button
@@ -1655,6 +1737,27 @@ function ViewMembers({ view, safety }: { view: ShareView; safety: SafetyContext 
             doAddGroup(pendingGroupAdd, c);
             setPendingGroupAdd(null);
           }}
+        />
+      )}
+      {pendingAllPublic !== null && (
+        <DestructiveConfirmDialog
+          open
+          onOpenChange={(o) => !o && setPendingAllPublic(null)}
+          title="Show everyone set to Public"
+          description={`This view is already published, so this exposes every member whose privacy is Public - the ones who are Public now, and any you make Public later, without coming back here. ${effectSentence(safety)}`}
+          tier={safety.tier}
+          actionLabel="Confirm"
+          actionLabelLoading="Saving..."
+          loading={update.isPending}
+          onConfirm={(c?: DestructiveConfirm) =>
+            update.mutate(
+              {
+                id: view.id,
+                data: { include_all_public_members: pendingAllPublic, ...c },
+              },
+              { onSuccess: () => setPendingAllPublic(null) },
+            )
+          }
         />
       )}
       {groupToRemove && (

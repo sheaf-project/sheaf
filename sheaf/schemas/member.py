@@ -42,6 +42,17 @@ class MemberCreate(BaseModel):
     # no view, so there is nothing for the release gate to protect.
     fronting_private: bool | None = None
 
+    # Step-up credentials, ignored unless this create actually publishes
+    # somebody - which it can, despite the member being in no view, when a
+    # share view is set to serve every member whose privacy is `public`. Same
+    # shape and same reasoning as `GroupCreate`: creating something already
+    # public and raising an existing one to public are one exposure and must
+    # meet one gate, or the create path is the way around the other.
+    password: str | None = Field(
+        default=None, description="Required when the create would publish"
+    )
+    totp_code: str | None = None
+
     # banner_url shares the avatar normaliser: both are image storage keys /
     # external URLs with the same allow_external_images gate.
     @field_validator("avatar_url", "banner_url", mode="before")

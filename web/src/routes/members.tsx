@@ -1340,6 +1340,12 @@ export function MembersPage() {
     data: MemberUpdate;
     tier: DeleteConfirmation;
   } | null>(null);
+  // Creating a member already set to Public is the same raise when a share
+  // view shows everyone set to Public, so it takes the same credential prompt.
+  const [pendingExposureCreate, setPendingExposureCreate] = useState<{
+    data: MemberCreate;
+    tier: DeleteConfirmation;
+  } | null>(null);
   // Unarchiving somebody who is still sitting in a published view is a raise,
   // so it takes the same credential prompt as the edits above.
   const [pendingUnarchive, setPendingUnarchive] = useState<{
@@ -1400,6 +1406,40 @@ export function MembersPage() {
       return;
     }
     doSaveMemberEdit(member, data);
+  }
+
+  /**
+   * Create a member, retrying with credentials if the server asks.
+   *
+   * A member born Public is in no view, so for most accounts this is never
+   * gated. It is when a published share view shows everyone set to Public:
+   * then the create IS the publication, and the server refuses the bare
+   * attempt with the step-up error exactly as it does for raising an existing
+   * member. That refusal is a prompt, not a failure.
+   */
+  function doCreateMember(data: MemberCreate, confirm?: DestructiveConfirm) {
+    createMember.mutate(
+      { data: { ...data, ...confirm }, skipErrorToast: !confirm },
+      {
+        onSuccess: () => {
+          setPendingExposureCreate(null);
+          setShowCreate(false);
+        },
+        onError: (err) => {
+          if (!confirm && isStepUpRequiredError(err)) {
+            setPendingExposureCreate({
+              data,
+              tier:
+                safety?.settings.auth_tier ??
+                system?.delete_confirmation ??
+                "password",
+            });
+            return;
+          }
+          showApiErrorToast(err, "Couldn't create member.", { force: true });
+        },
+      },
+    );
   }
 
   function doSaveMemberEdit(member: Member, data: MemberUpdate) {
@@ -1546,11 +1586,7 @@ export function MembersPage() {
             <DialogTitle>Add member</DialogTitle>
           </DialogHeader>
           <MemberForm
-            onSubmit={(data) =>
-              createMember.mutate(data as MemberCreate, {
-                onSuccess: () => setShowCreate(false),
-              })
-            }
+            onSubmit={(data) => doCreateMember(data as MemberCreate)}
             loading={createMember.isPending}
             submitLabel="Create"
           />
@@ -1647,6 +1683,23 @@ export function MembersPage() {
               },
             },
           );
+        }}
+      />
+
+      {/* Create step-up: only ever shown after the server has said a member
+          born Public would be published at once by a live share view. */}
+      <DestructiveConfirmDialog
+        open={!!pendingExposureCreate}
+        onOpenChange={(open) => !open && setPendingExposureCreate(null)}
+        title="Confirm public visibility"
+        description="A share view of yours shows everyone set to Public, so creating this member as Public publishes them through it. Confirm now; if you have a grace period set, they arrive private and go Public after your System Safety window."
+        tier={pendingExposureCreate?.tier ?? "none"}
+        actionLabel="Create"
+        actionLabelLoading="Creating..."
+        loading={createMember.isPending}
+        onConfirm={(confirm?: DestructiveConfirm) => {
+          if (!pendingExposureCreate) return;
+          doCreateMember(pendingExposureCreate.data, confirm);
         }}
       />
 
