@@ -7,7 +7,10 @@ abstract, and the "who do I trust" decision is made separately:
   (`ShareViewMember`) and custom fields (`ShareViewField`), plus per-view flags
   (`include_bio`, `include_fronting`). A member or field that was never
   deliberately added is never projected, so the surface fails closed by
-  construction rather than by remembering to set a flag.
+  construction rather than by remembering to set a flag. The single, deliberate
+  exception is `include_all_public_members`, which makes the roster track
+  `Member.privacy == public` live; see the column's own comment for why that
+  particular signal is allowed to be a rule when group membership is not.
 - **ShareGrant** - points a subject at a view. Phase 1 ships two subjects:
   `public` (reachable at the system's UUID) and `link` (an opaque, revocable,
   rotatable bearer token). The user-to-user `user` subject is deliberately
@@ -104,6 +107,40 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
     # roster?" for anyone who asked.
     include_members: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
+    )
+
+    # Whether the roster is "every member set to public", evaluated LIVE, rather
+    # than only the members explicitly listed in `ShareViewMember`. Off by
+    # default, because a new capability never arrives switched on.
+    #
+    # This is the one place the module docstring's "nothing is exposed
+    # implicitly" rule is relaxed, and it is relaxed deliberately and narrowly.
+    # A group expansion is still a one-shot picker precisely because group
+    # membership is not a publishing decision - people are put in "Littles"
+    # for reasons that have nothing to do with strangers. `privacy == public`
+    # IS the publishing decision: it is the member's exposure ceiling, the
+    # single thing an owner sets to mean "this one may be seen". So a view can
+    # honestly track it, and an owner who marks somebody public later gets what
+    # they asked for without re-editing the view.
+    #
+    # It changes WHO is in the view, never WHETHER the view serves a roster:
+    # `include_members` stays the on/off switch over the member list, and every
+    # surface downstream (bios, relationships, group rosters, the fronting
+    # names) applies its own `include_members` gate exactly as it does for
+    # explicitly-listed members. With this on, the `ShareViewMember` rows are
+    # left untouched but stop deciding anything - every one of them that would
+    # have been served is a public member and so is already included - which is
+    # what makes turning it back off restore the curated roster intact.
+    #
+    # `never_shareable` is NOT relaxed: those members are excluded by
+    # `share_projection._active_member_filter` on their own predicate, with no
+    # override, flag or no flag.
+    #
+    # Because this is live, raising ANY member to public becomes an act of
+    # publishing on its own. `sharing.member_privacy_raise_exposes` is the gate
+    # that knows it; see its docstring.
+    include_all_public_members: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
 
     # Whether member bios are included for members in this view. Bios are
@@ -219,7 +256,7 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    # Staged flag flips. Turning one of the eight exposure flags ON while the
+    # Staged flag flips. Turning one of the nine exposure flags ON while the
     # view is already shared exposes more, so the new value parks here and the
     # finalize sweep copies it onto the live flag once `flags_activate_at`
     # passes - the same PENDING lifecycle the member and field rows carry,
@@ -252,6 +289,9 @@ class ShareView(UUIDMixin, TimestampMixin, Base):
     )
     pending_member_link_preview_mode: Mapped[str | None] = mapped_column(
         String(16), nullable=True
+    )
+    pending_include_all_public_members: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
     )
     # Shared activation time for whatever is staged above. NULL whenever no
     # pending value is set.

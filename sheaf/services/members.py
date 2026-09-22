@@ -111,6 +111,8 @@ def decrypt_member_for_read(
         "emoji": member.emoji,
         "is_custom_front": member.is_custom_front,
         "privacy": member.privacy,
+        "pending_privacy": member.pending_privacy,
+        "privacy_activates_at": member.privacy_activates_at,
         "note": member_note_plaintext(member),
         "quick_switch_pin": member.quick_switch_pin,
         "never_shareable": member.never_shareable,

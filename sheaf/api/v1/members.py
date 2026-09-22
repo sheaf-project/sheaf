@@ -60,10 +60,12 @@ from sheaf.services.security_events import record_security_event
 from sheaf.services.sharing import (
     exposure_activates_at,
     fronting_guard_release_exposes,
+    member_privacy_raise_exposes,
     refuse_raise_when_publishing_unavailable,
     reject_mixed_exposure_directions,
     shared_view_memberships,
     stage_membership_exposure,
+    view_serves_all_public_members,
     visibility_grace_days,
     visibility_step_up_required,
 )
@@ -242,6 +244,7 @@ async def list_members(
 )
 async def create_member(
     body: MemberCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -253,8 +256,33 @@ async def create_member(
     # surface is off serves nobody today and would quietly START serving the
     # moment an operator flips the setting back; being new rather than edited
     # does not change that, and without this create was the way around it.
+    born_staged = False
+    born_exposed = False
     if body.privacy == PrivacyLevel.PUBLIC:
         refuse_raise_when_publishing_unavailable(user)
+        # ...and the same STEP-UP and the same WAIT `update_member` applies,
+        # whenever a view is set to serve every public member. A brand new
+        # member is in no view, so for the whole life of this endpoint creating
+        # one public exposed nobody; under that flag there is no view to be in
+        # and the create IS the publication. Leaving it ungated would make
+        # "delete them and add them back as public" the way around the slower
+        # door - the same reason `group_raise_exposes` is asked by the group
+        # CREATE path, and this is the same treatment that path gives: re-auth
+        # now, then with a grace window set the member is born private with the
+        # raise parked on `pending_privacy` for the finalizer, else born public.
+        #
+        # `view_serves_all_public_members` rather than
+        # `member_privacy_raise_exposes`: there is no member id yet, and the
+        # membership-row half of that answer is necessarily empty for a row that
+        # does not exist.
+        if visibility_step_up_required(system) and (
+            await view_serves_all_public_members(db, system)
+        ):
+            await verify_destructive_auth(
+                user, system, body.password, body.totp_code, db
+            )
+            born_exposed = True
+            born_staged = visibility_grace_days(system) > 0
 
     limit = get_member_limit(user)
     if limit > 0:
@@ -269,6 +297,15 @@ async def create_member(
             )
 
     data = body.model_dump()
+    # Step-up credentials are not member columns; drop them before anything
+    # iterates the body, exactly as update_member does, so they can never be
+    # passed to the Member constructor and persisted.
+    data.pop("password", None)
+    data.pop("totp_code", None)
+    if born_staged:
+        data["privacy"] = PrivacyLevel.PRIVATE
+        data["pending_privacy"] = PrivacyLevel.PUBLIC
+        data["privacy_activates_at"] = exposure_activates_at(system)
     # The one field whose default depends on another field in the same body.
     # Resolved through the shared helper so this endpoint and the importers
     # cannot disagree about what a brand new custom front is guarded with.
@@ -308,6 +345,23 @@ async def create_member(
     db.add(member)
     await db.commit()
     await db.refresh(member)
+    # A birth that publishes somebody is a raise like any other and leaves the
+    # same IP/UA trail as `update_member` and `unarchive_member` do. Gated to
+    # the exposing path: a member born public into no live all-public view was
+    # never an exposure and records nothing, as before.
+    if born_exposed:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="staged" if born_staged else "immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={
+                "source": "member_privacy",
+                "member_id": str(member.id),
+                "create": True,
+            },
+        )
     return decrypt_member_for_read(member, user.id)
 
 
@@ -494,12 +548,22 @@ async def update_member(
     if any_raise_requested:
         refuse_raise_when_publishing_unavailable(user)
 
-    # Raising a member to `public` EXPOSES them: if they are already sitting in
-    # a view something points at, the projection would start serving them the
-    # moment this lands. Same rule as the sharing endpoints - when the category
-    # is armed, re-auth first; then, with a grace window set, the exposure
-    # itself waits it out (staged below), and with no window it applies at once
-    # because the re-auth already happened.
+    # Raising a member to `public` EXPOSES them, and there are two ways it can:
+    # they are already sitting in a view something points at, or some live view
+    # publishes every public member and this raise is itself the act of putting
+    # them on it. `member_privacy_raise_exposes` is the single answer to both -
+    # do NOT re-derive it from a membership-row lookup here, because a member
+    # with no membership row is exactly the case the second path exists for,
+    # and the row test alone reports "exposes nobody" about a raise that
+    # publishes them.
+    #
+    # Same rule as the sharing endpoints - when the category is armed, re-auth
+    # first; then, with a grace window set, the raise itself waits it out on the
+    # member's own `pending_privacy` (staged below), and with no window it
+    # applies at once because the re-auth already happened. The staging is the
+    # same for both paths: the live ceiling is what every projection filters
+    # on, so leaving it unmoved keeps the member off a curated roster and an
+    # all-public one alike until the sweep promotes it.
     #
     # Lowering privacy is the un-exposing direction and stays instant and
     # ungated. private -> friends is ungated too because the friends tier is
@@ -508,13 +572,11 @@ async def update_member(
     # (a flip to `friends` would then expose to friend grants) alongside the
     # matching filter in share_projection._active_member_filter and the same
     # test in import_dedup._privacy_raise_exposes.
-    exposing_rows: list[ShareViewMember] = []
-    if (
-        update_data.get("privacy") == PrivacyLevel.PUBLIC
-        and member.privacy != PrivacyLevel.PUBLIC
-        and visibility_step_up_required(system)
-    ):
-        exposing_rows = await shared_view_memberships(db, system, member.id)
+    privacy_raise_exposes = False
+    if privacy_raise_requested and visibility_step_up_required(system):
+        privacy_raise_exposes = await member_privacy_raise_exposes(
+            db, system, member.id
+        )
 
     # Releasing the dedicated fronting guard is another exposing direction.
     # Active and pending paths both count: this request receives a fresh full
@@ -539,15 +601,25 @@ async def update_member(
     # releasing it must not be easier than releasing the softer fronting guard
     # sitting right beside it in the same form.
     #
-    # What it actually exposes is the same thing that guard does. Setting the
-    # flag deletes every `ShareViewMember` row for the member, so releasing it
-    # cannot put them back on a roster, in a group list, or at the end of an
-    # edge - all of those compose out of those rows. What it CAN do is let
-    # their presence leak through `project_fronting`, which excludes a
-    # never-shareable member from the anonymous `hidden_count` as well as from
-    # the naming, so a release while they are fronting turns "nobody else is
-    # around" into "somebody else is". `fronting_guard_release_exposes` is
-    # exactly that question, so it is the same call, not a parallel one.
+    # What it exposes used to be exactly what the fronting guard exposes.
+    # Setting the flag deletes every `ShareViewMember` row for the member, so
+    # releasing it could not put them back on a roster, in a group list, or at
+    # the end of an edge - all of those composed out of those rows. What it
+    # could do is let their presence leak through `project_fronting`, which
+    # excludes a never-shareable member from the anonymous `hidden_count` as
+    # well as from the naming, so a release while they are fronting turns
+    # "nobody else is around" into "somebody else is".
+    # `fronting_guard_release_exposes` is exactly that question, so it is the
+    # same call, not a parallel one.
+    #
+    # `include_all_public_members` broke the first half of that. A view with
+    # that flag needs no membership row, so for a member who is ALREADY public,
+    # clearing never-shareable drops them straight onto a live roster - the
+    # deleted rows protect nothing. So the same
+    # `member_privacy_raise_exposes` the privacy raise asks is asked here too,
+    # conditioned on the privacy this request leaves them at (the body may be
+    # raising it in the same breath). Without this, the hardest guard in the
+    # product would have been the cheapest of the three to release.
     #
     # Step-up alone is the gate: unlike `fronting_private` there is no
     # `never_shareable_activates_at` column to park the release in, and the
@@ -558,23 +630,31 @@ async def update_member(
     # re-auth is the protection and the docstring says so rather than the code
     # implying a wait that does not happen.
     never_shareable_release_exposes = False
-    if (
-        update_data.get("never_shareable") is False
-        and member.never_shareable
-        and visibility_step_up_required(system)
-    ):
+    if never_shareable_release_requested and visibility_step_up_required(system):
+        # The privacy this request leaves them at, not the one they arrived
+        # with: "clear never_shareable AND set public" is one body, and the
+        # roster it lands them on is the one the new level reaches.
+        ends_public = (
+            update_data.get("privacy", member.privacy) == PrivacyLevel.PUBLIC
+        )
         never_shareable_release_exposes = await fronting_guard_release_exposes(
             db,
             system.id,
             member.id,
-            member_is_public=member.privacy == PrivacyLevel.PUBLIC,
+            member_is_public=ends_public,
         )
+        if not never_shareable_release_exposes and ends_public:
+            never_shareable_release_exposes = await member_privacy_raise_exposes(
+                db, system, member.id
+            )
 
     # Whether any raise would ACTUALLY expose (category armed AND something to
     # serve). This is the step-up trigger, distinct from `any_raise_requested`
     # above, which is the owner's intent regardless of the category.
     raises_exposure = bool(
-        exposing_rows or fronting_release_exposes or never_shareable_release_exposes
+        privacy_raise_exposes
+        or fronting_release_exposes
+        or never_shareable_release_exposes
     )
     # A body that also takes something DOWN must not ride on the raise's gate:
     # if the step-up below failed, the lowering would fail with it. Checked
@@ -600,9 +680,12 @@ async def update_member(
 
     # Step-up fires whenever any of the three raises would actually expose.
     # Staging is the separate question of whether a grace window is configured:
-    # with grace at 0 the raise applies immediately (no pending row, guard
+    # with grace at 0 the raise applies immediately (ceiling moved, guard
     # released now), the re-auth having already run above. The never-shareable
-    # release is never staged either way - it has nowhere to be staged.
+    # release is never staged either way - it has nowhere to be staged. The
+    # activation time is keyed on the two raises that actually park behind it,
+    # so what this reports back is a wait something was really put behind
+    # rather than one the owner is told about and does not get.
     if raises_exposure:
         await verify_destructive_auth(user, system, password, totp_code, db)
 
@@ -610,7 +693,7 @@ async def update_member(
     stage = grace > 0
     visibility_activates_at = (
         exposure_activates_at(system)
-        if (exposing_rows or fronting_release_exposes)
+        if (privacy_raise_exposes or fronting_release_exposes)
         else None
     )
     # Only keep the guard live pending the finalizer when there is a window to
@@ -666,6 +749,26 @@ async def update_member(
             else:
                 member.fronting_private = value
                 member.fronting_private_activates_at = None
+        elif key == "privacy":
+            if (
+                value == PrivacyLevel.PUBLIC
+                and privacy_raise_exposes
+                and visibility_activates_at is not None
+            ):
+                # Staged, the way a group or a field is: the live ceiling stays
+                # where it was and the raise parks on the member until the
+                # finalizer promotes it. The projection keeps hiding them by
+                # their live ceiling, so this holds for every kind of view,
+                # curated or not - no membership rows have to be demoted.
+                member.pending_privacy = PrivacyLevel.PUBLIC
+                member.privacy_activates_at = visibility_activates_at
+            else:
+                # Immediate: lowering, an ungated raise, or a re-auth'd raise
+                # with no grace window. A lowering also cancels any raise that
+                # was staged - going dark always wins and never waits.
+                member.privacy = value
+                member.pending_privacy = None
+                member.privacy_activates_at = None
         else:
             setattr(member, key, value)
 
@@ -677,16 +780,14 @@ async def update_member(
         await db.execute(
             delete(ShareViewMember).where(ShareViewMember.member_id == member.id)
         )
-        # Nothing left to demote - the rows are gone, which is stricter still.
-        exposing_rows = []
 
-    # With a grace window, the privacy change itself is immediate but the
-    # exposure it would cause is not: demote the membership rows so the
-    # projection keeps hiding this member until the finalize sweep promotes
-    # them, exactly as if they had just been added to the view. With no window
-    # (grace 0) the rows stay live and the member is exposed now - the re-auth
-    # above was the whole gate.
-    stage_membership_exposure(exposing_rows, visibility_activates_at)
+    # The staged raise lives on the member's own `pending_privacy` (set in the
+    # loop above), not in demoted membership rows: the live ceiling is what
+    # every projection filters on, so leaving it unmoved hides the member from
+    # curated and all-public rosters alike until the finalize sweep promotes
+    # it. The rows are left exactly as they were. With no window (grace 0) the
+    # ceiling moved at once above and the member is exposed now - the re-auth
+    # was the whole gate.
 
     await db.commit()
     await db.refresh(member)
@@ -694,8 +795,8 @@ async def update_member(
     # trail. Every raise-to-public direction records exactly one event, whether
     # it was step-up'd and staged, applied at once, or landed immediately because
     # the category is disarmed - so the audit does not go dark exactly when
-    # step-up is off. `staged` when the membership rows were parked behind the
-    # grace window, `immediate` otherwise (grace 0, a guard release with nowhere
+    # step-up is off. `staged` when the raise was parked behind the grace
+    # window, `immediate` otherwise (grace 0, a guard release with nowhere
     # to stage, or the category off). One event with a boolean per axis, keyed on
     # the owner's requested direction; no member content, only the id and flags.
     # Only raises record; lowering a ceiling or re-arming a guard un-exposes and
@@ -827,10 +928,9 @@ async def unarchive_member(
     in front of strangers goes through the same two controls as raising them to
     `public`: step-up when the `profile_visibility` category is armed, then, if
     a grace window is set, their `ShareViewMember` rows are demoted to PENDING
-    so the projection keeps hiding them until the finalize sweep promotes them.
-    Both use the same helper as the privacy raise (`stage_membership_exposure`)
-    rather than a second copy of the rule. With grace at 0 the rows stay ACTIVE
-    and the re-auth is the whole gate.
+    (`stage_membership_exposure`) so the projection keeps hiding them until the
+    finalize sweep promotes them. With grace at 0 the rows stay ACTIVE and the
+    re-auth is the whole gate.
 
     What does NOT wait is the member row itself: `archived_at` is cleared
     immediately either way, so the owner gets them back in their own roster,
@@ -845,8 +945,11 @@ async def unarchive_member(
     under them.
 
     Ungated and instant when nothing points at them - no live-or-pending grant
-    over a view they belong to means unarchiving exposes nobody, and friction
-    bought for nothing is friction the next person learns to click through.
+    over a view they belong to (or, for a public member, over a view that
+    serves every public member) means unarchiving exposes nobody, and friction
+    bought for nothing is friction the next person learns to click through. The
+    all-public path re-auths but cannot stage, having no membership rows to
+    demote; see `member_privacy_raise_exposes`.
     The optional body carries step-up credentials in the same shape the member
     PATCH and the archive endpoint take.
     """
@@ -863,10 +966,25 @@ async def unarchive_member(
             has_bio_revisions=await _member_has_bio_revisions(db, member.id),
         )
 
+    # Two ways coming back exposes them, and the second has no rows behind it:
+    # a view that serves every public member puts a public member back on the
+    # page the instant `archived_at` clears, with nothing in
+    # `share_view_members` to notice. Same single answer the privacy raise uses,
+    # asked only for a member whose ceiling actually reaches that roster - a
+    # private member unarchiving into an all-public view exposes nobody, and
+    # friction bought for nothing is friction people learn to click through.
     exposing_rows: list[ShareViewMember] = []
+    exposes = False
     if visibility_step_up_required(system):
         exposing_rows = await shared_view_memberships(db, system, member.id)
-    if exposing_rows:
+        exposes = (
+            await member_privacy_raise_exposes(
+                db, system, member.id, memberships=exposing_rows
+            )
+            if member.privacy == PrivacyLevel.PUBLIC
+            else bool(exposing_rows)
+        )
+    if exposes:
         await verify_destructive_auth(
             user,
             system,
@@ -876,6 +994,9 @@ async def unarchive_member(
         )
 
     member.archived_at = None
+    # Keyed on the ROWS, not on `exposes`: staging a member means demoting their
+    # membership rows, so a restore whose only exposure path is the all-public
+    # flag has nothing to park and must not be reported as waiting.
     activates_at = exposure_activates_at(system) if exposing_rows else None
     stage_membership_exposure(exposing_rows, activates_at)
     await db.commit()
@@ -884,7 +1005,7 @@ async def unarchive_member(
     # of strangers, which is a raise like flipping them to public, so it leaves
     # the same IP/UA trail. Gated to the exposing path (nothing points at them
     # means nothing to record); `staged` vs `immediate` follows the grace window.
-    if exposing_rows:
+    if exposes:
         await record_security_event(
             event_type=SecurityEventType.EXPOSURE_RAISED,
             outcome="staged" if activates_at is not None else "immediate",

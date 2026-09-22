@@ -86,6 +86,7 @@ def _published_system(
     fronting_show_count: bool = True,
     include_relationships: bool = False,
     include_groups: bool = False,
+    include_all_public_members: bool = False,
     member_permalinks: bool = False,
 ) -> tuple[str, str]:
     """Create a view with the given members, publish it publicly, and return
@@ -102,6 +103,7 @@ def _published_system(
             "fronting_show_count": fronting_show_count,
             "include_relationships": include_relationships,
             "include_groups": include_groups,
+            "include_all_public_members": include_all_public_members,
             "member_permalinks": member_permalinks,
         },
     ).json()["id"]
@@ -213,7 +215,25 @@ def _backdate_view_flags(view_id: str) -> None:
     _in_db(_work)
 
 
+def _backdate_member_raise(member_id: str) -> None:
+    """A member's staged privacy raise, made due for the finalize sweep. The
+    raise lives on the member's own `privacy_activates_at` (the pair groups
+    and fields carry), not in demoted membership rows."""
+
+    async def _work(db) -> None:
+        from sheaf.models.member import Member
+
+        member = await db.get(Member, uuid.UUID(member_id))
+        assert member is not None and member.privacy_activates_at is not None
+        member.privacy_activates_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    _in_db(_work)
+
+
 def _backdate_pending_membership(member_id: str) -> None:
+    """Rows demoted to PENDING: how an unarchive back onto a published view
+    stages, since an already-public member has no level left to raise."""
+
     async def _work(db) -> None:
         from sqlalchemy import select
 
@@ -612,7 +632,9 @@ def test_fronting_member_external_avatar_is_withheld():
 @pytest.mark.public_profiles
 def test_raising_a_member_to_public_waits_for_the_sweep(admin_client: httpx.Client):
     """Flipping a member in a published view to public does not publish them
-    on the spot; their membership row is demoted until the window elapses."""
+    on the spot: their live level stays where it was with the raise staged on
+    the member, and the roster keeps filtering on that live level until the
+    window elapses. No membership row is touched."""
     owner = _register()
     m = _member(owner, "Riser", privacy="private")
     system_id, _ = _published_system(owner, members=[m])
@@ -622,9 +644,11 @@ def test_raising_a_member_to_public_waits_for_the_sweep(admin_client: httpx.Clie
         f"/v1/members/{m}", json={"privacy": "public", "password": "testpassword123"}
     )
     assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "private"
+    assert r.json()["pending_privacy"] == "public"
     assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
 
-    _backdate_pending_membership(m)
+    _backdate_member_raise(m)
     assert (
         admin_client.post(
             "/v1/admin/jobs/finalize_share_activations/run"
@@ -1167,6 +1191,379 @@ def test_fronting_is_deliberately_independent_of_the_roster():
 
     body = _anon().get(f"/v1/public/systems/{system_id}/fronting").json()
     assert [pm["name"] for pm in body["members"]] == ["Fronter"]
+    owner.close()
+
+
+# ---------------------------------------------------------------------------
+# The roster as a LIVE rule (include_all_public_members)
+# ---------------------------------------------------------------------------
+#
+# The whole point of this flag is that the view keeps up on its own: the
+# roster is "every member set to public", worked out per request, so nobody
+# has to remember to come back and edit the view. Which also means that
+# raising a member to public becomes an act of publishing all by itself - the
+# gate cases at the bottom of this section are the load-bearing half.
+
+
+@pytest.mark.public_profiles
+def test_all_public_view_serves_a_member_added_to_no_view():
+    """The flag is a rule, not an expansion: a member who has never been near
+    a `ShareViewMember` row shows up purely because they are public."""
+    owner = _register()
+    _member(owner, "Auto")
+    system_id, view = _published_system(owner, include_all_public_members=True)
+    # Nothing was curated into it at all.
+    assert owner.get(f"/v1/share-views/{view}").json()["members"] == []
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [m["name"] for m in body] == ["Auto"]
+    # And the header count is the served count, not the (empty) curated one.
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["member_count"] == 1
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_making_a_member_public_later_adds_them_without_editing_the_view():
+    """THE feature. The member is created private, so the page does not show
+    them; flipping their privacy is the only action taken, and the page picks
+    it up on the next request."""
+    owner = _register()
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+    later = _member(owner, "Later", privacy="private")
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    r = owner.patch(f"/v1/members/{later}", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [m["name"] for m in body] == ["Later"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_dropping_a_member_out_of_public_removes_them_at_once():
+    """The other direction, and the one that must never wait: un-exposing is
+    instant, and under this flag it is instant with no view edit either."""
+    owner = _register()
+    m = _member(owner, "Leaving")
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+    assert len(_anon().get(f"/v1/public/systems/{system_id}/members").json()) == 1
+
+    # No password, no window, even with both armed.
+    _arm_visibility_stepup(owner, grace=7)
+    r = owner.patch(f"/v1/members/{m}", json={"privacy": "private"})
+    assert r.status_code == 200, r.text
+
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_never_shareable_is_excluded_whatever_the_flag_says():
+    """The hardest guard in the product: "appears in NO view, ever". A rule
+    that says "everyone public" does not get to be an exception to it."""
+    owner = _register()
+    _member(owner, "Shown")
+    _member(owner, "Secret", never_shareable=True)
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+
+    body = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [m["name"] for m in body] == ["Shown"]
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["member_count"] == 1
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_the_roster_switch_still_governs_the_flag():
+    """`include_all_public_members` decides WHO is in the view; `include_members`
+    decides whether a roster is served at all. The second still wins."""
+    owner = _register()
+    _member(owner, "Nobody")
+    system_id, _ = _published_system(
+        owner, include_members=False, include_all_public_members=True
+    )
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").status_code == 404
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["member_count"] is None
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_turning_the_flag_on_stages_behind_the_grace_window(
+    admin_client: httpx.Client,
+):
+    """It is an exposure flag like its six siblings, so switching it on for a
+    view that is already published re-auths and then waits."""
+    owner = _register()
+    _member(owner, "Waiting")
+    system_id, view = _published_system(owner)
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+    _arm_visibility_stepup(owner, grace=7)
+
+    # Bare is refused; the page does not move.
+    bare = owner.patch(
+        f"/v1/share-views/{view}", json={"include_all_public_members": True}
+    )
+    assert bare.status_code in (400, 403), bare.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    staged = owner.patch(
+        f"/v1/share-views/{view}",
+        json={
+            "include_all_public_members": True,
+            "password": "testpassword123",
+        },
+    )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    assert body["include_all_public_members"] is False
+    assert body["pending_include_all_public_members"] is True
+    assert body["flags_activate_at"] is not None
+    # Still nobody, inside the window.
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    _backdate_view_flags(view)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
+
+    promoted = owner.get(f"/v1/share-views/{view}").json()
+    assert promoted["include_all_public_members"] is True
+    assert promoted["pending_include_all_public_members"] is None
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [m["name"] for m in got] == ["Waiting"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_turning_the_flag_off_is_immediate_and_restores_the_curated_roster():
+    """Going dark is never gated, and the curation the flag was ignoring is
+    still there underneath it - the rows were never touched."""
+    owner = _register()
+    picked = _member(owner, "Picked")
+    _member(owner, "Auto")
+    system_id, view = _published_system(
+        owner, members=[picked], include_all_public_members=True
+    )
+    assert len(_anon().get(f"/v1/public/systems/{system_id}/members").json()) == 2
+
+    _arm_visibility_stepup(owner, grace=7)
+    off = owner.patch(
+        f"/v1/share-views/{view}", json={"include_all_public_members": False}
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["include_all_public_members"] is False
+
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [m["name"] for m in got] == ["Picked"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_raising_a_member_to_public_needs_step_up_with_no_membership_row():
+    """THE gate. Under this flag the raise IS the publication, so the member
+    having no `ShareViewMember` row is exactly when the step-up matters most -
+    and it is precisely the case the old row-only test answered "exposes
+    nobody" to."""
+    owner = _register()
+    system_id, view = _published_system(owner, include_all_public_members=True)
+    m = _member(owner, "Gated", privacy="private")
+    # Deliberately in no view: the flag is what would publish them.
+    assert owner.get(f"/v1/share-views/{view}").json()["members"] == []
+    _arm_visibility_stepup(owner)  # password tier, grace 0
+
+    bare = owner.patch(f"/v1/members/{m}", json={"privacy": "public"})
+    assert bare.status_code in (400, 403), bare.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    wrong = owner.patch(
+        f"/v1/members/{m}", json={"privacy": "public", "password": "nope"}
+    )
+    assert wrong.status_code == 403, wrong.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    ok = owner.patch(
+        f"/v1/members/{m}",
+        json={"privacy": "public", "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [c["name"] for c in got] == ["Gated"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_raising_a_member_to_public_is_ungated_without_an_all_public_view():
+    """The gate has to stay narrow: an ordinary published view (curated roster,
+    member not in it) reveals nobody by this raise, so it must not start
+    demanding a password for it."""
+    owner = _register()
+    other = _member(owner, "Curated")
+    _published_system(owner, members=[other])
+    m = _member(owner, "Unrelated", privacy="private")
+    _arm_visibility_stepup(owner)
+
+    r = owner.patch(f"/v1/members/{m}", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    assert r.json()["privacy"] == "public"
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_creating_a_member_public_needs_step_up_under_an_all_public_view():
+    """Creating one already public and raising an existing one are the same
+    exposure, so "delete them and add them back as public" must not be the way
+    around the slower door."""
+    owner = _register()
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+    _arm_visibility_stepup(owner)
+
+    bare = owner.post("/v1/members", json={"name": "Born", "privacy": "public"})
+    assert bare.status_code in (400, 403), bare.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    ok = owner.post(
+        "/v1/members",
+        json={
+            "name": "Born",
+            "privacy": "public",
+            "password": "testpassword123",
+        },
+    )
+    assert ok.status_code == 201, ok.text
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [c["name"] for c in got] == ["Born"]
+
+    # A private create is untouched by any of it.
+    assert owner.post("/v1/members", json={"name": "Quiet"}).status_code == 201
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_clearing_never_shareable_needs_step_up_under_an_all_public_view():
+    """Setting the guard deletes the member's view rows, which used to mean
+    releasing it could not put them back on a roster. Under this flag there is
+    no row to delete and it can, so the hardest guard must not be the cheapest
+    one to release."""
+    owner = _register()
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+    m = _member(owner, "Secret", never_shareable=True)
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+    _arm_visibility_stepup(owner)
+
+    bare = owner.patch(f"/v1/members/{m}", json={"never_shareable": False})
+    assert bare.status_code in (400, 403), bare.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    ok = owner.patch(
+        f"/v1/members/{m}",
+        json={"never_shareable": False, "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [c["name"] for c in got] == ["Secret"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_unarchiving_needs_step_up_under_an_all_public_view():
+    """Archiving takes a member off the page, so coming back is an exposing
+    act - and under this flag it is one with no membership rows behind it."""
+    owner = _register()
+    m = _member(owner, "Returning")
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+    assert owner.post(f"/v1/members/{m}/archive").status_code == 200
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+    _arm_visibility_stepup(owner)
+
+    bare = owner.post(f"/v1/members/{m}/unarchive")
+    assert bare.status_code in (400, 403), bare.text
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    ok = owner.post(
+        f"/v1/members/{m}/unarchive", json={"password": "testpassword123"}
+    )
+    assert ok.status_code == 200, ok.text
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [c["name"] for c in got] == ["Returning"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_raising_a_member_under_an_all_public_view_waits_out_the_window(
+    admin_client: httpx.Client,
+):
+    """The raise has no membership row to stage, so it parks on the member
+    itself: the live level stays private, the page keeps hiding them by it,
+    and the sweep is what makes them public. The one case a live roster could
+    have got ahead of the grace window, and the reason it cannot."""
+    owner = _register()
+    system_id, view = _published_system(owner, include_all_public_members=True)
+    m = _member(owner, "Parked", privacy="private")
+    _arm_visibility_stepup(owner, grace=7)
+
+    staged = owner.patch(
+        f"/v1/members/{m}",
+        json={"privacy": "public", "password": "testpassword123"},
+    )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    assert body["privacy"] == "private"
+    assert body["pending_privacy"] == "public"
+    assert body["privacy_activates_at"] is not None
+    # Still in no view, and still on no page.
+    assert owner.get(f"/v1/share-views/{view}").json()["members"] == []
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    _backdate_member_raise(m)
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
+
+    promoted = owner.get(f"/v1/members/{m}").json()
+    assert promoted["privacy"] == "public"
+    assert promoted["pending_privacy"] is None
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [c["name"] for c in got] == ["Parked"]
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_creating_a_member_public_under_an_all_public_view_waits_out_the_window(
+    admin_client: httpx.Client,
+):
+    """Born private with the raise parked, the way a group born public is, so
+    "create them public" is not the way to skip the window that "raise them to
+    public" has to wait out."""
+    owner = _register()
+    system_id, _ = _published_system(owner, include_all_public_members=True)
+    _arm_visibility_stepup(owner, grace=7)
+
+    born = owner.post(
+        "/v1/members",
+        json={"name": "Born", "privacy": "public", "password": "testpassword123"},
+    )
+    assert born.status_code == 201, born.text
+    body = born.json()
+    assert body["privacy"] == "private"
+    assert body["pending_privacy"] == "public"
+    assert body["privacy_activates_at"] is not None
+    assert _anon().get(f"/v1/public/systems/{system_id}/members").json() == []
+
+    _backdate_member_raise(body["id"])
+    assert (
+        admin_client.post(
+            "/v1/admin/jobs/finalize_share_activations/run"
+        ).status_code
+        == 200
+    )
+    got = _anon().get(f"/v1/public/systems/{system_id}/members").json()
+    assert [c["name"] for c in got] == ["Born"]
     owner.close()
 
 

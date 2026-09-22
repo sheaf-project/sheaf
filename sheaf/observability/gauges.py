@@ -628,6 +628,7 @@ async def _refresh_share_exposures(db: AsyncSession) -> None:
     # Columns that stage a raise directly (one row = one pending exposure).
     await _count_min("system_privacy", System.privacy_activates_at)
     await _count_min("member_guard", Member.fronting_private_activates_at)
+    await _count_min("member_raise", Member.privacy_activates_at)
     await _count_min("group_raise", Group.privacy_activates_at)
     await _count_min("field_raise", CustomFieldDefinition.privacy_activates_at)
     await _count_min("edge_raise", MemberRelationship.visibility_activates_at)

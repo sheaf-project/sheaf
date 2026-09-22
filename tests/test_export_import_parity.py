@@ -109,6 +109,13 @@ _FIELD_RAISE_STAGING = (
     "staged privacy raise waiting out the grace window; the export carries the "
     "definition's live privacy, so an import never restores a half-applied raise"
 )
+# And for a member, now that a member raise stages on the member itself the
+# way the other three do: the export carries the member's LIVE privacy, so an
+# import never restores a half-applied raise.
+_MEMBER_RAISE_STAGING = (
+    "staged privacy raise waiting out the grace window; the export carries the "
+    "member's live privacy, so an import never restores a half-applied raise"
+)
 # And for the system-level master switch, same reason: the export carries the
 # system's LIVE privacy, so an import never restores a half-applied raise.
 _SYSTEM_RAISE_STAGING = (
@@ -281,6 +288,8 @@ CLASSIFICATION: dict[type, dict] = {
                 "live System Safety staging state; imports restore the guard "
                 "itself but never resume an in-flight release"
             ),
+            "pending_privacy": _MEMBER_RAISE_STAGING,
+            "privacy_activates_at": _MEMBER_RAISE_STAGING,
         },
     },
     Front: {
@@ -321,6 +330,13 @@ CLASSIFICATION: dict[type, dict] = {
         "exported": {
             "name", "include_members", "include_bio", "include_fronting",
             "fronting_show_count", "include_relationships", "include_groups",
+            # The roster RULE, not a roster: whether this view tracks
+            # `privacy == public` live instead of its member rows. It is the
+            # owner's own setting and the view is meaningless without it (a
+            # restore that dropped it would hand back a view with an empty
+            # roster and no sign of why), so it round-trips like the flags
+            # beside it. Safe to restore because no grant comes with it.
+            "include_all_public_members",
             # Not a staged flag (it exposes nothing new, so it never waits),
             # but it IS the owner's setting, so it round-trips like the rest.
             "member_permalinks",
@@ -346,6 +362,7 @@ CLASSIFICATION: dict[type, dict] = {
             "pending_include_groups": _SHARE_FLAG_STAGING,
             "pending_link_preview_mode": _SHARE_FLAG_STAGING,
             "pending_member_link_preview_mode": _SHARE_FLAG_STAGING,
+            "pending_include_all_public_members": _SHARE_FLAG_STAGING,
             "flags_activate_at": _SHARE_FLAG_STAGING,
         },
     },
