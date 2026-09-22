@@ -14,6 +14,7 @@ import { Shield, KeyRound, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { apiFetch } from "@/lib/api-client";
 import { patchWebSettings } from "@/lib/client-settings";
+import { SKIP_ONBOARDING } from "@/lib/build-flags";
 
 function useWebSettings() {
   return useQuery({
@@ -42,6 +43,10 @@ export function OnboardingPrompt() {
   const navigate = useNavigate();
   const [dismissing, setDismissing] = useState(false);
 
+  // Build-time opt-out for screenshot and test harnesses. Deliberately does
+  // NOT write `onboarding_complete`: suppressing the prompt is not the user
+  // having answered it, so a build without the flag asks them properly.
+  if (SKIP_ONBOARDING) return null;
   if (isLoading || !user) return null;
   if (settings?.onboarding_complete === true) return null;
 

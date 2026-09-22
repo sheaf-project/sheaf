@@ -39,6 +39,18 @@ npm run dev
 
 The API runs on `http://localhost:8000` (docs at `/v1/docs`), and the web UI on `http://localhost:5173`.
 
+#### Frontend build flags
+
+Vite inlines `import.meta.env.VITE_*` at build time, so these are baked into the bundle rather than read at runtime. They live in `web/src/lib/build-flags.ts` and all default to off.
+
+| Variable | Effect |
+| --- | --- |
+| `VITE_SKIP_ONBOARDING=true` | Suppresses the "Welcome to Sheaf" dialog. |
+
+`VITE_SKIP_ONBOARDING` exists for screenshot automation and UI harnesses, where the dialog covers whatever surface is being captured and has to be clicked away before every shot (and, on a scratch stack whose origin is not in `CSRF_TRUSTED_ORIGINS`, cannot be dismissed at all, because the Skip button's PATCH 403s).
+
+Do not set it on a build real people will use. That dialog is how a new account gets pointed at two-factor auth and recovery codes. Suppressing it is not the same as someone choosing to skip it: `onboarding_complete` is never written, so nothing records that they were asked, and they will get the prompt the first time they load a build without the flag. A bundle built with it on logs a console warning saying so.
+
 ### Running tests
 
 #### Full test suite (recommended)
@@ -49,7 +61,7 @@ Use `run_tests.sh` to spin up dedicated isolated Docker stacks, run tests agains
 ./run_tests.sh
 ```
 
-This runs eleven configurations: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and seven selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, the metrics endpoint enabled, and public profiles on and off).
+This runs twelve configurations: selfhosted with no admin step-up, selfhosted with password step-up, selfhosted with TOTP step-up, saas mode, and eight selfhosted runs that each flip a single feature flag (rate limiting enabled, image uploads disabled, bio images disabled, external images disabled, the metrics endpoint enabled, the front stream disabled, and public profiles on and off). `./run_tests.sh --list` prints the current set.
 
 They are spread over parallel stacks, two by default: pass `--jobs N` to widen or `--jobs 1` for a single sequential stack. Each slot gets its own compose project and its own port block, slot `s` on app `8000+s`, database `5432+s` and Redis `6379+s`, so slot 1 lands on the classic 8001/5433/6380 and nothing collides with a running dev stack. Output is captured per configuration and replayed one at a time at the end, so parallel runs do not interleave on the terminal.
 

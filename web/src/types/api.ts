@@ -396,6 +396,10 @@ export interface Group {
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
   pending_delete_at: string | null;
+  /** Only present when the list was asked for it
+   *  (`?include_member_ids=true`). Lets a screen build the whole
+   *  member-to-groups map from one request instead of one per group. */
+  member_ids?: string[];
 }
 
 export interface GroupCreate {
@@ -436,6 +440,9 @@ export interface Tag {
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
   pending_delete_at: string | null;
+  /** Only present when the list was asked for it
+   *  (`?include_member_ids=true`); see `Group.member_ids`. */
+  member_ids?: string[];
 }
 
 export interface TagCreate {

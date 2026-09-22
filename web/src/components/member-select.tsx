@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMembers } from "@/hooks/use-members";
-import { useAllGroupMembers, useGroups } from "@/hooks/use-groups";
-import { useAllTagMembers, useTags } from "@/hooks/use-tags";
+import { useGroupMemberMap, useGroups } from "@/hooks/use-groups";
+import { useTagMemberMap, useTags } from "@/hooks/use-tags";
 import { ColorDot } from "./color-dot";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -28,8 +28,8 @@ export function MemberSelect({
   const { data: members } = useMembers();
   const { data: groups } = useGroups();
   const { data: tags } = useTags();
-  const groupMemberMap = useAllGroupMembers();
-  const tagMemberMap = useAllTagMembers();
+  const groupMemberMap = useGroupMemberMap();
+  const tagMemberMap = useTagMemberMap();
   const [search, setSearch] = useState("");
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [activeTagId, setActiveTagId] = useState<string | null>(null);
