@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   isDeleteQueued,
@@ -14,12 +14,20 @@ export const groupKeys = {
   all: ["groups"] as const,
   detail: (id: string) => ["groups", id] as const,
   members: (id: string) => ["groups", id, "members"] as const,
+  /** The whole group list with member ids attached, in one request. */
+  membership: ["groups", "membership"] as const,
 };
+
+// Membership changes rarely and this list backs a picker, not a live view:
+// a stale map for a few minutes costs nothing, a refetch of every group's
+// membership on every dialog open is what the fan-out this replaced used to
+// be.
+const MEMBERSHIP_STALE_MS = 5 * 60 * 1000;
 
 export function useGroups() {
   return useQuery({
     queryKey: groupKeys.all,
-    queryFn: api.listGroups,
+    queryFn: () => api.listGroups(),
   });
 }
 
@@ -30,22 +38,29 @@ export function useGroupMembers(id: string) {
   });
 }
 
-export function useAllGroupMembers(): Map<string, Set<string>> {
-  const { data: groups } = useGroups();
-  const queries = useQueries({
-    queries: (groups ?? []).map((g) => ({
-      queryKey: groupKeys.members(g.id),
-      queryFn: () => api.getGroupMembers(g.id),
-    })),
+/**
+ * Group id to the set of member ids in it, for every group, from ONE request.
+ *
+ * This used to be `useQueries` over every group, one `/members` call each:
+ * on a system with a few hundred groups that was a few hundred concurrent
+ * requests every time the member picker opened, which is exactly the burst
+ * that made the API slow for everyone on 2026-09-22. The list endpoint can
+ * carry the ids itself (`?include_member_ids=true`), so this asks for that
+ * once and derives the map. The memo is keyed on the response object, which
+ * react-query keeps stable between fetches, so the map is rebuilt only when
+ * the data actually changes rather than on every render.
+ */
+export function useGroupMemberMap(): Map<string, Set<string>> {
+  const { data: groups } = useQuery({
+    queryKey: groupKeys.membership,
+    queryFn: () => api.listGroups({ includeMemberIds: true }),
+    staleTime: MEMBERSHIP_STALE_MS,
   });
   return useMemo(() => {
     const map = new Map<string, Set<string>>();
-    (groups ?? []).forEach((g, i) => {
-      const members = queries[i]?.data;
-      if (members) map.set(g.id, new Set(members.map((m) => m.id)));
-    });
+    for (const g of groups ?? []) map.set(g.id, new Set(g.member_ids ?? []));
     return map;
-  }, [groups, queries]);
+  }, [groups]);
 }
 
 export function useCreateGroup() {
@@ -136,6 +151,7 @@ export function useSetGroupMembers() {
       api.setGroupMembers(id, memberIds),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: groupKeys.members(id) });
+      qc.invalidateQueries({ queryKey: groupKeys.membership });
       toast.success("Group members updated");
     },
   });

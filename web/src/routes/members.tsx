@@ -802,7 +802,7 @@ function DeleteMemberDialog({
 
 function MemberTagsEditor({ memberId }: { memberId: string }) {
   const qc = useQueryClient();
-  const { data: allTags } = useQuery({ queryKey: ["tags"], queryFn: listTags });
+  const { data: allTags } = useQuery({ queryKey: ["tags"], queryFn: () => listTags() });
   const { data: memberTags } = useQuery({
     queryKey: ["member", memberId, "tags"],
     queryFn: () => getMemberTags(memberId),
