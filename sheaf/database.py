@@ -112,6 +112,20 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         # mid-request commits. Background jobs use async_session_factory() /
         # job_session() directly and are not affected.
         session.info[_TIMEOUT_INFO_KEY] = settings.db_statement_timeout_ms
+        # Check the connection out NOW, timed, rather than lazily on the first
+        # query. Every request path runs a query within microseconds of this
+        # anyway (auth resolves the user), so nothing is held any longer than
+        # before - but the wait for a pooled connection becomes a number. When
+        # the pool is dry that wait is the entire incident, and until this
+        # existed it was invisible: query timings looked fine, handler timings
+        # looked bad, and nothing said which resource was the one everyone was
+        # queueing on. A dry pool raises sqlalchemy.exc.TimeoutError here after
+        # db_pool_timeout, which main.py turns into a 503 with Retry-After.
+        from sheaf.observability.metrics import db_pool_checkout_wait_seconds
+
+        started = time.perf_counter()
+        await session.connection()
+        db_pool_checkout_wait_seconds.observe(time.perf_counter() - started)
         try:
             yield session
             await session.commit()

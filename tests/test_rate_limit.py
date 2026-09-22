@@ -344,3 +344,41 @@ def test_per_user_block_records_admin_history(admin_client):
     assert top["ip"]
     # One history entry per 429, no more, no fewer.
     assert sum(data["summary"].values()) == statuses.count(429)
+
+
+def test_per_user_read_budget_combined():
+    """The combined per-account READ budget (read_rate_per_user_per_min,
+    default 300/min) is applied from the auth dependency, so it covers every
+    authenticated GET without any route opting in. One shared bucket: reads
+    split across different endpoints trip a single 429, and the response
+    names the read budget rather than the global per-IP backstop."""
+    email = f"rl-read-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+
+        first_429 = None
+        allowed = 0
+        # Well under the 600/min per-IP global backstop, so the only limit
+        # that can fire here is the per-account read budget.
+        for i in range(330):
+            r = c.get("/v1/auth/me" if i % 2 == 0 else "/v1/systems/me")
+            if r.status_code == 429:
+                first_429 = r
+                break
+            assert r.status_code == 200, r.text
+            allowed += 1
+
+        assert first_429 is not None, "read budget never tripped"
+        assert 290 <= allowed <= 300, allowed
+        assert "Read rate limit" in first_429.json()["detail"]
+        assert first_429.headers["X-RateLimit-Limit"] == "300"
+        assert "Retry-After" in first_429.headers
+
+        # Writes draw from their own budget and are unaffected by the read one.
+        w = c.post("/v1/members", json={"name": f"rl-{uuid.uuid4().hex[:8]}"})
+        assert w.status_code == 201, w.text

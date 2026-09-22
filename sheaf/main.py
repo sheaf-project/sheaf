@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -16,6 +17,7 @@ from sheaf.api.link_preview import router as link_preview_router
 from sheaf.api.v1.router import v1_router
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
+from sheaf.middleware.concurrency import AccountConcurrencyMiddleware
 from sheaf.middleware.origin_check import OriginCheckMiddleware
 from sheaf.middleware.public_headers import PublicShareHeadersMiddleware
 from sheaf.middleware.rate_limit import RateLimitMiddleware
@@ -277,6 +279,29 @@ async def validation_exception_handler(
     )
 
 
+@app.exception_handler(PoolTimeoutError)
+async def pool_timeout_handler(
+    request: Request, exc: PoolTimeoutError
+) -> JSONResponse:
+    # The request waited db_pool_timeout seconds for a pooled connection and
+    # none came free: the instance is saturated, not broken. 503 with a short
+    # Retry-After says exactly that to a client, and to a dashboard, where a
+    # generic 500 says "bug". Logged at warning without a traceback: under
+    # exhaustion this fires once per request, and the stack is always the
+    # same three frames of pool internals.
+    logger.warning(
+        "%s %s -> 503: DB connection pool exhausted (waited %ss)",
+        request.method,
+        route_template(request),
+        settings.db_pool_timeout,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Service busy, try again shortly"},
+        headers={"Retry-After": "5"},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception(
@@ -331,6 +356,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # cookie-authenticated mutations. Runs after the rate limiter so CSRF
 # probes still consume rate-limit budget.
 app.add_middleware(OriginCheckMiddleware)
+# Releases the per-account in-flight slot that get_current_user takes. Its
+# position in the stack does not matter for correctness (the slot is taken
+# inside the handler's dependency chain and released once the response is on
+# its way, wherever this sits); innermost keeps the hold as short as it can be.
+app.add_middleware(AccountConcurrencyMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 # Outside the rate limiter so its 429 is stamped too, and outside the

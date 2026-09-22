@@ -8,10 +8,13 @@ from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from sheaf.auth.jwt import TokenType, decode_token
 from sheaf.auth.sessions import check_admin_step_up, get_session_user_id, touch_session
 from sheaf.database import get_db
+from sheaf.middleware.concurrency import acquire_account_slot
+from sheaf.middleware.rate_limit import enforce_read_budget
 from sheaf.models.user import AccountStatus, User
 from sheaf.observability.client_family import client_family_from
 from sheaf.observability.metrics import requests_by_client_total
@@ -165,7 +168,13 @@ async def get_current_user(
             detail="Not authenticated",
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    # The system rides along in the same query. Nearly every authenticated
+    # route needs it next (see sheaf/api/deps.py), and loading it here turns
+    # what used to be a second round trip on every request into a free
+    # attribute read.
+    result = await db.execute(
+        select(User).options(joinedload(User.system)).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
 
     if user is None:
@@ -239,6 +248,15 @@ async def get_current_user(
 
     # Expose user ID on request state for rate limiting and logging
     request.state.user_id = str(user.id)
+
+    # The two per-account backstops, applied here rather than as route
+    # dependencies so that no route can be shipped without them. Order
+    # matters: a request the read budget refuses must not have taken an
+    # in-flight slot first. Both are DB-protection under preserve-by-default
+    # and fail open; see sheaf/middleware/rate_limit.py and
+    # sheaf/middleware/concurrency.py.
+    await enforce_read_budget(request)
+    await acquire_account_slot(request, user.id)
 
     # Aggregate usage metrics (DAU/MAU). Best-effort and non-blocking: this only
     # schedules a fire-and-forget task, so Redis latency or an outage can never
@@ -473,7 +491,9 @@ async def get_current_user_optional(
     if user_id is None:
         return None
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).options(joinedload(User.system)).where(User.id == user_id)
+    )
     if not hasattr(request.state, "api_key_scopes"):
         request.state.api_key_scopes = None
     return result.scalar_one_or_none()
