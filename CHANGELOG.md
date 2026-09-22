@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-22
+
 ### Added
 
 - **One busy client can no longer slow the API down for everyone else.** Self-hosters and operators. A client that opens a screen by requesting one thing per group or tag, all at once (the current mobile apps and the web member picker all do this on large systems), could check out every pooled database connection in a second and leave everyone else's requests queueing behind it; on 2026-09-22 that took median latency to around half a second and the tail to several seconds. Two per-account backstops now apply to every authenticated request from inside authentication, so no route can be shipped without them: a cap on requests in flight at once (`ACCOUNT_CONCURRENCY_LIMIT`, default 6; a request past it waits for a slot rather than failing, so the client still gets everything it asked for, in batches), and a combined read budget (`READ_RATE_PER_USER_PER_MIN`, default 300) as the read-side twin of the existing write budget. Both are per account rather than per address, both are database protection rather than product limits, and both can be raised or switched off. A request that finds the pool empty anyway now gives up after `DB_POOL_TIMEOUT` (default lowered from 30 s to 5 s) with a 503 and `Retry-After` instead of hanging. Documented in `docs/SELFHOSTING.md`.
