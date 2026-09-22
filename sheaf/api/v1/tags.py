@@ -6,11 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from sheaf.api.deps import get_user_system as _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.database import get_db
 from sheaf.models.member import Member
 from sheaf.models.pending_action import PendingActionType
-from sheaf.models.system import System
 from sheaf.models.tag import Tag
 from sheaf.models.user import User
 from sheaf.observability.metrics import tags_created_total
@@ -27,13 +27,6 @@ from sheaf.services.system_safety import (
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
-
-async def _get_user_system(user: User, db: AsyncSession) -> System:
-    result = await db.execute(select(System).where(System.user_id == user.id))
-    system = result.scalar_one_or_none()
-    if system is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
-    return system
 
 
 @router.get("", response_model=list[TagRead])

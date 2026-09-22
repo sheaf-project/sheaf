@@ -224,8 +224,11 @@ def _G(
 
 http_requests_total = _C(
     "sheaf_http_requests_total",
-    "HTTP requests handled by the API, by route template and status class.",
-    ["method", "route", "status_class"],
+    "HTTP requests handled by the API, by route template and status. `status` "
+    "is the exact code for anything outside 2xx and the literal `2xx` for "
+    "successes, so a 429 is distinguishable from a 404 without fanning the "
+    "success path out into 200/201/204 per route.",
+    ["method", "route", "status_class", "status"],
 )
 http_request_duration_seconds = _H(
     "sheaf_http_request_duration_seconds",
@@ -304,6 +307,18 @@ rate_limit_active_blocks = _G(
     "sheaf_rate_limit_active_blocks",
     "Identifiers currently sitting at their rate-limit ceiling, by bucket.",
     ["bucket"],
+)
+account_concurrency_total = _C(
+    "sheaf_account_concurrency_total",
+    "Per-account in-flight slot acquisitions: immediate (a slot was free), "
+    "waited (the account was at its cap and the request queued), timed_out "
+    "(no slot came free inside the wait and the request got a 429).",
+    ["outcome"],
+)
+account_concurrency_wait_seconds = _H(
+    "sheaf_account_concurrency_wait_seconds",
+    "Time a request spent waiting for its account's in-flight slot, seconds. "
+    "Non-trivial values mean an account is fanning out faster than its cap.",
 )
 captcha_challenges_total = _C(
     "sheaf_captcha_challenges_total",
@@ -1071,6 +1086,13 @@ db_pool_connections = _G(
     "SQLAlchemy async pool connection counts.",
     ["state"],
 )
+db_pool_checkout_wait_seconds = _H(
+    "sheaf_db_pool_checkout_wait_seconds",
+    "Time a request session waited to check a connection out of the pool, "
+    "seconds. This is the metric that says 'out of connections' rather than "
+    "'something is slow': under pool exhaustion every request on every route "
+    "sits here, and nothing else moves.",
+)
 db_query_duration_seconds = _H(
     "sheaf_db_query_duration_seconds",
     "DB query execution time bucketed by SQL operation. Operation is the "
@@ -1335,6 +1357,9 @@ def prewarm_metrics() -> None:
 
     for family in get_args(ClientFamilyLabel):
         requests_by_client_total.labels(client_family=family).inc(0)
+
+    for outcome in ("immediate", "waited", "timed_out"):
+        account_concurrency_total.labels(outcome=outcome).inc(0)
 
     for reason in (
         "client_closed", "auth_revoked", "auth_expired", "backpressure",

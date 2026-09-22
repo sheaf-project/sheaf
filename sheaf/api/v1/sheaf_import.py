@@ -13,12 +13,11 @@ source value to submit the job under.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.api.deps import get_user_system as _get_user_system
 from sheaf.auth.dependencies import get_current_user
 from sheaf.database import get_db
-from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.services.front_retention import front_retention_preview_warning
 from sheaf.services.import_parsing import ImportPayloadError, safe_json_loads_async
@@ -88,15 +87,6 @@ def _summary_dict(p: SheafPreviewSummary) -> dict:
         "limit_warnings": p.limit_warnings,
     }
 
-
-async def _get_user_system(user: User, db: AsyncSession) -> System:
-    result = await db.execute(select(System).where(System.user_id == user.id))
-    system = result.scalar_one_or_none()
-    if system is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="System not found"
-        )
-    return system
 
 
 @router.post("/sheaf/preview")

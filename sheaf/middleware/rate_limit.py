@@ -443,6 +443,46 @@ _WRITE_LIMIT_DETAIL = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Combined per-account read budget
+# ---------------------------------------------------------------------------
+#
+# The read-side twin of the write limit, with one structural difference: it
+# is not a dependency that endpoints attach, because that is how the read
+# surface ended up with no per-account bound at all (6 of 118 GET routes had
+# one). It is called from get_current_user, so it applies to every
+# authenticated GET/HEAD by construction. Same Redis counter shape as the
+# write limit, same fail-open contract: capacity protection, not security.
+
+_READ_BUCKET = "read"
+_READ_LIMIT_DETAIL = (
+    "Read rate limit exceeded: too many requests in a short time. "
+    "Slow down and try again shortly."
+)
+
+
+async def enforce_read_budget(request: Request) -> None:
+    """Draw one read from the account's combined budget, or 429.
+
+    Only meaningful once `request.state.user_id` is set (get_current_user
+    calls this right after stamping it). GET and HEAD only; writes have their
+    own budget. `read_rate_per_user_per_min` 0 disables.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return
+    per_min = settings.read_rate_per_user_per_min
+    if per_min <= 0:
+        return
+    await _enforce_limit(
+        request,
+        limit=Limit(requests=per_min, window=60),
+        key="user",
+        bucket=_READ_BUCKET,
+        fail_closed=False,
+        detail=_READ_LIMIT_DETAIL,
+    )
+
+
 def write_rate_limit():
     """FastAPI dependency: the combined per-account write rate limit.
 

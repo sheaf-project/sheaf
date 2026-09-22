@@ -7,8 +7,12 @@ and makes it obvious which bucket family a new metric should use.
 # HTTP request latency. Default range fits FastAPI handlers comfortably:
 # fast cached reads in the 5-20ms range, P99 typical paths well under a
 # second, with headroom for the rare slow endpoint.
+# 1.5 and 2.0 are there because the previous jump from 1.0 straight to 2.5
+# put p95 and p99 in the same bucket during a latency regression, where the
+# interpolated quantiles compressed against each other and understated how
+# bad the tail was.
 HTTP_LATENCY_BUCKETS = (
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0,
 )
 
 # Outbound dispatch latency (email send, notification dispatch, webhook
