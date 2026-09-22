@@ -5,12 +5,16 @@ import type {
   RedeemResponse,
 } from "@/types/api";
 
+import { instanceHeaders } from "./api-client";
+
 // These endpoints are unauthenticated, so don't go through apiFetch (which
-// would attach the access token / hit the refresh path on 401).
+// would attach the access token / hit the refresh path on 401). They are
+// still requests to this instance, so they identify the client the same way.
 async function publicFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
     ...init,
     headers: {
+      ...instanceHeaders(path),
       "Content-Type": "application/json",
       ...(init?.headers as Record<string, string> | undefined),
     },

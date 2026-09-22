@@ -454,3 +454,227 @@ def test_leader_transitions_total_present():
     val = _series_value(body, "sheaf_leader_transitions_total")
     # At least one acquisition happened at startup.
     assert val is not None and val >= 1.0, val
+
+
+# ---------------------------------------------------------------------------
+# Shape: feature adoption, share-view options, account age
+# ---------------------------------------------------------------------------
+
+
+def test_feature_adoption_and_age_gauges_populate(admin_client: httpx.Client):
+    """One slow-gauge pass exposes every feature-adoption series, every
+    share-view option series, and the four age buckets. The admin account
+    registered moments ago, so today's under-7-days bucket has at least one
+    member; and `public_profile` under the feature gauge must be the same
+    number as the bare adoption gauge it aliases."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+
+    for feature in (
+        "journals", "polls", "relationships", "reminders", "share_views",
+        "custom_fields", "groups", "tags", "public_profile",
+    ):
+        val = _series_value(body, "sheaf_systems_with_feature", {"feature": feature})
+        assert val is not None and val >= 0, feature
+    assert _series_value(
+        body, "sheaf_systems_with_feature", {"feature": "public_profile"}
+    ) == _series_value(body, "sheaf_systems_with_public_profile")
+
+    for option in (
+        "member_permalinks", "include_fronting", "include_bio",
+        "link_preview_detailed", "member_preview_detailed",
+    ):
+        val = _series_value(body, "sheaf_share_views_with_option", {"option": option})
+        assert val is not None and val >= 0, option
+
+    newest = _series_value(body, "sheaf_active_accounts_daily_by_age", {"account_age": "lt7d"})
+    assert newest is not None and newest >= 1, newest
+    for bucket in ("lt30d", "lt90d", "older"):
+        val = _series_value(body, "sheaf_active_accounts_daily_by_age", {"account_age": bucket})
+        assert val is not None and val >= 0, bucket
+
+
+def test_share_view_distribution_populates(admin_client: httpx.Client):
+    """The hourly distributions job sets the per-system share-view CDF; its
+    +Inf bucket is the system count, so it is at least the admin's own."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauge_distributions/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+    total = _series_value(body, "sheaf_systems_by_share_view_count", {"le": "+Inf"})
+    assert total is not None and total >= 1, total
+    assert _series_value(body, "sheaf_system_share_view_count_max") is not None
+# Public profiles: the demand side
+# ---------------------------------------------------------------------------
+#
+# The test stack publishes by default, so these drive the real outcomes
+# through the real routes. The property under test is the one that makes the
+# counter worth having: the visitor gets ONE indistinguishable 404 for every
+# refusal, and the split between those refusals exists only in the metric.
+
+
+def _public_requests(body: str, surface: str, subject_type: str, outcome: str) -> float:
+    return (
+        _series_value(
+            body,
+            "sheaf_public_requests_total",
+            {"surface": surface, "subject_type": subject_type, "outcome": outcome},
+        )
+        or 0.0
+    )
+
+
+def _publish(c: httpx.Client, **view_kw) -> tuple[str, str, dict]:
+    """A system with a live public grant. Returns (system_id, view_id, grant)."""
+    assert c.post("/v1/auth/me/attest-adult").status_code == 200
+    # Visibility safety off, so the raise lands live rather than staging.
+    r = c.patch("/v1/system/safety", json={"applies_to_profile_visibility": False})
+    assert r.status_code == 200, r.text
+    r = c.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    r = c.post("/v1/share-views", json={"name": f"m-{uuid.uuid4().hex[:6]}", **view_kw})
+    assert r.status_code == 201, r.text
+    view_id = r.json()["id"]
+    r = c.post("/v1/share-grants", json={"view_id": view_id, "subject_type": "public"})
+    assert r.status_code == 201, r.text
+    system_id = c.get("/v1/systems/me").json()["id"]
+    return system_id, view_id, r.json()["grant"]
+
+
+def test_public_request_outcomes_split_behind_one_uniform_404(auth_client: httpx.Client):
+    """served / withheld / not_found / dark each move their own series, while
+    the three refusals are byte-identical to the visitor."""
+    system_id, _, grant = _publish(auth_client, include_fronting=False)
+    anon = httpx.Client(base_url=BASE_URL, timeout=5)
+
+    before = _scrape()
+    assert anon.get(f"/v1/public/systems/{system_id}").status_code == 200
+    withheld = anon.get(f"/v1/public/systems/{system_id}/fronting")
+    not_found = anon.get(f"/v1/public/systems/{uuid.uuid4()}")
+    # Revocation is immediate; the same profile now reads as dark.
+    r = auth_client.delete(f"/v1/share-grants/{grant['id']}")
+    assert r.status_code in (200, 204), r.text
+    dark = anon.get(f"/v1/public/systems/{system_id}")
+    after = _scrape()
+
+    # The no-oracle rule, stated as an assertion: nothing about the response
+    # distinguishes the three reasons.
+    for refusal in (withheld, not_found, dark):
+        assert refusal.status_code == 404
+        assert refusal.json() == {"detail": "Not found"}
+
+    def delta(surface: str, outcome: str) -> float:
+        return _public_requests(after, surface, "public", outcome) - _public_requests(
+            before, surface, "public", outcome
+        )
+
+    assert delta("system", "served") == 1
+    assert delta("fronting", "withheld") == 1
+    assert delta("system", "not_found") == 1
+    assert delta("system", "dark") == 1
+
+
+def test_a_grant_inside_its_grace_window_counts_as_pending(auth_client: httpx.Client):
+    """A pending grant 404s exactly like a missing one; the counter says which.
+    Driven through a share link so the link subject type is exercised too, and
+    a made-up token alongside it lands in not_found rather than dark: after a
+    rotate or for a token that never existed there is genuinely no row."""
+    c = auth_client
+    assert c.post("/v1/auth/me/attest-adult").status_code == 200
+    r = c.patch("/v1/systems/me", json={"privacy": "public"})
+    assert r.status_code == 200, r.text
+    r = c.patch(
+        "/v1/system/safety",
+        json={"grace_period_days": 7, "applies_to_profile_visibility": True, "auth_tier": "none"},
+    )
+    assert r.status_code == 200, r.text
+    r = c.post("/v1/share-views", json={"name": f"m-{uuid.uuid4().hex[:6]}"})
+    assert r.status_code == 201, r.text
+    r = c.post("/v1/share-grants", json={"view_id": r.json()["id"], "subject_type": "link"})
+    assert r.status_code == 201, r.text
+    assert r.json()["grant"]["status"] == "pending", r.json()
+    token = r.json()["token"]
+    anon = httpx.Client(base_url=BASE_URL, timeout=5)
+
+    before = _scrape()
+    pending = anon.get(f"/v1/public/shared/{token}")
+    missing = anon.get(f"/v1/public/shared/{uuid.uuid4().hex}")
+    after = _scrape()
+
+    assert pending.status_code == missing.status_code == 404
+    assert pending.json() == missing.json()
+    for outcome in ("pending", "not_found"):
+        moved = _public_requests(after, "system", "link", outcome) - _public_requests(
+            before, "system", "link", outcome
+        )
+        assert moved == 1, (outcome, moved)
+
+
+def test_link_previews_are_counted_by_card_and_unfurler(auth_client: httpx.Client):
+    """A rich card and a generic one, each attributed to the service that asked;
+    an unknown User-Agent is `other`; a share link is always generic."""
+    system_id, _, _ = _publish(auth_client, link_preview_mode="system_details")
+    discord = {"User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"}
+    slack = {"User-Agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)"}
+    anon = httpx.Client(base_url=BASE_URL, timeout=5)
+
+    def card(body: str, which: str, unfurler: str) -> float:
+        return (
+            _series_value(
+                body, "sheaf_link_previews_total", {"card": which, "unfurler": unfurler}
+            )
+            or 0.0
+        )
+
+    before = _scrape()
+    rich = anon.get(f"/v1/link-preview/p/{system_id}", headers=discord)
+    generic_missing = anon.get(f"/v1/link-preview/p/{uuid.uuid4()}", headers=discord)
+    generic_link = anon.get(f"/v1/link-preview/s/{uuid.uuid4().hex}", headers=slack)
+    generic_other = anon.get(f"/v1/link-preview/p/{uuid.uuid4()}", headers={"User-Agent": "curl/8"})
+    after = _scrape()
+
+    for resp in (rich, generic_missing, generic_link, generic_other):
+        assert resp.status_code == 200 and "text/html" in resp.headers["content-type"]
+    assert card(after, "system_details", "discord") - card(before, "system_details", "discord") == 1
+    assert card(after, "generic", "discord") - card(before, "generic", "discord") == 1
+    assert card(after, "generic", "slack") - card(before, "generic", "slack") == 1
+    assert card(after, "generic", "other") - card(before, "generic", "other") == 1
+
+
+def test_adopters_by_subject_partition_the_total(admin_client: httpx.Client):
+    """public + link + both must equal the unlabelled adopter gauge, whatever the
+    data happens to be, because it is a partition and not a set of overlapping
+    counts."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+    total = _series_value(body, "sheaf_systems_with_public_profile")
+    assert total is not None
+    parts = [
+        _series_value(
+            body, "sheaf_systems_with_public_profile_by_subject", {"subject_type": s}
+        )
+        for s in ("public", "link", "both")
+    ]
+    assert all(p is not None for p in parts), parts
+    assert sum(parts) == total, (parts, total)
+
+
+def test_public_demand_series_are_prewarmed():
+    """Every bounded combination exists from the first scrape, so an
+    absence-alert can fire on a series Prometheus has actually seen."""
+    body = _scrape()
+    assert _public_requests(body, "member", "link", "dark") >= 0
+    assert (
+        _series_value(
+            body, "sheaf_public_requests_total",
+            {"surface": "groups", "subject_type": "public", "outcome": "feature_off"},
+        )
+        is not None
+    )
+    assert (
+        _series_value(
+            body, "sheaf_link_previews_total", {"card": "member", "unfurler": "whatsapp"}
+        )
+        is not None
+    )

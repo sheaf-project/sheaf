@@ -24,10 +24,18 @@ rules run through all of it:
 
    Revoking, rotating, removing, and turning flags back off are always
    immediate and never gated - nothing may slow down going dark.
-2. **Nothing is exposed implicitly.** `ShareViewMember` is the sole authority
-   on who appears. Groups are a bulk picker that expands into explicit member
-   rows (see `expand_group_into_view`), never a rule evaluated at read time,
-   so adding someone to a group can never silently publish them.
+2. **Nothing is exposed implicitly.** `ShareViewMember` is the authority on who
+   appears. Groups are a bulk picker that expands into explicit member rows
+   (see `expand_group_into_view`), never a rule evaluated at read time, so
+   adding someone to a group can never silently publish them.
+
+   The single exception is the per-view `include_all_public_members` flag,
+   which makes a view's roster track `Member.privacy == public` live, because
+   that level is the one signal an owner sets to MEAN "this one may be seen".
+   It is an exception to the mechanism, not to the rule: turning the flag on is
+   itself a staged, step-up'd exposure like any other, and it makes raising a
+   member to public an act of publishing in its own right - which is exactly
+   what `member_privacy_raise_exposes` exists to keep gated.
 
 `Member.never_shareable` is refused here at the point of adding, and refused
 again in the projection query (sheaf/services/share_projection.py). Both, on
@@ -138,6 +146,7 @@ EXPOSURE_FLAGS: tuple[str, ...] = (
     "include_groups",
     "link_preview_mode",
     "member_link_preview_mode",
+    "include_all_public_members",
 )
 
 # How exposing each flag's values are, least first.
@@ -191,6 +200,27 @@ def flag_direction(view: ShareView, flag: str, value: object) -> int:
         return 0
     delta = order.index(value) - order.index(current)
     return (delta > 0) - (delta < 0)
+
+
+def all_public_members_clause():
+    """SQL predicate for "this ShareView's roster is every public member".
+
+    True for a view with `include_all_public_members` set, and for one that has
+    it STAGED - pending counts here for the reason it counts everywhere else in
+    this module: a pending flip goes live on its own, so a raise landing near
+    the end of its window must serve its own full window rather than inheriting
+    the remainder.
+
+    Requires `ShareView` to be in the query. Named once so every gate that has
+    to ask "does this view publish people without a membership row?" asks it
+    the same way; `share_projection._active_member_filter` is the read-time
+    twin, and it deliberately reads only the LIVE flag, because a staged flip
+    must not serve anybody yet.
+    """
+    return or_(
+        ShareView.include_all_public_members.is_(True),
+        ShareView.pending_include_all_public_members.is_(True),
+    )
 
 
 def visibility_step_up_required(system: System) -> bool:
@@ -334,17 +364,20 @@ def stage_membership_exposure(
 ) -> None:
     """Park a member's share-view rows PENDING until `activates_at`.
 
-    A member has no `pending_privacy` twin to hold a staged raise, so their
+    For a member whose ceiling is ALREADY public and who is being put back on
+    a published roster - unarchiving - there is no level to stage, so the
     staging lives in the membership rows themselves: demoted to PENDING, the
     projection keeps hiding them exactly as if they had just been added to the
     view, and `finalize_share_activations` promotes them when the window
     elapses. `pending_exposures` reads the same rows back for the owner's
     banner.
 
-    Called by every path that re-exposes an existing member - raising them to
-    `public`, and unarchiving one who is still sitting in a published view -
-    so the two cannot drift over what "staged" means. A None `activates_at`
-    (grace 0) leaves the rows live: there is no window to wait out.
+    A privacy RAISE no longer comes through here. It stages on the member's
+    own `pending_privacy` / `privacy_activates_at`, the pair the other three
+    privacy-carrying entities have, so the ceiling itself waits and the member
+    stays hidden from every kind of roster, curated or live, without a row to
+    demote. A None `activates_at` (grace 0) leaves the rows live: there is no
+    window to wait out.
     """
     if activates_at is None:
         return
@@ -567,6 +600,98 @@ async def shared_view_memberships(
     return list(result.scalars().all())
 
 
+async def view_serves_all_public_members(
+    db: AsyncSession, system: System
+) -> bool:
+    """Does ANY live-granted view of this system publish every public member?
+
+    The half of `member_privacy_raise_exposes` that does not depend on the
+    member at all - which is the whole point of it. A view with
+    `include_all_public_members` needs no `ShareViewMember` row to serve
+    somebody, so the answer here is a property of the system's views, and a
+    member nobody has ever added to anything is just as exposed by it as one
+    the owner curated in by hand.
+
+    Two conditions, and they are deliberately the two `shared_view_memberships`
+    applies from the other end - the roster flag (live or staged) and a grant on
+    that view passing `grant_live_clause()`.
+
+    `include_members` is deliberately NOT one of them, even though it is the
+    roster's on/off switch, because the membership-row test beside it does not
+    ask either and the two have to answer the same question. Being in a view
+    reaches further than the roster: `project_fronting` names in-view members
+    with the roster switched off, on purpose, so a member who becomes public
+    under a fronting-only view stops being an anonymous `hidden_count` and
+    starts being a name. A row in that view already triggers the step-up
+    today; this must too, or the flag would be the lenient way in.
+
+    Exported rather than folded into the function below because three callers
+    ask the member-side question differently - a raise TO public, a release of
+    `never_shareable` on somebody who is ALREADY public, and a member who does
+    not exist yet (`POST /v1/members`, which has no id to look rows up by) - and
+    all three need this same view-side answer. None gets to re-express it.
+    """
+    result = await db.execute(
+        select(ShareView.id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .where(
+            ShareView.system_id == system.id,
+            all_public_members_clause(),
+            grant_live_clause(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def member_privacy_raise_exposes(
+    db: AsyncSession,
+    system: System,
+    member_id: uuid.UUID,
+    *,
+    memberships: list[ShareViewMember] | None = None,
+) -> bool:
+    """Would this member, sitting at `public`, actually be in front of anybody?
+
+    THE one answer to that question, for every caller that has to decide
+    whether publishing a member needs step-up. It exists because the honest
+    answer stopped being "are they in a granted view" the moment
+    `include_all_public_members` shipped, and a second copy of the rule that
+    missed that would be a safeguard silently switched off in exactly the case
+    it is most needed.
+
+    Two independent paths, either of which publishes them:
+
+    - an explicit membership row in a view a live-or-pending grant points at
+      (`shared_view_memberships`) - the original path;
+    - a live-granted view that serves every public member
+      (`view_serves_all_public_members`) - the new path, where the raise IS the
+      publication and no row exists or ever will.
+
+    The second path is why this is not just `bool(shared_view_memberships(...))`
+    at each call site. A member with no `ShareViewMember` row returns no rows,
+    so the old test answered False and skipped the step-up precisely when the
+    raise was the act of publishing them.
+
+    Either way the answer is only WHETHER the raise exposes. How it then waits
+    is the same for both: the raise parks on the member's own `pending_privacy`
+    / `privacy_activates_at` while the live ceiling stays put, and because the
+    projection filters on the live ceiling the member is off every roster,
+    curated or all-public, until the finalize sweep promotes it. No membership
+    row is touched, which is what lets the second path wait at all.
+
+    `memberships` lets a caller that already fetched the rows for its own
+    purposes (the unarchive endpoint stages them behind the grace window) pass
+    them in rather than paying for the query twice. Pass the real list,
+    including an empty one - None means "not fetched", not "none exist".
+    """
+    if memberships is None:
+        memberships = await shared_view_memberships(db, system, member_id)
+    if memberships:
+        return True
+    return await view_serves_all_public_members(db, system)
+
+
 async def fronting_guard_release_exposes(
     db: AsyncSession,
     system_id: uuid.UUID,
@@ -580,6 +705,14 @@ async def fronting_guard_release_exposes(
     grant/flag/membership window must still receive its own full grace period,
     not inherit only the older action's remaining time. A member outside the
     view can expose an anonymous presence bit when show-count is enabled.
+
+    "In the view" is a membership row OR the view's `include_all_public_members`
+    flag, for the same reason `member_privacy_raise_exposes` exists: with that
+    flag on, a public member is named by the fronting surface without ever
+    having been added to anything, so a row test alone would report "exposes
+    nobody" about a release that puts their name on a live page. The flag path
+    is only taken for a member who is already public, which is what
+    `member_is_public` already gates - the projection applies the same ceiling.
     """
     eligible_membership = (
         (ShareViewMember.view_id == ShareView.id)
@@ -593,7 +726,9 @@ async def fronting_guard_release_exposes(
         ShareView.pending_fronting_show_count.is_(True),
     ]
     if member_is_public:
-        visibility_paths.append(ShareViewMember.id.is_not(None))
+        visibility_paths.append(
+            or_(ShareViewMember.id.is_not(None), all_public_members_clause())
+        )
 
     result = await db.execute(
         select(ShareView.id)
@@ -635,7 +770,11 @@ async def relationship_raise_exposes(
 
     - both endpoints are members of one view (the SAME view: an edge whose ends
       sit in two different views is never drawn), each with an active or
-      pending row;
+      pending row - OR that view has `include_all_public_members`, live or
+      staged, which puts both endpoints in it without any row at all. Both
+      endpoints have already been checked `public` above, so the flag really
+      does reach them; without this clause the gate would answer "exposes
+      nobody" about an edge that lands on a live page the moment it is saved;
     - that view has `include_relationships` on, or staged on;
     - a grant points at that view and passes `grant_live_clause()`;
     - and both endpoints clear the member ceiling the projection applies -
@@ -675,18 +814,25 @@ async def relationship_raise_exposes(
     source_row = aliased(ShareViewMember)
     target_row = aliased(ShareViewMember)
     eligible = [ShareItemStatus.ACTIVE.value, ShareItemStatus.PENDING.value]
+    # OUTER joins, with the status test in the ON clause: an endpoint may be in
+    # the view through the all-public flag instead of a row, so a missing row
+    # must not drop the view from the result before that alternative is
+    # considered.
+    all_public = all_public_members_clause()
     result = await db.execute(
         select(ShareView.id)
         .join(ShareGrant, ShareGrant.view_id == ShareView.id)
-        .join(
+        .outerjoin(
             source_row,
             (source_row.view_id == ShareView.id)
-            & (source_row.member_id == source_id),
+            & (source_row.member_id == source_id)
+            & source_row.status.in_(eligible),
         )
-        .join(
+        .outerjoin(
             target_row,
             (target_row.view_id == ShareView.id)
-            & (target_row.member_id == target_id),
+            & (target_row.member_id == target_id)
+            & target_row.status.in_(eligible),
         )
         .where(
             ShareView.system_id == system.id,
@@ -694,8 +840,8 @@ async def relationship_raise_exposes(
                 ShareView.include_relationships.is_(True),
                 ShareView.pending_include_relationships.is_(True),
             ),
-            source_row.status.in_(eligible),
-            target_row.status.in_(eligible),
+            or_(source_row.id.is_not(None), all_public),
+            or_(target_row.id.is_not(None), all_public),
             grant_live_clause(),
         )
         .limit(1)
@@ -719,7 +865,42 @@ async def relationship_exposed_member_ids(
     endpoints to share ONE view, so two members published through two different
     views count. That direction of imprecision keeps an edge private that might
     have been safe to publish, which is the only direction worth being wrong in.
+
+    A live-granted view with `include_all_public_members` short-circuits the
+    whole thing: it publishes every public member, so the answer is every
+    public member, with no membership rows to join through. Without this branch
+    the importer would read "nobody is published" off an empty
+    `share_view_members` table and store an incoming `public` edge as-is,
+    publishing it on commit - the same blind spot
+    `member_privacy_raise_exposes` closes on the interactive side.
     """
+    all_public_view = await db.execute(
+        select(ShareView.id)
+        .join(ShareGrant, ShareGrant.view_id == ShareView.id)
+        .where(
+            ShareView.system_id == system.id,
+            all_public_members_clause(),
+            # `include_relationships` only, matching the membership-row query
+            # below predicate for predicate: the two are the same question
+            # asked of two ways of being in a view, so they gate alike.
+            or_(
+                ShareView.include_relationships.is_(True),
+                ShareView.pending_include_relationships.is_(True),
+            ),
+            grant_live_clause(),
+        )
+        .limit(1)
+    )
+    if all_public_view.scalar_one_or_none() is not None:
+        everyone = await db.execute(
+            select(Member.id).where(
+                Member.system_id == system.id,
+                Member.never_shareable.is_(False),
+                Member.privacy == PrivacyLevel.PUBLIC,
+            )
+        )
+        return set(everyone.scalars().all())
+
     result = await db.execute(
         select(Member.id)
         .join(ShareViewMember, ShareViewMember.member_id == Member.id)
@@ -1453,6 +1634,61 @@ async def resolve_link_grant(
     return (row[0], row[1]) if row else None
 
 
+async def explain_public_miss(db: AsyncSession, system_id: uuid.UUID) -> str:
+    """Why `resolve_public_grant` returned None, for the metric and nothing else.
+
+    One of `pending`, `dark`, `not_found`. Runs only on the miss path, and its
+    answer never reaches the response: the visitor's 404 stays uniform. It
+    reuses the resolver's own two clauses rather than restating them, so the
+    reason recorded and the reason the page 404'd cannot disagree:
+
+    - a grant that passes `grant_live_clause(include_pending=True)` AND
+      `profile_serving_clause()` when the resolver (which excludes pending)
+      found nothing can only be PENDING;
+    - otherwise any grant at all for this subject means something existed and
+      is not serving - revoked, or suppressed - which is `dark`;
+    - otherwise there is nothing here.
+    """
+    return await _explain_miss(
+        db,
+        (ShareGrant.system_id == system_id)
+        & (ShareGrant.subject_type == ShareSubjectType.PUBLIC.value),
+    )
+
+
+async def explain_link_miss(db: AsyncSession, raw_token: str) -> str:
+    """The link twin of `explain_public_miss`. A rotated link's old token hashes
+    to nothing and so reads as `not_found`, not `dark`: after a rotate there
+    is genuinely no row for it."""
+    if not raw_token:
+        return "not_found"
+    return await _explain_miss(
+        db,
+        (ShareGrant.token_hash == hash_share_token(raw_token))
+        & (ShareGrant.subject_type == ShareSubjectType.LINK.value),
+    )
+
+
+async def _explain_miss(db: AsyncSession, subject) -> str:
+    would_serve_when_live = await db.scalar(
+        select(ShareGrant.id)
+        .join(System, System.id == ShareGrant.system_id)
+        .join(User, User.id == System.user_id)
+        .where(
+            subject,
+            grant_live_clause(include_pending=True),
+            profile_serving_clause(),
+        )
+        .limit(1)
+    )
+    if would_serve_when_live is not None:
+        return "pending"
+    exists_at_all = await db.scalar(select(ShareGrant.id).where(subject).limit(1))
+    if exists_at_all is not None:
+        return "dark"
+    return "not_found"
+
+
 async def account_serving_public_media(
     db: AsyncSession, owner_user_id: str
 ) -> bool:
@@ -1667,6 +1903,11 @@ async def finalize_share_activations(db: AsyncSession) -> int:
                  ShareView.pending_member_link_preview_mode),
                 else_=ShareView.member_link_preview_mode,
             ),
+            include_all_public_members=case(
+                (ShareView.pending_include_all_public_members.is_not(None),
+                 ShareView.pending_include_all_public_members),
+                else_=ShareView.include_all_public_members,
+            ),
             pending_include_bio=None,
             pending_include_fronting=None,
             pending_fronting_show_count=None,
@@ -1675,6 +1916,7 @@ async def finalize_share_activations(db: AsyncSession) -> int:
             pending_include_groups=None,
             pending_link_preview_mode=None,
             pending_member_link_preview_mode=None,
+            pending_include_all_public_members=None,
             flags_activate_at=None,
         )
         .returning(ShareView.id, ShareView.system_id)
@@ -1769,6 +2011,37 @@ async def finalize_share_activations(db: AsyncSession) -> int:
         share_grants_finalized_total.labels(kind="group_raise").inc()
         raised_direct.append(
             ("group_privacy", system_id, {"group_id": str(group_id)})
+        )
+
+    # Staged member raises, same atomic shape and the same reasoning: a
+    # lowering that lands mid-sweep clears `privacy_activates_at` and so either
+    # falls outside the predicate or writes last, and the `case()` covers the
+    # ordering where the timestamp survived but the staged level did not. This
+    # is the block that makes a member's ceiling wait; without it the pair on
+    # the model would stage forever (see the link-preview finalizer bug for
+    # what a column left out of this sweep looks like from the outside).
+    member_raises = await db.execute(
+        update(Member)
+        .where(
+            Member.privacy_activates_at.is_not(None),
+            Member.privacy_activates_at <= now,
+        )
+        .values(
+            privacy=case(
+                (Member.pending_privacy.is_not(None), Member.pending_privacy),
+                else_=Member.privacy,
+            ),
+            pending_privacy=None,
+            privacy_activates_at=None,
+        )
+        .returning(Member.id, Member.system_id)
+        .execution_options(synchronize_session=False)
+    )
+    for member_id, system_id in member_raises.all():
+        promoted += 1
+        share_grants_finalized_total.labels(kind="member_raise").inc()
+        raised_direct.append(
+            ("member_privacy", system_id, {"member_id": str(member_id)})
         )
 
     # Staged custom-field definition raises. Same atomic shape and the same
@@ -1933,12 +2206,14 @@ async def pending_exposures(
     authenticated owner. Every query is a single scoped predicate on that id
     (the share-view children reach it through their parent view).
 
-    Member raises have no dedicated `pending_*` column - they stage by demoting
-    the member's `ShareViewMember` rows to PENDING (`stage_membership_exposure`,
-    called by the privacy raise in update_member and by unarchive_member), so
-    those pending rows ARE the staged member exposure, whichever of the two put
-    them there. They are collapsed per member here so one raise counts once
-    rather than once per view the member sits in.
+    A member raise stages on `members.pending_privacy`, the same pair the
+    other privacy-carrying entities carry. An UNARCHIVE of an already-public
+    member back onto a published view has no level to stage and parks in the
+    member's `ShareViewMember` rows instead (`stage_membership_exposure`), so
+    those pending rows are also a staged member exposure; they are collapsed
+    per member here so one unarchive counts once rather than once per view.
+    Both report as `member_privacy`: to the owner they are the same thing, a
+    member on their way onto a shared page.
     """
     exposures: list[PendingExposure] = []
 
@@ -1964,10 +2239,21 @@ async def pending_exposures(
         PendingExposure("member_fronting", ts) for ts in guard_rows.scalars()
     ]
 
-    # A member raised to public, or unarchived back onto a published view:
-    # their share-view memberships were demoted to PENDING. Collapse per member
-    # (earliest activation) so one raise counts as one pending exposure, not
-    # once per view the member appears in.
+    # members.pending_privacy - a member raise.
+    member_raise_rows = await db.execute(
+        select(Member.privacy_activates_at).where(
+            Member.system_id == system_id,
+            Member.privacy_activates_at.is_not(None),
+        )
+    )
+    exposures += [
+        PendingExposure("member_privacy", ts) for ts in member_raise_rows.scalars()
+    ]
+
+    # A member unarchived back onto a published view: their share-view
+    # memberships were demoted to PENDING. Collapse per member (earliest
+    # activation) so one unarchive counts as one pending exposure, not once per
+    # view the member appears in.
     member_rows = await db.execute(
         select(func.min(ShareViewMember.activates_at))
         .join(ShareView, ShareView.id == ShareViewMember.view_id)
@@ -2060,3 +2346,193 @@ async def pending_exposures(
     ]
 
     return exposures
+
+
+async def cancel_pending_exposures(
+    system_id: uuid.UUID, db: AsyncSession
+) -> dict[str, int]:
+    """Call off every staged flip-to-public raise for one system.
+
+    The write-side mirror of `pending_exposures`, source for source, and the
+    inverse of `finalize_share_activations`: whatever that sweep would have
+    promoted, this stops. Returns a count per kind using the same labels the
+    read side reports, so a caller can say what it just cancelled.
+
+    Every branch does what the owner's own lowering path does, which is the
+    point: un-exposing is never gated, so cancelling a staged raise needs no
+    re-auth, honours no window, and is safe to run at any time. Staged
+    LEVELS are dropped (`pending_privacy` / `pending_visibility` /
+    `pending_<flag>` back to NULL) while the LIVE level is left exactly where
+    it is, so cancelling only ever removes a future exposure and never
+    un-publishes something already public. The two staged-membership kinds are
+    the same idea expressed differently: their rows stay PENDING with the
+    timestamp cleared, which is the resting state the sweep and the banner both
+    ignore, rather than being deleted and taking the owner's curation with
+    them. Pending grants are revoked outright, because a grant has no lower
+    level to fall back to.
+
+    Idempotent: a second call finds nothing staged and returns zeros.
+    """
+    cancelled: dict[str, int] = {}
+
+    def _count(kind: str, n: int) -> None:
+        if n:
+            cancelled[kind] = cancelled.get(kind, 0) + n
+
+    # systems.pending_privacy - the master switch raise.
+    system_result = await db.execute(
+        update(System)
+        .where(System.id == system_id, System.privacy_activates_at.is_not(None))
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("system_privacy", system_result.rowcount or 0)
+
+    # members.fronting_private_activates_at - a staged fronting-guard release.
+    # The guard itself (`fronting_private`) stays on: clearing the clock keeps
+    # the member hidden rather than revealing them.
+    guard_result = await db.execute(
+        update(Member)
+        .where(
+            Member.system_id == system_id,
+            Member.fronting_private_activates_at.is_not(None),
+        )
+        .values(fronting_private_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("member_fronting", guard_result.rowcount or 0)
+
+    # members.pending_privacy - a member raise. The live ceiling stays where it
+    # is; only the future exposure is dropped.
+    member_raise_result = await db.execute(
+        update(Member)
+        .where(
+            Member.system_id == system_id,
+            Member.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("member_privacy", member_raise_result.rowcount or 0)
+
+    # Staged member memberships (an unarchive back onto a published view).
+    # Counted per member, not per row, to match the read side's collapse - one
+    # unarchive cancelled is one cancellation.
+    staged_members = await db.execute(
+        select(func.count(func.distinct(ShareViewMember.member_id)))
+        .join(ShareView, ShareView.id == ShareViewMember.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+        )
+    )
+    _count("member_privacy", staged_members.scalar() or 0)
+    await db.execute(
+        update(ShareViewMember)
+        .where(
+            ShareViewMember.status == ShareItemStatus.PENDING.value,
+            ShareViewMember.activates_at.is_not(None),
+            ShareViewMember.view_id.in_(
+                select(ShareView.id).where(ShareView.system_id == system_id)
+            ),
+        )
+        .values(activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+    # groups.pending_privacy - a group raise.
+    group_result = await db.execute(
+        update(Group)
+        .where(
+            Group.system_id == system_id,
+            Group.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("group_privacy", group_result.rowcount or 0)
+
+    # custom_field_definitions.pending_privacy - a field-definition raise.
+    field_result = await db.execute(
+        update(CustomFieldDefinition)
+        .where(
+            CustomFieldDefinition.system_id == system_id,
+            CustomFieldDefinition.privacy_activates_at.is_not(None),
+        )
+        .values(pending_privacy=None, privacy_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("field_privacy", field_result.rowcount or 0)
+
+    # member_relationships.pending_visibility - a staged edge raise.
+    edge_result = await db.execute(
+        update(MemberRelationship)
+        .where(
+            MemberRelationship.system_id == system_id,
+            MemberRelationship.visibility_activates_at.is_not(None),
+        )
+        .values(pending_visibility=None, visibility_activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    _count("relationship_privacy", edge_result.rowcount or 0)
+
+    # share_views.flags_activate_at - staged exposure-flag loosenings. Every
+    # pending_<flag> is dropped alongside the clock, so a later loosening
+    # starts a fresh window instead of inheriting a half-cancelled one.
+    flag_result = await db.execute(
+        update(ShareView)
+        .where(
+            ShareView.system_id == system_id,
+            ShareView.flags_activate_at.is_not(None),
+        )
+        .values(
+            flags_activate_at=None,
+            **{f"pending_{flag}": None for flag in EXPOSURE_FLAGS},
+        )
+        .execution_options(synchronize_session=False)
+    )
+    _count("view_flags", flag_result.rowcount or 0)
+
+    # Pending grants. A grant is the one staged exposure with nothing lower to
+    # fall back to - it either serves or it does not - so cancelling it means
+    # revoking it, exactly as the owner's panic button does. Loaded rather than
+    # bulk-updated so `revoke_grant` stays the single definition of what
+    # revoking means, metrics included.
+    grants = await db.execute(
+        select(ShareGrant).where(
+            ShareGrant.system_id == system_id,
+            ShareGrant.status == ShareGrantStatus.PENDING.value,
+            ShareGrant.activates_at.is_not(None),
+        )
+    )
+    grant_rows = list(grants.scalars().all())
+    for grant in grant_rows:
+        revoke_grant(grant)
+    _count("share_grant", len(grant_rows))
+
+    # Staged field memberships, collapsed per field like the member rows above.
+    staged_fields = await db.execute(
+        select(func.count(func.distinct(ShareViewField.field_id)))
+        .join(ShareView, ShareView.id == ShareViewField.view_id)
+        .where(
+            ShareView.system_id == system_id,
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+        )
+    )
+    _count("view_field", staged_fields.scalar() or 0)
+    await db.execute(
+        update(ShareViewField)
+        .where(
+            ShareViewField.status == ShareItemStatus.PENDING.value,
+            ShareViewField.activates_at.is_not(None),
+            ShareViewField.view_id.in_(
+                select(ShareView.id).where(ShareView.system_id == system_id)
+            ),
+        )
+        .values(activates_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+    return cancelled

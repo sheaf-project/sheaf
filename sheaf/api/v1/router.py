@@ -11,6 +11,7 @@ from sheaf.api.v1 import (
     analytics,
     announcements,
     auth,
+    berrytree_import,
     client_settings,
     custom_fields,
     devices,
@@ -183,6 +184,10 @@ v1_router.include_router(
 )
 v1_router.include_router(
     ampersand_import.router,
+    dependencies=[Depends(require_scope("import:write"))],
+)
+v1_router.include_router(
+    berrytree_import.router,
     dependencies=[Depends(require_scope("import:write"))],
 )
 # Unified async-job import router. Replaces the per-source legacy

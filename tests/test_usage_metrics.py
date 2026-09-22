@@ -276,3 +276,287 @@ def test_record_active_account_drops_when_inflight_cap_reached(monkeypatch):
         assert len(usage._bg_tasks) == usage._MAX_INFLIGHT_TASKS
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Client families: a second dimension on the same sketches
+# ---------------------------------------------------------------------------
+
+
+def test_family_key_scheme_is_id_free_and_namespaced():
+    """Family keys live under `fam:` so a family can never shadow an auth kind
+    (a family literally named `client` would otherwise collide), and `api` has
+    no family sketch: it reads the api auth-kind sketch."""
+    from datetime import date
+
+    from sheaf.observability.usage import family_day_key
+
+    key = family_day_key(usage.SCOPE_ACCOUNT, "web", date(2026, 9, 1))
+    assert key == "sheaf:hll:acct:fam:web:2026-09-01"
+    assert usage._ref_for_family("api") == (usage.KIND_API, usage.FAMILY_NONE)
+    assert usage._ref_for_family("web") == (usage.KIND_CLIENT, "web")
+    # The account scope flushes both auth-kind sketches plus one per
+    # interactive family; the system scope only the auth-kind ones.
+    acct_refs = usage._refs_for_scope(usage.SCOPE_ACCOUNT)
+    sys_refs = usage._refs_for_scope(usage.SCOPE_SYSTEM)
+    assert (usage.KIND_CLIENT, "web") in acct_refs
+    assert (usage.KIND_CLIENT, "web") not in sys_refs
+    assert set(sys_refs) == {(k, usage.FAMILY_NONE) for k in usage.WRITE_KINDS}
+
+
+def test_overlap_is_inclusion_exclusion_and_never_negative():
+    """|A n B| = |A| + |B| - |A u B|, clamped: three HLL estimates can cross
+    when the true overlap is tiny, and a negative overlap is not a number."""
+    assert usage.overlap_from_counts(500, 500, 800) == 200
+    assert usage.overlap_from_counts(500, 500, 1000) == 0
+    assert usage.overlap_from_counts(100, 100, 210) == 0
+
+
+def test_family_overlap_from_the_sketches(monkeypatch):
+    """Cross-platform overlap needs no per-account state: two family sketches
+    plus their union give it. web: ids 0..499, android: ids 300..799, so the
+    true overlap is 200 and the union 800."""
+    from sheaf.observability.usage import family_day_key
+
+    scope = _scope()
+    rb = _bytes_client()
+    _patch_redis_bytes(monkeypatch, rb)
+
+    today = datetime.now(UTC).date()
+    k_web = family_day_key(scope, "web", today)
+    k_android = family_day_key(scope, "android", today)
+    web_ref = (usage.KIND_CLIENT, "web")
+    android_ref = (usage.KIND_CLIENT, "android")
+
+    async def body() -> tuple[int, int, int]:
+        engine, maker = await _session()
+        try:
+            await rb.delete(k_web, k_android)
+            await rb.execute_command("PFADD", k_web, *[f"o-{i}" for i in range(0, 500)])
+            await rb.execute_command(
+                "PFADD", k_android, *[f"o-{i}" for i in range(300, 800)]
+            )
+            async with maker() as db:
+                a = await usage._monthly_union(db, scope, [web_ref])
+                b = await usage._monthly_union(db, scope, [android_ref])
+                u = await usage._monthly_union(db, scope, [web_ref, android_ref])
+            return a, b, u
+        finally:
+            await rb.delete(k_web, k_android)
+            await rb.aclose()
+            await engine.dispose()
+
+    a, b, u = asyncio.run(body())
+    assert 470 <= a <= 530 and 470 <= b <= 530, (a, b)
+    assert 760 <= u <= 840, u
+    overlap = usage.overlap_from_counts(a, b, u)
+    # Three estimates' errors compound; the true value is 200.
+    assert 130 <= overlap <= 270, overlap
+
+
+def test_family_sketch_restores_from_postgres_under_its_own_key(monkeypatch):
+    """A persisted family sketch is keyed by (day, scope, auth_kind, family)
+    and must be restored for that family only: a lost `web` day must not be
+    filled in from the plain `client` row for the same day."""
+    from sheaf.models.usage_sketch import UsageDailySketch
+    from sheaf.observability.usage import family_day_key
+
+    scope = _scope()
+    rb = _bytes_client()
+    _patch_redis_bytes(monkeypatch, rb)
+
+    today = datetime.now(UTC).date()
+    lost_day = today - timedelta(days=3)
+    k_lost = family_day_key(scope, "web", lost_day)
+    k_client_lost = day_key(scope, usage.KIND_CLIENT, lost_day)
+
+    async def body() -> tuple[int, int]:
+        engine, maker = await _session()
+        try:
+            await rb.delete(k_lost, k_client_lost)
+            # Build the lost web day, capture its bytes, lose the key.
+            await rb.execute_command("PFADD", k_lost, *[f"w-{i}" for i in range(400)])
+            web_bytes = await rb.get(k_lost)
+            await rb.delete(k_lost)
+            # A much bigger plain-client sketch for the same day, persisted with
+            # family '' - the one a wrong restore would pick up instead.
+            await rb.execute_command(
+                "PFADD", k_client_lost, *[f"c-{i}" for i in range(2000)]
+            )
+            client_bytes = await rb.get(k_client_lost)
+            await rb.delete(k_client_lost)
+
+            async with maker() as db:
+                await db.execute(
+                    delete(UsageDailySketch).where(UsageDailySketch.scope == scope)
+                )
+                db.add(UsageDailySketch(
+                    day=lost_day, scope=scope, auth_kind=usage.KIND_CLIENT,
+                    client_family="web", sketch=web_bytes,
+                    updated_at=datetime.now(UTC),
+                ))
+                db.add(UsageDailySketch(
+                    day=lost_day, scope=scope, auth_kind=usage.KIND_CLIENT,
+                    client_family=usage.FAMILY_NONE, sketch=client_bytes,
+                    updated_at=datetime.now(UTC),
+                ))
+                await db.commit()
+                web = await usage._monthly_union(db, scope, [(usage.KIND_CLIENT, "web")])
+                client = await usage.monthly_count(db, scope, usage.KIND_CLIENT)
+            return web, client
+        finally:
+            await rb.delete(k_lost, k_client_lost)
+            async with maker() as db:
+                await db.execute(
+                    delete(UsageDailySketch).where(UsageDailySketch.scope == scope)
+                )
+                await db.commit()
+            await rb.aclose()
+            await engine.dispose()
+
+    web, client = asyncio.run(body())
+    assert 380 <= web <= 420, f"web restore picked up the wrong row: {web}"
+    assert 1900 <= client <= 2100, client
+
+
+def test_record_active_writes_the_family_sketch_alongside_the_kind(monkeypatch):
+    """The family sketch is additive: an interactive request lands in BOTH the
+    `client` auth-kind sketch (so DAU/MAU never depend on families) and its
+    family sketch. An api request lands in `api` and no family key at all."""
+    from sheaf.observability.usage import family_day_key
+
+    scope = _scope()
+    # Point the write path at the throwaway scope so the real acct sketch on
+    # the test Redis is untouched.
+    monkeypatch.setattr(usage, "SCOPE_ACCOUNT", scope)
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+    async def _fake_get_redis():
+        return r
+
+    async def _no_system(_user_id):
+        return None
+
+    import sheaf.auth.sessions as sessions
+
+    monkeypatch.setattr(sessions, "get_redis", _fake_get_redis)
+    monkeypatch.setattr(usage, "_system_id_for", _no_system)
+
+    today = datetime.now(UTC).date()
+    k_client = day_key(scope, usage.KIND_CLIENT, today)
+    k_api = day_key(scope, usage.KIND_API, today)
+    k_web = family_day_key(scope, "web", today)
+    k_api_fam = family_day_key(scope, "api", today)
+
+    async def body() -> tuple[int, int, int, bool]:
+        try:
+            await r.delete(k_client, k_api, k_web, k_api_fam)
+            await usage._record_active(uuid.uuid4(), usage.KIND_CLIENT, "web")
+            await usage._record_active(uuid.uuid4(), usage.KIND_API, "api")
+            return (
+                int(await r.pfcount(k_client)),
+                int(await r.pfcount(k_web)),
+                int(await r.pfcount(k_api)),
+                bool(await r.exists(k_api_fam)),
+            )
+        finally:
+            await r.delete(k_client, k_api, k_web, k_api_fam)
+            await r.aclose()
+
+    client, web, api, api_family_key_exists = asyncio.run(body())
+    assert client == 1 and web == 1, (client, web)
+    assert api == 1
+    assert api_family_key_exists is False, "api must not get a family sketch"
+
+
+# ---------------------------------------------------------------------------
+# Account-age buckets: daily only, never persisted
+# ---------------------------------------------------------------------------
+
+
+def test_age_bucket_boundaries_are_half_open_and_total():
+    """Each edge belongs to the bucket ABOVE it (7 days old is lt30d, not lt7d),
+    every age lands somewhere, and the two ways a timestamp can be awkward
+    (future, naive) are handled rather than raised."""
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    cases = [
+        (timedelta(0), "lt7d"),
+        (timedelta(days=6, hours=23), "lt7d"),
+        (timedelta(days=7), "lt30d"),
+        (timedelta(days=29, hours=23), "lt30d"),
+        (timedelta(days=30), "lt90d"),
+        (timedelta(days=89, hours=23), "lt90d"),
+        (timedelta(days=90), "older"),
+        (timedelta(days=3000), "older"),
+    ]
+    for age, expected in cases:
+        assert usage.age_bucket(now - age, now) == expected, age
+    assert {expected for _, expected in cases} == set(usage.AGE_BUCKETS)
+    # Clock skew between nodes: a creation time in the future is brand new.
+    assert usage.age_bucket(now + timedelta(hours=1), now) == "lt7d"
+    # A naive timestamp is read as UTC; a missing one is simply no bucket.
+    assert usage.age_bucket(datetime(2026, 9, 19, 12, 0), now) == "lt7d"
+    assert usage.age_bucket(None, now) is None
+
+
+def test_age_key_scheme_is_id_free_and_outside_the_persisted_set():
+    """Age sketches live under `age:` and are DAILY ONLY: not a SketchRef, not
+    flushed, not restored. Nothing about them needs to survive a Redis replace
+    because only today's key is ever read."""
+    from datetime import date
+
+    from sheaf.observability.usage import age_day_key
+
+    assert (
+        age_day_key(usage.SCOPE_ACCOUNT, "lt7d", date(2026, 9, 1))
+        == "sheaf:hll:acct:age:lt7d:2026-09-01"
+    )
+    persisted_segments = {family for _, family in usage._refs_for_scope(usage.SCOPE_ACCOUNT)}
+    assert not persisted_segments & set(usage.AGE_BUCKETS)
+    assert usage.AGE_KEY_TTL_SECONDS < usage.HLL_KEY_TTL_SECONDS
+
+
+def test_record_active_writes_the_age_sketch_for_every_auth_kind(monkeypatch):
+    """An interactive request and an automation request each land in their age
+    bucket: an API key's account has an age too. The key carries the short
+    TTL, not the 31-day one."""
+    from sheaf.observability.usage import age_day_key
+
+    scope = _scope()
+    monkeypatch.setattr(usage, "SCOPE_ACCOUNT", scope)
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+    async def _fake_get_redis():
+        return r
+
+    async def _no_system(_user_id):
+        return None
+
+    import sheaf.auth.sessions as sessions
+
+    monkeypatch.setattr(sessions, "get_redis", _fake_get_redis)
+    monkeypatch.setattr(usage, "_system_id_for", _no_system)
+
+    today = datetime.now(UTC).date()
+    k_new = age_day_key(scope, "lt7d", today)
+    k_old = age_day_key(scope, "older", today)
+    k_client = day_key(scope, usage.KIND_CLIENT, today)
+    k_api = day_key(scope, usage.KIND_API, today)
+
+    async def body() -> tuple[int, int, int]:
+        try:
+            await r.delete(k_new, k_old, k_client, k_api)
+            await usage._record_active(uuid.uuid4(), usage.KIND_CLIENT, "web", "lt7d")
+            await usage._record_active(uuid.uuid4(), usage.KIND_API, "api", "older")
+            return (
+                int(await r.pfcount(k_new)),
+                int(await r.pfcount(k_old)),
+                int(await r.ttl(k_new)),
+            )
+        finally:
+            await r.delete(k_new, k_old, k_client, k_api)
+            await r.aclose()
+
+    new, old, ttl = asyncio.run(body())
+    assert new == 1 and old == 1, (new, old)
+    assert 0 < ttl <= usage.AGE_KEY_TTL_SECONDS, ttl

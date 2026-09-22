@@ -681,6 +681,7 @@ def _share_view_dict(view: ShareView) -> dict:
         "include_groups": view.include_groups,
         "link_preview_mode": view.link_preview_mode,
         "member_link_preview_mode": view.member_link_preview_mode,
+        "include_all_public_members": view.include_all_public_members,
         "member_permalinks": view.member_permalinks,
         "member_ids": [str(m.member_id) for m in view.members],
         "member_sources": {

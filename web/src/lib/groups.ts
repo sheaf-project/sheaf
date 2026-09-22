@@ -8,8 +8,9 @@ import type {
 } from "@/types/api";
 import { apiFetch } from "./api-client";
 
-export function listGroups() {
-  return apiFetch<Group[]>("/v1/groups");
+export function listGroups(opts: { includeMemberIds?: boolean } = {}) {
+  const qs = opts.includeMemberIds ? "?include_member_ids=true" : "";
+  return apiFetch<Group[]>(`/v1/groups${qs}`);
 }
 
 export function getGroup(id: string) {

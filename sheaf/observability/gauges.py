@@ -20,10 +20,15 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sheaf.observability.client_family import (
+    CLIENT_FAMILIES,
+    client_family_from_name,
+)
 from sheaf.observability.metrics import (
     FRONT_COUNT_BUCKETS,
     auth_lockouts_active,
     auth_sessions_active,
+    auth_sessions_by_client,
     auth_totp_enabled,
     auth_trusted_devices_active,
     cf_shield_active,
@@ -44,6 +49,7 @@ from sheaf.observability.metrics import (
     open_polls_total,
     pending_actions_active,
     polls_total,
+    push_devices,
     redis_up,
     reminders_total,
     requests_per_account_per_minute,
@@ -51,6 +57,7 @@ from sheaf.observability.metrics import (
     share_grants_live,
     share_pending_exposure_oldest_seconds,
     share_pending_exposures,
+    share_views_with_option,
     system_custom_field_count_max,
     system_front_count_max,
     system_group_count_max,
@@ -59,6 +66,7 @@ from sheaf.observability.metrics import (
     system_open_poll_count_max,
     system_poll_count_max,
     system_reminder_count_max,
+    system_share_view_count_max,
     system_tag_count_max,
     systems_by_custom_field_count,
     systems_by_front_count,
@@ -68,9 +76,12 @@ from sheaf.observability.metrics import (
     systems_by_open_poll_count,
     systems_by_poll_count,
     systems_by_reminder_count,
+    systems_by_share_view_count,
     systems_by_tag_count,
     systems_total,
+    systems_with_feature,
     systems_with_public_profile,
+    systems_with_public_profile_by_subject,
     tags_total,
     target_revision_count_max,
     targets_by_revision_count,
@@ -106,6 +117,8 @@ async def refresh_gauges(db: AsyncSession) -> dict:
     await _refresh_share_exposures(db)
     await _refresh_live_grants(db)
     await _refresh_public_profile_adoption(db)
+    await _refresh_feature_adoption(db)
+    await _refresh_share_view_options(db)
 
     # Aggregate usage cardinality (DAU/MAU) from the id-free HLL sketches, plus
     # the monthly union with restore-from-Postgres. Best-effort inside; a Redis
@@ -171,6 +184,22 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
 
     mem_count = await db.scalar(select(func.count(Member.id)))
     members_total.set(int(mem_count or 0))
+
+    # Installed mobile base by platform. Every platform gets set, including
+    # to zero, so a platform whose last device deregistered reads as 0 rather
+    # than freezing at its final count.
+    from sheaf.models.push_device_token import PushDeviceToken, PushPlatform
+
+    rows = await db.execute(
+        select(PushDeviceToken.platform, func.count(PushDeviceToken.id)).group_by(
+            PushDeviceToken.platform
+        )
+    )
+    by_platform = {platform: int(n) for platform, n in rows.all()}
+    for platform in PushPlatform:
+        push_devices.labels(platform=platform.value).set(
+            by_platform.get(platform.value, 0)
+        )
 
     custom_fronts = await db.scalar(
         select(func.count(Member.id)).where(Member.is_custom_front.is_(True))
@@ -290,6 +319,7 @@ async def _refresh_distributions(db: AsyncSession) -> None:
     from sheaf.models.message import Message
     from sheaf.models.poll import Poll
     from sheaf.models.reminder import Reminder
+    from sheaf.models.share import ShareView
     from sheaf.models.system import System
     from sheaf.models.tag import Tag
 
@@ -307,6 +337,23 @@ async def _refresh_distributions(db: AsyncSession) -> None:
     )
     await _set_count_distribution(
         db, front_per_system, systems_by_front_count, system_front_count_max
+    )
+
+    # Per-system share-view count, same shape. Most systems have zero; the
+    # interesting part of this distribution is le=1 against le=5 among those
+    # that publish at all.
+    share_views_per_system = (
+        select(func.count(ShareView.id).label("c"))
+        .select_from(System)
+        .outerjoin(ShareView, ShareView.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db,
+        share_views_per_system,
+        systems_by_share_view_count,
+        system_share_view_count_max,
     )
 
     # Journal entries per system, same preserve-by-count lens.
@@ -581,6 +628,7 @@ async def _refresh_share_exposures(db: AsyncSession) -> None:
     # Columns that stage a raise directly (one row = one pending exposure).
     await _count_min("system_privacy", System.privacy_activates_at)
     await _count_min("member_guard", Member.fronting_private_activates_at)
+    await _count_min("member_raise", Member.privacy_activates_at)
     await _count_min("group_raise", Group.privacy_activates_at)
     await _count_min("field_raise", CustomFieldDefinition.privacy_activates_at)
     await _count_min("edge_raise", MemberRelationship.visibility_activates_at)
@@ -679,6 +727,120 @@ async def _refresh_public_profile_adoption(db: AsyncSession) -> None:
         )
     )
     systems_with_public_profile.set(int(count or 0))
+    # The same number under the feature-adoption gauge. The bare gauge above
+    # is kept as an alias so nothing already charted breaks.
+    systems_with_feature.labels(feature="public_profile").set(int(count or 0))
+
+
+async def _refresh_feature_adoption(db: AsyncSession) -> None:
+    """Distinct systems with at least one row of each feature.
+
+    Adoption rather than volume (the data-shape distributions cover volume):
+    a system that tried polls once and one that runs a poll a week count the
+    same. One indexed COUNT(DISTINCT system_id) per feature, nothing about
+    the rows themselves. `public_profile` is set by the adoption refresh
+    above, from the resolver's own live clause.
+    """
+    from sheaf.models.custom_field import CustomFieldDefinition
+    from sheaf.models.group import Group
+    from sheaf.models.journal_entry import JournalEntry
+    from sheaf.models.poll import Poll
+    from sheaf.models.relationship import MemberRelationship
+    from sheaf.models.reminder import Reminder
+    from sheaf.models.share import ShareView
+    from sheaf.models.tag import Tag
+
+    columns = {
+        "journals": JournalEntry.system_id,
+        "polls": Poll.system_id,
+        "relationships": MemberRelationship.system_id,
+        "reminders": Reminder.system_id,
+        "share_views": ShareView.system_id,
+        "custom_fields": CustomFieldDefinition.system_id,
+        "groups": Group.system_id,
+        "tags": Tag.system_id,
+    }
+    for feature, column in columns.items():
+        n = await db.scalar(select(func.count(func.distinct(column))))
+        systems_with_feature.labels(feature=feature).set(int(n or 0))
+
+
+async def _refresh_share_view_options(db: AsyncSession) -> None:
+    """How many LIVE share views have each option switched on.
+
+    Live = at least one grant satisfying `grant_live_clause`, the same
+    predicate the resolver serves against; a view nothing points at is a
+    draft, and counting its options would count intentions rather than
+    exposures. One query, five filtered counts, no per-view rows hydrated.
+    Not a partition: a view can have every option on at once.
+    """
+    from sheaf.models.share import LinkPreviewMode, ShareGrant, ShareView
+    from sheaf.services.sharing import grant_live_clause
+
+    live_view_ids = (
+        select(ShareGrant.view_id).where(grant_live_clause()).distinct().subquery()
+    )
+    detailed = LinkPreviewMode.SYSTEM_DETAILS.value
+    row = (
+        await db.execute(
+            select(
+                func.count().filter(ShareView.member_permalinks.is_(True)).label(
+                    "member_permalinks"
+                ),
+                func.count().filter(ShareView.include_fronting.is_(True)).label(
+                    "include_fronting"
+                ),
+                func.count().filter(ShareView.include_bio.is_(True)).label(
+                    "include_bio"
+                ),
+                func.count().filter(ShareView.link_preview_mode == detailed).label(
+                    "link_preview_detailed"
+                ),
+                func.count()
+                .filter(ShareView.member_link_preview_mode == detailed)
+                .label("member_preview_detailed"),
+            )
+            .select_from(ShareView)
+            .join(live_view_ids, live_view_ids.c.view_id == ShareView.id)
+        )
+    ).one()
+    for option in (
+        "member_permalinks",
+        "include_fronting",
+        "include_bio",
+        "link_preview_detailed",
+        "member_preview_detailed",
+    ):
+        share_views_with_option.labels(option=option).set(int(getattr(row, option) or 0))
+
+    # The same adopters, partitioned by how they share. One row per system
+    # saying whether it has a live public grant and whether it has a live
+    # link grant, then a count per combination. Every combination is set,
+    # including to zero, so a bucket that empties reads as empty.
+    per_system = (
+        select(
+            func.bool_or(ShareGrant.subject_type == "public").label("has_public"),
+            func.bool_or(ShareGrant.subject_type == "link").label("has_link"),
+        )
+        .where(grant_live_clause())
+        .group_by(ShareGrant.system_id)
+        .subquery()
+    )
+    rows = await db.execute(
+        select(per_system.c.has_public, per_system.c.has_link, func.count()).group_by(
+            per_system.c.has_public, per_system.c.has_link
+        )
+    )
+    partition = {"public": 0, "link": 0, "both": 0}
+    for has_public, has_link, n in rows.all():
+        if has_public and has_link:
+            partition["both"] += int(n)
+        elif has_public:
+            partition["public"] += int(n)
+        elif has_link:
+            partition["link"] += int(n)
+    for subject_type, n in partition.items():
+        systems_with_public_profile_by_subject.labels(subject_type=subject_type).set(n)
 
 
 async def _refresh_redis_up_only() -> None:
@@ -721,11 +883,41 @@ async def _refresh_rate_distribution() -> None:
     except Exception:
         return
 
-    # Active sessions. SCAN with COUNT hint; bail if it gets long.
+    # Active sessions. SCAN with COUNT hint; bail if it gets long. The same
+    # walk reads each session's stored client_name (pipelined, in batches) to
+    # split the total by client family; the family is derived by the same
+    # bounded parser the request path uses, so a stored name can never become
+    # a label. `sheaf:session:*` matches only the session hashes: the child
+    # registrations live under `sheaf:session_children:` and do not match.
     sessions = 0
-    async for _ in _scan(r, "sheaf:session:*", _MAX_RATE_LIMIT_KEYS_PER_REFRESH):
+    by_family: dict[str, int] = dict.fromkeys(CLIENT_FAMILIES, 0)
+    batch: list[str] = []
+
+    async def _count_batch() -> None:
+        if not batch:
+            return
+        pipe = r.pipeline(transaction=False)
+        for key in batch:
+            pipe.hget(key, "client_name")
+        try:
+            names = await pipe.execute(raise_on_error=False)
+        except Exception:
+            names = [None] * len(batch)
+        for name in names:
+            # A per-key error (a key that expired mid-walk, say) comes back as
+            # an exception object in the list; it is simply an unknown client.
+            by_family[client_family_from_name(name if isinstance(name, str) else None)] += 1
+        batch.clear()
+
+    async for key in _scan(r, "sheaf:session:*", _MAX_RATE_LIMIT_KEYS_PER_REFRESH):
         sessions += 1
+        batch.append(key)
+        if len(batch) >= 500:
+            await _count_batch()
+    await _count_batch()
     auth_sessions_active.set(sessions)
+    for family, count in by_family.items():
+        auth_sessions_by_client.labels(client_family=family).set(count)
 
     # Per-IP request distribution from the global rate-limit counters.
     # Each key is one IP for one window; the value is request count in

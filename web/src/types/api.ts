@@ -154,6 +154,12 @@ export interface Member {
   /** A requested release of the fronting guard is waiting out the System
    *  Safety grace period until this timestamp. */
   fronting_private_activates_at: string | null;
+  /** A raise to public still waiting out the System Safety grace window.
+   *  `privacy` above is still the live truth; this is what it becomes when
+   *  `privacy_activates_at` passes. null = nothing staged. The same pair
+   *  groups and custom fields carry. */
+  pending_privacy: PrivacyLevel | null;
+  privacy_activates_at: string | null;
   created_at: string;
   updated_at: string;
   /** True iff at least one ContentRevision exists for this member's
@@ -198,6 +204,11 @@ export interface MemberCreate {
   /** Omit (or send null) to take the server default, which is on for a custom
    *  front and off for an ordinary member. An explicit value is honoured. */
   fronting_private?: boolean | null;
+  /** Step-up credentials, only ever asked for when creating this member
+   *  public would publish them at once: a share view set to show everyone
+   *  set to Public is live. Same shape as the update body's. */
+  password?: string;
+  totp_code?: string;
 }
 
 export interface MemberUpdate {
@@ -385,6 +396,10 @@ export interface Group {
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
   pending_delete_at: string | null;
+  /** Only present when the list was asked for it
+   *  (`?include_member_ids=true`). Lets a screen build the whole
+   *  member-to-groups map from one request instead of one per group. */
+  member_ids?: string[];
 }
 
 export interface GroupCreate {
@@ -425,6 +440,9 @@ export interface Tag {
   updated_at: string;
   /** Pending-delete grace timestamp; null when not queued. */
   pending_delete_at: string | null;
+  /** Only present when the list was asked for it
+   *  (`?include_member_ids=true`); see `Group.member_ids`. */
+  member_ids?: string[];
 }
 
 export interface TagCreate {
@@ -814,6 +832,9 @@ export interface NotificationChannel {
   name: string;
   destination_type: DestinationType;
   destination_state: DestinationState;
+  /** Set when the server disabled this channel rather than the owner or the
+   *  recipient. Currently only "delivery_failed". */
+  disabled_reason: string | null;
   destination_config: Record<string, unknown>;
   event_type: string;
   activation_code_expires_at: string | null;
@@ -914,6 +935,11 @@ export interface ManageChannelView {
    *  recipient unsubscribing). Lets the recipient UI render "Paused by
    *  sender" instead of "Unsubscribed". */
   paused_by_sender: boolean;
+  /** Set when the SERVER disabled the channel, which is neither of the two
+   *  cases above. Currently only "delivery_failed". Null otherwise, so
+   *  `disabled` still means "unsubscribed" when both this and
+   *  paused_by_sender are empty. */
+  disabled_reason: string | null;
 }
 
 export interface ReceivingChannelView {
@@ -924,6 +950,8 @@ export interface ReceivingChannelView {
   destination_state: string;
   /** See ManageChannelView.paused_by_sender. */
   paused_by_sender: boolean;
+  /** See ManageChannelView.disabled_reason. */
+  disabled_reason: string | null;
   redeemed_at: string | null;
   last_delivered_at: string | null;
 }
@@ -1366,6 +1394,13 @@ export interface ShareView {
   /** The same, for member permalink links. Also reads "generic" when
    *  `member_permalinks` is off, because then there is no member link at all. */
   member_link_preview_effective?: PreviewMode;
+  /** When true the roster is not `members` below: the view serves EVERY member
+   *  set to public, worked out live on each request, so somebody made public
+   *  later shows up without the view being edited and somebody made private
+   *  drops out at once. `never_shareable` members are still never included.
+   *  The rows in `members` stay as they are - curation kept for the day this
+   *  goes back off - but they decide nothing while it is on. */
+  include_all_public_members: boolean;
   /** Stable per-member URLs for members this view already shows. Deliberately
    *  NOT an exposure flag: it publishes no data that the roster doesn't
    *  already publish, only an address for it. So it has no pending twin,
@@ -1382,6 +1417,7 @@ export interface ShareView {
   pending_include_groups?: boolean | null;
   pending_link_preview_mode?: PreviewMode | null;
   pending_member_link_preview_mode?: PreviewMode | null;
+  pending_include_all_public_members?: boolean | null;
   /** When the queued flag change above becomes live. */
   flags_activate_at?: string | null;
   created_at: string;
@@ -1403,6 +1439,7 @@ export interface ShareViewCreate {
   include_groups?: boolean;
   link_preview_mode?: PreviewMode;
   member_link_preview_mode?: PreviewMode;
+  include_all_public_members?: boolean;
   member_permalinks?: boolean;
 }
 
@@ -1416,6 +1453,7 @@ export interface ShareViewUpdate {
   include_groups?: boolean;
   link_preview_mode?: PreviewMode;
   member_link_preview_mode?: PreviewMode;
+  include_all_public_members?: boolean;
   member_permalinks?: boolean;
   password?: string;
   totp_code?: string;
@@ -1480,6 +1518,10 @@ export interface ShareAuditEntry {
   include_fronting: boolean;
   include_relationships: boolean;
   include_groups: boolean;
+  /** When true, `member_count` above is not the rule: the view serves every
+   *  member set to public, so `served_member_count` is the only one of the two
+   *  that describes what a visitor gets. */
+  include_all_public_members: boolean;
   member_permalinks: boolean;
   /** Edges this view would actually serve right now, not what the flag
    *  permits: zero when the flag is off, and zero when it is on but no edge

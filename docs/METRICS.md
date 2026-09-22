@@ -126,6 +126,7 @@ deliberately not a label).
 | `sheaf_auth_lockouts_active` | gauge | - |
 | `sheaf_auth_trusted_devices_active` | gauge | - |
 | `sheaf_auth_sessions_active` | gauge | - |
+| `sheaf_auth_sessions_by_client` | gauge | `client_family` |
 | `sheaf_auth_totp_enabled` | gauge | - |
 
 Useful alerts: a sustained `password_incorrect` rate per hour (credential
@@ -338,11 +339,20 @@ message_thread_delete, revision_unpin, watch_token_revoke).
 | `sheaf_adult_attestations_total` | counter | - |
 | `sheaf_watch_redemptions_total` | counter | `destination_type`, `outcome` |
 | `sheaf_share_projection_duration_seconds` | histogram | `projection` ∈ {members} |
+| `sheaf_share_views_with_option` | gauge | `option` ∈ {member_permalinks, include_fronting, include_bio, link_preview_detailed, member_preview_detailed} |
+| `sheaf_systems_by_share_view_count` | gauge | `le` |
+| `sheaf_system_share_view_count_max` | gauge | - |
+| `sheaf_public_requests_total` | counter | `surface`, `subject_type` ∈ {public, link}, `outcome` |
+| `sheaf_link_previews_total` | counter | `card` ∈ {generic, system_details, member}, `unfurler` |
+| `sheaf_systems_with_public_profile_by_subject` | gauge | `subject_type` ∈ {public, link, both} |
 
 `kind` (both the finalize counter and the pending gauge) ∈ {grant,
-view_member, view_field, view_flags, member_guard, edge_raise, group_raise,
-field_raise, system_privacy} - one per promotion category the finalize sweep
-handles. `sheaf_share_grants_finalized_total` counts staged exposures the
+view_member, view_field, view_flags, member_guard, member_raise, edge_raise,
+group_raise, field_raise, system_privacy} - one per promotion category the
+finalize sweep handles. `member_raise` is a member's own ceiling waiting to go
+public (the `members.pending_privacy` pair); `view_member` is a membership row
+waiting, which after this split is how an unarchive back onto a published
+view stages. `sheaf_share_grants_finalized_total` counts staged exposures the
 sweep has promoted live; `sheaf_share_pending_exposures` is the point-in-time
 depth still waiting behind a grace window (the operator mirror of the owner's
 exposure banner). member/field kinds collapse per entity, matching the banner.
@@ -376,6 +386,56 @@ because no channel resolved. Only the reachable combinations are pre-warmed
 projection - the privacy-ceiling roster query plus the decrypt-and-render
 pass. The other `project_*` surfaces are near-duplicates of HTTP RED and are
 left to it.
+
+`sheaf_share_views_with_option{option}` counts LIVE share views (at least one
+grant satisfying `grant_live_clause`, the resolver's own predicate) with each
+option on: member permalinks, fronting shown, bios shown, a detailed system
+preview card, a detailed member preview card. Not a partition - a view can
+have every option on - so the series do not sum to anything. A view nothing
+points at is a draft and is not counted; its options are intentions, not
+exposures. `sheaf_systems_by_share_view_count{le}` and
+`sheaf_system_share_view_count_max` are the per-system view-count
+distribution in the same CDF shape as the other data-shape gauges (hourly,
+`FRONT_COUNT_BUCKETS` thresholds, `+Inf` = all systems). Most systems have
+zero; the interesting comparison is `le="1"` against `le="5"` among the ones
+that publish, which is what decides whether a linked "all public members"
+selection is a convenience or a necessity.
+**Demand side.** Everything above counts what owners publish; the last three
+count what visitors and crawlers ask for.
+
+`sheaf_public_requests_total` counts every anonymous JSON request to the
+public surface. `surface` ∈ {system, members, member, fronting,
+relationships, groups}; `subject_type` is how the visitor addressed it
+(`public` by system id, `link` by share token); `outcome` ∈ {served,
+withheld, pending, dark, not_found, feature_off}. The visitor still gets one
+uniform 404 for every non-served outcome - the no-oracle rule is unchanged;
+the split exists only in this counter. `withheld` is a live grant whose view
+does not publish that surface (no roster, no fronting, no permalinks). `pending`
+is a grant inside its grace window. `dark` is a grant that exists but may not
+serve: revoked, or the account suppressed (system private, publishing latch,
+suspended, banned, pending deletion) - the same set `public_media_serves_total`
+calls `dark_account`, decided by the same two SQL clauses the resolver uses so
+the two cannot disagree. `not_found` is no grant at all; a rotated link's old
+token reads as this, since its hash matches nothing once rotated. The
+classification runs only on the miss path (one extra lookup behind a 404) and
+its answer never reaches the response. Reading it: `dark` and `not_found`
+climbing on `subject_type=link` is somebody probing dead tokens; `served`
+on `member` says deep links are being used at all; `withheld` on `fronting`
+says visitors want something the owner chose not to show.
+
+`sheaf_link_previews_total` counts crawler-facing preview documents by `card`
+(generic / system_details / member) and `unfurler` ∈ {discord, slack, telegram,
+mastodon, matrix, bluesky, twitter, facebook, whatsapp, other}, folded from the
+User-Agent by a bounded substring match (`sheaf/observability/unfurler.py`) so a
+crawler cannot mint series by lying about itself. It answers where people paste
+their links and whether the detailed modes see use. Documents only: the image
+a rich card points at is fetched as a consequence of the card and is not
+counted again.
+
+`sheaf_systems_with_public_profile_by_subject` partitions the adopters by how
+they publish: `public` = only a public grant live, `link` = only share links,
+`both` = at least one of each. The three sum to
+`sheaf_systems_with_public_profile`, which keeps its unlabelled shape.
 
 ### cf-shield
 
@@ -529,6 +589,13 @@ distributions ride the hourly distribution job.
 | `sheaf_active_systems_daily` | gauge | `auth_kind` |
 | `sheaf_active_accounts_monthly` | gauge | `auth_kind` |
 | `sheaf_active_systems_monthly` | gauge | `auth_kind` |
+| `sheaf_active_accounts_daily_by_client` | gauge | `client_family` |
+| `sheaf_active_accounts_monthly_by_client` | gauge | `client_family` |
+| `sheaf_active_accounts_monthly_overlap` | gauge | `families` |
+| `sheaf_requests_by_client_total` | counter | `client_family` |
+| `sheaf_push_devices` | gauge | `platform` ∈ {fcm, apns_dev, apns_prod} |
+| `sheaf_active_accounts_daily_by_age` | gauge | `account_age` ∈ {lt7d, lt30d, lt90d, older} |
+| `sheaf_systems_with_feature` | gauge | `feature` |
 | `sheaf_systems_with_public_profile` | gauge | - |
 
 `sheaf_signups_total` is new-account velocity (the flow signal), incremented
@@ -569,6 +636,71 @@ are irreversibly folded into HLL registers) and is deliberately excluded from
 the user-data export. If Redis is down the gauges hold their last value rather
 than zeroing (a blip is not "activity dropped to zero"); `sheaf_redis_up` covers
 visibility.
+
+**Client families.** `client_family` ∈ {web, android, ios, watch, api, other}
+splits the `client` auth kind by platform. It is derived once per request at
+the auth choke point from the credential and the `X-Sheaf-Client` header: an
+API key is `api` whatever its header says, an official app prefix
+(`Sheaf Web/`, `Sheaf Android/`, `Sheaf iOS/`, `Sheaf watchOS/`, `Sheaf Wear/`)
+maps to its family, and anything else is `other`. The raw header never reaches
+a label or a key, so a third-party client cannot mint series by changing it.
+There is deliberately no User-Agent fallback for `web`: "a browser talked to
+the API" is not "the Sheaf web app". The watchOS app currently sends the phone's
+header and lands as `ios` until its watch target identifies itself.
+
+The family sketches are **additive**: an interactive request is PFADDed into
+the `client` auth-kind sketch exactly as before AND into
+`sheaf:hll:acct:fam:<family>:<day>`, so the DAU/MAU series above never depend
+on the family sketches and did not move when they were introduced. `api` has
+no family sketch (the api auth-kind sketch is the api family), and families are
+kept for the account scope only. Persisted alongside the auth-kind sketches in
+`usage_daily_sketches` under a `client_family` column ('' for the auth-kind
+rows) with the same restore-after-Redis-replace path.
+
+`active_accounts_{daily,monthly}_by_client` are per-family cardinalities; an
+account active on two families counts in both, and the deduped total is
+`active_accounts_*{auth_kind=any}`. Platform share is the family gauge over
+that total. `active_accounts_monthly_overlap{families="a+b"}` is the
+estimated number of accounts active on BOTH families in the trailing 30 days,
+by inclusion-exclusion over the sketch unions (`|A| + |B| - |A u B|`), one
+series per unordered pair. It needs no per-account state at all, which is the
+point; the cost is that three HLL estimates' errors compound, so it answers
+"is it 3% or 30%", not "3% or 4%", and a small true overlap can read as 0.
+
+`sheaf_requests_by_client_total` counts authenticated requests by family and
+deliberately carries no route: it exists for the hour-of-day and day-of-week
+shape per platform. Route x family belongs behind the extended-metrics gate
+when that exists. `sheaf_auth_sessions_by_client` splits the live session
+count by the family of the `client_name` stored at mint time; a web session
+minted before the web app sent the header carries a browser name and reads as
+`other` until it expires. `sheaf_push_devices` is the *installed* mobile base
+(registered push tokens by platform), as opposed to the *active* base the
+sketches count.
+
+**Account age.** `sheaf_active_accounts_daily_by_age{account_age}` splits
+today's active accounts by how long ago the account was created: under 7
+days, under 30, under 90, older. The four buckets partition the day, so they
+sum (within HLL error) to `active_accounts_daily{auth_kind=any}`, and the
+shape is the retention signal: a healthy instance has a fat `older` and a
+steady `lt7d`; a leaky one has a fat `lt7d` and not much else. Four fixed
+buckets rather than a signup-week cohort label, which would add 52 series a
+year for the same shape. **Daily only, on purpose**: a monthly union over age
+buckets would need the persistence and restore machinery the other sketches
+have, and the daily gauge answers the question, so these are Redis day-keys
+(`sheaf:hll:acct:age:<bucket>:<day>`, two-day TTL) that are never persisted
+and never restored. The bucket is decided at the auth choke point from the
+account's creation timestamp and, like the family, only the bounded bucket
+name ever becomes a key.
+
+**Feature adoption.** `sheaf_systems_with_feature{feature}` is one
+`COUNT(DISTINCT system_id)` per feature - journals, polls, relationships,
+reminders, share_views, custom_fields, groups, tags - plus `public_profile`,
+which is the same number as `sheaf_systems_with_public_profile` (kept as an
+alias so existing dashboards keep working). Adoption, not volume: a system
+with one journal entry and one with a thousand both count once, and the
+data-shape distributions cover the volume side. Refreshed on the slow gauge
+pass. It answers "which features do people actually use", which is the
+question that decides where the next month goes.
 
 `sheaf_systems_with_public_profile` is the public-profiles adoption signal:
 distinct systems with at least one live public or unlisted-link share grant

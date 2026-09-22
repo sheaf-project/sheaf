@@ -31,7 +31,13 @@ export function useMember(id: string) {
 export function useCreateMember() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: MemberCreate) => api.createMember(data),
+    mutationFn: ({
+      data,
+      skipErrorToast = false,
+    }: {
+      data: MemberCreate;
+      skipErrorToast?: boolean;
+    }) => api.createMember(data, skipErrorToast),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: memberKeys.all });
       toast.success("Member created");

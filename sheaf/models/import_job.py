@@ -44,6 +44,10 @@ class ImportJobSource(enum.StrEnum):
     # Ampersand JSON export ({revision, config, database}). Base64 images
     # inline as data URIs; decoded + stored like the archive importers.
     AMPERSAND_FILE = "ampersand_file"
+    # BerryTree JSON export (one key per section, plus _partial_errors).
+    # Experimental and deliberately partial: only the sections our single
+    # sample demonstrates are mapped, the rest are counted and reported.
+    BERRYTREE_FILE = "berrytree_file"
 
 
 class ImportJobStatus(enum.StrEnum):

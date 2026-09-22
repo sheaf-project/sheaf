@@ -1146,13 +1146,19 @@ def test_privacy_flip_to_public_in_a_shared_view_is_deferred(
         f"/v1/members/{m}", json={"privacy": "public", "password": "testpassword123"}
     )
     assert ok.status_code == 200, ok.text
-    assert ok.json()["privacy"] == "public"
+    # Accepted but staged on the member itself, the way a group's or a field's
+    # raise is: the live level has not moved, and the pair says what it will
+    # become and when.
+    assert ok.json()["privacy"] == "private"
+    assert ok.json()["pending_privacy"] == "public"
+    assert ok.json()["privacy_activates_at"] is not None
 
-    # The flip landed, the exposure did not: the membership row is back to
-    # pending and waits out the window.
+    # The membership row is NOT what waits any more. It stays exactly as it
+    # was; the projection hides the member by their live ceiling instead, which
+    # is what a roster with no rows to demote needs.
     row = auth_client.get(f"/v1/share-views/{vid}").json()["members"][0]
-    assert row["status"] == "pending"
-    assert row["activates_at"] is not None
+    assert row["status"] == "active"
+    assert row["activates_at"] is None
 
 
 def test_privacy_flip_outside_a_shared_view_is_ungated(auth_client: httpx.Client):

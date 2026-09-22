@@ -8,8 +8,9 @@ import type {
 } from "@/types/api";
 import { apiFetch } from "./api-client";
 
-export function listTags() {
-  return apiFetch<Tag[]>("/v1/tags");
+export function listTags(opts: { includeMemberIds?: boolean } = {}) {
+  const qs = opts.includeMemberIds ? "?include_member_ids=true" : "";
+  return apiFetch<Tag[]>(`/v1/tags${qs}`);
 }
 
 export function createTag(data: TagCreate) {

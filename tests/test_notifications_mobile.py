@@ -292,7 +292,13 @@ def test_unit_validate_destination_rejects_when_no_mobile_provider(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         nc._validate_destination("mobile_push")
     assert exc.value.status_code == 501
-    assert "not configured" in exc.value.detail.lower()
+    # The refusal used to say "not configured on this server", which reads
+    # as a setting somebody forgot and sends self-hosters off to read
+    # Firebase documentation. It now explains the actual constraint and
+    # names something that does work, so that is what is asserted here.
+    detail = exc.value.detail.lower()
+    assert "app build" in detail
+    assert "ntfy" in detail
 
 
 def test_unit_validate_destination_allows_single_provider(monkeypatch):

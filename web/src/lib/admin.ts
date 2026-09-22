@@ -1,4 +1,4 @@
-import { apiFetch } from "./api-client";
+import { apiFetch, instanceHeaders } from "./api-client";
 
 export interface AdminStats {
   total_users: number;
@@ -182,6 +182,40 @@ export function adminBypassPendingActions(userId: string, reason: string) {
     `/v1/admin/users/${userId}/bypass-pending`,
     { method: "POST", body: JSON.stringify({ reason }) },
   );
+}
+
+export interface CancelExposuresResult {
+  cancelled_count: number;
+  by_kind: Record<string, number>;
+}
+
+export function adminCancelStagedExposures(userId: string, reason: string) {
+  return apiFetch<CancelExposuresResult>(
+    `/v1/admin/users/${userId}/cancel-exposures`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+}
+
+/** What is queued on an account: counts and timestamps, never a name or an id. */
+export interface AdminPendingWork {
+  pending_actions: {
+    count: number;
+    by_type: Record<string, number>;
+    earliest_finalize_after: string | null;
+  };
+  pending_changes: {
+    count: number;
+    earliest_finalize_after: string | null;
+  };
+  pending_exposures: {
+    count: number;
+    by_kind: Record<string, number>;
+    earliest_activates_at: string | null;
+  };
+}
+
+export function adminGetPendingWork(userId: string) {
+  return apiFetch<AdminPendingWork>(`/v1/admin/users/${userId}/pending`);
 }
 
 export interface AdminImportJobSummary {
@@ -614,10 +648,14 @@ export async function downloadDossier(
   // apiFetch coerces JSON; for a file download we want the raw blob,
   // so call fetch directly with the same credentials behaviour as the
   // shared client.
-  const resp = await fetch(`/v1/admin/users/${userId}/dossier`, {
+  const dossierPath = `/v1/admin/users/${userId}/dossier`;
+  const resp = await fetch(dossierPath, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...instanceHeaders(dossierPath),
+    },
     body: JSON.stringify({ reason }),
   });
   if (!resp.ok) {

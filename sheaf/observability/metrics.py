@@ -23,7 +23,7 @@ Adding a new metric:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -36,6 +36,7 @@ from sheaf.observability.buckets import (
     REALTIME_LAG_BUCKETS,
 )
 from sheaf.observability.registry import get_metric_registry
+from sheaf.observability.unfurler import UNFURLERS
 
 # ---------------------------------------------------------------------------
 # Label-value type aliases
@@ -149,6 +150,7 @@ ShareExposureKind = Literal[
     "view_field",
     "view_flags",
     "member_guard",
+    "member_raise",
     "edge_raise",
     "group_raise",
     "field_raise",
@@ -692,6 +694,121 @@ active_systems_monthly = _G(
     "kind, the cardinality of the UNION of 30 daily HLL sketches.",
     ["auth_kind"],
 )
+
+# Client families split the `client` auth kind by platform. Bounded by
+# construction: the raw X-Sheaf-Client header never reaches a label, only the
+# family it folds into (sheaf/observability/client_family.py). `api` is a family
+# too, decided by the credential rather than the header, so the six together
+# cover every authenticated request. Kept as a separate set of series rather
+# than a second label on the DAU/MAU gauges so nothing already charted changes
+# shape.
+ClientFamilyLabel = Literal["web", "android", "ios", "watch", "api", "other"]
+
+active_accounts_daily_by_client = _G(
+    "sheaf_active_accounts_daily_by_client",
+    "Estimated distinct accounts active today on each client family (web / "
+    "android / ios / watch / api / other), from the same id-free HLL machinery "
+    "as sheaf_active_accounts_daily. An account active on two families counts "
+    "in both; the deduped total is active_accounts_daily{auth_kind=any}.",
+    ["client_family"],
+)
+active_accounts_monthly_by_client = _G(
+    "sheaf_active_accounts_monthly_by_client",
+    "Estimated distinct accounts active on each client family over the trailing "
+    "30 days: the cardinality of the UNION of that family's 30 daily sketches. "
+    "Platform share is this over active_accounts_monthly{auth_kind=any}.",
+    ["client_family"],
+)
+active_accounts_monthly_overlap = _G(
+    "sheaf_active_accounts_monthly_overlap",
+    "Estimated distinct accounts active on BOTH of a pair of client families in "
+    "the trailing 30 days, by inclusion-exclusion over the HLL unions "
+    "(|A| + |B| - |A union B|). `families` is the pair as 'a+b'. Three estimates' "
+    "errors compound, so read it as a proportion, not a census; a small true "
+    "overlap can read as 0.",
+    ["families"],
+)
+requests_by_client_total = _C(
+    "sheaf_requests_by_client_total",
+    "Authenticated requests by client family. Deliberately without route: the "
+    "hour-of-day and day-of-week shape per platform is what this is for, and "
+    "route x family belongs behind the extended-metrics gate.",
+    ["client_family"],
+)
+push_devices = _G(
+    "sheaf_push_devices",
+    "Registered mobile push device tokens by platform (fcm / apns_dev / "
+    "apns_prod): the installed base the notification fan-out can reach, as "
+    "opposed to the active base the usage sketches count.",
+    ["platform"],
+)
+auth_sessions_by_client = _G(
+    "sheaf_auth_sessions_by_client",
+    "Live sessions by the client family of the name stored at mint time. A "
+    "session minted before the web app sent X-Sheaf-Client carries a browser "
+    "name and lands as `other` until it expires.",
+    ["client_family"],
+)
+
+# Account age at the time of the request, in four fixed buckets. Daily only:
+# the retention question this answers ("are today's active accounts mostly
+# new or mostly long-standing?") does not need a monthly union, and a
+# signup-week cohort label would grow by 52 series a year for the same shape.
+AccountAgeBucket = Literal["lt7d", "lt30d", "lt90d", "older"]
+active_accounts_daily_by_age = _G(
+    "sheaf_active_accounts_daily_by_age",
+    "Estimated distinct accounts active today, by how long ago the account was "
+    "created (under 7 days / under 30 / under 90 / older), from the same id-free "
+    "HLL machinery as sheaf_active_accounts_daily. The four buckets partition "
+    "the day, so they sum (within HLL error) to active_accounts_daily{auth_kind=any}.",
+    ["account_age"],
+)
+
+# Feature adoption: which features systems actually use. One bounded label,
+# one COUNT(DISTINCT system_id) per feature, no content. `public_profile`
+# is the same number as sheaf_systems_with_public_profile, which stays as
+# an alias so existing dashboards keep working.
+FeatureLabel = Literal[
+    "journals", "polls", "relationships", "reminders", "share_views",
+    "custom_fields", "groups", "tags", "public_profile",
+]
+systems_with_feature = _G(
+    "sheaf_systems_with_feature",
+    "Distinct systems with at least one row of a feature (journals / polls / "
+    "relationships / reminders / share_views / custom_fields / groups / tags) or "
+    "a live public profile. Adoption, not volume: a system with one journal entry "
+    "and one with a thousand both count once. Refreshed on the slow gauge pass.",
+    ["feature"],
+)
+
+# Share-view option adoption, over views that have at least one live grant
+# (a view nothing points at is a draft and its options mean nothing yet).
+ShareViewOption = Literal[
+    "member_permalinks", "include_fronting", "include_bio",
+    "link_preview_detailed", "member_preview_detailed",
+]
+share_views_with_option = _G(
+    "sheaf_share_views_with_option",
+    "Live share views (at least one live grant) with each option on: member "
+    "permalinks, fronting shown, bios shown, a detailed system preview card, a "
+    "detailed member preview card. Not a partition - one view can have several.",
+    ["option"],
+)
+
+# How many views an adopter keeps. FRONT_COUNT_BUCKETS thresholds are reused
+# (plain counts); the low buckets are the ones that matter here.
+systems_by_share_view_count = _G(
+    "sheaf_systems_by_share_view_count",
+    "Number of systems whose share-view count is <= the `le` bucket (point-in-time "
+    "cumulative distribution, re-set each refresh). Answers whether adopters keep "
+    "one view or many, which is what decides whether a linked 'all public "
+    "members' selection is a convenience or a necessity.",
+    ["le"],
+)
+system_share_view_count_max = _G(
+    "sheaf_system_share_view_count_max",
+    "Largest single system's share-view count.",
+)
 systems_with_public_profile = _G(
     "sheaf_systems_with_public_profile",
     "Systems with at least one live public or unlisted-link share grant right "
@@ -1045,6 +1162,65 @@ public_media_serves_total = _C(
     "RED; this is only the outcome breakdown.",
     ["outcome"],
 )
+# The demand side of public profiles. Everything above counts what owners
+# publish; these count what visitors and crawlers actually ask for.
+#
+# The visitor still gets one uniform 404 for every refusal - that no-oracle
+# rule is unchanged - but an aggregate counter is not an oracle, and the
+# operator needs the split: a `link` surface with `dark` and `not_found`
+# climbing is somebody probing dead tokens, while `served` climbing on
+# `member` says deep links are being used at all.
+PublicSurface = Literal[
+    "system", "members", "member", "fronting", "relationships", "groups",
+]
+PublicRequestOutcome = Literal[
+    # A 200 with a payload.
+    "served",
+    # The grant is live but this view does not publish this surface (no roster,
+    # no fronting, no permalinks, ...). The visitor's 404 is deliberate.
+    "withheld",
+    # A grant exists and would serve, but is inside its grace window.
+    "pending",
+    # A grant exists but nothing may come out: revoked, or the account behind
+    # it is suppressed (system private, publishing latch, suspended, banned,
+    # pending deletion). The same set `public_media_serves_total` calls
+    # dark_account.
+    "dark",
+    # No grant for that id or token at all. A rotated link's OLD token reads as
+    # this too: its hash matches nothing once rotated.
+    "not_found",
+    # public_profiles_enabled is off.
+    "feature_off",
+]
+public_requests_total = _C(
+    "sheaf_public_requests_total",
+    "Anonymous public-profile JSON requests by surface (system / members / member "
+    "/ fronting / relationships / groups), grant subject type (public / link) and "
+    "outcome. The visitor sees one uniform 404 for every non-served outcome; the "
+    "split exists only here. Raw volume and latency stay in HTTP RED.",
+    ["surface", "subject_type", "outcome"],
+)
+
+LinkPreviewCard = Literal["generic", "system_details", "member"]
+link_previews_total = _C(
+    "sheaf_link_previews_total",
+    "Crawler-facing preview documents served, by which card (generic / "
+    "system_details / member) and which unfurling service asked, folded from "
+    "the User-Agent into a bounded set. Answers where people paste their links "
+    "and whether the detailed preview modes see use. Counts documents only, not "
+    "the image fetches a rich card triggers.",
+    ["card", "unfurler"],
+)
+
+systems_with_public_profile_by_subject = _G(
+    "sheaf_systems_with_public_profile_by_subject",
+    "Adopters split by HOW they publish: `public` = systems with only a public "
+    "grant live, `link` = only share links, `both` = at least one of each. A "
+    "partition, so the three sum to sheaf_systems_with_public_profile; kept as "
+    "its own gauge so the unlabelled total keeps its shape.",
+    ["subject_type"],
+)
+
 share_publish_blocked_total = _C(
     "sheaf_share_publish_blocked_total",
     "Publish attempts refused, by reason: missing 18+ attestation, operator "
@@ -1157,6 +1333,9 @@ def prewarm_metrics() -> None:
     cf_shield_session_revocations_total.inc(0)
     signups_total.inc(0)
 
+    for family in get_args(ClientFamilyLabel):
+        requests_by_client_total.labels(client_family=family).inc(0)
+
     for reason in (
         "client_closed", "auth_revoked", "auth_expired", "backpressure",
         "server_shutdown", "error", "connection_cap",
@@ -1186,7 +1365,8 @@ def prewarm_metrics() -> None:
 
     for kind in (
         "grant", "view_member", "view_field", "view_flags", "member_guard",
-        "edge_raise", "group_raise", "field_raise", "system_privacy",
+        "member_raise", "edge_raise", "group_raise", "field_raise",
+        "system_privacy",
     ):
         share_grants_finalized_total.labels(kind=kind).inc(0)
 
@@ -1201,6 +1381,16 @@ def prewarm_metrics() -> None:
         "grant_cap", "duplicate_public",
     ):
         share_publish_blocked_total.labels(reason=reason).inc(0)
+
+    for surface in get_args(PublicSurface):
+        for subject_type in ("public", "link"):
+            for outcome in get_args(PublicRequestOutcome):
+                public_requests_total.labels(
+                    surface=surface, subject_type=subject_type, outcome=outcome,
+                ).inc(0)
+    for card in get_args(LinkPreviewCard):
+        for unfurler in UNFURLERS:
+            link_previews_total.labels(card=card, unfurler=unfurler).inc(0)
 
     # Only the reachable destination/outcome combinations: web push never
     # demands auth, mobile push always does, and invalid_code has no channel

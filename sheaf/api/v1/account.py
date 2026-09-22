@@ -482,6 +482,7 @@ async def get_account_data(
                 "view_fronting_show_count": v.fronting_show_count,
                 "view_include_relationships": v.include_relationships,
                 "view_include_groups": v.include_groups,
+                "view_include_all_public_members": v.include_all_public_members,
                 "view_member_permalinks": v.member_permalinks,
             }
             for g, v in share_grants

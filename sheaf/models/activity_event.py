@@ -65,6 +65,11 @@ class ActivityAction(enum.StrEnum):
     IMPORT_COMPLETED = "import_completed"
     EXPORT_READY = "export_ready"
     RETENTION_PRUNED = "retention_pruned"
+    # A channel the server switched off after deliveries kept failing. Here
+    # rather than nowhere because the alternative is a notification feature
+    # that stops working without telling anyone, which is the one failure it
+    # cannot afford.
+    NOTIFICATION_CHANNEL_DISABLED = "notification_channel_disabled"
 
 
 class ActivityEvent(UUIDMixin, Base):

@@ -5,6 +5,28 @@ import { getShowTechnicalErrors } from "./developer-prefs-snapshot";
 let accessToken: string | null = null;
 let refreshPromise: Promise<string | null> | null = null;
 
+/**
+ * How this client identifies itself to the instance. The server folds the
+ * prefix into a bounded client family for metrics and shows the whole value
+ * in the sessions list; the version comes from package.json at build time.
+ */
+export const SHEAF_CLIENT_ID = `Sheaf Web/${__SHEAF_WEB_VERSION__}`;
+
+/**
+ * The identifying header, for requests to THIS instance only.
+ *
+ * Everything the API client fetches is a same-origin relative path, so the
+ * guard is belt-and-braces: it exists so the header can never ride along on
+ * an absolute URL to somewhere else (an embed, a preview, a third-party
+ * endpoint), where it would be a small piece of fingerprint handed to a
+ * stranger for no reason. Protocol-relative `//host/...` is absolute too.
+ */
+export function instanceHeaders(path: string): Record<string, string> {
+  return path.startsWith("/") && !path.startsWith("//")
+    ? { "X-Sheaf-Client": SHEAF_CLIENT_ID }
+    : {};
+}
+
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
@@ -39,7 +61,10 @@ async function refreshAccessToken(): Promise<string | null> {
   try {
     const resp = await fetch("/v1/auth/refresh", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...instanceHeaders("/v1/auth/refresh"),
+      },
       body: JSON.stringify({}),
       credentials: "same-origin",
     });
@@ -95,6 +120,7 @@ export async function apiFetch<T>(
   const { skipRefresh, skipErrorToast, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
   const headers: Record<string, string> = {
+    ...instanceHeaders(path),
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(fetchOptions.headers as Record<string, string>),
   };
@@ -169,6 +195,7 @@ export async function apiFetchWithHeaders<T>(
   const { skipRefresh, skipErrorToast, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
   const headers: Record<string, string> = {
+    ...instanceHeaders(path),
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(fetchOptions.headers as Record<string, string>),
   };
