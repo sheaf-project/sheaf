@@ -65,6 +65,9 @@ async def leader_loop(
     consistent.
     """
     from sheaf.database import engine
+
+    # Same pool, AUTOCOMMIT execution: see the comment at the connect() below.
+    _autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
     from sheaf.observability.metrics import (
         leader_is_leader,
         leader_transitions_total,
@@ -77,7 +80,17 @@ async def leader_loop(
 
     while True:
         try:
-            async with engine.connect() as conn:
+            # AUTOCOMMIT, because this connection lives for the whole term of
+            # leadership. In the default mode SQLAlchemy autobegins a
+            # transaction on the first statement and the heartbeats never end
+            # it, so the session sat "idle in transaction" for days: it
+            # pinned pg_stat_activity's max transaction age (blinding any
+            # long-transaction alert) and kept resetting
+            # idle_in_transaction_session_timeout. A session-level advisory
+            # lock is held by the SESSION, not the transaction, so nothing
+            # about the election changes: the lock still dies with the
+            # connection, which is the property the whole design relies on.
+            async with _autocommit_engine.connect() as conn:
                 got = (
                     await conn.execute(
                         text("SELECT pg_try_advisory_lock(:key)"),

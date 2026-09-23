@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from sheaf.api.deps import get_user_system as _get_user_system
 from sheaf.auth.dependencies import get_current_user, require_scope
 from sheaf.config import settings
 from sheaf.database import get_db
@@ -87,15 +88,6 @@ async def get_server_config(
 
 # --- Helpers ---------------------------------------------------------------
 
-
-async def _get_user_system(user: User, db: AsyncSession) -> System:
-    result = await db.execute(select(System).where(System.user_id == user.id))
-    system = result.scalar_one_or_none()
-    if system is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="System not found"
-        )
-    return system
 
 
 async def _get_owned_poll(

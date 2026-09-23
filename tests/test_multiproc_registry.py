@@ -42,7 +42,7 @@ def test_multiproc_exposition_has_no_duplicate_families(tmp_path):
 
         metrics.users_total.set(6)
         metrics.http_requests_total.labels(
-            method="GET", route="/health", status_class="2xx"
+            method="GET", route="/health", status_class="2xx", status="2xx"
         ).inc()
 
         print(generate_latest(get_registry()).decode())

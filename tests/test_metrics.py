@@ -678,3 +678,76 @@ def test_public_demand_series_are_prewarmed():
         )
         is not None
     )
+
+
+# ---------------------------------------------------------------------------
+# Read-path backstops (2026-09-22)
+# ---------------------------------------------------------------------------
+
+def test_http_requests_total_carries_exact_status_outside_2xx():
+    """A 404 and a 429 used to be the same `4xx` series. The exact code is
+    now a label for anything outside 2xx; successes stay collapsed to the
+    literal `2xx` so the happy path does not fan out per route."""
+    before = _series_value(
+        _scrape(),
+        "sheaf_http_requests_total",
+        {"method": "GET", "route": "/v1/members/{member_id}", "status": "404"},
+    ) or 0.0
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = f"metrics-status-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        r = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert r.status_code == 201
+        c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+        assert c.get(f"/v1/members/{uuid.uuid4()}").status_code == 404
+        assert c.get("/v1/auth/me").status_code == 200
+    body = _scrape()
+    after = _series_value(
+        body,
+        "sheaf_http_requests_total",
+        {"method": "GET", "route": "/v1/members/{member_id}", "status": "404"},
+    ) or 0.0
+    assert after >= before + 1
+    # The success is filed under the literal "2xx", never "200".
+    assert _series_value(
+        body,
+        "sheaf_http_requests_total",
+        {"method": "GET", "route": "/v1/auth/me", "status": "2xx"},
+    )
+    assert _series_value(
+        body,
+        "sheaf_http_requests_total",
+        {"method": "GET", "route": "/v1/auth/me", "status": "200"},
+    ) is None
+
+
+def test_pool_checkout_wait_and_concurrency_metrics_populate():
+    """Every request session times its pool checkout, and every authenticated
+    request takes an in-flight slot, so after one authenticated request both
+    have observations. The `immediate` outcome is the normal case."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = f"metrics-pool-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        r = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert r.status_code == 201
+        c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+        assert c.get("/v1/auth/me").status_code == 200
+    body = _scrape()
+    assert (_series_value(body, "sheaf_db_pool_checkout_wait_seconds_count") or 0) >= 1
+    assert (
+        _series_value(
+            body, "sheaf_account_concurrency_total", {"outcome": "immediate"}
+        ) or 0
+    ) >= 1
+    # Prewarmed, so the rarer outcomes exist at zero rather than being absent.
+    for outcome in ("waited", "timed_out"):
+        assert _series_value(
+            body, "sheaf_account_concurrency_total", {"outcome": outcome}
+        ) is not None
+    assert (_series_value(body, "sheaf_account_concurrency_wait_seconds_count") or 0) >= 1
+    # The 1.5 and 2.0 latency buckets exist.
+    assert 'le="1.5"' in body and 'le="2.0"' in body

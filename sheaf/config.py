@@ -63,7 +63,13 @@ class Settings(BaseSettings):
     # run more processes, and mind that each process opens its own pool.
     db_pool_size: int = 10
     db_max_overflow: int = 20
-    db_pool_timeout: int = 30  # seconds to wait for a free connection
+    # Seconds a request waits for a free pooled connection before giving up.
+    # When the pool is dry every request on every route is stuck in this wait,
+    # so a long value turns "one account is busy" into "the whole API hangs
+    # for that long". Fail fast instead: the wait becomes a 503 with
+    # Retry-After (see main.py) and the client, which has usually given up on
+    # a request that old anyway, retries against a pool that has drained.
+    db_pool_timeout: int = 5
 
     # Request-path Postgres statement_timeout (milliseconds), applied
     # per-transaction inside get_db so a pathological O(history) query can't
@@ -452,6 +458,28 @@ class Settings(BaseSettings):
     # or set 0 to disable, but it is on by default so a buggy client benefits
     # from the bound too. 0 = disabled.
     write_rate_per_user_per_min: int = 60
+
+    # Per-account combined READ budget, the read-side twin of the write limit
+    # above: one shared bucket for every GET/HEAD an account makes, whatever
+    # the route and whatever the credential. It exists because the read
+    # surface had no per-account bound at all - only the per-IP backstop,
+    # which a single phone on a carrier address never trips on its own. It
+    # catches the slow loop (a client re-fetching sixty things every fifteen
+    # seconds), not the burst; the burst is the concurrency cap's job below.
+    # Sized generously: a large system's page load is tens of requests, not
+    # hundreds. DB-protection, not a product limit; 0 = disabled.
+    read_rate_per_user_per_min: int = 300
+
+    # Per-account cap on requests IN FLIGHT at once, enforced in the auth
+    # dependency so no route can miss it (sheaf/middleware/concurrency.py).
+    # A request over the cap waits for a slot, holding no DB connection, for
+    # up to account_concurrency_wait_seconds, then gets a 429. This is what
+    # keeps one client's fan-out of two hundred concurrent requests from
+    # draining the connection pool for everyone else; the requests still get
+    # served, in batches of this size. Process-local, so with several uvicorn
+    # workers the effective bound is workers x limit. 0 = disabled.
+    account_concurrency_limit: int = 6
+    account_concurrency_wait_seconds: float = 10.0
 
     # Per-SYSTEM front-switch guard. Separate from the per-user write limit:
     # keyed on the system (which may have several legitimate writers), it

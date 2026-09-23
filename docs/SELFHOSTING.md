@@ -1075,12 +1075,27 @@ Three other limits are worth knowing about, because they are the ones people tri
 LOGIN_MAX_FAILURES=10                    # failed logins before the account is locked
 LOGIN_LOCKOUT_MINUTES=15                 # how long the lockout lasts
 WRITE_RATE_PER_USER_PER_MIN=60           # per-account write budget
+READ_RATE_PER_USER_PER_MIN=300           # per-account read budget (every authenticated GET)
 FRONT_SWITCH_RATE_PER_SYSTEM_PER_MIN=20  # switches/min, with a burst allowance
 FRONT_SWITCH_RATE_BURST=10
 MAX_REQUEST_BODY_SIZE_MB=110             # rejected before the body is read
 ```
 
-The lockout is per account and time-based, so it is a brute-force speed bump rather than something an attacker can use to lock a user out permanently by guessing at them. The write and front-switch limits are database protection rather than product limits: a system that genuinely switches more than twenty times a minute is unusual, but raise them rather than telling such a user they are wrong.
+The lockout is per account and time-based, so it is a brute-force speed bump rather than something an attacker can use to lock a user out permanently by guessing at them. The write, read and front-switch limits are database protection rather than product limits: a system that genuinely switches more than twenty times a minute is unusual, but raise them rather than telling such a user they are wrong. All three are per account, not per IP, so several people behind one carrier or campus address do not share a budget, and one looping client is capped whichever addresses it comes from.
+
+### In-flight requests per account
+
+Separate from the per-minute budgets, and the one that actually protects the database: a cap on how many of one account's requests can be in flight at the same time.
+
+```env
+ACCOUNT_CONCURRENCY_LIMIT=6             # requests in flight per account; 0 disables
+ACCOUNT_CONCURRENCY_WAIT_SECONDS=10     # how long a request waits for a slot before a 429
+DB_POOL_TIMEOUT=5                       # how long a request waits for a DB connection before a 503
+```
+
+A client that opens a screen by firing one request per group, all at once, can check out every pooled database connection in a single second, and from then on everyone else's requests queue behind it. A per-minute limit cannot see that: the burst is over before the minute is. The cap can. A request past the limit waits for a slot (holding no connection) rather than failing, so the client still gets everything it asked for, in batches, and other accounts keep their share of the pool. Only a request that waits the full allowance is refused, with a 429 and `Retry-After`. Streaming responses (the live front stream) release their slot as soon as the response starts, so an open stream does not count against the cap for its lifetime.
+
+The cap is per process. With `WEB_CONCURRENCY` above one, the effective ceiling per account is the limit multiplied by the worker count, which is still a bound. Size it against your pool: with the default pool of 30 connections per worker, six in flight per account leaves room for several busy accounts at once. `DB_POOL_TIMEOUT` is the backstop behind the backstop: if the pool is dry anyway, a request gives up after this many seconds with a 503 rather than hanging.
 
 ### Per-user hit history
 

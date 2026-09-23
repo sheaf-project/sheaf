@@ -104,14 +104,16 @@ metric; permitted values are bounded sets defined in
 
 | Metric | Type | Labels |
 |---|---|---|
-| `sheaf_http_requests_total` | counter | `method`, `route`, `status_class` |
+| `sheaf_http_requests_total` | counter | `method`, `route`, `status_class`, `status` |
 | `sheaf_http_request_duration_seconds` | histogram | `method`, `route` |
 | `sheaf_http_requests_in_progress` | gauge | `method` |
 
 `route` is the templated path (`/v1/members/{member_id}`), not the raw
 URL. Unmatched routes collapse to `<unmatched>`. `status_class` is one
-of `2xx`, `3xx`, `4xx`, `5xx` (the literal HTTP status code is
-deliberately not a label).
+of `2xx`, `3xx`, `4xx`, `5xx`. `status` is the exact code for anything
+outside 2xx (`404`, `429`, `503`, ...) and the literal `2xx` for
+successes: a 429 has to be distinguishable from a 404 on a panel, but
+the success path does not need to fan out into 200/201/204 per route.
 
 ### Auth funnel
 
@@ -139,6 +141,8 @@ high-water mark (failure-mode tracking).
 |---|---|---|
 | `sheaf_rate_limit_checks_total` | counter | `bucket`, `scope` ∈ {per_ip, per_user, global}, `outcome` ∈ {allowed, blocked} |
 | `sheaf_rate_limit_active_blocks` | gauge | `bucket` |
+| `sheaf_account_concurrency_total` | counter | `outcome` ∈ {immediate, waited, timed_out} |
+| `sheaf_account_concurrency_wait_seconds` | histogram | - |
 | `sheaf_captcha_challenges_total` | counter | `outcome` ∈ {issued, solved, failed} |
 | `sheaf_webhook_signature_failures_total` | counter | `endpoint` ∈ {sendgrid, cf_shield, notification_dispatch} |
 | `sheaf_requests_per_ip_per_minute` | histogram | - |
@@ -149,7 +153,22 @@ high-water mark (failure-mode tracking).
 `account_delete`, `account_change`, `account_data`, `upload`, `export`,
 `redeem`, `webhook`, `admin`, `global`, `other`. New endpoints land
 under `other` until a bucket mapping is added in
-`sheaf/middleware/rate_limit.py:_route_to_bucket`.
+`sheaf/middleware/rate_limit.py:_route_to_bucket`. Three buckets are
+named explicitly rather than derived, because each is one shared counter
+across many routes: `write` (the combined per-account write budget),
+`read` (its read-side twin, applied to every authenticated GET from the
+auth dependency), and `concurrency` (the per-account in-flight cap; a
+`blocked` there is a request that waited its full allowance for a slot
+and got a 429).
+
+`account_concurrency_total` and `account_concurrency_wait_seconds`
+describe the in-flight cap itself. `waited` means an account was at its
+cap and the request queued for a slot; a rising `waited` share with a
+healthy `timed_out` of zero is a client fanning out faster than the cap
+and being paced, which is the cap working. `timed_out` is the 429 case.
+The wait histogram is the pacing delay those requests experienced, and
+is the first place to look when one account's requests are slow and
+nobody else's are.
 
 The per-IP / per-account histograms are the "no labels" trick: they
 capture the distribution of per-identifier request rates without ever
@@ -712,6 +731,7 @@ labels.
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_db_pool_connections` | gauge | `state` ∈ {checked_in, checked_out} |
+| `sheaf_db_pool_checkout_wait_seconds` | histogram | - |
 | `sheaf_db_query_duration_seconds` | histogram | `operation` ∈ {select, insert, update, delete, ddl, other} |
 | `sheaf_redis_up` | gauge | - |
 | `sheaf_s3_operations_total` | counter | `op`, `outcome` ∈ {success, error} |
@@ -720,6 +740,14 @@ labels.
 `db_query_duration_seconds` complements the HTTP RED histogram - handler
 latency is the user-facing number, but a query-time spike vs handler-
 time spike tells you where to look.
+
+`db_pool_checkout_wait_seconds` is the third leg of that: the time a
+request session waited to get a pooled connection at all. When the pool
+is exhausted, query time looks fine, handler time looks terrible, and
+this is the one that says why. A p99 above a few milliseconds here means
+the pool is the bottleneck; the per-account concurrency cap above is
+what keeps one account from causing it, and `DB_POOL_TIMEOUT` bounds how
+long a request waits before it is turned away with a 503.
 
 `op` for S3 metrics ∈ {put, get, delete, head, list, presign}. Catches
 "upload failures" and "image fetch storms" without bucket-name
