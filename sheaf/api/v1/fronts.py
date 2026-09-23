@@ -466,15 +466,18 @@ async def get_current_fronters_compact(
 ):
     """Flattened, object-wrapped view of who is fronting right now.
 
-    For constrained clients that cannot consume `GET /v1/fronts/current`.
-    Two reasons it exists rather than leaving callers to project the full
+    For clients that cannot practically consume `GET /v1/fronts/current`.
+    Three reasons it exists rather than leaving callers to project the full
     payload themselves:
 
-    * Some embedded HTTP clients cannot receive a top-level JSON array at
-      all, so the list has to be wrapped (see `CompactFronters`).
     * The full view carries `member_ids` without names, so rendering a
-      fronter list means fetching the roster as well, which is a larger
-      bare array with the same problem.
+      fronter list means fetching the roster as well. Two round trips and a
+      client-side join, to show a handful of names.
+    * A client with a small heap has to decode the entire response before it
+      can discard anything, so the fields it will not render still cost it
+      memory. This view carries three per fronter.
+    * Some embedded HTTP clients cannot receive a top-level JSON array at
+      all, so the list is wrapped in an object (see `CompactFronters`).
 
     Name and `since` semantics match what the phone pushes to the Wear app,
     so clients built on either render identical text.

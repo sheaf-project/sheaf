@@ -119,11 +119,16 @@ class FrontRead(BaseModel):
 class CompactFronter(BaseModel):
     """One member currently fronting, flattened out of the front entries.
 
+    Three fields on purpose. A client with a small heap has to hold the
+    whole decoded response at once, so every field it will not render is
+    memory it cannot spend on anything else. `FrontRead` carries ids,
+    timestamps, audit flags and a per-member `member_since` map, none of
+    which a "who is fronting" display needs.
+
     `name` is the display name when set, else the member's name. `since` is
     the effective per-member fronting-since: the chain-aware `member_since`
     when the system coalesces contiguous fronts, else the entry's
-    `started_at`. Both mirror what the phone hands the Wear app, so the two
-    watch platforms render identical text.
+    `started_at`.
     """
 
     id: uuid.UUID
