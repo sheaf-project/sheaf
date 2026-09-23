@@ -472,15 +472,18 @@ async def get_current_fronters_compact(
 ):
     """Flattened, object-wrapped view of who is fronting right now.
 
-    For watch clients that cannot consume `GET /v1/fronts/current`. Two
-    reasons it exists rather than the caller projecting the full payload:
-    Connect IQ cannot receive a top-level JSON array (see `CompactFronters`),
-    and the full view carries `member_ids` without names, so a watch would
-    have to fetch the roster too, which is a larger bare array with the
-    same problem.
+    For constrained clients that cannot consume `GET /v1/fronts/current`.
+    Two reasons it exists rather than leaving callers to project the full
+    payload themselves:
 
-    Name and `since` semantics deliberately match what the phone pushes to
-    the Wear app, so both watch platforms show the same thing.
+    * Some embedded HTTP clients cannot receive a top-level JSON array at
+      all, so the list has to be wrapped (see `CompactFronters`).
+    * The full view carries `member_ids` without names, so rendering a
+      fronter list means fetching the roster as well, which is a larger
+      bare array with the same problem.
+
+    Name and `since` semantics match what the phone pushes to the Wear app,
+    so clients built on either render identical text.
     """
     system = await _get_user_system(user, db)
     result = await db.execute(

@@ -134,11 +134,14 @@ class CompactFronter(BaseModel):
 class CompactFronters(BaseModel):
     """Object wrapper around the fronter list.
 
-    Deliberately an object rather than a bare array. Connect IQ's
-    `makeWebRequest` cannot deliver a top-level JSON array: the callback's
-    `data` is typed Dictionary/String/Iterator/Null, and in practice a
-    multi-element top-level array arrives as null even on a 200. Wrapping
-    is what makes this consumable from a Garmin watch at all.
+    Deliberately an object rather than a bare array: some constrained HTTP
+    clients cannot consume a top-level JSON array at all. Connect IQ, for
+    one, types its response callback's payload as
+    Dictionary/String/Iterator/Null, so a multi-element top-level array
+    arrives as null even alongside a 200.
+
+    Flattening this back to a bare array would break such clients silently,
+    with a success status and no body.
     """
 
     fronters: list[CompactFronter] = []

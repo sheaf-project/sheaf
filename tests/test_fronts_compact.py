@@ -1,11 +1,10 @@
-"""GET /v1/fronts/current/compact - the watch-facing fronter view.
+"""GET /v1/fronts/current/compact - the fronter view for constrained clients.
 
-The shape assertions here are not cosmetic. Connect IQ's makeWebRequest
-cannot deliver a top-level JSON array (its callback types `data` as
-Dictionary/String/Iterator/Null), and a multi-element array arrives as null
-even alongside a 200. An object wrapper is what makes this endpoint
-consumable from a Garmin watch at all, so a change back to a bare array
-would silently break that client.
+The shape assertions here are not cosmetic. Some embedded HTTP clients
+cannot consume a top-level JSON array: Connect IQ, for one, types its
+response payload as Dictionary/String/Iterator/Null, so a multi-element
+array arrives as null even alongside a 200. Returning a bare array here
+would break those clients silently, with a success status and no body.
 """
 
 import httpx
