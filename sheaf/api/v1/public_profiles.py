@@ -34,6 +34,7 @@ from sheaf.database import get_db
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.share import ShareView
 from sheaf.models.system import System
+from sheaf.observability.extended import record_public_request
 from sheaf.observability.metrics import public_requests_total
 from sheaf.schemas.public_profile import (
     PublicFrontingView,
@@ -175,6 +176,9 @@ async def _resolve_system(
     system = await db.get(System, system_id)
     if system is None:
         raise _not_found()
+    # Extended tier: served requests per profile per day. After resolution
+    # on purpose, so a miss never creates a key. No-op unless the tier is on.
+    record_public_request("public", system.id)
     return view, system
 
 
@@ -234,6 +238,7 @@ async def _resolve_link(token: str, db: AsyncSession) -> tuple[ShareView, System
     system = await db.get(System, grant.system_id)
     if system is None:
         raise _not_found()
+    record_public_request("link", system.id)
     return view, system
 
 

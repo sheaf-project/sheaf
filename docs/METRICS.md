@@ -766,6 +766,11 @@ the TTL fires.
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_ext_active_accounts_by_version` | gauge | `client_family`, `version` |
+| `sheaf_ext_http_requests_by_client_total` | counter | `method`, `route`, `status_class`, `client_family` |
+| `sheaf_ext_accounts_by_client_pattern` | gauge | `pattern` |
+| `sheaf_ext_active_accounts_daily` | gauge | `client_family`, `account_age` |
+| `sheaf_ext_account_requests_daily` | histogram | `client_family` |
+| `sheaf_ext_public_requests_per_profile_daily` | histogram | `subject_type` |
 
 **Active accounts by client version.** Distinct accounts active today per
 interactive client family and `major.minor` client version, from the
@@ -782,6 +787,56 @@ pairs already seen that day keep counting normally, and the set resets with
 the day. A version no longer seen today reads 0 until the process
 restarts, then disappears. Refreshed on the slow gauge pass, read from a
 per-`(family, version)` day sketch under the day-salted token.
+
+**Requests by route and client family.** `sheaf_http_requests_total`
+multiplied by `client_family`, which is exactly why it is extended tier
+(six families times every route). It is the cross-client drift question in
+concrete form: "the Android app polls `/fronts/current` four times as
+often as the web app does" is one query here and unanswerable without it.
+Emitted by the same middleware as the default-tier counter, with the family
+derived from `X-Sheaf-Client` and the credential the same way the auth path
+derives it, for every request including anonymous ones.
+
+**Accounts by exact client combination.**
+`sheaf_ext_accounts_by_client_pattern{pattern}` is distinct accounts active
+today per EXACT combination of families used: `web`, `android`,
+`web+android`, `api+web+ios`, and so on, in a fixed family order. The
+default-tier overlap gauges give every pairwise intersection; this gives
+the partition, which is the question "do people actually use more than one
+client" asked directly. It is computed by set algebra inside Redis
+(`SINTERSTORE` / `SDIFFSTORE` / `SCARD` on scratch keys) over one set of
+day-salted tokens per family, so no account is ever read out to the app,
+and only combinations with at least one account are published (a
+combination that empties reads 0 until restart).
+
+**Active accounts by family and account age.**
+`sheaf_ext_active_accounts_daily{client_family, account_age}` is the
+default-tier age gauge split by family: "do new signups start on mobile".
+Fixed label space (families times the four age buckets), one day sketch
+per pair.
+
+**Requests per account per day.** `sheaf_ext_account_requests_daily` is a
+histogram of how many authenticated requests each account made in a day,
+by family: where the heavy users are, and what "heavy" is. The default-tier
+`requests_per_account_per_minute` walks the rate-limit counters and cannot
+give the per-family split or a per-day total. This one keeps a per-token
+counter for the day (`sheaf:ext:reqs:<family>:<day>`, a Redis hash under
+the day-salted token), and the hourly `sweep_extended_metric_keys` job
+folds YESTERDAY's counters into the histogram, one observation per account,
+then deletes the hash. So the histogram is a day behind, each account
+contributes exactly one observation per day, and the per-token counters are
+the only thing in the whole metrics surface that is read back per account:
+a count, for one day, under a token that means nothing the next day.
+
+**Public requests per profile per day.**
+`sheaf_ext_public_requests_per_profile_daily{subject_type}` is the same
+shape for the anonymous read surface: served requests per public profile
+per day, by grant type. It answers the traffic-bucketing question - are
+there a few very popular profiles or a flat tail, and does caching need to
+care - which the default-tier request counter, summed over all profiles,
+cannot. Counted at the resolver only once a grant has resolved, so a miss
+never creates a key; the profile is identified by a day-salted SYSTEM
+token, never a system id; folded and deleted the same way.
 
 ### Infra
 
