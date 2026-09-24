@@ -275,7 +275,13 @@ async def get_current_user(
     _family = client_family_from(
         request.headers.get("x-sheaf-client"), is_api_key=_is_api_key
     )
-    record_active_account(user.id, _usage_kind, _family, age_bucket(user.created_at))
+    record_active_account(
+        user.id,
+        _usage_kind,
+        _family,
+        age_bucket(user.created_at),
+        request.headers.get("x-sheaf-client"),
+    )
     requests_by_client_total.labels(client_family=_family).inc()
 
     return user

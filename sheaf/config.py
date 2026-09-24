@@ -964,6 +964,14 @@ class Settings(BaseSettings):
     # depth). Bounded below by job_check_interval_minutes * 60 same as
     # the slow refresh; values below that effectively round up.
     metrics_fast_gauge_refresh_seconds: int = 10
+    # The extended metrics tier: multiplied label sets (client version, route
+    # by client family) and short-lived, day-salted per-account counters.
+    # Off by default because every instance would otherwise inherit the
+    # scrape cost and the data-handling posture whether or not its operator
+    # wants the answers. Every metric in the tier is named sheaf_ext_* and
+    # every Redis key sheaf:ext:*, so a pipeline can route or drop the lot
+    # with one regex. See docs/METRICS.md, "Extended tier".
+    metrics_extended: bool = False
 
     # Server
     sheaf_port: int = 8000

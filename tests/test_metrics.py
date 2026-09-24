@@ -751,3 +751,58 @@ def test_pool_checkout_wait_and_concurrency_metrics_populate():
     assert (_series_value(body, "sheaf_account_concurrency_wait_seconds_count") or 0) >= 1
     # The 1.5 and 2.0 latency buckets exist.
     assert 'le="1.5"' in body and 'le="2.0"' in body
+
+
+# ---------------------------------------------------------------------------
+# Extended tier (METRICS_EXTENDED=true in this config)
+# ---------------------------------------------------------------------------
+
+def test_extended_version_gauge_populates(admin_client: httpx.Client):
+    """The metrics config runs with the extended tier on. An authenticated
+    request carrying a recognised `X-Sheaf-Client` lands in today's
+    per-(family, version) sketch under the day-salted token, and the slow
+    gauge pass publishes the bucketed `major.minor` count. An unparseable
+    header is `unknown`, never the raw string."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = f"metrics-ext-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        r = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert r.status_code == 201
+        c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+        assert c.get(
+            "/v1/auth/me", headers={"X-Sheaf-Client": "Sheaf Android/9.9.1"}
+        ).status_code == 200
+        assert c.get(
+            "/v1/auth/me", headers={"X-Sheaf-Client": "Sheaf iOS/not-a-version"}
+        ).status_code == 200
+
+    # The PFADD is fire-and-forget; give it a moment before the refresh reads.
+    import time
+
+    time.sleep(0.5)
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+    android = _series_value(
+        body,
+        "sheaf_ext_active_accounts_by_version",
+        {"client_family": "android", "version": "9.9"},
+    )
+    assert android is not None and android >= 1, android
+    unknown = _series_value(
+        body,
+        "sheaf_ext_active_accounts_by_version",
+        {"client_family": "ios", "version": "unknown"},
+    )
+    assert unknown is not None and unknown >= 1, unknown
+    # The raw header text never becomes a label value.
+    assert "not-a-version" not in body
+    assert "9.9.1" not in body
+
+
+def test_extended_sweep_job_runs(admin_client: httpx.Client):
+    resp = admin_client.post("/v1/admin/jobs/sweep_extended_metric_keys/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"

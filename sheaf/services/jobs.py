@@ -856,6 +856,19 @@ async def _flush_usage_sketches(db: AsyncSession) -> dict:
     return await flush_day_sketches(db)
 
 
+async def _sweep_extended_metric_keys(db: AsyncSession) -> dict:
+    """Delete extended-tier Redis keys older than yesterday.
+
+    Every `sheaf:ext:` key carries a 48-hour TTL already; this is the
+    backstop that makes "nothing per account outlives two days" a promise
+    the retention docs can state without resting it on a TTL alone.
+    """
+    from sheaf.observability.extended import sweep_extended_keys
+
+    del db
+    return await sweep_extended_keys()
+
+
 async def _build_export_jobs(db: AsyncSession) -> dict:
     """Pick up one pending export job per tick and assemble its zip.
 
@@ -1337,6 +1350,16 @@ def _register_all_jobs() -> None:
         func=_flush_usage_sketches,
         interval_seconds=lambda: 600,  # every 10 minutes
         enabled=lambda: settings.metrics_enabled,
+    )
+
+    # Extended-tier key hygiene. Hourly is plenty: the keys expire on their
+    # own at 48h, this only guarantees it.
+    register_job(
+        name="sweep_extended_metric_keys",
+        description="Delete extended-tier metric keys older than yesterday",
+        func=_sweep_extended_metric_keys,
+        interval_seconds=lambda: 3600,
+        enabled=lambda: settings.metrics_enabled and settings.metrics_extended,
     )
 
     # Heavy per-system / per-target distribution gauges. Whole-table scans

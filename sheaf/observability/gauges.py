@@ -127,6 +127,11 @@ async def refresh_gauges(db: AsyncSession) -> dict:
 
     await refresh_usage_gauges(db)
 
+    # Extended tier (METRICS_EXTENDED). A no-op when the tier is off.
+    from sheaf.observability.extended import refresh_extended_gauges
+
+    await refresh_extended_gauges()
+
     # Per-IP / per-account rate-distribution sampling — slow because it
     # walks every rate-limit counter in Redis.
     await _refresh_rate_distribution()

@@ -145,7 +145,7 @@ add_config "selfhosted/external_images_disabled" none selfhosted 0 "external_ima
 # the metrics test file so the rest of the suite (which assumes /metrics
 # isn't on the app port) doesn't get confused.
 add_config "selfhosted/metrics" none selfhosted 1 "" "tests/test_metrics.py" \
-    "METRICS_ENABLED=true METRICS_BIND=main METRICS_TOKEN=$METRICS_TOKEN" \
+    "METRICS_ENABLED=true METRICS_BIND=main METRICS_TOKEN=$METRICS_TOKEN METRICS_EXTENDED=true" \
     "SHEAF_TEST_METRICS_TOKEN=$METRICS_TOKEN"
 
 # 10. Public profiles enabled - the anonymous read surface. The stack now
