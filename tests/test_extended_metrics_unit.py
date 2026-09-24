@@ -167,9 +167,12 @@ class _FakePipe:
     def pfadd(self, *a):
         self.calls.append(("pfadd", *a))
 
+    def hincrby(self, *a):
+        self.calls.append(("hincrby", *a))
 
-def _pfadd_key(pipe: _FakePipe) -> str:
-    return next(c[1] for c in pipe.calls if c[0] == "pfadd")
+
+def _version_key(pipe: _FakePipe) -> str:
+    return next(c[1] for c in pipe.calls if c[0] == "pfadd" and ":hll:ver:" in c[1])
 
 
 async def test_new_versions_fold_into_other_once_the_day_is_full(monkeypatch):
@@ -186,24 +189,64 @@ async def test_new_versions_fold_into_other_once_the_day_is_full(monkeypatch):
     r = _FakeRedis({"android:1.0", "android:1.1"})
 
     pipe = _FakePipe()
-    await extended.record_client_version(
-        r, pipe, "android", "Sheaf Android/1.2.0", day, "tok"
+    await extended.record_activity(
+        r, pipe, "android", "Sheaf Android/1.2.0", "lt7d", day, "tok"
     )
-    assert _pfadd_key(pipe) == extended.version_day_key("android", "other", day)
+    assert _version_key(pipe) == extended.version_day_key("android", "other", day)
 
     pipe = _FakePipe()
-    await extended.record_client_version(
-        r, pipe, "android", "Sheaf Android/1.1.9", day, "tok"
+    await extended.record_activity(
+        r, pipe, "android", "Sheaf Android/1.1.9", "lt7d", day, "tok"
     )
-    assert _pfadd_key(pipe) == extended.version_day_key("android", "1.1", day)
+    assert _version_key(pipe) == extended.version_day_key("android", "1.1", day)
 
     # Below the cap a new version is recorded as itself.
     monkeypatch.setattr(settings, "metrics_extended_version_pairs_per_day", 64)
     pipe = _FakePipe()
-    await extended.record_client_version(
-        r, pipe, "android", "Sheaf Android/1.2.0", day, "tok"
+    await extended.record_activity(
+        r, pipe, "android", "Sheaf Android/1.2.0", "lt7d", day, "tok"
     )
-    assert _pfadd_key(pipe) == extended.version_day_key("android", "1.2", day)
+    assert _version_key(pipe) == extended.version_day_key("android", "1.2", day)
+
+
+async def test_activity_records_set_counter_and_age_under_the_token(monkeypatch):
+    """One request lands the token in the family set, bumps its request
+    counter, and adds it to the family-by-age sketch. The token is the only
+    thing written; nothing resembling an id ever reaches a key, and every
+    key written carries the tier's TTL."""
+    from sheaf.observability import extended
+
+    monkeypatch.setattr(extended, "ENABLED", True)
+    day = date(2026, 9, 23)
+    pipe = _FakePipe()
+    await extended.record_activity(
+        _FakeRedis(set()), pipe, "web", "Sheaf Web/1.6.0", "older", day, "tok-x"
+    )
+    assert ("sadd", extended.family_set_key("web", day), "tok-x") in pipe.calls
+    assert ("hincrby", extended.requests_key("web", day), "tok-x", 1) in pipe.calls
+    assert ("pfadd", extended.family_age_key("web", "older", day), "tok-x") in pipe.calls
+    written = {c[1] for c in pipe.calls if c[0] != "expire"}
+    expired = {c[1] for c in pipe.calls if c[0] == "expire"}
+    assert written <= expired
+    assert all(
+        c[2] == extended.EXT_KEY_TTL_SECONDS for c in pipe.calls if c[0] == "expire"
+    )
+
+
+async def test_api_family_gets_everything_but_a_version(monkeypatch):
+    """An API key has no client version, but it is a family in its own right
+    for the combination pattern and the per-account histogram."""
+    from sheaf.observability import extended
+
+    monkeypatch.setattr(extended, "ENABLED", True)
+    day = date(2026, 9, 23)
+    pipe = _FakePipe()
+    await extended.record_activity(
+        _FakeRedis(set()), pipe, "api", None, "older", day, "tok"
+    )
+    kinds = {c[0] for c in pipe.calls}
+    assert "sadd" in kinds and "hincrby" in kinds
+    assert not any(":hll:ver:" in c[1] for c in pipe.calls if c[0] == "pfadd")
 
 
 async def test_hook_is_a_no_op_when_the_tier_is_off():
@@ -211,7 +254,67 @@ async def test_hook_is_a_no_op_when_the_tier_is_off():
 
     assert extended.ENABLED is False  # the unit test env never sets the flag
     pipe = _FakePipe()
-    await extended.record_client_version(
-        _FakeRedis(set()), pipe, "android", "Sheaf Android/1.2.0", date(2026, 9, 23), "tok"
+    await extended.record_activity(
+        _FakeRedis(set()), pipe, "android", "Sheaf Android/1.2.0", "lt7d",
+        date(2026, 9, 23), "tok",
     )
     assert pipe.calls == []
+
+
+def test_pattern_label_is_order_independent():
+    from sheaf.observability.extended import pattern_label
+
+    assert pattern_label(("android", "web")) == pattern_label(("web", "android"))
+    assert pattern_label(("api", "ios", "web")) == "web+ios+api"
+    assert pattern_label(("watch",)) == "watch"
+
+
+class _FakeHist:
+    def __init__(self) -> None:
+        self.seen: list[int] = []
+
+    def labels(self, **_):
+        return self
+
+    def observe(self, v):
+        self.seen.append(v)
+
+
+class _FakeFoldRedis:
+    def __init__(self, hashes: dict[str, dict[str, str]]) -> None:
+        self.hashes = hashes
+        self.deleted: list[str] = []
+
+    async def hvals(self, key):
+        return list(self.hashes.get(key, {}).values())
+
+    async def delete(self, key):
+        self.deleted.append(key)
+
+
+async def test_fold_observes_each_token_once_then_deletes_the_hash(monkeypatch):
+    """Yesterday's per-token counters become one histogram observation per
+    token and the hash is gone afterwards: the only per-account read-back in
+    the tier happens exactly once, and leaves nothing behind."""
+    from sheaf.observability import extended
+
+    day = date(2026, 9, 22)
+    hashes = {
+        extended.requests_key("web", day): {"t1": "12", "t2": "300", "t3": "junk"},
+        extended.public_requests_key("public", day): {"s1": "7"},
+    }
+    fake = _FakeFoldRedis(hashes)
+    reqs, pub = _FakeHist(), _FakeHist()
+    monkeypatch.setattr(extended, "ENABLED", True)
+    monkeypatch.setattr(extended, "account_requests_daily", reqs)
+    monkeypatch.setattr(extended, "public_requests_per_profile_daily", pub)
+
+    async def _get_redis():
+        return fake
+
+    monkeypatch.setattr("sheaf.auth.sessions.get_redis", _get_redis)
+    observed = await extended.fold_daily_histograms(day)
+    assert observed == 3  # the unparseable value is skipped, not counted
+    assert sorted(reqs.seen) == [12, 300]
+    assert pub.seen == [7]
+    assert set(fake.deleted) == set(hashes)

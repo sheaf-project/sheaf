@@ -806,3 +806,55 @@ def test_extended_sweep_job_runs(admin_client: httpx.Client):
     resp = admin_client.post("/v1/admin/jobs/sweep_extended_metric_keys/run")
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "success"
+
+
+def test_extended_patterns_family_age_and_route_counter_populate(
+    admin_client: httpx.Client,
+):
+    """One account used from two families in a day shows up under the exact
+    combination `android+ios` (never under `android` or `ios` alone), lands
+    in the family-by-age gauges for both, and each request is counted on the
+    route-by-family counter. Nothing account-shaped appears anywhere."""
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = f"metrics-ext5-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        r = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert r.status_code == 201
+        c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+        for hdr in ("Sheaf Android/9.8.0", "Sheaf iOS/9.8.0", "Sheaf Android/9.8.0"):
+            assert c.get("/v1/auth/me", headers={"X-Sheaf-Client": hdr}).status_code == 200
+
+    import time
+
+    time.sleep(0.5)
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+
+    both = _series_value(
+        body, "sheaf_ext_accounts_by_client_pattern", {"pattern": "android+ios"}
+    )
+    assert both is not None and both >= 1, both
+
+    for fam in ("android", "ios"):
+        v = _series_value(
+            body,
+            "sheaf_ext_active_accounts_daily",
+            {"client_family": fam, "account_age": "lt7d"},
+        )
+        assert v is not None and v >= 1, (fam, v)
+
+    hits = _series_value(
+        body,
+        "sheaf_ext_http_requests_by_client_total",
+        {"method": "GET", "route": "/v1/auth/me", "status_class": "2xx",
+         "client_family": "android"},
+    )
+    assert hits is not None and hits >= 2, hits
+
+    # The histograms exist (folded from yesterday, so possibly empty today).
+    assert "sheaf_ext_account_requests_daily_bucket" in body
+    assert "sheaf_ext_public_requests_per_profile_daily_bucket" in body
+    assert email not in body
