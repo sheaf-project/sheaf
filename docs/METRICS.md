@@ -32,6 +32,7 @@ METRICS_AUTH=none                    # none | token
 METRICS_TOKEN=                       # required when AUTH=token or BIND=main
 METRICS_GAUGE_REFRESH_SECONDS=60     # DB-sourced gauges refresh interval
 METRICS_EXTENDED=false               # opt into the sheaf_ext_* tier (see below)
+METRICS_EXTENDED_VERSION_PAIRS_PER_DAY=64  # extended tier: version label cap
 ```
 
 ### Four shapes
@@ -738,6 +739,10 @@ short-lived per-account state, and it is off unless the operator asks:
 METRICS_EXTENDED=true
 ```
 
+Every setting the tier has shares the `METRICS_EXTENDED_` prefix, for the
+same reason its metrics share `sheaf_ext_`: one grep finds the gate and
+everything it governs.
+
 Two things make the gate worth trusting. It is applied in one place
 (`sheaf/observability/extended.py`): when the flag is off the metric objects
 are never created, so the series do not exist, and nothing can half-leak
@@ -770,9 +775,11 @@ granularity). It answers "how long do we keep the compatibility shim for
 1.2", and it is extended-tier because every release adds series on every
 instance whether or not the operator cares. Unparseable or third-party
 headers land as `unknown`, never the raw string, and a single day holds at
-most 64 distinct `(family, version)` pairs before further new versions fold
-into `other`, so a client minting a fresh version string per request cannot
-mint series. A version no longer seen today reads 0 until the process
+most `METRICS_EXTENDED_VERSION_PAIRS_PER_DAY` (default 64) distinct
+`(family, version)` pairs before further new versions fold into `other`, so
+a client minting a fresh version string per request cannot mint series;
+pairs already seen that day keep counting normally, and the set resets with
+the day. A version no longer seen today reads 0 until the process
 restarts, then disappears. Refreshed on the slow gauge pass, read from a
 per-`(family, version)` day sketch under the day-salted token.
 

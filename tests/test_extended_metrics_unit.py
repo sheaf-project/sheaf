@@ -137,3 +137,81 @@ def test_extended_families_exist_when_the_tier_is_on():
 def test_extended_stays_off_when_metrics_are_off_entirely():
     """METRICS_EXTENDED is a refinement of metrics being on, not an override."""
     assert _probe({"METRICS_ENABLED": "false", "METRICS_EXTENDED": "true"})[0] == "DISABLED"
+
+
+class _FakeRedis:
+    """Just enough of the read side: the day's seen-pair set."""
+
+    def __init__(self, seen: set[str]) -> None:
+        self.seen = seen
+
+    async def sismember(self, key: str, member: str) -> bool:
+        return member in self.seen
+
+    async def scard(self, key: str) -> int:
+        return len(self.seen)
+
+
+class _FakePipe:
+    """Records the commands the hook queues instead of executing them."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def sadd(self, *a):
+        self.calls.append(("sadd", *a))
+
+    def expire(self, *a):
+        self.calls.append(("expire", *a))
+
+    def pfadd(self, *a):
+        self.calls.append(("pfadd", *a))
+
+
+def _pfadd_key(pipe: _FakePipe) -> str:
+    return next(c[1] for c in pipe.calls if c[0] == "pfadd")
+
+
+async def test_new_versions_fold_into_other_once_the_day_is_full(monkeypatch):
+    """The cap is `METRICS_EXTENDED_VERSION_PAIRS_PER_DAY`: with the day's set
+    full, a version not yet seen lands under `other`, while a pair already in
+    the set keeps counting under its own version. Pinned with a fake Redis so
+    the property does not depend on a stack."""
+    from sheaf.config import settings
+    from sheaf.observability import extended
+
+    monkeypatch.setattr(extended, "ENABLED", True)
+    monkeypatch.setattr(settings, "metrics_extended_version_pairs_per_day", 2)
+    day = date(2026, 9, 23)
+    r = _FakeRedis({"android:1.0", "android:1.1"})
+
+    pipe = _FakePipe()
+    await extended.record_client_version(
+        r, pipe, "android", "Sheaf Android/1.2.0", day, "tok"
+    )
+    assert _pfadd_key(pipe) == extended.version_day_key("android", "other", day)
+
+    pipe = _FakePipe()
+    await extended.record_client_version(
+        r, pipe, "android", "Sheaf Android/1.1.9", day, "tok"
+    )
+    assert _pfadd_key(pipe) == extended.version_day_key("android", "1.1", day)
+
+    # Below the cap a new version is recorded as itself.
+    monkeypatch.setattr(settings, "metrics_extended_version_pairs_per_day", 64)
+    pipe = _FakePipe()
+    await extended.record_client_version(
+        r, pipe, "android", "Sheaf Android/1.2.0", day, "tok"
+    )
+    assert _pfadd_key(pipe) == extended.version_day_key("android", "1.2", day)
+
+
+async def test_hook_is_a_no_op_when_the_tier_is_off():
+    from sheaf.observability import extended
+
+    assert extended.ENABLED is False  # the unit test env never sets the flag
+    pipe = _FakePipe()
+    await extended.record_client_version(
+        _FakeRedis(set()), pipe, "android", "Sheaf Android/1.2.0", date(2026, 9, 23), "tok"
+    )
+    assert pipe.calls == []

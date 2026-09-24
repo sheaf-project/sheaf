@@ -971,7 +971,18 @@ class Settings(BaseSettings):
     # wants the answers. Every metric in the tier is named sheaf_ext_* and
     # every Redis key sheaf:ext:*, so a pipeline can route or drop the lot
     # with one regex. See docs/METRICS.md, "Extended tier".
+    #
+    # Every setting that belongs to the tier shares this METRICS_EXTENDED_
+    # prefix, for the same reason the metrics share sheaf_ext_: one grep
+    # finds the gate and everything it governs.
     metrics_extended: bool = False
+    # Distinct (client_family, version) pairs a single day may hold before
+    # further new versions fold into `other`. The version label comes from a
+    # client-controlled header, so without a bound a client could mint one
+    # series per request; with it, the worst case is this many plus `other`.
+    # The realistic figure is a few families times a handful of live minor
+    # versions, so the default leaves plenty of room for a release rollout.
+    metrics_extended_version_pairs_per_day: int = 64
 
     # Server
     sheaf_port: int = 8000

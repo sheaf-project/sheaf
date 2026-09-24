@@ -67,12 +67,11 @@ KEY_PREFIX = "sheaf:ext:"
 # yesterday, or a worker that was down across the boundary.
 EXT_KEY_TTL_SECONDS = 48 * 3600
 
-# Distinct (family, version) pairs a single day may hold before further new
-# versions fold into `other`. The design's realistic figure is four families
-# by half a dozen live minor versions; this is several times that, and it is
-# the bound that stops a client sending a fresh version string per request
-# from minting an unbounded number of keys and series.
-VERSION_SET_CAP = 64
+# Where new (family, version) pairs land once a day has seen
+# `metrics_extended_version_pairs_per_day` of them. The version label comes
+# from a client-controlled header, and this fold is what stops a client
+# sending a fresh version string per request from minting an unbounded
+# number of keys and series: the worst case is the cap plus this.
 VERSION_OTHER = "other"
 
 # Metric objects exist only when the tier is on. `_G` is the same
@@ -123,9 +122,10 @@ async def record_client_version(
     Called from `usage._record_active` inside its fire-and-forget task, with
     the DAY-SALTED token already computed by the caller: this function never
     sees an id. It does two reads of its own (is this pair already known
-    today, and how many pairs are known) to enforce `VERSION_SET_CAP`, then
-    appends to the pipeline the caller executes. No-op when the tier is off
-    or the family is not an interactive one.
+    today, and how many pairs are known) to enforce the per-day pair cap
+    (`metrics_extended_version_pairs_per_day`), then appends to the pipeline
+    the caller executes. No-op when the tier is off or the family is not an
+    interactive one.
     """
     if not ENABLED or family not in INTERACTIVE_FAMILIES:
         return
@@ -134,7 +134,8 @@ async def record_client_version(
     member = f"{family}:{version}"
     if (
         not await r.sismember(seen_key, member)
-        and int(await r.scard(seen_key)) >= VERSION_SET_CAP
+        and int(await r.scard(seen_key))
+        >= settings.metrics_extended_version_pairs_per_day
     ):
         version = VERSION_OTHER
         member = f"{family}:{version}"
@@ -147,7 +148,7 @@ async def record_client_version(
 
 # (family, version) pairs this process has ever published, so a pair that
 # drops out of today's set is set to 0 rather than left at yesterday's value.
-# Bounded by VERSION_SET_CAP per day times the days the process lives.
+# Bounded by the per-day pair cap times the days the process lives.
 _published: set[tuple[str, str]] = set()
 
 
