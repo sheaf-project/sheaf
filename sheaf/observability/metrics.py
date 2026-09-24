@@ -842,6 +842,18 @@ members_custom_front = _G(
     "sheaf_members_custom_front",
     "Members flagged as custom-front entities (non-counting fronters).",
 )
+systems_by_member_count = _G(
+    "sheaf_systems_by_member_count",
+    "Number of systems whose member count is <= the `le` bucket (point-in-time "
+    "cumulative distribution, re-set each refresh).",
+    ["le"],
+)
+system_member_count_max = _G(
+    "sheaf_system_member_count_max",
+    "Largest single system's member count. The roster is what every "
+    "load-everyone endpoint scales with, so this is the outlier signal for "
+    "those.",
+)
 fronts_total = _G(
     "sheaf_fronts_total",
     "All front-history rows across all systems (global volume baseline).",

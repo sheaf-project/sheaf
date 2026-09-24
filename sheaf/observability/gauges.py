@@ -62,6 +62,7 @@ from sheaf.observability.metrics import (
     system_front_count_max,
     system_group_count_max,
     system_journal_entry_count_max,
+    system_member_count_max,
     system_message_count_max,
     system_open_poll_count_max,
     system_poll_count_max,
@@ -72,6 +73,7 @@ from sheaf.observability.metrics import (
     systems_by_front_count,
     systems_by_group_count,
     systems_by_journal_entry_count,
+    systems_by_member_count,
     systems_by_message_count,
     systems_by_open_poll_count,
     systems_by_poll_count,
@@ -321,6 +323,7 @@ async def _refresh_distributions(db: AsyncSession) -> None:
     from sheaf.models.front import Front
     from sheaf.models.group import Group
     from sheaf.models.journal_entry import JournalEntry
+    from sheaf.models.member import Member
     from sheaf.models.message import Message
     from sheaf.models.poll import Poll
     from sheaf.models.reminder import Reminder
@@ -342,6 +345,19 @@ async def _refresh_distributions(db: AsyncSession) -> None:
     )
     await _set_count_distribution(
         db, front_per_system, systems_by_front_count, system_front_count_max
+    )
+
+    # Per-system member count, same shape. Archived members included: they
+    # are still rows the roster endpoints touch.
+    member_per_system = (
+        select(func.count(Member.id).label("c"))
+        .select_from(System)
+        .outerjoin(Member, Member.system_id == System.id)
+        .group_by(System.id)
+        .subquery()
+    )
+    await _set_count_distribution(
+        db, member_per_system, systems_by_member_count, system_member_count_max
     )
 
     # Per-system share-view count, same shape. Most systems have zero; the
