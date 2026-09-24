@@ -857,7 +857,8 @@ async def _flush_usage_sketches(db: AsyncSession) -> dict:
 
 
 async def _sweep_extended_metric_keys(db: AsyncSession) -> dict:
-    """Delete extended-tier Redis keys older than yesterday.
+    """Fold yesterday's extended-tier counters into their histograms, then
+    delete extended-tier Redis keys older than yesterday.
 
     Every `sheaf:ext:` key carries a 48-hour TTL already; this is the
     backstop that makes "nothing per account outlives two days" a promise
@@ -1356,7 +1357,10 @@ def _register_all_jobs() -> None:
     # own at 48h, this only guarantees it.
     register_job(
         name="sweep_extended_metric_keys",
-        description="Delete extended-tier metric keys older than yesterday",
+        description=(
+            "Fold yesterday's extended-tier counters into histograms and "
+            "delete keys older than yesterday"
+        ),
         func=_sweep_extended_metric_keys,
         interval_seconds=lambda: 3600,
         enabled=lambda: settings.metrics_enabled and settings.metrics_extended,

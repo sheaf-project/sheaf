@@ -351,17 +351,21 @@ async def _record_active(
             fam_key = family_day_key(SCOPE_ACCOUNT, client_family, today)
             pipe.pfadd(fam_key, _active_token(SCOPE_ACCOUNT, str(user_id)))
             pipe.expire(fam_key, HLL_KEY_TTL_SECONDS)
-            # Extended tier: the per-version sketch, under the DAY-SALTED
-            # token. A no-op inside unless METRICS_EXTENDED is on; the raw
-            # header goes in, only a bounded family and version come out.
+        # Extended tier, for every family including `api`: the per-version
+        # sketch, the family token set, the per-token request counter and
+        # the family-by-age sketch, all under the DAY-SALTED token. A no-op
+        # inside unless METRICS_EXTENDED is on; the raw header goes in, only
+        # a bounded family and version come out.
+        if client_family is not None:
             from sheaf.observability import extended
 
             await asyncio.wait_for(
-                extended.record_client_version(
+                extended.record_activity(
                     r,
                     pipe,
                     client_family,
                     client_header,
+                    account_age,
                     today,
                     _day_salted_token(SCOPE_ACCOUNT, str(user_id), today),
                 ),
