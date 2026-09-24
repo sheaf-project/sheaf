@@ -31,6 +31,8 @@ METRICS_BIND_PORT=8090               # separate listener bind port
 METRICS_AUTH=none                    # none | token
 METRICS_TOKEN=                       # required when AUTH=token or BIND=main
 METRICS_GAUGE_REFRESH_SECONDS=60     # DB-sourced gauges refresh interval
+METRICS_EXTENDED=false               # opt into the sheaf_ext_* tier (see below)
+METRICS_EXTENDED_VERSION_PAIRS_PER_DAY=64  # extended tier: version label cap
 ```
 
 ### Four shapes
@@ -726,6 +728,61 @@ distinct systems with at least one live public or unlisted-link share grant
 right now, counted against the same `grant_live_clause` the resolver serves. No
 labels.
 
+### Extended tier (`METRICS_EXTENDED=true`)
+
+Everything above is the default tier: bounded labels, aggregate values, no
+per-account state, on for every instance with metrics enabled. The
+extended tier is for the questions whose answers need more series or
+short-lived per-account state, and it is off unless the operator asks:
+
+```
+METRICS_EXTENDED=true
+```
+
+Every setting the tier has shares the `METRICS_EXTENDED_` prefix, for the
+same reason its metrics share `sheaf_ext_`: one grep finds the gate and
+everything it governs.
+
+Two things make the gate worth trusting. It is applied in one place
+(`sheaf/observability/extended.py`): when the flag is off the metric objects
+are never created, so the series do not exist, and nothing can half-leak
+because a call site forgot a check. And every metric in the tier is named
+`sheaf_ext_*`, every Redis key `sheaf:ext:*`, so one regex finds the lot
+wherever it matters: `grep -r sheaf_ext_` in the repo,
+`{__name__=~"sheaf_ext_.*"}` in a `write_relabel_configs` block or a
+recording rule to route it to a short-retention or downsampled store, `SCAN
+sheaf:ext:*` in Redis. A `tier` label would work in a pipeline but is
+invisible in code and easy to drop when copying a definition.
+
+Per-account state in this tier is folded under a **day-salted** token
+(`HMAC(key, scope:day:id)`) rather than the stable one the DAU/MAU sketches
+use. A stable token is fine inside a HyperLogLog, whose members are never
+read back; anything that could be read back must not be joinable from one
+day to the next. Every `sheaf:ext:` key carries a 48-hour TTL, and the
+hourly `sweep_extended_metric_keys` job deletes anything older than
+yesterday outright, so nothing per account outlives two days whether or not
+the TTL fires.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sheaf_ext_active_accounts_by_version` | gauge | `client_family`, `version` |
+
+**Active accounts by client version.** Distinct accounts active today per
+interactive client family and `major.minor` client version, from the
+`X-Sheaf-Client` header (`Sheaf Android/1.2.0` reads as `1.2`; patch
+releases would multiply the series for no decision anyone makes at patch
+granularity). It answers "how long do we keep the compatibility shim for
+1.2", and it is extended-tier because every release adds series on every
+instance whether or not the operator cares. Unparseable or third-party
+headers land as `unknown`, never the raw string, and a single day holds at
+most `METRICS_EXTENDED_VERSION_PAIRS_PER_DAY` (default 64) distinct
+`(family, version)` pairs before further new versions fold into `other`, so
+a client minting a fresh version string per request cannot mint series;
+pairs already seen that day keep counting normally, and the set resets with
+the day. A version no longer seen today reads 0 until the process
+restarts, then disappears. Refreshed on the slow gauge pass, read from a
+per-`(family, version)` day sketch under the day-salted token.
+
 ### Infra
 
 | Metric | Type | Labels |
@@ -832,6 +889,11 @@ picking a mode is a clear code-review item.
 4. If counters have a bounded label set that should always be visible,
    pre-touch each combination with `.inc(0)` inside `prewarm_metrics()`.
 5. Update this catalog.
+6. If the metric multiplies an existing label set or holds anything per
+   account, it belongs in the extended tier: declare it in
+   `sheaf/observability/extended.py` under the `ENABLED` branch, name it
+   `sheaf_ext_*`, key any Redis state `sheaf:ext:*` under the day-salted
+   token with the 48-hour TTL, and document it in the extended-tier table.
 
 ---
 

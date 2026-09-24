@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **An opt-in extended metrics tier, starting with active accounts by client version.** Self-hosters with metrics enabled only. `METRICS_EXTENDED=true` turns on a second tier of metrics for the questions whose answers need more series or short-lived per-account state, off by default so no instance inherits the scrape cost or the data-handling posture without asking. Every metric in it is named `sheaf_ext_*` and every Redis key `sheaf:ext:*`, so one regex routes or drops the lot in a pipeline; per-account state is folded under a day-salted token that cannot be joined across days and nothing outlives 48 hours. The first metric is `sheaf_ext_active_accounts_by_version{client_family, version}`: distinct accounts active today per client family and `major.minor` client version, the number that decides how long an API compatibility shim has to stay. The tier's own settings share the `METRICS_EXTENDED_` prefix; the first, `METRICS_EXTENDED_VERSION_PAIRS_PER_DAY` (default 64), bounds how many distinct versions a day may hold before new ones fold into `other`. Documented in `docs/METRICS.md`.
+
 ## [1.6.0] - 2026-09-22
 
 ### Added

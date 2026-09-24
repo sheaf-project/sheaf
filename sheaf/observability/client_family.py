@@ -22,6 +22,7 @@ UA, would be counted as ours. The header is the claim; the honest fallback is
 
 from __future__ import annotations
 
+import re
 from typing import Literal, get_args
 
 ClientFamily = Literal["web", "android", "ios", "watch", "api", "other"]
@@ -88,3 +89,36 @@ def client_family_from_name(client_name: str | None) -> str:
     here by construction.
     """
     return client_family_from(client_name, is_api_key=False)
+
+
+# --- Client version ---------------------------------------------------------
+#
+# Extended tier only (sheaf/observability/extended.py). The version is the
+# part of the header after the family prefix, bucketed to `major.minor`:
+# patch releases would multiply the series for no decision anyone makes at
+# patch granularity. Anything that does not parse is `unknown`, never the raw
+# string, and the digit caps keep a hostile header from producing a label
+# that is anything other than two short integers.
+
+VERSION_UNKNOWN = "unknown"
+_VERSION_RE = re.compile(r"^\s*(\d{1,4})\.(\d{1,4})(?:[^\d]|$)")
+
+
+def client_version_from(client_header: str | None) -> str:
+    """`Sheaf Android/1.2.0` -> `1.2`. Pure and total, like the family parser.
+
+    Only a header with a recognised family prefix yields a version: a
+    third-party client's version is not something this taxonomy tracks, and
+    it lands as `unknown` alongside its `other` family.
+    """
+    if not client_header:
+        return VERSION_UNKNOWN
+    stripped = client_header.strip()
+    lowered = stripped.lower()
+    for prefix, _family in _PREFIXES:
+        if lowered.startswith(prefix):
+            match = _VERSION_RE.match(stripped[len(prefix):])
+            if match is None:
+                return VERSION_UNKNOWN
+            return f"{int(match.group(1))}.{int(match.group(2))}"
+    return VERSION_UNKNOWN

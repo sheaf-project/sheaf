@@ -215,6 +215,25 @@ def _active_token(scope: str, value: str) -> str:
     ).hexdigest()
 
 
+def _day_salted_token(scope: str, value: str, day: date) -> str:
+    """`_active_token` with the day folded in, for the extended tier.
+
+    The stable token above is fine inside a HyperLogLog, whose members are
+    never read back. The extended tier holds per-account state that in
+    principle could be (a counter keyed by token, say), and the salt is what
+    makes that state an ephemeral aggregate rather than a pseudonymised
+    activity log: a token seen on day N cannot be joined to day N+1, so
+    nobody holding two days of keys can line an account up across them.
+    """
+    from sheaf.config import settings
+
+    return hmac.new(
+        settings.get_encryption_key(),
+        f"{scope}:{_day_str(day)}:{value}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _day_str(day: date) -> str:
     return day.isoformat()
 
@@ -259,6 +278,7 @@ def record_active_account(
     auth_kind: str,
     client_family: str | None = None,
     account_age: str | None = None,
+    client_header: str | None = None,
 ) -> None:
     """Record an authenticated account (and its system) as active today, under
     the given auth kind (`client` or `api`), for an interactive request under
@@ -284,7 +304,9 @@ def record_active_account(
             return
         loop = asyncio.get_running_loop()
         task = loop.create_task(
-            _record_active(user_id, auth_kind, client_family, account_age)
+            _record_active(
+                user_id, auth_kind, client_family, account_age, client_header
+            )
         )
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
@@ -299,6 +321,7 @@ async def _record_active(
     auth_kind: str,
     client_family: str | None,
     account_age: str | None = None,
+    client_header: str | None = None,
 ) -> None:
     """Fire-and-forget body: PFADD the account id into today's acct sketch and
     the system id into today's sys sketch for this auth kind, refreshing the
@@ -328,6 +351,22 @@ async def _record_active(
             fam_key = family_day_key(SCOPE_ACCOUNT, client_family, today)
             pipe.pfadd(fam_key, _active_token(SCOPE_ACCOUNT, str(user_id)))
             pipe.expire(fam_key, HLL_KEY_TTL_SECONDS)
+            # Extended tier: the per-version sketch, under the DAY-SALTED
+            # token. A no-op inside unless METRICS_EXTENDED is on; the raw
+            # header goes in, only a bounded family and version come out.
+            from sheaf.observability import extended
+
+            await asyncio.wait_for(
+                extended.record_client_version(
+                    r,
+                    pipe,
+                    client_family,
+                    client_header,
+                    today,
+                    _day_salted_token(SCOPE_ACCOUNT, str(user_id), today),
+                ),
+                timeout=_REDIS_OP_TIMEOUT_S,
+            )
         # The age bucket, for every auth kind: an automation account has an
         # age too. Same membership guard, same token, a shorter TTL because
         # only today's key is ever read.
