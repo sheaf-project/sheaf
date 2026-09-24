@@ -522,6 +522,8 @@ itself, labelled `unlabelled` when the call site does not use
 | `sheaf_systems_total` | gauge | - |
 | `sheaf_members_total` | gauge | - |
 | `sheaf_members_custom_front` | gauge | - |
+| `sheaf_systems_by_member_count` | gauge | `le` (member-count threshold; `+Inf` = all systems) |
+| `sheaf_system_member_count_max` | gauge | - |
 | `sheaf_fronts_total` | gauge | - |
 | `sheaf_systems_by_front_count` | gauge | `le` (front-count threshold; `+Inf` = all systems) |
 | `sheaf_system_front_count_max` | gauge | - |

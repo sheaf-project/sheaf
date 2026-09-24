@@ -143,3 +143,26 @@ def test_pin_set_and_clear_via_member_patch(auth_client: httpx.Client):
     )
     assert clear_resp.status_code == 200
     assert clear_resp.json()["quick_switch_pin"] is None
+
+
+def test_returned_members_are_fully_hydrated(auth_client: httpx.Client):
+    # The ranking runs on an id+pin projection of the whole roster and the
+    # full rows are loaded afterwards for the survivors; make sure the
+    # projection never leaks through as a half-empty member.
+    description = f"Long bio {uuid.uuid4().hex}"
+    m = _member(
+        auth_client,
+        f"Hydrated-{uuid.uuid4().hex[:6]}",
+        description=description,
+        pronouns="they/them",
+    )
+    auth_client.patch(f"/v1/members/{m['id']}", json={"quick_switch_pin": 0})
+
+    r = auth_client.get("/v1/members/top-fronters", params={"limit": 1})
+    assert r.status_code == 200, r.text
+    (row,) = r.json()
+    assert row["id"] == m["id"]
+    assert row["name"] == m["name"]
+    assert row["description"] == description
+    assert row["pronouns"] == "they/them"
+    assert row["quick_switch_pin"] == 0

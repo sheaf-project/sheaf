@@ -252,6 +252,7 @@ def test_capped_entity_volume_metrics_present():
     here (see test_capped_entity_distributions_populate)."""
     body = _scrape()
     for name in (
+        "sheaf_system_member_count_max",
         "sheaf_messages_total",
         "sheaf_system_message_count_max",
         "sheaf_messages_created_total",
@@ -290,6 +291,7 @@ def test_capped_entity_distributions_populate(admin_client: httpx.Client):
 
     body = _scrape()
     for name in (
+        "sheaf_systems_by_member_count",
         "sheaf_systems_by_message_count",
         "sheaf_systems_by_poll_count",
         "sheaf_systems_by_open_poll_count",

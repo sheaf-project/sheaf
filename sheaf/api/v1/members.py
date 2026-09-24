@@ -419,25 +419,43 @@ async def top_fronters(
         half_life_days=_TOP_FRONTERS_HALF_LIFE_DAYS,
     )
 
-    members_result = await db.execute(
-        select(Member).where(
-            Member.system_id == system.id,
-            Member.archived_at.is_(None),
+    # Only the two columns the ordering needs, for the whole roster. The
+    # full rows - encrypted bio and note included - are loaded afterwards
+    # for the `limit` members that survive, not for everyone. Loading every
+    # member to return eight was the whole cost of this endpoint on a large
+    # system: the scoring query above runs in tens of milliseconds against
+    # fifty thousand fronts, while a roster of a couple of thousand members
+    # with long bios took seconds to hydrate on every quick-switch poll.
+    rows = (
+        await db.execute(
+            select(Member.id, Member.quick_switch_pin).where(
+                Member.system_id == system.id,
+                Member.archived_at.is_(None),
+            )
         )
-    )
-    members = list(members_result.scalars().all())
+    ).all()
 
     pinned = sorted(
-        (m for m in members if m.quick_switch_pin is not None),
-        key=lambda m: (m.quick_switch_pin, str(m.id)),
+        (r for r in rows if r.quick_switch_pin is not None),
+        key=lambda r: (r.quick_switch_pin, str(r.id)),
     )
     # Highest score first; id as a stable tiebreaker for equal scores
     # (e.g. the long tail of members who haven't fronted in the window).
     unpinned = sorted(
-        (m for m in members if m.quick_switch_pin is None),
-        key=lambda m: (-scores.get(m.id, 0.0), str(m.id)),
+        (r for r in rows if r.quick_switch_pin is None),
+        key=lambda r: (-scores.get(r.id, 0.0), str(r.id)),
     )
-    ordered = (pinned + unpinned)[:limit]
+    ordered_ids = [r.id for r in (pinned + unpinned)[:limit]]
+
+    ordered: list[Member] = []
+    if ordered_ids:
+        full = (
+            await db.execute(select(Member).where(Member.id.in_(ordered_ids)))
+        ).scalars().all()
+        by_id = {m.id: m for m in full}
+        # Re-impose the ranking: IN () returns rows in whatever order the
+        # planner likes.
+        ordered = [by_id[i] for i in ordered_ids if i in by_id]
 
     with_revisions = await _load_bio_revision_existence(
         db, [m.id for m in ordered]
