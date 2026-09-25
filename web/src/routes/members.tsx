@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
 import {
   PrivacyLevelSelect,
+  PrivacyLevelTag,
   PublishingOffNote,
 } from "@/components/privacy-level-select";
 import {
@@ -500,6 +501,7 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
   const { data: fields } = useCustomFields();
   const { data: values } = useMemberFieldValues(memberId);
   const setValues = useSetMemberFieldValues();
+  const { formatDate } = useDateFormatters();
   const [overrides, setOverrides] = useState<Record<string, FieldEditValue>>({});
 
   const serverValues = useMemo(() => {
@@ -573,9 +575,25 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
         const id = `custom-field-${f.id}`;
         return (
           <div key={f.id} className="space-y-1">
-            <Label htmlFor={id} className="text-xs">
-              {f.name}
-            </Label>
+            {/* The level lives on the field definition and applies to every
+                member, so it is read-only here; changing it is the settings
+                card's job. Shown anyway, because "wait, was that one public?"
+                is otherwise a trip to Settings and back mid-edit. */}
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor={id} className="text-xs">
+                {f.name}
+              </Label>
+              <PrivacyLevelTag level={f.privacy} />
+            </div>
+            {/* Same wording as the settings card: a staged raise has not
+                happened yet, and the level above is the truth until it does. */}
+            {f.privacy_activates_at && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                {f.pending_privacy ?? "public"} - activates{" "}
+                {formatDate(f.privacy_activates_at)}. Until then this stays{" "}
+                {f.privacy}.
+              </p>
+            )}
             {f.field_type === "boolean" ? (
               <div className="flex items-center gap-2">
                 <Checkbox
@@ -1104,7 +1122,7 @@ function MemberView({
     }
     return fields
       .filter((f) => valMap[f.id])
-      .map((f) => ({ name: f.name, value: valMap[f.id] }));
+      .map((f) => ({ name: f.name, value: valMap[f.id], privacy: f.privacy }));
   }, [fields, values]);
 
   return (
@@ -1250,9 +1268,13 @@ function MemberView({
           {fieldDisplay.length > 0 && (
             <div className="space-y-1">
               {fieldDisplay.map((f) => (
-                <div key={f.name} className="flex gap-2 text-sm">
+                <div key={f.name} className="flex items-baseline gap-2 text-sm">
                   <span className="text-muted-foreground">{f.name}:</span>
                   <span>{f.value}</span>
+                  {/* Same read-only level tag the editor shows, so the two
+                      views of a member never disagree about who can see a
+                      field. */}
+                  <PrivacyLevelTag level={f.privacy} />
                 </div>
               ))}
             </div>
