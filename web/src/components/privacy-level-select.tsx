@@ -6,6 +6,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAuth } from "@/hooks/use-auth";
+import { cn } from "@/lib/utils";
 import type { PrivacyLevel } from "@/types/api";
 
 /**
@@ -181,4 +182,39 @@ export function PublishingOffNote(props: PublicAvailability) {
  */
 export function PrivacyLevelLabel({ level }: { level: PrivacyLevel }) {
   return <>{PRIVACY_LEVELS.find((l) => l.value === level)?.label ?? level}</>;
+}
+
+/** One tone per level, so the answer to "was that one public?" is readable
+ *  at a glance and not only by reading. Private is the quiet default and gets
+ *  the muted tone; the two levels that put something in front of somebody get
+ *  a colour, and Public gets the louder one. Same amber the staged-raise notes
+ *  use: both mean "this is, or is about to be, visible". An unknown level from
+ *  a newer server falls back to muted rather than to nothing. */
+const PRIVACY_TONES: Record<PrivacyLevel, string> = {
+  private: "text-muted-foreground",
+  friends: "text-sky-600 dark:text-sky-400",
+  public: "text-amber-600 dark:text-amber-500 font-medium",
+};
+
+/**
+ * The level as a small tinted word, for a row that carries the value beside
+ * something else (a field label, a "Name: value" line). Word only, no icon: a
+ * badge alone says nothing for `private`, and that is the one answer people
+ * open the editor to confirm. Display only, and deliberately not a link to
+ * where the level is changed - one write path per level keeps the step-up and
+ * grace-period flow in one place.
+ */
+export function PrivacyLevelTag({
+  level,
+  className,
+}: {
+  level: PrivacyLevel;
+  className?: string;
+}) {
+  const tone = PRIVACY_TONES[level] ?? "text-muted-foreground";
+  return (
+    <span className={cn("shrink-0 text-[11px]", tone, className)}>
+      <PrivacyLevelLabel level={level} />
+    </span>
+  );
 }
