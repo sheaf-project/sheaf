@@ -4,7 +4,10 @@
 # Usage: ./run_tests.sh [--no-build] [--jobs N] [config ...]
 #
 # Spins up an isolated test stack (docker-compose.test.yml), runs pytest
-# for each configuration in sequence, then tears everything down.
+# for each configuration in sequence, then tears everything down. Anything
+# an earlier, killed run left under the same compose project is removed
+# first, and every config starts against empty tables and a flushed Redis,
+# so a config behaves the same whether it runs alone or after others.
 # Requires Docker and the SHEAF_TEST_DB_URL that points at the test DB.
 #
 # With no config arguments every configuration runs. Naming one or more
@@ -380,6 +383,72 @@ wait_for_app() {
     exit 1
 }
 
+# Put the stack's db and redis back to what a freshly created stack has:
+# every table empty (alembic_version kept, so the schema stays migrated) and
+# Redis flushed. Runs before every config's pytest, so a config sees the same
+# state whether it runs alone or third in a combined invocation, and a stack
+# a killed earlier run left behind cannot feed its leftovers into this one.
+#
+# This matters because run_one reconfigures the app IN PLACE: compose
+# recreates only the app container when its environment changes and leaves
+# db/redis running with everything the previous config wrote. Thousands of
+# accounts from selfhosted/none, lockouts, limiter windows, shield-mode
+# state: all of it was still there for the next config, which is not what
+# the next config got when run on its own, and the difference showed up as
+# failures only a combined run could produce.
+reset_stack_state() {
+    echo "Resetting stack state (empty tables, flushed Redis)..."
+    # One TRUNCATE over every public table; RESTART IDENTITY so sequences
+    # match a fresh database too. The app is idle between configs and holds
+    # no open transactions, so the exclusive locks are immediate.
+    $COMPOSE exec -T db psql -q -U sheaf -d sheaf -v ON_ERROR_STOP=1 -c "
+        DO \$\$
+        DECLARE tables text;
+        BEGIN
+            SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+              INTO tables
+              FROM pg_tables
+             WHERE schemaname = 'public' AND tablename <> 'alembic_version';
+            IF tables IS NOT NULL THEN
+                EXECUTE 'TRUNCATE ' || tables || ' RESTART IDENTITY CASCADE';
+            END IF;
+        END
+        \$\$;" || exit 1
+    $COMPOSE exec -T redis redis-cli FLUSHALL >/dev/null || exit 1
+}
+
+# Remove whatever an earlier run left under this compose project before
+# starting a new one. A run that was killed (Ctrl-C during a build, a closed
+# terminal) never reaches its EXIT trap, and `up` on the survivors reuses
+# them, data and all. Quick and quiet when there is nothing to remove.
+discard_stale_stack() {
+    $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
+}
+
+# Refuse to start a stack whose host ports something else already holds.
+# Docker's own message for this ("failed to set up container networking ...
+# driver failed programming external connectivity") lands in the middle of a
+# config's output and reads like a test failure; the usual cause is another
+# Sheaf stack (the dev stack on 8000, a devmode stack, another checkout's
+# test run outside the lock) sitting on the block. Say which port and stop
+# before anything is built or started. Called after discard_stale_stack, so
+# this run's own leftovers never trip it.
+require_free_ports() {
+    local label="$1"
+    shift
+    local port
+    for port in "$@"; do
+        if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            exec 3>&-
+            echo "ERROR: port $port is already in use, so the $label test stack" >&2
+            echo "       cannot start. Something else is listening there - another" >&2
+            echo "       Sheaf stack (dev, devmode, or a test run from another" >&2
+            echo "       checkout)? Stop it, or run with fewer --jobs." >&2
+            exit 2
+        fi
+    done
+}
+
 # Run one configuration against the stack described by the current COMPOSE /
 # TEST_URL / TEST_DB_URL / TEST_REDIS_URL values (the serial globals, or a
 # slot worker's overrides - which is why this reads those instead of taking
@@ -411,6 +480,9 @@ run_one() {
     env "${compose_env[@]}" $COMPOSE up -d $UP_FLAGS app || exit 1
 
     wait_for_app "$TEST_URL"
+    # After the app is up (its startup ran the migrations, so the schema is in
+    # place) and before pytest: this config starts from a clean slate.
+    reset_stack_state
 
     # Build pytest args as an array to avoid quoting/word-splitting issues.
     local pytest_args=(-q)
@@ -472,6 +544,8 @@ run_slot() {
     trap '$COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
     trap 'exit 143' INT TERM
 
+    discard_stale_stack
+
     local cfg safe
     for cfg in "${configs[@]}"; do
         safe="${cfg//\//_}"
@@ -502,6 +576,8 @@ if [[ "$JOBS" -eq 1 ]]; then
     }
     trap cleanup EXIT
 
+    discard_stale_stack
+    require_free_ports "serial" 8001 5433 6380
     echo "Starting test stack..."
     ADMIN_AUTH_LEVEL=none SHEAF_MODE=selfhosted \
         $COMPOSE up $BUILD_FLAG -d
@@ -582,6 +658,17 @@ else
         exit 130
     }
     trap on_interrupt INT TERM
+
+    # Clear every slot's leftovers and check its port block up front, before
+    # the build: a slot that would fail on a port bind should say so now, in
+    # one line, not minutes later from inside a config's captured output.
+    # (run_slot discards again on its own; that is the belt to this brace.)
+    for ((s = 1; s <= JOBS; s++)); do
+        docker compose -p "sheaf-test-$s" \
+            -f docker-compose.yml -f docker-compose.test.yml \
+            down -v --remove-orphans >/dev/null 2>&1 || true
+        require_free_ports "slot $s" $((8000 + s)) $((5432 + s)) $((6379 + s))
+    done
 
     # Build the app image once before forking. docker-compose.test.yml pins
     # image: sheaf-test-app (the tag a plain sheaf-test project build
