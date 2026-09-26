@@ -21,6 +21,8 @@ from sheaf.models.system import System
 from sheaf.models.user import User
 from sheaf.observability.metrics import fronts_created_total
 from sheaf.schemas.front import (
+    CompactFronter,
+    CompactFronters,
     FrontAuditEventRead,
     FrontCreate,
     FrontRead,
@@ -30,6 +32,7 @@ from sheaf.schemas.front import (
 )
 from sheaf.schemas.member import MemberDeleteConfirm
 from sheaf.services.front_stream import publish_front_change
+from sheaf.services.members import member_name_plaintext
 from sheaf.services.notifications.events import (
     emit_front_change,
     snapshot_front_state,
@@ -454,6 +457,60 @@ async def get_current_fronts(
         )
         for f in fronts
     ]
+
+
+@router.get("/current/compact", response_model=CompactFronters)
+async def get_current_fronters_compact(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Flattened, object-wrapped view of who is fronting right now.
+
+    For clients that cannot practically consume `GET /v1/fronts/current`.
+    Three reasons it exists rather than leaving callers to project the full
+    payload themselves:
+
+    * The full view carries `member_ids` without names, so rendering a
+      fronter list means fetching the roster as well. Two round trips and a
+      client-side join, to show a handful of names.
+    * A client with a small heap has to decode the entire response before it
+      can discard anything, so the fields it will not render still cost it
+      memory. This view carries three per fronter.
+    * Some embedded HTTP clients cannot receive a top-level JSON array at
+      all, so the list is wrapped in an object (see `CompactFronters`).
+
+    Name and `since` semantics match what the phone pushes to the Wear app,
+    so clients built on either render identical text.
+    """
+    system = await _get_user_system(user, db)
+    result = await db.execute(
+        select(Front)
+        .options(selectinload(Front.members))
+        .where(Front.system_id == system.id, Front.ended_at.is_(None))
+        .order_by(Front.started_at.desc())
+    )
+    fronts = list(result.scalars().all())
+    member_since_map = await _build_coalesced_member_since(db, system, fronts)
+
+    # A member can sit in more than one open front. Keep the first hit:
+    # fronts are ordered newest-first, and member_since already resolves
+    # the chain-aware start, so the first is the one to show.
+    seen: set[uuid.UUID] = set()
+    fronters: list[CompactFronter] = []
+    for f in fronts:
+        since_map = member_since_map[f.id][0]
+        for m in f.members:
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            fronters.append(
+                CompactFronter(
+                    id=m.id,
+                    name=m.display_name or member_name_plaintext(m),
+                    since=since_map.get(str(m.id), f.started_at),
+                )
+            )
+    return CompactFronters(fronters=fronters)
 
 
 @router.post(

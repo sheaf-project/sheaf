@@ -114,3 +114,39 @@ class FrontRead(BaseModel):
     pending_delete_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class CompactFronter(BaseModel):
+    """One member currently fronting, flattened out of the front entries.
+
+    Three fields on purpose. A client with a small heap has to hold the
+    whole decoded response at once, so every field it will not render is
+    memory it cannot spend on anything else. `FrontRead` carries ids,
+    timestamps, audit flags and a per-member `member_since` map, none of
+    which a "who is fronting" display needs.
+
+    `name` is the display name when set, else the member's name. `since` is
+    the effective per-member fronting-since: the chain-aware `member_since`
+    when the system coalesces contiguous fronts, else the entry's
+    `started_at`.
+    """
+
+    id: uuid.UUID
+    name: str
+    since: datetime
+
+
+class CompactFronters(BaseModel):
+    """Object wrapper around the fronter list.
+
+    Deliberately an object rather than a bare array: some constrained HTTP
+    clients cannot consume a top-level JSON array at all. Connect IQ, for
+    one, types its response callback's payload as
+    Dictionary/String/Iterator/Null, so a multi-element top-level array
+    arrives as null even alongside a 200.
+
+    Flattening this back to a bare array would break such clients silently,
+    with a success status and no body.
+    """
+
+    fronters: list[CompactFronter] = []
