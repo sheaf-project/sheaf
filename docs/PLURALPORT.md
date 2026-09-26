@@ -196,6 +196,7 @@ Sheaf fields that land in PluralPort core records.
 |---|---|
 | `system.id` / `name` / `description` / `tag` / `color` | `System.id` / `name` / `description` / `tag` / `color` |
 | `system.avatar_url` | `Asset` (kind `avatar`) + `System.avatar_asset_id` |
+| `system.banner_url` | `Asset` (kind `banner`) + `System.banner_asset_id` |
 | `system.privacy` | `System.privacy` (visibility bucket; see edge cases) |
 | `members[].id` / `name` / `display_name` / `description` / `pronouns` / `color` | `Member.id` / `name` / `display_name` / `description` / `pronouns` / `color` |
 | `members[].avatar_url` | `Asset` (kind `avatar`) + `Member.avatar_asset_id` |

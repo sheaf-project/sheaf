@@ -720,6 +720,7 @@ def _system_dict(system: System) -> dict:
         ),
         "tag": system.tag,
         "avatar_url": system.avatar_url,
+        "banner_url": system.banner_url,
         "color": system.color,
         "privacy": system.privacy.value,
         # User-set system preferences. Re-import should restore these.

@@ -339,8 +339,8 @@ def test_public_system_view_key_set():
 
     body = _anon().get(f"/v1/public/systems/{system_id}").json()
     assert set(body) == {
-        "id", "name", "description", "avatar_url", "color", "tag", "member_count",
-        "member_permalinks",
+        "id", "name", "description", "avatar_url", "banner_url", "color", "tag",
+        "member_count", "member_permalinks",
     }
     assert body["member_count"] == 1
     # Presentation configuration the client reads to decide whether a member
@@ -382,7 +382,7 @@ def test_a_share_link_never_carries_the_system_id():
     # Same key set as the public-profile payload - the contract is one
     # contract, so the field is null rather than absent.
     assert set(root.json()) == {
-        "id", "name", "description", "avatar_url", "color", "tag",
+        "id", "name", "description", "avatar_url", "banner_url", "color", "tag",
         "member_count", "member_permalinks",
     }
     assert root.json()["id"] is None
@@ -567,6 +567,47 @@ def test_external_avatar_and_banner_are_withheld():
     own = owner.get(f"/v1/members/{linked}").json()
     assert own["avatar_url"] == _TRACKER
     assert own["banner_url"] == _TRACKER
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_system_banner_is_served_when_hosted_and_withheld_when_external():
+    """The system banner follows every rule the member banner does: an upload
+    resolves to a public serve URL, an external URL is withheld from visitors,
+    and the owner's own read is never scrubbed."""
+    owner = _register()
+    key = _upload(owner, purpose="banner")
+    m = _member(owner, "Any")
+    system_id, _ = _published_system(owner, members=[m])
+
+    r = owner.patch("/v1/systems/me", json={"banner_url": key})
+    assert r.status_code == 200, r.text
+    assert key in (r.json()["banner_url"] or "")
+
+    body = _anon().get(f"/v1/public/systems/{system_id}").json()
+    assert body["banner_url"].startswith(f"/v1/public/files/{key}")
+
+    r = owner.patch("/v1/systems/me", json={"banner_url": _TRACKER})
+    assert r.status_code == 200, r.text
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["banner_url"] is None
+    assert owner.get("/v1/systems/me").json()["banner_url"] == _TRACKER
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_system_banner_pointing_at_another_accounts_storage_is_dropped():
+    """Same ownership binding as the avatar: a storage key under some other
+    account's prefix is refused at write time rather than re-signed into a
+    live serve URL for the wrong account's blob."""
+    other = _register()
+    foreign_key = _upload(other, purpose="banner")
+    other.close()
+
+    owner = _register()
+    r = owner.patch("/v1/systems/me", json={"banner_url": foreign_key})
+    assert r.status_code == 200, r.text
+    assert r.json()["banner_url"] is None
+    assert owner.get("/v1/systems/me").json()["banner_url"] is None
     owner.close()
 
 

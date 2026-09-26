@@ -67,7 +67,7 @@ A plural system's records are among the most sensitive data a person can keep, a
 - **Account deletion** — Self-service with configurable grace period
 - **Field-level encryption** — Member names/bios, journal titles/bodies, and revision history encrypted at rest with XChaCha20-Poly1305
 - **Appearance** - 15 colour palettes (Classic, OLED, Sepia, Ocean, several pride flags, and more) crossed with light / dark / follow-my-system, defaulting to dark, with Dark Reader compatibility. Your pick can sync across your devices through your account or stay local to one browser, your choice.
-- **Image uploads** - Avatars, member banners, and images embedded in bios and journals. An in-browser cropper (with zoom and rotate) frames the image before it is sent, and every accepted upload is re-encoded server-side: EXIF stripped, dimensions capped, decompression bombs refused, animation flattened unless the operator allows it.
+- **Image uploads** - Avatars, system and member banners, and images embedded in bios and journals. An in-browser cropper (with zoom and rotate) frames the image before it is sent, and every accepted upload is re-encoded server-side: EXIF stripped, dimensions capped, decompression bombs refused, animation flattened unless the operator allows it.
 
 ## FAQ
 
