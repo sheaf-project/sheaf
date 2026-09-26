@@ -65,6 +65,7 @@ SYS_NOTE = Cap("system note", 5000)
 SYS_DESCRIPTION = Cap("system description", 20000)
 SYS_TAG = Cap("system tag", 8)
 SYS_AVATAR_URL = Cap("system avatar URL", 500)
+SYS_BANNER_URL = Cap("system banner URL", 500)
 SYS_COLOR = Cap("system color", 7)
 
 # --- Group / tag ------------------------------------------------------------

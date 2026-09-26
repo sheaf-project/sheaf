@@ -209,6 +209,7 @@ def build_envelope(
                 "tag": sys_data.get("tag"),
                 "color": sys_data.get("color"),
                 "avatar_asset_id": assets.ref(sys_data.get("avatar_url"), kind="avatar"),
+                "banner_asset_id": assets.ref(sys_data.get("banner_url"), kind="banner"),
                 "privacy": _privacy_obj(sys_data.get("privacy")),
                 "extensions": {EXT_NS: _prune(sys_ext)},
             }

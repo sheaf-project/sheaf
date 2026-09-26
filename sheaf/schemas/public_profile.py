@@ -62,6 +62,7 @@ class PublicSystemView(BaseModel):
     name: str
     description: str | None = None
     avatar_url: str | None = None
+    banner_url: str | None = None
     color: str | None = None
     tag: str | None = None
     # Count of members actually visible in this view (after the hard guards),

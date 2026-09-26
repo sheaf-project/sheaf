@@ -88,12 +88,13 @@ async def find_orphaned_files(
     # Collect all referenced keys for this user
     referenced: set[str] = set()
 
-    # System avatar
+    # System avatar and banner
     result = await db.execute(
-        select(System.avatar_url).join(User).where(User.id == user_id)
+        select(System.avatar_url, System.banner_url).join(User).where(User.id == user_id)
     )
-    for (avatar_url,) in result:
+    for avatar_url, banner_url in result:
         referenced.update(_key_from_avatar(avatar_url))
+        referenced.update(_key_from_avatar(banner_url))
 
     # Member avatars, banners, and bios. Member.id is projected so the
     # description ciphertext can be decrypted under its per-cell aad.
@@ -182,6 +183,13 @@ async def find_file_references(
         refs.append({
             "kind": "system_avatar",
             "label": "System avatar",
+            "target_type": "system",
+            "target_id": str(system.id),
+        })
+    if key in _key_from_avatar(system.banner_url):
+        refs.append({
+            "kind": "system_banner",
+            "label": "System banner",
             "target_type": "system",
             "target_id": str(system.id),
         })

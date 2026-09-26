@@ -716,6 +716,7 @@ def measure_native_payload(data: dict, report: ClampReport) -> None:
         s(sys_data.get("tag"), il.SYS_TAG)
         s(sys_data.get("color"), il.SYS_COLOR)
         s(sys_data.get("avatar_url"), il.SYS_AVATAR_URL)
+        s(sys_data.get("banner_url"), il.SYS_BANNER_URL)
         s(sys_data.get("note"), il.SYS_NOTE)
 
     for m in _as_list(data.get("members")):
@@ -1083,6 +1084,13 @@ async def run_import(
                 system.avatar_url = clamp_str(
                     _resolve_avatar_url(sys_data["avatar_url"]),
                     il.SYS_AVATAR_URL,
+                    report=report,
+                )
+            if sys_data.get("banner_url") is not None:
+                # Same treatment as the avatar above, and as the member banner.
+                system.banner_url = clamp_str(
+                    _resolve_avatar_url(sys_data["banner_url"]),
+                    il.SYS_BANNER_URL,
                     report=report,
                 )
             if "replace_fronts_default" in sys_data:

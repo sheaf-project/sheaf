@@ -238,6 +238,7 @@ def collect_image_references(data: dict) -> dict[str, list[str]]:
     sys_data = data.get("system")
     if isinstance(sys_data, dict):
         _from_url(sys_data.get("avatar_url"), "system avatar")
+        _from_url(sys_data.get("banner_url"), "system banner")
         for fld in _MD_FIELDS_SYSTEM:
             _from_md(sys_data.get(fld), f"system {fld}")
 

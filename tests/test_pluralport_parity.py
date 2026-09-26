@@ -38,7 +38,7 @@ DISPOSITION: dict[str, dict[str, object]] = {
     "System": {
         # Core PluralPort System fields.
         "name": CORE, "description": CORE, "tag": CORE, "color": CORE,
-        "privacy": CORE, "avatar_url": CORE,
+        "privacy": CORE, "avatar_url": CORE, "banner_url": CORE,
         # extensions.sheaf.* (note + prefs + the safety/retention blocks).
         "note": EXT, "date_format": EXT, "timezone": EXT,
         "replace_fronts_default": EXT,
