@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-26
+
 ### Fixed
 
 - **`run_tests.sh` no longer fails configs that pass on their own.** Contributors only. Running several configurations in one invocation reconfigured the app in place and left the database and Redis carrying everything the previous configuration wrote, and a stack left behind by a killed run was reused, data and all, by the next one. Every configuration now starts against empty tables and a flushed Redis, and each compose project is torn down before it is started, so a config behaves the same whether it runs alone, third in a combined run, or after a Ctrl-C. It also refuses up front, naming the port, when something else holds a test stack's host ports, instead of failing a config from inside its output with Docker's networking error. Relatedly, the disposable devmode stack moves from 8002/5434/6381 to 8050/5450/6450: its old block was exactly what parallel test slot 2 uses, so a default two-slot run with devmode up failed slot 2 on a port bind.
