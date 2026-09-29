@@ -454,6 +454,17 @@ export function PublicProfileBody({
             </p>
           </PublicPageHeader>
 
+          {/* The system's banner, at its full 3:1 shape: the same rule the
+              member cards use, so nothing the owner framed in the cropper is
+              cut off here. */}
+          {sys.banner_url && isPublicImageAllowed(sys.banner_url) && (
+            <img
+              src={sys.banner_url}
+              alt=""
+              className="aspect-[3/1] w-full rounded-lg object-cover"
+            />
+          )}
+
           <div className="flex flex-col items-center gap-3 text-center">
             <Avatar className="size-20">
               {sys.avatar_url && isPublicImageAllowed(sys.avatar_url) && (
@@ -933,9 +944,16 @@ function RelationshipRow({ relationship: r }: { relationship: PublicRelationship
   );
 }
 
+/** Card classes for a member with a banner: the banner sits flush to the
+ *  card's top edge, so drop the card's top padding and flex gap, exactly as
+ *  the in-app member list does. */
+function memberCardClass(member: PublicMemberView): string {
+  return cn("overflow-hidden", member.banner_url && "gap-0 pt-0");
+}
+
 function MemberCard({ member }: { member: PublicMemberView }) {
   return (
-    <Card className="overflow-hidden">
+    <Card className={memberCardClass(member)}>
       <MemberCardBody member={member} />
     </Card>
   );
@@ -981,10 +999,16 @@ function MemberCardBody({
 
   return (
     <>
+      {/* At the banner's own 3:1 shape, the same as the in-app member card
+          and dialog. A fixed height here used to crop the top and bottom
+          off, so the image the owner framed in the cropper never showed in
+          full on the one page it was framed for. */}
       {member.banner_url && isPublicImageAllowed(member.banner_url) && (
-        <div className="h-24 w-full bg-muted">
-          <img src={member.banner_url} alt="" className="h-full w-full object-cover" />
-        </div>
+        <img
+          src={member.banner_url}
+          alt=""
+          className="aspect-[3/1] w-full bg-muted object-cover"
+        />
       )}
       <CardContent className="space-y-3 p-4">
         {linkName ? (
@@ -1188,7 +1212,7 @@ function PublicMemberPageView({
           </Link>
         </PublicPageHeader>
 
-        <Card className="overflow-hidden">
+        <Card className={memberCardClass(member.data)}>
           <MemberCardBody member={member.data} linkName={false} />
         </Card>
 

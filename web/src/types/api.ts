@@ -75,6 +75,8 @@ export interface System {
   note: string | null;
   tag: string | null;
   avatar_url: string | null;
+  /** Wide header image, the system twin of a member's banner. */
+  banner_url: string | null;
   color: string | null;
   privacy: PrivacyLevel;
   /** A raise of the master switch to public still waiting out the System
@@ -107,6 +109,7 @@ export interface SystemUpdate {
   note?: string | null;
   tag?: string | null;
   avatar_url?: string | null;
+  banner_url?: string | null;
   color?: string | null;
   privacy?: PrivacyLevel;
   date_format?: DateFormat;
@@ -1583,6 +1586,7 @@ export interface PublicSystemView {
   name: string;
   description: string | null;
   avatar_url: string | null;
+  banner_url: string | null;
   color: string | null;
   tag: string | null;
   /** Null when the view does not serve its member roster. A roster the view

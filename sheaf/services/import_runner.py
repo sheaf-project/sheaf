@@ -332,6 +332,13 @@ async def run_import_tick(db: AsyncSession) -> dict:
     return {"items_processed": 1, "details": f"complete: {job.id}"}
 
 
+# How often the LISTEN connection probes that it is still alive. A module
+# constant rather than a literal so the regression test can drive a heartbeat
+# without waiting a minute: the bug this guards against only appears AFTER the
+# first probe, so a test that never heartbeats cannot see it.
+_LISTEN_HEARTBEAT_SECONDS = 60
+
+
 async def _listen_for_enqueues(wake: asyncio.Event) -> None:
     """Hold a LISTEN connection and set `wake` on every enqueue NOTIFY.
 
@@ -347,9 +354,28 @@ async def _listen_for_enqueues(wake: asyncio.Event) -> None:
 
     from sheaf.database import engine
 
+    # AUTOCOMMIT, because this connection lives for the whole process. In the
+    # default mode SQLAlchemy autobegins a transaction on the first statement
+    # and the heartbeat below never ends it, so the session sat "idle in
+    # transaction" forever. That is the same bug the leader election had (see
+    # sheaf/services/leader.py), with the same two costs: it pinned
+    # pg_stat_activity's max transaction age, blinding any long-transaction
+    # alert, and it kept resetting idle_in_transaction_session_timeout.
+    #
+    # Here it also broke the feature outright. Postgres delivers NOTIFY to a
+    # listening backend only when that backend is idle, so a listener parked
+    # inside a never-ending transaction stops receiving notifications
+    # altogether - which meant that from 60 seconds after startup this
+    # accelerator silently did nothing and every enqueued import waited out
+    # the poll interval instead. The LISTEN registration itself belongs to the
+    # SESSION, not the transaction, so nothing else about the listener
+    # changes: it still dies with the connection, which is what the reconnect
+    # path relies on.
+    listen_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+
     while True:
         try:
-            async with engine.connect() as conn:
+            async with listen_engine.connect() as conn:
                 raw = await conn.get_raw_connection()
                 driver = raw.driver_connection  # asyncpg connection
                 await driver.add_listener(
@@ -362,7 +388,7 @@ async def _listen_for_enqueues(wake: asyncio.Event) -> None:
                 while True:
                     # Liveness probe: raises when the connection has died,
                     # dropping us to the reconnect path.
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(_LISTEN_HEARTBEAT_SECONDS)
                     await conn.execute(text("SELECT 1"))
         except asyncio.CancelledError:
             raise

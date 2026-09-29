@@ -583,6 +583,55 @@ def test_enqueue_notify_wakes_the_listener():
     asyncio.run(run())
 
 
+def test_listener_still_wakes_after_a_heartbeat():
+    """A NOTIFY that arrives AFTER the liveness probe has run still wakes the
+    listener.
+
+    The regression this pins: the listener connection used to run in the
+    default isolation level, so the probe's `SELECT 1` autobegan a
+    transaction that nothing ever ended. Postgres only delivers NOTIFY to a
+    backend that is idle, so a listener parked inside an open transaction
+    stops receiving notifications entirely - the accelerator silently died 60
+    seconds after startup and every import fell back to the poll interval.
+
+    The pre-existing test above cannot catch this, because it notifies within
+    a few seconds and the first heartbeat has not run yet. This one drives a
+    heartbeat first, which is why the interval is a patchable constant.
+    """
+    from unittest.mock import patch
+
+    import sheaf.database as database_module
+    from sheaf.services import import_runner as runner_module
+    from sheaf.services.import_runner import _listen_for_enqueues
+
+    async def run() -> None:
+        engine = _test_engine()
+        wake = asyncio.Event()
+        try:
+            with (
+                patch.object(database_module, "engine", engine),
+                patch.object(runner_module, "_LISTEN_HEARTBEAT_SECONDS", 0.2),
+            ):
+                listener = asyncio.create_task(_listen_for_enqueues(wake))
+                # Long enough for several heartbeats to have run, so the
+                # connection is well past the point the old code broke at.
+                await asyncio.sleep(1.5)
+                assert not wake.is_set()
+
+                async with engine.connect() as conn:
+                    await conn.execute(text("NOTIFY sheaf_import_enqueued"))
+                    await conn.commit()
+
+                await asyncio.wait_for(wake.wait(), timeout=5)
+                listener.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await listener
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # Operator kill switch for data-deleting jobs
 

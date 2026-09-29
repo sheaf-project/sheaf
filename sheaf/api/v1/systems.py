@@ -176,6 +176,8 @@ async def update_own_system(
     # it is stored (and later re-signed on read) - cross-tenant read oracle.
     if "avatar_url" in update_data:
         update_data["avatar_url"] = owned_avatar_url(update_data["avatar_url"], user.id)
+    if "banner_url" in update_data:
+        update_data["banner_url"] = owned_avatar_url(update_data["banner_url"], user.id)
     if "description" in update_data:
         update_data["description"] = owned_description_urls(
             update_data["description"], user.id

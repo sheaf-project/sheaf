@@ -228,7 +228,8 @@ CLASSIFICATION: dict[type, dict] = {
     },
     System: {
         "exported": {
-            "name", "description", "note", "tag", "avatar_url", "color",
+            "name", "description", "note", "tag", "avatar_url", "banner_url",
+            "color",
             "privacy", "delete_confirmation", "date_format", "timezone",
             "replace_fronts_default", "coalesce_contiguous_fronts",
             "show_member_created_date",

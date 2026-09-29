@@ -252,6 +252,7 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
             "note": ext.get("note"),
             "tag": sys_in.get("tag"),
             "avatar_url": assets.url(sys_in.get("avatar_asset_id")),
+            "banner_url": assets.url(sys_in.get("banner_asset_id")),
             "color": sys_in.get("color"),
             "privacy": _op_privacy(sys_in.get("privacy")),
             "date_format": ext.get("date_format"),

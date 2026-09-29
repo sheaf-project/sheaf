@@ -21,6 +21,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from sheaf.observability.extended import record_request as _record_by_client
 from sheaf.observability.metrics import (
     http_request_duration_seconds,
     http_requests_in_progress,
@@ -98,4 +99,13 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 status=_status_label(status),
             ).inc()
             http_request_duration_seconds.labels(method=method, route=route).observe(elapsed)
+            # Extended tier: the same counter multiplied by client family.
+            # A no-op unless METRICS_EXTENDED is on.
+            _record_by_client(
+                method,
+                route,
+                _status_class(status),
+                request.headers.get("x-sheaf-client"),
+                request.headers.get("authorization"),
+            )
             in_progress.dec()

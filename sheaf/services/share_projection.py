@@ -966,6 +966,7 @@ def _build_system_view(
             system.description, system.user_id
         ),
         avatar_url=resolve_avatar_url_public(system.avatar_url, system.user_id),
+        banner_url=resolve_avatar_url_public(system.banner_url, system.user_id),
         color=system.color,
         tag=system.tag,
         member_count=member_count,

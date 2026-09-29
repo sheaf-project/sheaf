@@ -28,6 +28,7 @@ def _native() -> dict:
         "system": {
             "id": "s1", "name": "Sys", "description": "d", "note": "sysnote",
             "tag": "|S|", "avatar_url": "/v1/files/avatars/u/a.png",
+            "banner_url": "/v1/files/banners/u/b.png",
             "color": "#fff", "privacy": "public", "date_format": "ymd",
             "timezone": "America/New_York",
             "replace_fronts_default": True, "coalesce_contiguous_fronts": False,
@@ -104,6 +105,12 @@ def test_core_records_mapped():
     assert env["systems"][0]["name"] == "Sys"
     # privacy is the PluralPort Privacy object, not a bare string.
     assert env["systems"][0]["privacy"] == {"visibility": "public"}
+    # The system's avatar and banner each become an Asset of their kind,
+    # referenced by id, exactly as a member's do.
+    by_asset = {a["id"]: a for a in env["assets"]}
+    sys_out = env["systems"][0]
+    assert by_asset[sys_out["avatar_asset_id"]]["kind"] == "avatar"
+    assert by_asset[sys_out["banner_asset_id"]]["kind"] == "banner"
     # pluralkit_id becomes a source_ref, not a core member field.
     m1 = next(m for m in env["members"] if m["id"] == "m1")
     assert {"app": "pluralkit", "collection": "members", "id": "abcde"} in m1["source_refs"]

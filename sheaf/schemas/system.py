@@ -23,10 +23,13 @@ class SystemCreate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
+    banner_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     privacy: PrivacyLevel = PrivacyLevel.PRIVATE
 
-    @field_validator("avatar_url", mode="before")
+    # banner_url shares the avatar normaliser, exactly as the member schemas
+    # do: both are image storage keys / external URLs with the same rules.
+    @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:
         return normalize_avatar_url(v)
@@ -44,6 +47,7 @@ class SystemUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
     tag: str | None = Field(default=None, max_length=8)
     avatar_url: str | None = Field(default=None, max_length=500)
+    banner_url: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, max_length=7)
     privacy: PrivacyLevel | None = None
     date_format: DateFormat | None = None
@@ -64,7 +68,7 @@ class SystemUpdate(BaseModel):
     )
     totp_code: str | None = None
 
-    @field_validator("avatar_url", mode="before")
+    @field_validator("avatar_url", "banner_url", mode="before")
     @classmethod
     def _normalize_avatar(cls, v: str | None) -> str | None:
         return normalize_avatar_url(v)
@@ -113,6 +117,7 @@ class SystemRead(BaseModel):
     note: str | None
     tag: str | None
     avatar_url: str | None
+    banner_url: str | None = None
     color: str | None
     privacy: PrivacyLevel
     # A raise of the master switch waiting out the grace window: `privacy` above
@@ -140,7 +145,7 @@ class SystemRead(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_serializer("avatar_url")
+    @field_serializer("avatar_url", "banner_url")
     def _sign_avatar_url(self, v: str | None) -> str | None:
         return resolve_avatar_url(v, self.user_id)
 

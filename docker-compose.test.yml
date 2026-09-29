@@ -92,6 +92,7 @@ services:
       METRICS_ENABLED: "${METRICS_ENABLED:-false}"
       METRICS_BIND: "${METRICS_BIND:-disabled}"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      METRICS_EXTENDED: "${METRICS_EXTENDED:-false}"
     volumes: []
     depends_on:
       db:

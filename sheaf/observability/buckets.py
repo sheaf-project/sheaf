@@ -49,6 +49,15 @@ REALTIME_CONNECTION_DURATION_BUCKETS = (
     1, 5, 15, 30, 60, 300, 900, 1800, 3600, 7200, 21600,
 )
 
+# Requests per identifier per DAY (extended tier: per account, per public
+# profile). One order of magnitude wider than the per-minute buckets above,
+# because a day of ordinary polling is a few hundred requests and a day of
+# a fan-out bug is a few thousand; the top bucket is where "this account is
+# a script" lives.
+DAILY_REQUEST_BUCKETS = (
+    10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000,
+)
+
 # Export size, in bytes. Tier-bucket coverage from "tiny system, JSON
 # only" through "large system with images, multi-GB tarball".
 EXPORT_SIZE_BUCKETS = (

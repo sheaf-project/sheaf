@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getMySystem, updateMySystem } from "@/lib/systems";
 import { AvatarUpload } from "@/components/avatar-upload";
+import { BannerUpload } from "@/components/banner-upload";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -114,12 +115,13 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; pending_privacy?: PrivacyLevel | null; privacy_activates_at?: string | null; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean };
-  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null; show_member_created_date: boolean }) => void;
+  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; banner_url: string | null; color: string | null; privacy: PrivacyLevel; pending_privacy?: PrivacyLevel | null; privacy_activates_at?: string | null; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean };
+  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; banner_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null; show_member_created_date: boolean }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
   const [avatarUrl, setAvatarUrl] = useState(initial.avatar_url);
+  const [bannerUrl, setBannerUrl] = useState(initial.banner_url);
   const [description, setDescription] = useState(initial.description ?? "");
   const [note, setNote] = useState(initial.note ?? "");
   const [tag, setTag] = useState(initial.tag ?? "");
@@ -137,6 +139,7 @@ function SystemSettingsForm({
     onSubmit({
       name,
       avatar_url: avatarUrl,
+      banner_url: bannerUrl,
       description: description || null,
       note: note || null,
       tag: tag || null,
@@ -161,6 +164,16 @@ function SystemSettingsForm({
             onUpload={setAvatarUrl}
             onRemove={() => setAvatarUrl(null)}
           />
+          {/* Same control, same cropper, same 3:1 shape as a member's banner.
+              Shown on the public profile above the avatar and name. */}
+          <div className="space-y-2">
+            <Label>Banner</Label>
+            <BannerUpload
+              url={bannerUrl}
+              onUpload={setBannerUrl}
+              onRemove={() => setBannerUrl(null)}
+            />
+          </div>
           <div className="space-y-2">
             <Label htmlFor="system-name">Name</Label>
             <Input id="system-name" value={name} onChange={(e) => setName(e.target.value)} required />

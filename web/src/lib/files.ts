@@ -60,6 +60,7 @@ export function listFiles() {
 
 export type FileReferenceKind =
   | "system_avatar"
+  | "system_banner"
   | "member_avatar"
   | "member_banner"
   | "member_bio"

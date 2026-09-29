@@ -1,10 +1,12 @@
 # Dev-mode overlay — a separate disposable instance with dev tools enabled.
 #
 # Usage:
-#   ./run_devmode.sh          # start (builds with dev tools, ports 8002/5434/6381)
+#   ./run_devmode.sh          # start (builds with dev tools, ports 8050/5450/6450)
 #   ./run_devmode.sh --down   # tear down and wipe volumes
 #
-# Does NOT conflict with the normal dev stack (8000) or test suite (8001).
+# Does NOT conflict with the normal dev stack (8000) or the test suite: the
+# serial test stack is 8001/5433/6380 and parallel slot s is 8000+s/5432+s/6379+s,
+# so this block sits well clear of any slot count anyone will run.
 # Note this is for *TESTING* devmode and should not be used live (null encryption key, various changemes)
 services:
   app:
@@ -14,7 +16,7 @@ services:
       args:
         INCLUDE_DEV_TOOLS: "true"
     ports: !override
-      - "8002:8000"
+      - "8050:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://sheaf:sheafdev@db:5432/sheaf
       REDIS_URL: redis://redis:6379/0
@@ -41,7 +43,7 @@ services:
 
   db:
     ports: !override
-      - "5434:5432"
+      - "5450:5432"
     volumes:
       - devmode-pgdata:/var/lib/postgresql/data
     environment:
@@ -51,7 +53,7 @@ services:
 
   redis:
     ports: !override
-      - "6381:6379"
+      - "6450:6379"
     volumes:
       - devmode-redisdata:/data
 

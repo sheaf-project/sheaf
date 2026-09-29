@@ -47,6 +47,9 @@ class System(UUIDMixin, TimestampMixin, Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True, info={"encrypted": True})
     tag: Mapped[str | None] = mapped_column(String(8), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Wide header image for the system profile. Same storage/trust model as
+    # avatar_url and the member twin, Member.banner_url.
+    banner_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     privacy: Mapped[PrivacyLevel] = mapped_column(
         Enum(PrivacyLevel, values_callable=lambda e: [m.value for m in e]),

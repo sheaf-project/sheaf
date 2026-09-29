@@ -1245,6 +1245,8 @@ Sheaf exposes a Prometheus-compatible `/metrics` endpoint covering HTTP RED, the
 
 Full catalog, cardinality rules, multi-worker setup, and scrape-config examples live in [METRICS.md](METRICS.md).
 
+A second, opt-in tier (`METRICS_EXTENDED=true`) adds the metrics whose answers need more series or short-lived per-account state, starting with active accounts by client version. Every metric in it is named `sheaf_ext_*` so a pipeline can route or drop the lot with one regex, per-account state is folded under a day-salted token that cannot be joined across days, and nothing in it outlives 48 hours. Off by default; details in the same document.
+
 ---
 
 ## External images
