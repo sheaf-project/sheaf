@@ -481,6 +481,12 @@ async def get_current_fronters_compact(
 
     Name and `since` semantics match what the phone pushes to the Wear app,
     so clients built on either render identical text.
+
+    Order is part of the contract, because a constrained client renders the
+    list exactly as it arrives: fronts newest-first, and within a front its
+    members in the order `/current` lists them in that front's `member_ids`
+    (both views walk the same loaded rows). A member in more than one open
+    front appears once, at the position of the newest front that holds them.
     """
     system = await _get_user_system(user, db)
     result = await db.execute(

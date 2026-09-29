@@ -15,6 +15,7 @@ def _create_member(client: httpx.Client, name: str, display_name: str | None = N
     if display_name is not None:
         body["display_name"] = display_name
     resp = client.post("/v1/members", json=body)
+    assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
 

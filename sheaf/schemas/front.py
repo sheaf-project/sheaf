@@ -147,6 +147,9 @@ class CompactFronters(BaseModel):
 
     Flattening this back to a bare array would break such clients silently,
     with a success status and no body.
+
+    The list is ordered: newest front first, members in front order, each
+    member once. See `get_current_fronters_compact`.
     """
 
     fronters: list[CompactFronter] = []
