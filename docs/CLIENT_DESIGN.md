@@ -313,6 +313,7 @@ All resource endpoints require authentication. With API keys, the appropriate sc
 | GET | `/fronts` | `fronts:read` |
 | POST | `/fronts` | `fronts:write` |
 | GET | `/fronts/current` | `fronts:read` |
+| GET | `/fronts/current/compact` | `fronts:read` (flattened `{fronters: [...]}` for constrained clients) |
 | PATCH | `/fronts/{id}` | `fronts:write` |
 | POST | `/fronts/{id}/replace` | `fronts:write` |
 | DELETE | `/fronts/{id}` | `fronts:delete` |

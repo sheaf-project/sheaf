@@ -176,6 +176,7 @@ Key endpoints:
 | `GET/POST /v1/members` | List/create members |
 | `GET/POST /v1/fronts` | Front history |
 | `GET /v1/fronts/current` | Who's fronting now |
+| `GET /v1/fronts/current/compact` | Who's fronting now, flattened to names for small clients |
 | `GET /v1/fronts/stream` | Live front changes over Server-Sent Events |
 | `GET/POST /v1/groups` | Groups |
 | `PUT /v1/groups/reorder` | Reorder groups |

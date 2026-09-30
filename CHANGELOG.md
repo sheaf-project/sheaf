@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **A compact "who is fronting" endpoint for constrained clients.** `GET /v1/fronts/current/compact` returns `{"fronters": [{"id", "name", "since"}]}`: one entry per member currently fronting, newest front first, with the shown name and the chain-aware fronting-since timestamp already resolved, so a client does not need the roster to render a name. It exists for clients that cannot comfortably consume `GET /v1/fronts/current`: a small heap has to decode the whole response before discarding anything, and some embedded HTTP clients cannot receive a top-level JSON array at all, which is why the list is wrapped in an object. Same `fronts:read` scope as the full view; the full view is unchanged.
+
 ## [1.6.1] - 2026-09-26
 
 ### Fixed
