@@ -183,6 +183,8 @@ percentiles means abuse.
 | Metric | Type | Labels |
 |---|---|---|
 | `sheaf_notifications_dispatched_total` | counter | `channel_type`, `outcome` ∈ {success, transient_failure, permanent_failure, filtered, revoked, dropped} |
+| `sheaf_notifications_channels_disabled_total` | counter | `channel_type`, `reason` (channels the dispatcher switched off; counted after the commit) |
+| `sheaf_notifications_dispatcher_errors_total` | counter | - (outbox rows whose processing raised; each is logged with a traceback) |
 | `sheaf_notifications_dispatch_duration_seconds` | histogram | `channel_type` |
 | `sheaf_notifications_dispatch_lag_seconds` | histogram | `channel_type` |
 | `sheaf_notifications_outbox_depth` | gauge | - |
