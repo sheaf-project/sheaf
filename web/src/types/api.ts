@@ -267,6 +267,11 @@ export interface Front {
 export interface FrontCreate {
   member_ids: string[];
   started_at?: string | null;
+  // Set this to record a closed history entry rather than start a front.
+  // A closed entry never becomes the current front, so the server skips
+  // replace_fronts and the duplicate-open-set check for it. Leave it unset
+  // to start a front now.
+  ended_at?: string | null;
   replace_fronts?: boolean;
   custom_status?: string | null;
 }
