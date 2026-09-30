@@ -6,6 +6,12 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **A compact "who is fronting" endpoint for constrained clients.** `GET /v1/fronts/current/compact` returns `{"fronters": [{"id", "name", "since"}]}`: one entry per member currently fronting, newest front first, with the shown name and the chain-aware fronting-since timestamp already resolved, so a client does not need the roster to render a name. It exists for clients that cannot comfortably consume `GET /v1/fronts/current`: a small heap has to decode the whole response before discarding anything, and some embedded HTTP clients cannot receive a top-level JSON array at all, which is why the list is wrapped in an object. Same `fronts:read` scope as the full view; the full view is unchanged.
+
+## [1.6.1] - 2026-09-26
+
 ### Fixed
 
 - **`run_tests.sh` no longer fails configs that pass on their own.** Contributors only. Running several configurations in one invocation reconfigured the app in place and left the database and Redis carrying everything the previous configuration wrote, and a stack left behind by a killed run was reused, data and all, by the next one. Every configuration now starts against empty tables and a flushed Redis, and each compose project is torn down before it is started, so a config behaves the same whether it runs alone, third in a combined run, or after a Ctrl-C. It also refuses up front, naming the port, when something else holds a test stack's host ports, instead of failing a config from inside its output with Docker's networking error. Relatedly, the disposable devmode stack moves from 8002/5434/6381 to 8050/5450/6450: its old block was exactly what parallel test slot 2 uses, so a default two-slot run with devmode up failed slot 2 on a port bind.
