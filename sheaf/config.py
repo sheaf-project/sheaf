@@ -416,6 +416,15 @@ class Settings(BaseSettings):
     # An explicit http:// URL opts in to non-Secure cookies for plain-HTTP dev.
     sheaf_base_url: str = ""
 
+    # Passkey (WebAuthn) relying-party ID override. Empty = the host of
+    # SHEAF_BASE_URL, which is right for almost every instance. Set it only to
+    # a registrable parent of that host (example.net for an instance at
+    # sheaf.example.net) so one credential can serve several subdomains;
+    # anything else makes the feature unavailable rather than silently
+    # binding credentials to a name nothing serves. See sheaf/auth/passkeys.py
+    # for the whole rule, including why plain HTTP has no passkeys.
+    passkey_rp_id: str = ""
+
     # Shared Universal Link / App Link host for mobile_push activation
     # URLs. Every instance routes mobile_push redemption links through
     # this host because the mobile app's associated-domains entitlement
@@ -1225,6 +1234,22 @@ def _validate_settings() -> None:
             "email links require a base URL. Set SHEAF_BASE_URL (e.g. https://sheaf.example.com)."
         )
         sys.exit(1)
+
+    # Passkeys: an operator who set the RP override expects the feature, so
+    # tell them at boot if the rule refuses it. Without the override, an
+    # unavailable answer is the ordinary state of a plain-HTTP or base-URL-less
+    # instance and is reported to clients rather than shouted here.
+    if settings.passkey_rp_id:
+        from sheaf.auth.passkeys import current_relying_party
+
+        resolution = current_relying_party()
+        if not resolution.available:
+            logger.warning(
+                "PASSKEY_RP_ID is set but passkeys are unavailable on this "
+                "instance (%s). It must be the host of SHEAF_BASE_URL or a "
+                "registrable parent of it, and the base URL must be https.",
+                resolution.reason,
+            )
 
     # Legal links: not required to start, but strongly encouraged for any
     # public-facing instance. Missing links mean users can't see what they're
