@@ -37,6 +37,7 @@ from sheaf.models.notification_channel_member_rule import (
     NotificationChannelMemberRule,
 )
 from sheaf.models.notification_outbox import NotificationOutboxRow
+from sheaf.models.passkey_credential import PasskeyCredential
 from sheaf.models.pending_action import PendingAction, PendingActionStatus, PendingActionType
 from sheaf.models.poll import (
     Poll,
@@ -116,6 +117,7 @@ __all__ = [
     "NotificationChannelGroupRule",
     "NotificationChannelMemberRule",
     "NotificationOutboxRow",
+    "PasskeyCredential",
     "PayloadSensitivity",
     "PendingAction",
     "PendingActionStatus",
