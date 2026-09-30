@@ -251,3 +251,132 @@ def test_concurrent_replace_switches_leave_one_open(auth_client: httpx.Client):
 
     current = auth_client.get("/v1/fronts/current").json()
     assert len(current) == 1, current
+
+
+# --- Back-dated history entries ---------------------------------------------
+#
+# Creating a front with `ended_at` records a closed entry: history being
+# written after the fact rather than a switch happening now. The tests below
+# pin the thing that makes it safe, which is that such an entry must not touch
+# the live roster in any way.
+
+
+def test_create_backdated_entry_is_closed_and_not_current(auth_client: httpx.Client):
+    member_id = _create_member(auth_client, "Backdated")
+    resp = auth_client.post(
+        "/v1/fronts",
+        json={
+            "member_ids": [member_id],
+            "started_at": "2026-01-02T10:00:00+00:00",
+            "ended_at": "2026-01-02T12:30:00+00:00",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["started_at"].startswith("2026-01-02T10:00")
+    assert data["ended_at"].startswith("2026-01-02T12:30")
+
+    # It is history, so it must not show up as fronting now.
+    current_ids = {f["id"] for f in auth_client.get("/v1/fronts/current").json()}
+    assert data["id"] not in current_ids
+
+
+def test_backdated_entry_leaves_the_current_front_alone(auth_client: httpx.Client):
+    """The whole point of `ended_at` on create.
+
+    Without it, back-dating means POSTing an open front and PATCHing it
+    closed. `replace_fronts_default` is True, so that POST auto-ends whatever
+    is fronting AND back-dates its end to the historical start time: writing
+    down that you fronted last Tuesday would silently end today's front and
+    claim it stopped last Tuesday. A closed entry skips replacement entirely.
+    """
+    live = _create_member(auth_client, "StillHere")
+    past = _create_member(auth_client, "WasHere")
+
+    started = auth_client.post("/v1/fronts", json={"member_ids": [live]})
+    assert started.status_code == 201
+    live_front_id = started.json()["id"]
+
+    resp = auth_client.post(
+        "/v1/fronts",
+        json={
+            "member_ids": [past],
+            "started_at": "2026-01-02T10:00:00+00:00",
+            "ended_at": "2026-01-02T12:30:00+00:00",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    current = auth_client.get("/v1/fronts/current").json()
+    assert [f["id"] for f in current] == [live_front_id], current
+    assert current[0]["ended_at"] is None
+
+
+def test_backdated_entry_allowed_for_members_fronting_right_now(
+    auth_client: httpx.Client,
+):
+    """The duplicate-open-set check is about the live roster, so it must not
+    stop someone recording that the same people also fronted last week."""
+    member_id = _create_member(auth_client, "Repeat")
+    assert (
+        auth_client.post("/v1/fronts", json={"member_ids": [member_id]}).status_code
+        == 201
+    )
+
+    resp = auth_client.post(
+        "/v1/fronts",
+        json={
+            "member_ids": [member_id],
+            "started_at": "2026-01-02T10:00:00+00:00",
+            "ended_at": "2026-01-02T12:30:00+00:00",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_backdated_entry_rejects_end_before_start(auth_client: httpx.Client):
+    member_id = _create_member(auth_client, "Backwards")
+    resp = auth_client.post(
+        "/v1/fronts",
+        json={
+            "member_ids": [member_id],
+            "started_at": "2026-01-02T12:30:00+00:00",
+            "ended_at": "2026-01-02T10:00:00+00:00",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "earlier than started_at" in resp.json()["detail"]
+
+
+def test_backdated_entry_appears_in_history(auth_client: httpx.Client):
+    member_id = _create_member(auth_client, "HistoryEntry")
+    created = auth_client.post(
+        "/v1/fronts",
+        json={
+            "member_ids": [member_id],
+            "started_at": "2026-01-02T10:00:00+00:00",
+            "ended_at": "2026-01-02T12:30:00+00:00",
+            "custom_status": "recorded after the fact",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    history = auth_client.get("/v1/fronts", params={"limit": 50}).json()
+    match = [f for f in history if f["id"] == created.json()["id"]]
+    assert match, history
+    assert match[0]["custom_status"] == "recorded after the fact"
+
+
+def test_open_create_still_replaces_by_default(auth_client: httpx.Client):
+    """Guard the other side of the branch: omitting `ended_at` must keep the
+    ordinary switch behaviour, where starting a front ends the previous one."""
+    first = _create_member(auth_client, "FirstUp")
+    second = _create_member(auth_client, "SecondUp")
+
+    a = auth_client.post("/v1/fronts", json={"member_ids": [first]})
+    assert a.status_code == 201
+    b = auth_client.post("/v1/fronts", json={"member_ids": [second]})
+    assert b.status_code == 201
+
+    current = auth_client.get("/v1/fronts/current").json()
+    assert [f["id"] for f in current] == [b.json()["id"]], current

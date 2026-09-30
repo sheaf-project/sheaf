@@ -595,9 +595,28 @@ async def create_front(
     # would always break.
     new_started_at = body.started_at or datetime.now(UTC)
 
+    # A closed entry is history being recorded after the fact, not a switch.
+    # It is never the current front, so neither of the live-roster behaviours
+    # below applies to it: auto-ending the open fronts would end whoever is
+    # really fronting (and back-date their end to the historical timestamp),
+    # and the duplicate-open-set check would reject recording that the same
+    # people fronted before simply because they are fronting now.
+    is_historical = body.ended_at is not None
+    if is_historical and body.ended_at < new_started_at:
+        # Same rule and wording as PATCH, so the two paths are one concept.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ended_at cannot be earlier than started_at",
+        )
+
     # Resolve replace_fronts: explicit value beats system default
     should_replace = (
-        body.replace_fronts if body.replace_fronts is not None else system.replace_fronts_default
+        not is_historical
+        and (
+            body.replace_fronts
+            if body.replace_fronts is not None
+            else system.replace_fronts_default
+        )
     )
     if should_replace:
         open_fronts = await db.execute(
@@ -606,7 +625,7 @@ async def create_front(
         )
         for f in open_fronts.scalars().all():
             f.ended_at = new_started_at
-    else:
+    elif not is_historical:
         # Block exact-set duplicates: if an open front already has this exact
         # member set, two fronts with the same composition has no useful
         # semantics (notifications, current-front queries, etc. would treat
@@ -636,6 +655,7 @@ async def create_front(
         id=front_id,
         system_id=system.id,
         started_at=new_started_at,
+        ended_at=body.ended_at,
         custom_status=(
             encrypt(body.custom_status, aad=front_custom_status_aad(front_id))
             if body.custom_status
