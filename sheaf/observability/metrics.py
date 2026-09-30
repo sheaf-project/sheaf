@@ -357,6 +357,19 @@ notifications_dispatched_total = _C(
     "Notification outbox rows reaching a terminal disposition.",
     ["channel_type", "outcome"],
 )
+notifications_channels_disabled_total = _C(
+    "sheaf_notifications_channels_disabled_total",
+    "Channels the dispatcher switched off, by reason. Incremented after the "
+    "state change is committed, so this counts what actually happened, not "
+    "what a log line claimed.",
+    ["channel_type", "reason"],
+)
+notifications_dispatcher_errors_total = _C(
+    "sheaf_notifications_dispatcher_errors_total",
+    "Outbox rows whose processing raised instead of reaching a disposition. "
+    "Every one of these is also logged with its traceback; a non-zero rate "
+    "means rows are being re-claimed rather than delivered or dropped.",
+)
 notifications_dispatch_duration_seconds = _H(
     "sheaf_notifications_dispatch_duration_seconds",
     "Per-channel dispatch handler runtime.",

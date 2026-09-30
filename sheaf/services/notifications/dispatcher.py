@@ -22,6 +22,7 @@ from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,9 +38,11 @@ from sheaf.models.notification_channel import (
 )
 from sheaf.models.notification_outbox import NotificationOutboxRow
 from sheaf.observability.metrics import (
+    notifications_channels_disabled_total,
     notifications_dispatch_duration_seconds,
     notifications_dispatch_lag_seconds,
     notifications_dispatched_total,
+    notifications_dispatcher_errors_total,
 )
 from sheaf.services.activity_log import log_activity
 from sheaf.services.members import member_name_plaintext
@@ -99,22 +102,19 @@ async def _disable_channel(
     """
     channel.destination_state = DestinationState.DISABLED.value
     channel.disabled_reason = reason.value
-
-    owner_user_id, _ = await _resolve_channel_owner(db, channel)
-    if owner_user_id is not None:
-        await log_activity(
-            db,
-            user_id=owner_user_id,
-            action=ActivityAction.NOTIFICATION_CHANNEL_DISABLED,
-            actor_type=ActivityActorType.SYSTEM,
-            target_label=channel.name,
-            detail={
-                "channel_type": channel_type,
-                "reason": reason.value,
-                "consecutive_failures": channel.consecutive_failures,
-            },
-        )
-
+    # Switching the channel off is the point; telling the owner is the bonus.
+    # The switch-off lands in its own commit BEFORE anything else is
+    # attempted, so nothing downstream can undo it. This used to ride the
+    # caller's next commit, and when the activity-log write below failed
+    # (its enum value had never been migrated) the failure rolled the
+    # switch-off back with it, on every tick, for days: a logging concern had
+    # veto power over a safety mechanism. The log line and the metric come
+    # after the commit for the same reason, so both report what happened
+    # rather than what was about to be tried.
+    await db.commit()
+    notifications_channels_disabled_total.labels(
+        channel_type=channel_type, reason=reason.value,
+    ).inc()
     logger.warning(
         "notification channel disabled: channel=%s type=%s reason=%s "
         "failures=%s error=%s",
@@ -124,6 +124,35 @@ async def _disable_channel(
         channel.consecutive_failures,
         detail,
     )
+
+    owner_user_id, _ = await _resolve_channel_owner(db, channel)
+    if owner_user_id is None:
+        return
+    # A savepoint, so a failed activity write is undone on its own and the
+    # session stays usable for the caller's own commit (the outbox row's
+    # terminal state). Logged rather than raised: the owner not getting the
+    # entry is a real loss, but not one worth stranding the row for.
+    try:
+        async with db.begin_nested():
+            await log_activity(
+                db,
+                user_id=owner_user_id,
+                action=ActivityAction.NOTIFICATION_CHANNEL_DISABLED,
+                actor_type=ActivityActorType.SYSTEM,
+                target_label=channel.name,
+                detail={
+                    "channel_type": channel_type,
+                    "reason": reason.value,
+                    "consecutive_failures": channel.consecutive_failures,
+                },
+            )
+        await db.commit()
+    except SQLAlchemyError:
+        logger.exception(
+            "notification channel %s was disabled, but the owner's "
+            "activity-log entry could not be written",
+            channel.id,
+        )
 
 
 def _semaphores() -> dict[str, asyncio.Semaphore]:
@@ -190,7 +219,36 @@ async def _tick(sems: dict[str, asyncio.Semaphore]) -> None:
             return
         # Process rows concurrently, bounded by per-destination semaphores.
         tasks = [_process_row(row.id, sems) for row in rows]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        _report_row_failures([row.id for row in rows], results)
+
+
+def _report_row_failures(row_ids: list[uuid.UUID], results: list) -> None:
+    """Say which rows raised, with their tracebacks, and count them.
+
+    `gather(return_exceptions=True)` keeps one bad row from cancelling the
+    rest of the batch, which is right, but it also hands the exceptions back
+    as plain return values, and for a long time nothing looked at them. A row
+    that raises is neither delivered nor dropped: it stays pending, its lease
+    expires, and it is re-claimed next time, so a persistent failure here is
+    a row the dispatcher will retry forever while the logs show nothing. Every
+    such result is now logged with its traceback and counted, so "the
+    dispatcher is throwing" is both greppable and alertable.
+
+    A cancellation is not a row failure; it is re-raised so the tick and the
+    loop above it see it as the shutdown it is.
+    """
+    for row_id, result in zip(row_ids, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            notifications_dispatcher_errors_total.inc()
+            logger.error(
+                "notification outbox row %s raised during processing; it "
+                "stays pending and will be re-claimed when its lease expires",
+                row_id,
+                exc_info=result,
+            )
 
 
 async def _claim_batch(
