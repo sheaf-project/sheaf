@@ -41,6 +41,7 @@ dependencies = [
     # commonmark preset does not, so images hidden in footnotes would bypass
     # the image rails without this plugin (see markdown_images.py).
     "mdit-py-plugins>=0.4.0",
+    "webauthn>=3.0.1",
 ]
 
 [project.optional-dependencies]
