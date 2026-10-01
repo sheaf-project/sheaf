@@ -289,6 +289,11 @@ Use this for preferences that should sync across devices running the same client
 | POST | `/auth/totp/verify` | Verify code to enable TOTP |
 | POST | `/auth/totp/disable` | Disable TOTP (requires password + code) |
 | POST | `/auth/totp/regenerate-recovery-codes` | New recovery codes (requires TOTP code) |
+| GET | `/auth/passkeys` | List enrolled passkeys (404 when the instance cannot offer passkeys; API keys refused) |
+| POST | `/auth/passkeys/register/begin` | Start passkey enrolment (requires `{"password": ..., "totp_code"?: ...}`; returns `{"options": <PublicKeyCredentialCreationOptions JSON>}`) |
+| POST | `/auth/passkeys/register/complete` | Finish enrolment (`{"credential": <PublicKeyCredential.toJSON()>, "nickname"?: ...}`) |
+| PATCH | `/auth/passkeys/{id}` | Rename a passkey |
+| DELETE | `/auth/passkeys/{id}` | Remove a passkey (never password-gated; the last one may go, the password remains) |
 | GET | `/auth/keys` | List API keys |
 | POST | `/auth/keys` | Create API key |
 | DELETE | `/auth/keys/{id}` | Revoke API key |

@@ -58,6 +58,10 @@ class SecurityEventType(enum.StrEnum):
     EMAIL_CHANGE = "email_change"
     TOTP_ENROLL = "totp_enroll"
     TOTP_DISABLE = "totp_disable"
+    # Passkey enrolment: the step-up outcomes (password_incorrect,
+    # totp_required, totp_invalid) and the ceremony outcomes
+    # (challenge_invalid, verification_failed, duplicate, success).
+    PASSKEY_ENROLL = "passkey_enroll"
     RECOVERY_CODES_REGEN = "recovery_codes_regen"
     ACCOUNT_DELETION = "account_deletion"
     # One-way account state change that unlocks publishing; the refresh-token

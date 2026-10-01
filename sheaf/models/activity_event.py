@@ -53,6 +53,8 @@ class ActivityAction(enum.StrEnum):
     EMAIL_CHANGED = "email_changed"
     TOTP_ENABLED = "totp_enabled"
     TOTP_DISABLED = "totp_disabled"
+    PASSKEY_ADDED = "passkey_added"
+    PASSKEY_REMOVED = "passkey_removed"
     RECOVERY_CODES_REGENERATED = "recovery_codes_regenerated"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"

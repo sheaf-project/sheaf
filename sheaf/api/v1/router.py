@@ -26,6 +26,7 @@ from sheaf.api.v1 import (
     messages,
     notification_channels,
     notifications_public,
+    passkeys,
     pk_import,
     pluralport_import,
     pluralspace_import,
@@ -62,6 +63,9 @@ v1_router.include_router(shield_mode.router)
 
 # Auth, admin, announcements: no scope enforcement
 v1_router.include_router(auth.router)
+# Passkey enrolment and management. Refuses API keys inline on every route
+# and 404s wholesale when the instance cannot offer passkeys.
+v1_router.include_router(passkeys.router)
 v1_router.include_router(admin.router)
 # Admin audit log: per-endpoint admin gate on the admin listings;
 # the user-facing /auth/admin-activity is self-only.

@@ -35,6 +35,7 @@ from sheaf.models.api_key import ApiKey
 from sheaf.models.client_settings import ClientSettings
 from sheaf.models.email_suppression import EmailSuppression
 from sheaf.models.notification_channel import NotificationChannel
+from sheaf.models.passkey_credential import PasskeyCredential
 from sheaf.models.pending_action import PendingAction, PendingActionStatus
 from sheaf.models.retention_trim_notice import RetentionTrimNotice
 from sheaf.models.safety_change_request import (
@@ -215,6 +216,11 @@ async def get_account_data(
     )
     trusted_devices = trusted_devices_result.scalars().all()
 
+    passkeys_result = await db.execute(
+        select(PasskeyCredential).where(PasskeyCredential.user_id == user.id)
+    )
+    passkeys = passkeys_result.scalars().all()
+
     # Security event log for this account. Bounded by the retention
     # window, but a stuffing victim can accumulate many failed-login
     # rows, so cap at a generous newest-first slice rather than risk a
@@ -380,6 +386,26 @@ async def get_account_data(
                 "expires_at": _iso(d.expires_at),
             }
             for d in trusted_devices
+        ],
+        # Passkeys the account has enrolled. Metadata only: the public key
+        # is not personal data in any useful sense and the credential id is
+        # an opaque handle, so neither is listed; what the user is owed is
+        # "which keys exist, since when, last used from where".
+        "passkeys": [
+            {
+                "id": str(p.id),
+                "nickname": p.nickname,
+                "rp_id": p.rp_id,
+                "transports": list(p.transports or []),
+                "aaguid": str(p.aaguid) if p.aaguid else None,
+                "backup_eligible": p.backup_eligible,
+                "backup_state": p.backup_state,
+                "created_ip": p.created_ip,
+                "created_at": _iso(p.created_at),
+                "last_used_at": _iso(p.last_used_at),
+                "last_used_ip": p.last_used_ip,
+            }
+            for p in passkeys
         ],
         "api_keys": [
             {
