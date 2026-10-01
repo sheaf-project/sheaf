@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { apiFetch } from "@/lib/api-client";
 import { patchWebSettings } from "@/lib/client-settings";
-import { ChevronDown, ChevronRight, History, Infinity as InfinityIcon, ListOrdered, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, History, Infinity as InfinityIcon, ListOrdered, Pencil, Plus } from "lucide-react";
 import {
   useCurrentFronts,
   useFronts,
@@ -13,6 +13,7 @@ import {
 } from "@/hooks/use-fronts";
 import { useMembers } from "@/hooks/use-members";
 import { PageHeader } from "@/components/page-header";
+import { AddFrontEntryDialog } from "@/components/add-front-entry-dialog";
 import { ColorDot } from "@/components/color-dot";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { EditFrontDialog } from "@/components/edit-front-dialog";
@@ -165,6 +166,7 @@ export function FrontsPage() {
   const [showStart, setShowStart] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [editing, setEditing] = useState<Front | null>(null);
+  const [addingEntry, setAddingEntry] = useState(false);
   const [expandedHistory, setExpandedHistory] = useState<Set<string>>(
     new Set(),
   );
@@ -307,6 +309,15 @@ export function FrontsPage() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">History</h2>
         <div className="flex items-center gap-2 text-sm">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={() => setAddingEntry(true)}
+          >
+            <Plus className="size-3.5 mr-1" />
+            Add entry
+          </Button>
           {isPaged && total > 0 && (
             <span className="text-muted-foreground">
               {total} {total === 1 ? "entry" : "entries"}
@@ -465,6 +476,11 @@ export function FrontsPage() {
       )}
 
       <StartFrontDialog open={showStart} onOpenChange={setShowStart} />
+
+      <AddFrontEntryDialog
+        open={addingEntry}
+        onOpenChange={setAddingEntry}
+      />
 
       <EditFrontDialog
         front={editing}

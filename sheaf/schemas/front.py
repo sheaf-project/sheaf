@@ -7,6 +7,20 @@ from pydantic import BaseModel, field_validator
 class FrontCreate(BaseModel):
     member_ids: list[uuid.UUID]
     started_at: datetime | None = None
+    # Setting this creates a CLOSED entry: a piece of history being recorded
+    # after the fact, rather than a switch happening now. It is what makes
+    # back-dating safe. A closed entry cannot be the current front, so the
+    # server skips both of the behaviours that exist to manage the live
+    # roster - auto-ending whatever is fronting (`replace_fronts`) and
+    # refusing a duplicate open member set - and writes the row alone.
+    #
+    # Without it, back-dating means POSTing an open front and PATCHing it
+    # closed, which is not the same thing: between the two calls the entry
+    # IS the current front, so with `replace_fronts_default` on (the
+    # default) the POST ends whoever is really fronting and back-dates
+    # their end to the historical timestamp. `replace_fronts` is ignored
+    # when this is set.
+    ended_at: datetime | None = None
     replace_fronts: bool | None = None  # None = use system's replace_fronts_default
     custom_status: str | None = None
 

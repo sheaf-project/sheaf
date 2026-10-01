@@ -64,10 +64,15 @@ export function useCreateFront() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: FrontCreate) => api.createFront(data),
-    onSuccess: () => {
+    onSuccess: (_result, variables) => {
       qc.invalidateQueries({ queryKey: frontKeys.all });
       qc.invalidateQueries({ queryKey: frontKeys.current });
-      toast.success("Front started");
+      // An entry created with an end time is history being recorded, not a
+      // switch: saying "Front started" there would claim something the
+      // request deliberately did not do.
+      toast.success(
+        variables.ended_at ? "History entry added" : "Front started",
+      );
     },
   });
 }
