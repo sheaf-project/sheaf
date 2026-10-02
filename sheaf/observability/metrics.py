@@ -58,6 +58,14 @@ LoginOutcome = Literal[
     # login outcomes even though nothing was wrong with the password.
     "account_suspended",
     "account_banned",
+    # Passkey sign-in. `passkey` is the success; the three refusals are what
+    # an assertion can fail on once it has reached the server at all. Every
+    # other refusal (locked, suspended, banned, captcha) reuses the label
+    # above, because the account-standing gates are shared with login.
+    "passkey",
+    "passkey_unknown_credential",
+    "passkey_invalid",
+    "passkey_rp_mismatch",
 ]
 PasswordResetStage = Literal["requested", "completed", "expired", "abandoned"]
 EmailVerificationOutcome = Literal["sent", "completed", "expired", "resend_blocked"]
@@ -1332,6 +1340,12 @@ def prewarm_metrics() -> None:
         "captcha_failed",
         "email_unverified",
         "email_revalidation_required",
+        "account_suspended",
+        "account_banned",
+        "passkey",
+        "passkey_unknown_credential",
+        "passkey_invalid",
+        "passkey_rp_mismatch",
     ):
         auth_logins_total.labels(outcome=outcome).inc(0)
 

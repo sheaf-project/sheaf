@@ -8,7 +8,9 @@ byte the server checks is constructible here on purpose, so the negative
 tests can flip one thing at a time: the user-verification flag, the origin,
 the RP ID hash, the challenge.
 
-Sign-in (assertion) support is added when that ceremony lands.
+`get` answers a `PublicKeyCredentialRequestOptions` the same way for sign-in,
+signing with the private key, with the same per-field dishonesty switches
+plus a pinnable sign counter.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import struct
 from dataclasses import dataclass, field
 
 import cbor2
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
 # Authenticator data flag bits (WebAuthn 6.1).
@@ -138,6 +141,69 @@ class SoftwareAuthenticator:
                 "clientDataJSON": b64url(client_data),
                 "attestationObject": b64url(attestation_object),
                 "transports": list(self.transports),
+            },
+            "clientExtensionResults": {},
+        }
+
+    def get(
+        self,
+        options: dict,
+        *,
+        origin: str | None = None,
+        rp_id: str | None = None,
+        challenge: str | None = None,
+        user_verified: bool = True,
+        backup_eligible: bool = False,
+        backup_state: bool = False,
+        sign_count: int | None = None,
+        user_handle: bytes | None = None,
+        tamper_signature: bool = False,
+    ) -> dict:
+        """Answer request options the way a browser would: sign the
+        authenticator data plus the client-data hash with the private key.
+
+        Each call bumps the sign counter unless `sign_count` pins it, which
+        the counter-regression tests and the synced-passkey (always zero)
+        tests both need.
+        """
+        rp_id = rp_id or options["rpId"]
+        origin = origin or self._origin_for(rp_id)
+        challenge = challenge or options["challenge"]
+        if sign_count is None:
+            self.sign_count += 1
+        else:
+            self.sign_count = sign_count
+        client_data = json.dumps(
+            {
+                "type": "webauthn.get",
+                "challenge": challenge,
+                "origin": origin,
+                "crossOrigin": False,
+            }
+        ).encode()
+        auth_data = self.authenticator_data(
+            rp_id,
+            user_verified=user_verified,
+            backup_eligible=backup_eligible,
+            backup_state=backup_state,
+            include_credential=False,
+        )
+        signature = self.private_key.sign(
+            auth_data + hashlib.sha256(client_data).digest(),
+            ec.ECDSA(hashes.SHA256()),
+        )
+        if tamper_signature:
+            signature = signature[:-1] + bytes([signature[-1] ^ 0x01])
+        return {
+            "id": b64url(self.credential_id),
+            "rawId": b64url(self.credential_id),
+            "type": "public-key",
+            "authenticatorAttachment": "cross-platform",
+            "response": {
+                "clientDataJSON": b64url(client_data),
+                "authenticatorData": b64url(auth_data),
+                "signature": b64url(signature),
+                "userHandle": b64url(user_handle) if user_handle else None,
             },
             "clientExtensionResults": {},
         }
