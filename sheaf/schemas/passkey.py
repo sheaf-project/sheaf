@@ -49,3 +49,16 @@ class PasskeyRead(BaseModel):
     last_used_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class PasskeySignInBeginResponse(BaseModel):
+    # The exact object `navigator.credentials.get({publicKey})` takes, in
+    # JSON encoding. No allowCredentials: the browser offers what it holds.
+    options: dict
+
+
+class PasskeySignInComplete(BaseModel):
+    # `PublicKeyCredential.toJSON()` from `navigator.credentials.get()`.
+    credential: dict
+    # Same captcha rule as password login, when the instance has one.
+    captcha: str | None = None
