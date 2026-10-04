@@ -1,8 +1,9 @@
-"""Passkey enrolment and management: `/v1/auth/passkeys`.
+"""Passkeys: `/v1/auth/passkeys`.
 
-Sign-in is not here yet; this is the half where an account gains and
-manages the credentials, and nothing on this router can get anyone into an
-account. The rules it enforces, from the passkey design:
+Two halves. Enrolment and management (authenticated) is where an account
+gains, lists, renames and removes credentials. Sign-in (unauthenticated) is
+where a credential gets someone into the account. The rules, from the
+passkey design:
 
 * Every endpoint 404s when the availability rule says the instance cannot
   offer passkeys (no https base URL, or a refused RP override). "Not
@@ -15,6 +16,13 @@ account. The rules it enforces, from the passkey design:
   the password always remains, so there is no lockout to interlock against.
 * API keys are refused throughout. A leaked key of any scope must not be
   able to mint a credential that signs in, nor list which ones exist.
+* Sign-in takes no email and no body at `begin`: the credential is
+  discoverable, so there is nothing to enumerate. It honours an existing
+  lockout and the suspended/banned refusals exactly as login does, reaches a
+  session only through login's own success path, and never feeds the
+  lockout counter: a signature is not brute-forceable, and counting failures
+  would let anyone holding a credential id lock its owner out of their
+  password.
 """
 
 from __future__ import annotations
@@ -22,24 +30,35 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# The recovery-code check is the one login and change-password use; the
-# step-up here has to accept exactly what they accept, so it is borrowed
-# rather than copied.
-from sheaf.api.v1.auth import _check_recovery_code
+# Borrowed from the login module rather than copied: the recovery-code check
+# is the one login and change-password accept, the account-standing refusal
+# is the one login applies, and `_finalise_login` is the only way a session
+# gets minted. A passkey must reach the account by exactly login's code.
+from sheaf.api.v1.auth import (
+    _account_standing_refusal,
+    _check_recovery_code,
+    _finalise_login,
+)
 from sheaf.auth.dependencies import get_current_user
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.passkey_ceremony import (
     PasskeyCeremonyError,
+    assertion_identity,
+    authentication_options,
     challenge_from_credential,
     registration_options,
     store_registration_challenge,
+    store_signin_challenge,
     take_registration_challenge,
+    take_signin_challenge,
+    verify_assertion,
     verify_enrolment,
 )
 from sheaf.auth.passkeys import RelyingParty, current_relying_party
@@ -54,14 +73,19 @@ from sheaf.models.passkey_credential import PasskeyCredential
 from sheaf.models.security_event import SecurityEventType
 from sheaf.models.system import System
 from sheaf.models.user import User
+from sheaf.observability.metrics import LoginOutcome, auth_logins_total
 from sheaf.request import client_ip
 from sheaf.schemas.passkey import (
     PasskeyRead,
     PasskeyRegisterBegin,
     PasskeyRegisterBeginResponse,
     PasskeyRegisterComplete,
+    PasskeySignInBeginResponse,
+    PasskeySignInComplete,
     PasskeyUpdate,
 )
+from sheaf.schemas.user import TokenResponse
+from sheaf.services import captcha
 from sheaf.services.activity_log import log_activity
 from sheaf.services.security_events import record_security_event
 
@@ -396,3 +420,207 @@ async def delete_passkey(
     )
     await db.delete(row)
     await db.commit()
+
+
+# --- sign-in -------------------------------------------------------------------
+
+_SIGNIN_FAILED_DETAIL = "Passkey sign-in failed. Try again, or sign in with your password."
+# Password login's own per-IP limits. The begin call is a Redis write, the
+# complete call one signature check, so there is no CPU to protect here; the
+# limits exist so the two surfaces are abused at the same rate.
+_SIGNIN_LIMITS = [
+    rate_limit(10, 60, fail_closed=True),
+    rate_limit(30, 3600, fail_closed=True),
+]
+
+
+@router.post(
+    "/sign-in/begin",
+    response_model=PasskeySignInBeginResponse,
+    dependencies=_SIGNIN_LIMITS,
+)
+async def sign_in_begin():
+    """Mint the options for a discoverable sign-in. No body, no account.
+
+    Deliberately takes nothing: the browser offers whichever credentials it
+    holds for this RP and the user picks one, so there is no email to type
+    and no "which credentials does this address have" question for the
+    server to answer. That question is a user-enumeration oracle, and the
+    cleanest mitigation is to never ask it.
+    """
+    rp = _relying_party()
+    start = authentication_options(rp=rp)
+    await store_signin_challenge(start.challenge)
+    return PasskeySignInBeginResponse(options=json.loads(start.options_json))
+
+
+@router.post(
+    "/sign-in/complete",
+    response_model=TokenResponse,
+    dependencies=_SIGNIN_LIMITS,
+)
+async def sign_in_complete(
+    body: PasskeySignInComplete,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify an assertion and sign the credential's owner in.
+
+    The gates mirror login's, in login's order where the two share a step:
+    captcha where configured, the lockout check honoured (never incremented),
+    the signature, then the suspended/banned refusal, and finally the one
+    shared success path. Every refusal that is about the credential answers
+    with the same generic 401, so a caller holding a guessed or stale
+    credential id learns nothing from the shape of the response; the
+    distinct outcomes exist for the metric and the security log.
+    """
+    rp = _relying_party()
+    event_ip = client_ip(request)
+    event_ua = request.headers.get("user-agent")
+
+    async def _refuse(
+        outcome: LoginOutcome,
+        user_id: uuid.UUID | None,
+        status_code: int,
+        detail: str,
+    ) -> None:
+        auth_logins_total.labels(outcome=outcome).inc()
+        await record_security_event(
+            event_type=SecurityEventType.LOGIN,
+            outcome=outcome,
+            user_id=user_id,
+            ip=event_ip,
+            user_agent=event_ua,
+            detail={"credential": "passkey"},
+        )
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    if captcha.required_for_login() and not captcha.verify(body.captcha):
+        await _refuse(
+            "captcha_failed",
+            None,
+            status.HTTP_400_BAD_REQUEST,
+            "Captcha verification failed",
+        )
+
+    try:
+        identity = assertion_identity(body.credential)
+    except PasskeyCeremonyError as exc:
+        await _refuse("passkey_invalid", None, status.HTTP_400_BAD_REQUEST, exc.detail)
+
+    if not await take_signin_challenge(identity.challenge):
+        await _refuse(
+            "passkey_invalid",
+            None,
+            status.HTTP_400_BAD_REQUEST,
+            "That sign-in has expired or was already used. Try again.",
+        )
+
+    row = await db.scalar(
+        select(PasskeyCredential).where(
+            PasskeyCredential.credential_id == identity.credential_id
+        )
+    )
+    user = await db.get(User, row.user_id) if row is not None else None
+    if row is None or user is None:
+        await _refuse(
+            "passkey_unknown_credential",
+            None,
+            status.HTTP_401_UNAUTHORIZED,
+            _SIGNIN_FAILED_DETAIL,
+        )
+
+    # Honour an existing lock, as login does before it touches the
+    # credential. Nothing on this path ever creates one.
+    try:
+        ensure_not_locked(user)
+    except HTTPException:
+        auth_logins_total.labels(outcome="locked").inc()
+        await record_security_event(
+            event_type=SecurityEventType.LOGIN,
+            outcome="locked",
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+            detail={"credential": "passkey"},
+        )
+        raise
+
+    if row.rp_id != rp.rp_id:
+        # A credential from before a domain move. A real browser never
+        # offers one of these for the current RP ID, so reaching here means
+        # something other than a browser; verification would fail anyway on
+        # the RP hash. Distinct label, same generic answer.
+        await _refuse(
+            "passkey_rp_mismatch",
+            user.id,
+            status.HTTP_401_UNAUTHORIZED,
+            _SIGNIN_FAILED_DETAIL,
+        )
+
+    try:
+        verified = verify_assertion(
+            credential=body.credential,
+            expected_challenge=identity.challenge,
+            rp=rp,
+            public_key=row.public_key,
+            stored_sign_count=row.sign_count,
+        )
+    except PasskeyCeremonyError:
+        await _refuse(
+            "passkey_invalid",
+            user.id,
+            status.HTTP_401_UNAUTHORIZED,
+            _SIGNIN_FAILED_DETAIL,
+        )
+
+    refusal = _account_standing_refusal(user)
+    if refusal is not None:
+        standing_outcome, standing_exc = refusal
+        auth_logins_total.labels(outcome=standing_outcome).inc()
+        await record_security_event(
+            event_type=SecurityEventType.LOGIN,
+            outcome=standing_outcome,
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+            detail={"credential": "passkey"},
+        )
+        raise standing_exc
+
+    if verified.sign_count_regressed:
+        # A hardware key whose counter went backwards may have been cloned.
+        # Logged for the operator and the account's own security timeline,
+        # not fatal: refusing the legitimate owner on a heuristic that synced
+        # passkeys trip by design is the wrong trade. See verify_assertion.
+        logger.warning(
+            "passkey sign counter regressed: user=%s credential=%s stored=%s received=%s ip=%s",
+            user.id,
+            row.id,
+            row.sign_count,
+            verified.new_sign_count,
+            event_ip,
+        )
+        await record_security_event(
+            event_type=SecurityEventType.LOGIN,
+            outcome="passkey_counter_regressed",
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=event_ua,
+            detail={
+                "credential": "passkey",
+                "passkey_id": str(row.id),
+                "stored_sign_count": row.sign_count,
+                "received_sign_count": verified.new_sign_count,
+            },
+        )
+
+    # Rides the commit inside _finalise_login, so a Redis failure that rolls
+    # the session back rolls the usage stamp back with it.
+    row.sign_count = verified.new_sign_count
+    row.backup_state = verified.backup_state
+    row.last_used_at = datetime.now(UTC)
+    row.last_used_ip = event_ip
+
+    return await _finalise_login(db, user, request, response, outcome="passkey")

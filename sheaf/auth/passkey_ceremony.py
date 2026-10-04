@@ -28,10 +28,16 @@ import base64
 import uuid
 from dataclasses import dataclass
 
-from webauthn import generate_registration_options, verify_registration_response
+from webauthn import (
+    generate_authentication_options,
+    generate_registration_options,
+    verify_authentication_response,
+    verify_registration_response,
+)
 from webauthn.helpers import (
     base64url_to_bytes,
     options_to_json,
+    parse_authentication_credential_json,
     parse_client_data_json,
     parse_registration_credential_json,
 )
@@ -58,6 +64,7 @@ RP_NAME = "Sheaf"
 CHALLENGE_TTL_SECONDS = 300
 
 _REGISTRATION_KEY_PREFIX = "sheaf:passkey:reg:"
+_SIGNIN_KEY_PREFIX = "sheaf:passkey:auth:"
 
 
 class PasskeyCeremonyError(Exception):
@@ -70,9 +77,9 @@ class PasskeyCeremonyError(Exception):
         self.detail = detail
 
 
-def _challenge_key(challenge: bytes) -> str:
+def _challenge_key(challenge: bytes, prefix: str = _REGISTRATION_KEY_PREFIX) -> str:
     token = base64.urlsafe_b64encode(challenge).rstrip(b"=").decode()
-    return f"{_REGISTRATION_KEY_PREFIX}{token}"
+    return f"{prefix}{token}"
 
 
 async def store_registration_challenge(challenge: bytes, user_id: uuid.UUID) -> None:
@@ -230,3 +237,124 @@ def verify_enrolment(
 
 def credential_id_from_b64url(value: str) -> bytes:
     return base64url_to_bytes(value)
+
+
+# --- sign-in -------------------------------------------------------------------
+
+
+async def store_signin_challenge(challenge: bytes) -> None:
+    """Remember a freshly minted sign-in challenge.
+
+    Nobody is signed in yet, so there is no account to bind it to; the
+    credential the browser answers with names the account. Single-use and
+    short-lived all the same, and fail closed on a Redis error.
+    """
+    from sheaf.auth.sessions import get_redis
+
+    r = await get_redis()
+    await r.set(_challenge_key(challenge, _SIGNIN_KEY_PREFIX), "1", ex=CHALLENGE_TTL_SECONDS)
+
+
+async def take_signin_challenge(challenge: bytes) -> bool:
+    """Consume a sign-in challenge. True exactly once per issued challenge."""
+    from sheaf.auth.sessions import get_redis
+
+    r = await get_redis()
+    return bool(await r.getdel(_challenge_key(challenge, _SIGNIN_KEY_PREFIX)))
+
+
+@dataclass(frozen=True, slots=True)
+class SignInStart:
+    options_json: str
+    challenge: bytes
+
+
+def authentication_options(*, rp: RelyingParty) -> SignInStart:
+    """Mint the `navigator.credentials.get()` options for a sign-in.
+
+    No `allowCredentials`: the sign-in is discoverable, so the browser offers
+    whatever credentials it holds for this RP and the user picks. That is
+    what lets the begin endpoint take no body, which in turn is what keeps
+    it from being an account-enumeration oracle. User verification is
+    required here as at enrolment; it is asserted again on the response.
+    """
+    options = generate_authentication_options(
+        rp_id=rp.rp_id,
+        user_verification=UserVerificationRequirement.REQUIRED,
+        timeout=CHALLENGE_TTL_SECONDS * 1000,
+    )
+    return SignInStart(
+        options_json=options_to_json(options), challenge=bytes(options.challenge)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AssertionIdentity:
+    """What a sign-in response claims before anything is verified: which
+    challenge it answers and which credential signed it. Both are needed to
+    look things up; neither is trusted until `verify_assertion` passes."""
+
+    challenge: bytes
+    credential_id: bytes
+
+
+def assertion_identity(credential: dict) -> AssertionIdentity:
+    try:
+        parsed = parse_authentication_credential_json(credential)
+        client_data = parse_client_data_json(parsed.response.client_data_json)
+    except WebAuthnException as exc:
+        raise PasskeyCeremonyError("malformed", "That passkey response could not be read.") from exc
+    return AssertionIdentity(
+        challenge=bytes(client_data.challenge), credential_id=bytes(parsed.raw_id)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedAssertion:
+    new_sign_count: int
+    backup_state: bool
+    # True when the stored count was above zero and the response did not
+    # exceed it. Logged by the caller, never fatal: see `verify_assertion`.
+    sign_count_regressed: bool
+
+
+def verify_assertion(
+    *,
+    credential: dict,
+    expected_challenge: bytes,
+    rp: RelyingParty,
+    public_key: bytes,
+    stored_sign_count: int,
+) -> VerifiedAssertion:
+    """Verify a sign-in response against the stored credential, requiring
+    user verification.
+
+    The signature counter is deliberately not enforced by the library. Synced
+    passkeys (phone keychains, password managers) report zero forever, so a
+    strict "must exceed stored" rule would reject every real passkey on its
+    second use. A regression is only meaningful when the stored count was
+    above zero, which this reports and the caller logs; a cloned hardware key
+    is a real signal, but refusing the legitimate owner because of it is not
+    a trade this product makes.
+    """
+    try:
+        verified = verify_authentication_response(
+            credential=parse_authentication_credential_json(credential),
+            expected_challenge=expected_challenge,
+            expected_rp_id=rp.rp_id,
+            expected_origin=rp.origin,
+            credential_public_key=public_key,
+            credential_current_sign_count=0,
+            require_user_verification=True,
+        )
+    except WebAuthnException as exc:
+        raise PasskeyCeremonyError(
+            "verification_failed", "That passkey could not be verified."
+        ) from exc
+
+    new_count = int(verified.new_sign_count)
+    return VerifiedAssertion(
+        new_sign_count=new_count,
+        backup_state=bool(verified.credential_backed_up),
+        sign_count_regressed=(stored_sign_count > 0 and new_count <= stored_sign_count),
+    )
