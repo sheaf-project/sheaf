@@ -469,3 +469,36 @@ def _security_txt_body() -> str:
 @app.get("/security.txt", include_in_schema=False)
 async def security_txt() -> PlainTextResponse:
     return PlainTextResponse(_security_txt_body(), media_type="text/plain; charset=utf-8")
+
+
+# App-to-site association documents for native passkey clients. Both are
+# public by specification and built from operator settings; with nothing
+# configured the route 404s, so an instance that vouches for no app publishes
+# no document. Reverse proxies must route these two exact paths to the
+# backend (the AIO Caddyfile and the examples in docs/SELFHOSTING.md do), by
+# exact path rather than /.well-known/* so ACME challenges stay with whatever
+# issues the certificate. Cached briefly: the platforms fetch them at ceremony
+# time and a changed setting needs a restart anyway.
+_ASSOCIATION_CACHE = {"Cache-Control": "public, max-age=3600"}
+
+
+@app.get("/.well-known/assetlinks.json", include_in_schema=False)
+async def android_assetlinks() -> JSONResponse:
+    from sheaf.auth.app_associations import assetlinks_document, parse_android_apps
+
+    apps, _ = parse_android_apps(settings.passkey_android_apps)
+    if not apps:
+        raise StarletteHTTPException(status_code=404, detail="Not Found")
+    return JSONResponse(assetlinks_document(apps), headers=_ASSOCIATION_CACHE)
+
+
+@app.get("/.well-known/apple-app-site-association", include_in_schema=False)
+async def apple_app_site_association() -> JSONResponse:
+    from sheaf.auth.app_associations import apple_association_document, parse_ios_apps
+
+    apps, _ = parse_ios_apps(settings.passkey_ios_apps)
+    if not apps:
+        raise StarletteHTTPException(status_code=404, detail="Not Found")
+    # Apple requires application/json with no redirects; JSONResponse gives
+    # the former and this route is served directly for the latter.
+    return JSONResponse(apple_association_document(apps), headers=_ASSOCIATION_CACHE)

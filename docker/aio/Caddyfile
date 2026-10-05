@@ -59,7 +59,13 @@
 	# exactly on purpose: /.well-known/* as a prefix would also capture
 	# /.well-known/acme-challenge/*, and that belongs to Caddy's own certificate
 	# issuance, which is the entire reason this image uses Caddy.
-	@backend path /v1/* /health /.well-known/security.txt /security.txt
+	#
+	# The two app-association documents (Android assetlinks.json, Apple
+	# apple-app-site-association) are the same story: served by the backend
+	# from PASSKEY_ANDROID_APPS / PASSKEY_IOS_APPS so native apps may use this
+	# instance's passkeys, 404 when neither is set, and matched by exact path
+	# for the same ACME reason.
+	@backend path /v1/* /health /.well-known/security.txt /security.txt /.well-known/assetlinks.json /.well-known/apple-app-site-association
 	handle @backend {
 		reverse_proxy 127.0.0.1:8000
 	}
