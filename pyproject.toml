@@ -42,6 +42,7 @@ dependencies = [
     # the image rails without this plugin (see markdown_images.py).
     "mdit-py-plugins>=0.4.0",
     "webauthn>=3.0.1",
+    "publicsuffixlist>=1.0.2.20261003",
 ]
 
 [project.optional-dependencies]

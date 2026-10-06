@@ -305,6 +305,25 @@ def test_a_counter_regression_signs_in_and_is_logged(client: httpx.Client):
     assert "passkey_counter_regressed" in outcomes
 
 
+def test_the_stored_counter_is_a_high_water_mark(client: httpx.Client):
+    # A regressed value is logged but must not replace the stored baseline:
+    # if 3 replaced 5, a later 4 would look like an ordinary increment and
+    # the second regression would go unnoticed.
+    _, authenticator, _ = _register_with_passkey()
+    assert _sign_in(client, authenticator, sign_count=5).status_code == 200
+    assert _sign_in(client, authenticator, sign_count=3).status_code == 200
+    assert _sign_in(client, authenticator, sign_count=4).status_code == 200  # still below 5
+    final = _sign_in(client, authenticator, sign_count=6)  # finally above
+    assert final.status_code == 200, final.text
+
+    client.headers["Authorization"] = f"Bearer {final.json()['access_token']}"
+    data = client.post("/v1/account/data", json={"password": PASSWORD}).json()
+    regressions = [
+        e for e in data["security_events"] if e["outcome"] == "passkey_counter_regressed"
+    ]
+    assert len(regressions) == 2
+
+
 def test_a_synced_passkey_at_zero_signs_in_repeatedly(client: httpx.Client):
     _, authenticator, _ = _register_with_passkey()
     for _ in range(3):

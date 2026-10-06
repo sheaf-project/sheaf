@@ -150,7 +150,7 @@ Check `GET /v1/auth/config` first to determine:
 - `email_verification`: `"off"` or `"required"`
 - `email_enabled`: whether the server can send emails
 - `base_url`: the instance's base URL (e.g. `"https://sheaf.example.com"`) — use this for constructing web links (password reset, email verification). `null` if not configured.
-- `passkeys_available`: whether this instance can offer passkey sign-in and enrolment. Requires an `https` base URL (or a loopback one for local development). When `false`, `passkeys_unavailable_reason` carries a stable reason for the operator (`no_base_url`, `malformed_base_url`, `insecure_base_url`, `rp_id_invalid`, `rp_id_not_parent_of_host`) and clients should hide every passkey control.
+- `passkeys_available`: whether this instance can offer passkey sign-in and enrolment. Requires an `https` base URL (or a loopback one for local development). When `false`, `passkeys_unavailable_reason` carries a stable reason for the operator (`disabled` when the operator has not turned the feature on, otherwise `no_base_url`, `malformed_base_url`, `insecure_base_url`, `rp_id_invalid`, `rp_id_not_parent_of_host`, `rp_id_public_suffix`) and clients should hide every passkey control.
 
 If registration mode is `"approval"`, the account is created but inactive — the user sees a "pending approval" state until an admin approves them. If `"invite"`, an invite code is required.
 

@@ -47,8 +47,17 @@ class Front(UUIDMixin, Base):
 
     # Relationships
     system: Mapped["System"] = relationship(back_populates="fronts")
+    # Ordered explicitly because the association table has no position
+    # column and the compact fronters view promises a stable member order to
+    # clients that render the list exactly as it arrives. Without this the
+    # order is whatever the join happens to return, which can differ between
+    # two identical requests. Creation order with the id as a tiebreak is
+    # deterministic, roster-like, and needs no migration; if callers ever
+    # need to choose the order, that is an ordinal column, not a sort here.
     members: Mapped[list["Member"]] = relationship(
-        secondary=front_members, back_populates="fronts"
+        secondary=front_members,
+        back_populates="fronts",
+        order_by="Member.created_at, Member.id",
     )
 
     __table_args__ = (
