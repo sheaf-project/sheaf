@@ -417,12 +417,36 @@ reset_stack_state() {
     $COMPOSE exec -T redis redis-cli FLUSHALL >/dev/null || exit 1
 }
 
-# Remove whatever an earlier run left under this compose project before
+# Remove whatever an earlier run left under the named compose projects before
 # starting a new one. A run that was killed (Ctrl-C during a build, a closed
 # terminal) never reaches its EXIT trap, and `up` on the survivors reuses
 # them, data and all. Quick and quiet when there is nothing to remove.
+discard_stale_projects() {
+    local project
+    for project in "$@"; do
+        docker compose -p "$project" -f docker-compose.yml -f docker-compose.test.yml \
+            down -v --remove-orphans >/dev/null 2>&1 || true
+    done
+}
+
+# The compose projects whose stacks sit on a slot's port block. Slot s owns
+# "sheaf-test-s", and slot 1's block (8001/5433/6380) is also the classic
+# serial project's, so a stale stack of either blocks the other: a serial
+# run killed yesterday refused today's parallel run on "port 8001 in use",
+# because the parallel path only discarded its own project. Every discard
+# names every project on the block, so the port guard that follows only ever
+# sees a stranger, never one of ours.
+stale_projects_for_slot() {
+    local slot="$1"
+    echo "sheaf-test-$slot"
+    if [[ "$slot" -eq 1 ]]; then
+        echo "sheaf-test"
+    fi
+}
+
 discard_stale_stack() {
-    $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
+    # Serial: the classic project, plus parallel slot 1 which shares its ports.
+    discard_stale_projects $(stale_projects_for_slot 1)
 }
 
 # Refuse to start a stack whose host ports something else already holds.
@@ -544,7 +568,7 @@ run_slot() {
     trap '$COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
     trap 'exit 143' INT TERM
 
-    discard_stale_stack
+    discard_stale_projects $(stale_projects_for_slot "$slot")
 
     local cfg safe
     for cfg in "${configs[@]}"; do
@@ -659,14 +683,13 @@ else
     }
     trap on_interrupt INT TERM
 
-    # Clear every slot's leftovers and check its port block up front, before
-    # the build: a slot that would fail on a port bind should say so now, in
-    # one line, not minutes later from inside a config's captured output.
-    # (run_slot discards again on its own; that is the belt to this brace.)
+    # Clear every slot's leftovers (including the serial project that shares
+    # slot 1's ports) and check its port block up front, before the build: a
+    # slot that would fail on a port bind should say so now, in one line, not
+    # minutes later from inside a config's captured output. (run_slot
+    # discards again on its own; that is the belt to this brace.)
     for ((s = 1; s <= JOBS; s++)); do
-        docker compose -p "sheaf-test-$s" \
-            -f docker-compose.yml -f docker-compose.test.yml \
-            down -v --remove-orphans >/dev/null 2>&1 || true
+        discard_stale_projects $(stale_projects_for_slot "$s")
         require_free_ports "slot $s" $((8000 + s)) $((5432 + s)) $((6379 + s))
     done
 
