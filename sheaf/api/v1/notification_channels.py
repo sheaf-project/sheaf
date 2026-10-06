@@ -606,8 +606,14 @@ async def update_channel(
         v = getattr(body, field)
         if v is not None:
             setattr(channel, field, v)
-    if body.quiet_hours is not None:
-        channel.quiet_hours = body.quiet_hours.model_dump()
+    # quiet_hours is the one genuinely nullable field here: an explicit null
+    # means "clear the window", so presence in the body is what matters, not
+    # the value. Checking the value treated the clear as an omission and
+    # answered 200 with the window still set.
+    if "quiet_hours" in body.model_fields_set:
+        channel.quiet_hours = (
+            body.quiet_hours.model_dump() if body.quiet_hours is not None else None
+        )
 
     # The channel relationships use cascade="all, delete-orphan", so we have
     # to mutate the in-memory collection rather than constructing standalone
