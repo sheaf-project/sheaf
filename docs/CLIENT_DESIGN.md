@@ -162,7 +162,7 @@ Email links go to web URLs (`{SHEAF_BASE_URL}/reset-password?token=...`, etc.). 
 
 2. **Native form:** Build your own screens that call the API endpoints directly. For password reset, the user either taps the email link (which you intercept via deep linking) or copies the token manually. For email verification, the link is a simple GET — tapping it in any browser works.
 
-3. **Deep links (polish):** Register your app to handle `{instance_domain}/reset-password` and `/verify-email` URLs via Android App Links / iOS Universal Links. Requires the instance to serve `.well-known/assetlinks.json` (Android) or `apple-app-site-association` (iOS) — more complex for self-hosted instances with arbitrary domains.
+3. **Deep links (polish):** Register your app to handle `{instance_domain}/reset-password` and `/verify-email` URLs via Android App Links / iOS Universal Links. Requires the instance to serve `.well-known/assetlinks.json` (Android) or `apple-app-site-association` (iOS) with the deep-link relation. Note that the instance does publish both documents when its operator sets `PASSKEY_ANDROID_APPS` / `PASSKEY_IOS_APPS`, but only with the **credential** relation (`get_login_creds` / `webcredentials`) for passkey sign-in; the deep-link relation (`handle_all_urls` / `applinks`) is deliberately not included, since claiming every URL on an instance for the app is the app maintainers' decision, not the operator's. More complex for self-hosted instances with arbitrary domains either way, and on iOS the associated domains are compiled into the app, so a published build only works against the domains its maintainers included.
 
 ### Account Deletion
 
