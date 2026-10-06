@@ -688,14 +688,22 @@ With it on, signup is gated. `CAPTCHA_ON_LOGIN` additionally gates login, which 
 
 Users can enrol passkeys (a phone's or laptop's built-in authenticator, a password manager, or a hardware key) and sign in with a tap instead of a password. The account always keeps its password; a passkey is an additional door, never a replacement, and a passkey sign-in never satisfies System Safety's confirmation prompts. The reasoning is in the changelog entry that introduced it; this section is what an operator needs to know.
 
-**Availability is decided by `SHEAF_BASE_URL`.** Browsers only release a passkey to the exact site it was created for, so the instance has to know its own name. The relying-party ID is the host of `SHEAF_BASE_URL`, and the feature is available when that URL is `https://` (or a `localhost` / `127.0.0.1` / `::1` URL, for local development). Any other configuration, including an unset base URL or a plain-HTTP LAN install, makes passkeys **unavailable rather than broken**: every `/v1/auth/passkeys/*` route answers 404, clients hide the controls, and `GET /v1/auth/config` reports `passkeys_available: false` with the reason in `passkeys_unavailable_reason`. Nothing to configure for the ordinary https deployment.
+**Off by default.** `PASSKEYS_ENABLED=true` turns the feature on. With it off, every `/v1/auth/passkeys/*` route answers 404, `GET /v1/auth/config` reports `passkeys_available: false` with the reason `disabled`, and clients show no passkey control; existing enrolled credentials are kept, not deleted, so turning it off and on again loses nothing. The switch exists so a release can carry the code before the clients have their buttons.
+
+**Once on, availability is decided by `SHEAF_BASE_URL`.** Browsers only release a passkey to the exact site it was created for, so the instance has to know its own name. The relying-party ID is the host of `SHEAF_BASE_URL`, and the feature is available when that URL is `https://` (or a `localhost` / `127.0.0.1` / `::1` URL, for local development). Any other configuration, including an unset base URL or a plain-HTTP LAN install, makes passkeys **unavailable rather than broken**: every `/v1/auth/passkeys/*` route answers 404, clients hide the controls, and `GET /v1/auth/config` reports `passkeys_available: false` with the reason in `passkeys_unavailable_reason`. Nothing to configure for the ordinary https deployment.
 
 ```env
+# The master switch. Off (the default) keeps the feature dark.
+# PASSKEYS_ENABLED=false
+
 # Optional. Only when one instance is served on several subdomains and you
 # want passkeys to work on all of them: the registrable parent of the base
 # URL's host (for example "example.net" for https://sheaf.example.net).
 # Anything that is not the host itself or a parent of it is refused with a
-# warning at boot and passkeys stay unavailable.
+# warning at boot and passkeys stay unavailable. So is a parent that is a
+# public suffix ("co.uk", "github.io"): browsers refuse to bind a credential
+# to one, so the server refuses it up front instead of advertising passkeys
+# that fail at the first tap.
 # PASSKEY_RP_ID=
 ```
 

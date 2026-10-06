@@ -33,6 +33,9 @@ services:
       # rollout; the test stack runs the enabled state on purpose.
       FIELD_ENCRYPTION_WRITE_V2: "true"
       SHEAF_BASE_URL: "http://localhost:${SHEAF_TEST_APP_PORT:-8001}"
+      # Passkeys default off (dark) in a release; the suite exercises the
+      # enabled state on purpose, against the loopback base URL above.
+      PASSKEYS_ENABLED: "true"
       SHEAF_MODE: "${SHEAF_MODE:-selfhosted}"
       ADMIN_AUTH_LEVEL: "${ADMIN_AUTH_LEVEL:-none}"
       REGISTRATION_MODE: open

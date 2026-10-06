@@ -33,7 +33,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -617,10 +617,20 @@ async def sign_in_complete(
         )
 
     # Rides the commit inside _finalise_login, so a Redis failure that rolls
-    # the session back rolls the usage stamp back with it.
-    row.sign_count = verified.new_sign_count
-    row.backup_state = verified.backup_state
-    row.last_used_at = datetime.now(UTC)
-    row.last_used_ip = event_ip
+    # the session back rolls the usage stamp back with it. The counter is a
+    # high-water mark: a regressed value is logged above but never stored,
+    # otherwise one regression would reset the baseline and hide the next
+    # one. GREATEST in SQL rather than max() in Python so two concurrent
+    # sign-ins cannot race each other into lowering it.
+    await db.execute(
+        update(PasskeyCredential)
+        .where(PasskeyCredential.id == row.id)
+        .values(
+            sign_count=func.greatest(PasskeyCredential.sign_count, verified.new_sign_count),
+            backup_state=verified.backup_state,
+            last_used_at=datetime.now(UTC),
+            last_used_ip=event_ip,
+        )
+    )
 
     return await _finalise_login(db, user, request, response, outcome="passkey")

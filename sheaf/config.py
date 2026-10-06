@@ -423,6 +423,15 @@ class Settings(BaseSettings):
     # anything else makes the feature unavailable rather than silently
     # binding credentials to a name nothing serves. See sheaf/auth/passkeys.py
     # for the whole rule, including why plain HTTP has no passkeys.
+    #
+    # The master switch. Off, the whole feature is dark: every
+    # /v1/auth/passkeys/* route 404s, /v1/auth/config reports
+    # passkeys_available false with reason "disabled", and clients show no
+    # control. It exists so a release can carry the passkey code without
+    # exposing it until the operator (or a later release) turns it on; the
+    # association documents below are independent of it, since an operator
+    # sets those explicitly. Default off until the web UI ships.
+    passkeys_enabled: bool = False
     passkey_rp_id: str = ""
 
     # Native apps that may use this instance's passkeys, published as the
@@ -1252,7 +1261,7 @@ def _validate_settings() -> None:
     # tell them at boot if the rule refuses it. Without the override, an
     # unavailable answer is the ordinary state of a plain-HTTP or base-URL-less
     # instance and is reported to clients rather than shouted here.
-    if settings.passkey_rp_id:
+    if settings.passkeys_enabled and settings.passkey_rp_id:
         from sheaf.auth.passkeys import current_relying_party
 
         resolution = current_relying_party()

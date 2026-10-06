@@ -1374,6 +1374,15 @@ wheels = [
 ]
 
 [[package]]
+name = "publicsuffixlist"
+version = "1.0.2.20261003"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/5d/5d96888f65ea1936ed264e232be1794d33f758751baade8a2aeb038dfc8d/publicsuffixlist-1.0.2.20261003.tar.gz", hash = "sha256:d88339d4752d866a5be66ca4234257ca1e8277541c8518f6e6615d581a8d8b03", size = 109285, upload-time = "2026-10-03T09:03:47.867Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/40/52/1e16fcde6a770966a7fafea81169a54f8dc49dd16f232707b261d1772ed3/publicsuffixlist-1.0.2.20261003-py2.py3-none-any.whl", hash = "sha256:836bcbfb66f44eea6ee7917864635a0d5f49ef5220e3074bc8611f683a34c11c", size = 109061, upload-time = "2026-10-03T09:03:46.55Z" },
+]
+
+[[package]]
 name = "py-vapid"
 version = "1.9.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1796,6 +1805,7 @@ dependencies = [
     { name = "nh3" },
     { name = "pillow" },
     { name = "prometheus-client" },
+    { name = "publicsuffixlist" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
@@ -1851,6 +1861,7 @@ requires-dist = [
     { name = "nh3", specifier = ">=0.2.18" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
+    { name = "publicsuffixlist", specifier = ">=1.0.2.20261003" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pyjwt", specifier = ">=2.9.0" },

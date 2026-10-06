@@ -484,9 +484,11 @@ async def get_current_fronters_compact(
 
     Order is part of the contract, because a constrained client renders the
     list exactly as it arrives: fronts newest-first, and within a front its
-    members in the order `/current` lists them in that front's `member_ids`
-    (both views walk the same loaded rows). A member in more than one open
-    front appears once, at the position of the newest front that holds them.
+    members by creation date (oldest first, id as the tiebreak), which is the
+    order `Front.members` is declared with and so the order `/current` lists
+    them in that front's `member_ids` too (both views walk the same loaded
+    rows). A member in more than one open front appears once, at the position
+    of the newest front that holds them.
     """
     system = await _get_user_system(user, db)
     result = await db.execute(
@@ -534,12 +536,20 @@ async def create_front(
 ):
     system = await _get_user_system(user, db)
 
+    # A closed entry is history being recorded after the fact, not a switch.
+    # Decided first because the switch guard below must not see it: the
+    # guard exists to catch a looping switch client, and charging it for
+    # history would let an import of a few dozen past entries lock a system
+    # out of changing who is fronting now. The per-account write limit on the
+    # route still applies to both.
+    is_historical = body.ended_at is not None
+
     # Per-system front-switch guard, in addition to the per-account write
     # limit above. Keyed on the system rather than the caller, it catches a
     # stuck switch-client / looping integration on a system that may have
     # several legitimate writers. Checked before any front DB work so a
     # runaway loop is cut off early.
-    if not await check_front_switch_rate(system.id):
+    if not is_historical and not await check_front_switch_rate(system.id):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
@@ -595,13 +605,12 @@ async def create_front(
     # would always break.
     new_started_at = body.started_at or datetime.now(UTC)
 
-    # A closed entry is history being recorded after the fact, not a switch.
-    # It is never the current front, so neither of the live-roster behaviours
-    # below applies to it: auto-ending the open fronts would end whoever is
-    # really fronting (and back-date their end to the historical timestamp),
-    # and the duplicate-open-set check would reject recording that the same
-    # people fronted before simply because they are fronting now.
-    is_historical = body.ended_at is not None
+    # A closed entry (is_historical, decided above) is never the current
+    # front, so neither of the live-roster behaviours below applies to it:
+    # auto-ending the open fronts would end whoever is really fronting (and
+    # back-date their end to the historical timestamp), and the
+    # duplicate-open-set check would reject recording that the same people
+    # fronted before simply because they are fronting now.
     if is_historical and body.ended_at < new_started_at:
         # Same rule and wording as PATCH, so the two paths are one concept.
         raise HTTPException(
