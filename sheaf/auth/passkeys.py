@@ -43,6 +43,16 @@ REASON_MALFORMED_BASE_URL = "malformed_base_url"
 REASON_INSECURE_BASE_URL = "insecure_base_url"
 REASON_RP_ID_INVALID = "rp_id_invalid"
 REASON_RP_ID_NOT_PARENT_OF_HOST = "rp_id_not_parent_of_host"
+REASON_RP_ID_PUBLIC_SUFFIX = "rp_id_public_suffix"
+# The operator's master switch is off. Not a configuration fault, so listed
+# apart from the rule's own refusals.
+REASON_DISABLED = "disabled"
+
+# What a browser serialises an origin without: the scheme's default port.
+# `https://sheaf.example:443` is the origin `https://sheaf.example` to the
+# browser, and py_webauthn compares origins as strings, so the server has to
+# apply the same rule or every ceremony on such a base URL fails.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +92,46 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
+def _ascii_host(host: str) -> str | None:
+    """The host as a browser puts it in an origin and an RP ID: lowercase
+    ASCII, with any internationalised label in its punycode form. None when
+    the name cannot be encoded at all."""
+    if host.isascii():
+        return host.lower()
+    try:
+        return host.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+
+
+def _is_public_suffix(candidate: str) -> bool:
+    """True when the candidate is itself a public suffix (``co.uk``,
+    ``github.io``), which no credential can be bound to.
+
+    Browsers refuse an RP ID that is a public suffix, so accepting one here
+    would advertise passkeys the browser then rejects at ceremony time, which
+    is exactly the "looks broken" failure the availability rule exists to
+    prevent. The private section of the list counts too: ``github.io`` is a
+    public suffix for this purpose in every browser that ships the list.
+    """
+    psl = _public_suffix_list()
+    return psl.publicsuffix(candidate) == candidate and psl.privatesuffix(candidate) is None
+
+
+_PSL = None
+
+
+def _public_suffix_list():
+    # Built once: the bundled list is a third of a megabyte to parse, and the
+    # rule runs on every config read and every passkey request.
+    global _PSL
+    if _PSL is None:
+        from publicsuffixlist import PublicSuffixList
+
+        _PSL = PublicSuffixList()
+    return _PSL
+
+
 def _valid_rp_id(candidate: str) -> bool:
     """A bare host: lowercase labels, no scheme, port, path or brackets.
 
@@ -115,11 +165,14 @@ def resolve_relying_party(base_url: str, rp_id_override: str = "") -> RelyingPar
 
     try:
         parts = urlsplit(base_url)
-        host = parts.hostname  # lowercased, IPv6 brackets stripped
+        raw_host = parts.hostname  # lowercased, IPv6 brackets stripped
         port = parts.port  # raises ValueError on a non-numeric port
     except ValueError:
         return _unavailable(REASON_MALFORMED_BASE_URL)
-    if parts.scheme not in ("http", "https") or not host:
+    if parts.scheme not in ("http", "https") or not raw_host:
+        return _unavailable(REASON_MALFORMED_BASE_URL)
+    host = _ascii_host(raw_host)
+    if host is None:
         return _unavailable(REASON_MALFORMED_BASE_URL)
 
     if parts.scheme != "https" and host not in LOOPBACK_HOSTS:
@@ -128,6 +181,7 @@ def resolve_relying_party(base_url: str, rp_id_override: str = "") -> RelyingPar
     rp_id = host
     override = (rp_id_override or "").strip()
     if override:
+        override = _ascii_host(override) or override
         if not _valid_rp_id(override):
             return _unavailable(REASON_RP_ID_INVALID)
         # Equal to the host, or a registrable parent of it. An IP literal has
@@ -136,14 +190,21 @@ def resolve_relying_party(base_url: str, rp_id_override: str = "") -> RelyingPar
         # passes.
         if override != host and (_is_ip_literal(host) or not host.endswith("." + override)):
             return _unavailable(REASON_RP_ID_NOT_PARENT_OF_HOST)
+        # A dotted suffix is not enough: "co.uk" is a parent of
+        # "sheaf.example.co.uk" by string but a public suffix by the list every
+        # browser ships, and a browser refuses to bind a credential to one.
+        if override != host and _is_public_suffix(override):
+            return _unavailable(REASON_RP_ID_PUBLIC_SUFFIX)
         rp_id = override
 
     # Rebuild the origin from the parsed parts rather than echoing the
-    # configured string: a trailing path, mixed-case host or default port
-    # in SHEAF_BASE_URL must not leak into the origin comparison.
+    # configured string: a trailing path, mixed-case host, internationalised
+    # label or default port in SHEAF_BASE_URL must not leak into the origin
+    # comparison. The port is kept only when it is not the scheme's default,
+    # because that is how a browser serialises the origin it signs.
     origin_host = f"[{host}]" if ":" in host else host
     origin = f"{parts.scheme}://{origin_host}"
-    if port is not None:
+    if port is not None and port != _DEFAULT_PORTS[parts.scheme]:
         origin = f"{origin}:{port}"
 
     return RelyingPartyResolution(rp=RelyingParty(rp_id=rp_id, origin=origin), reason=None)
@@ -156,4 +217,6 @@ def current_relying_party() -> RelyingPartyResolution:
     # be a cycle.
     from sheaf.config import settings
 
+    if not settings.passkeys_enabled:
+        return _unavailable(REASON_DISABLED)
     return resolve_relying_party(settings.sheaf_base_url, settings.passkey_rp_id)

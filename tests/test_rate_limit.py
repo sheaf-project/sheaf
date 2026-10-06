@@ -312,6 +312,39 @@ def test_front_switch_guard_per_system():
     assert "faster than we accept" in first_429.json()["detail"].lower()
 
 
+def test_historical_front_entries_do_not_consume_the_switch_guard():
+    """Recording closed, past entries is history, not switching. It must not
+    draw on the per-system switch bucket, or importing a few dozen old
+    entries would lock the system out of changing who is fronting now."""
+    email = f"rl-hist-front-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    with httpx.Client(base_url=BASE_URL) as c:
+        resp = c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "testpassword123"},
+        )
+        assert resp.status_code == 201
+        c.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+        member_id = c.post(
+            "/v1/members", json={"name": f"rl-hist-{uuid.uuid4().hex[:8]}"}
+        ).json()["id"]
+
+        # Far past the switch burst capacity (default 10), all closed entries.
+        statuses = []
+        for i in range(30):
+            start = f"2025-01-{(i % 27) + 1:02d}T10:00:00Z"
+            end = f"2025-01-{(i % 27) + 1:02d}T11:00:00Z"
+            r = c.post(
+                "/v1/fronts",
+                json={"member_ids": [member_id], "started_at": start, "ended_at": end},
+            )
+            statuses.append(r.status_code)
+        assert 429 not in statuses, statuses
+
+        # And a real switch afterwards still goes through with a full bucket.
+        live = c.post("/v1/fronts", json={"member_ids": [member_id]})
+        assert live.status_code == 201, live.text
+
+
 def test_per_user_block_records_admin_history(admin_client):
     """End-to-end: a blocked per-user check leaves a triage trail
     readable via GET /admin/users/{id}/rate-limit-history."""

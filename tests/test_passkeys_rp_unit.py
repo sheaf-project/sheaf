@@ -24,6 +24,7 @@ from sheaf.auth.passkeys import (
     REASON_NO_BASE_URL,
     REASON_RP_ID_INVALID,
     REASON_RP_ID_NOT_PARENT_OF_HOST,
+    REASON_RP_ID_PUBLIC_SUFFIX,
     resolve_relying_party,
 )
 
@@ -56,6 +57,34 @@ def test_explicit_port_stays_in_the_origin_but_not_the_rp_id():
     rp = _rp("https://sheaf.example.net:8443")
     assert rp.rp_id == "sheaf.example.net"
     assert rp.origin == "https://sheaf.example.net:8443"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "origin"),
+    [
+        ("https://sheaf.example.net:443", "https://sheaf.example.net"),
+        ("http://localhost:80", "http://localhost"),
+        ("http://127.0.0.1:80/", "http://127.0.0.1"),
+    ],
+)
+def test_the_default_port_is_dropped_from_the_origin(base_url, origin):
+    # A browser serialises an origin without the scheme's default port, and
+    # the library compares origins as strings. Keeping ":443" here would make
+    # every ceremony on such a base URL fail verification.
+    assert _rp(base_url).origin == origin
+
+
+def test_a_non_default_port_on_the_default_scheme_is_kept():
+    assert _rp("https://sheaf.example.net:80").origin == "https://sheaf.example.net:80"
+    assert _rp("http://localhost:443").origin == "http://localhost:443"
+
+
+def test_an_internationalised_host_is_punycoded_like_a_browser_does():
+    rp = _rp("https://sheaf.bücher.example")
+    assert rp.rp_id == "sheaf.xn--bcher-kva.example"
+    assert rp.origin == "https://sheaf.xn--bcher-kva.example"
+    # And an override written in Unicode matches the same way.
+    assert _rp("https://sheaf.bücher.example", "bücher.example").rp_id == "xn--bcher-kva.example"
 
 
 def test_origin_is_rebuilt_not_echoed():
@@ -149,18 +178,61 @@ def test_override_cannot_be_a_child_of_the_host():
 
 
 @pytest.mark.parametrize(
+    ("base_url", "override"),
+    [
+        ("https://sheaf.example.co.uk", "co.uk"),  # ICANN section
+        ("https://sheaf.example.co.uk", "uk"),
+        ("https://sheaf.someone.github.io", "github.io"),  # private section
+        ("https://sheaf.example.net", "net"),
+    ],
+)
+def test_override_that_is_a_public_suffix_is_refused(base_url, override):
+    # A string parent is not enough: browsers refuse to bind a credential to
+    # a public suffix, so advertising it would fail at the first tap.
+    assert _reason(base_url, override) == REASON_RP_ID_PUBLIC_SUFFIX
+
+
+def test_override_at_the_registrable_domain_is_accepted():
+    assert _rp("https://sheaf.example.co.uk", "example.co.uk").rp_id == "example.co.uk"
+    assert _rp("https://sheaf.someone.github.io", "someone.github.io").rp_id == "someone.github.io"
+
+
+@pytest.mark.parametrize(
     "override",
     [
         "https://example.net",  # a URL, not a host
         "example.net:443",  # a port
         "example.net/",  # a path
-        "Example.NET",  # not lowercase
         "-example.net",  # bad label
         "exa mple.net",
     ],
 )
 def test_override_with_the_wrong_shape_is_refused(override):
     assert _reason("https://sheaf.example.net", override) == REASON_RP_ID_INVALID
+
+
+def test_override_case_is_normalised_like_the_host():
+    # Hostnames are case-insensitive and the base URL's host is already
+    # lowercased on the way in; the override gets the same treatment rather
+    # than a refusal, so "Example.NET" in an env file is not a support ticket.
+    assert _rp("https://sheaf.example.net", "Example.NET").rp_id == "example.net"
+
+
+def test_the_master_switch_makes_the_instance_unavailable_with_its_own_reason(monkeypatch):
+    from sheaf.auth.passkeys import REASON_DISABLED, current_relying_party
+    from sheaf.config import settings
+
+    monkeypatch.setattr(settings, "sheaf_base_url", "https://sheaf.example.net")
+    monkeypatch.setattr(settings, "passkey_rp_id", "")
+    monkeypatch.setattr(settings, "passkeys_enabled", False)
+    off = current_relying_party()
+    assert not off.available
+    assert off.reason == REASON_DISABLED
+
+    monkeypatch.setattr(settings, "passkeys_enabled", True)
+    on = current_relying_party()
+    assert on.available
+    assert on.rp.rp_id == "sheaf.example.net"
 
 
 def test_override_on_an_ip_literal_only_matches_itself():
