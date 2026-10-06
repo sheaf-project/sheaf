@@ -425,6 +425,19 @@ class Settings(BaseSettings):
     # for the whole rule, including why plain HTTP has no passkeys.
     passkey_rp_id: str = ""
 
+    # Native apps that may use this instance's passkeys, published as the
+    # app-to-site association documents at /.well-known/assetlinks.json and
+    # /.well-known/apple-app-site-association. Android: comma-separated
+    # "package.name=FINGERPRINT" entries, several signing fingerprints joined
+    # by "|" (SHA-256, colon-separated hex, as keytool prints it). iOS:
+    # comma-separated "TEAMID.bundle.identifier". Empty (the default) means
+    # the document is not published and the route 404s. A malformed entry is
+    # dropped with a boot warning rather than published. See
+    # sheaf/auth/app_associations.py for why the two platforms differ for
+    # selfhosters.
+    passkey_android_apps: str = ""
+    passkey_ios_apps: str = ""
+
     # Shared Universal Link / App Link host for mobile_push activation
     # URLs. Every instance routes mobile_push redemption links through
     # this host because the mobile app's associated-domains entitlement
@@ -1250,6 +1263,20 @@ def _validate_settings() -> None:
                 "registrable parent of it, and the base URL must be https.",
                 resolution.reason,
             )
+
+    # The app association documents are published as the operator wrote them,
+    # minus any entry that cannot be right. A bad fingerprint or bundle id
+    # fails the platform's check in a way that looks exactly like "no
+    # document", so this warning is the only place the operator learns why.
+    if settings.passkey_android_apps or settings.passkey_ios_apps:
+        from sheaf.auth.app_associations import parse_android_apps, parse_ios_apps
+
+        _, android_errors = parse_android_apps(settings.passkey_android_apps)
+        _, ios_errors = parse_ios_apps(settings.passkey_ios_apps)
+        for message in android_errors:
+            logger.warning("PASSKEY_ANDROID_APPS entry dropped: %s", message)
+        for message in ios_errors:
+            logger.warning("PASSKEY_IOS_APPS entry dropped: %s", message)
 
     # Legal links: not required to start, but strongly encouraged for any
     # public-facing instance. Missing links mean users can't see what they're

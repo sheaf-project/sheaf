@@ -684,6 +684,57 @@ Generate the key with `openssl rand -hex 32`. Setting `CAPTCHA_PROVIDER=altcha` 
 
 With it on, signup is gated. `CAPTCHA_ON_LOGIN` additionally gates login, which is worth it if you are seeing credential stuffing (see the [security-event log](#security-event-log) for how to tell) and costly otherwise, since it puts a proof-of-work in front of every legitimate sign-in too. Challenges are valid for 10 minutes. The client learns whether it needs to draw the widget from `GET /v1/auth/config`.
 
+## Passkeys (WebAuthn)
+
+Users can enrol passkeys (a phone's or laptop's built-in authenticator, a password manager, or a hardware key) and sign in with a tap instead of a password. The account always keeps its password; a passkey is an additional door, never a replacement, and a passkey sign-in never satisfies System Safety's confirmation prompts. The reasoning is in the changelog entry that introduced it; this section is what an operator needs to know.
+
+**Availability is decided by `SHEAF_BASE_URL`.** Browsers only release a passkey to the exact site it was created for, so the instance has to know its own name. The relying-party ID is the host of `SHEAF_BASE_URL`, and the feature is available when that URL is `https://` (or a `localhost` / `127.0.0.1` / `::1` URL, for local development). Any other configuration, including an unset base URL or a plain-HTTP LAN install, makes passkeys **unavailable rather than broken**: every `/v1/auth/passkeys/*` route answers 404, clients hide the controls, and `GET /v1/auth/config` reports `passkeys_available: false` with the reason in `passkeys_unavailable_reason`. Nothing to configure for the ordinary https deployment.
+
+```env
+# Optional. Only when one instance is served on several subdomains and you
+# want passkeys to work on all of them: the registrable parent of the base
+# URL's host (for example "example.net" for https://sheaf.example.net).
+# Anything that is not the host itself or a parent of it is refused with a
+# warning at boot and passkeys stay unavailable.
+# PASSKEY_RP_ID=
+```
+
+**Domain moves.** A credential is bound to the hostname it was created under, and nothing else in Sheaf breaks on a domain move: sessions, API keys and trusted devices all survive one. Passkeys do not. After a move, each user's existing passkeys stay listed in their settings, marked as created for the old address, and stop being offered by the browser; they sign in with their password and enrol again. Say so in your announcement when you move.
+
+`CSRF_TRUSTED_ORIGINS` lets you serve one instance on several hosts; passkeys cannot follow it. They work on the canonical origin, plus subdomains if you deliberately set a parent `PASSKEY_RP_ID`.
+
+### Native apps and the association files
+
+A native app can only use a passkey against a site that has vouched for it, through a small JSON document the site publishes under `/.well-known/`. Sheaf builds both platforms' documents from two settings. **The two platforms are not equal for self-hosters**, and it is worth knowing which wall you are up against before you file a bug:
+
+- **Android** resolves the association at ceremony time by fetching `/.well-known/assetlinks.json` from your instance. The app needs no build-time knowledge of your domain, so setting `PASSKEY_ANDROID_APPS` to the published app's package name and signing fingerprint is enough for passkeys to work in that app against your instance.
+- **iOS** also fetches `/.well-known/apple-app-site-association`, but the app's associated-domains entitlement is baked in at build time, so a published app can only use passkeys against the domains its maintainers compiled into it. `PASSKEY_IOS_APPS` is still required on those domains; it cannot make an arbitrary self-hosted domain work without a custom build of the app. This is the same wall the mobile push activation links hit.
+
+```env
+# Android apps allowed to use this instance's passkeys. Comma-separated
+# "package.name=FINGERPRINT" entries; an app with several signing
+# certificates (debug and release, say) joins them with "|". The fingerprint
+# is the SHA-256 of the signing certificate as keytool or the Play console
+# prints it: 32 colon-separated hex bytes.
+# PASSKEY_ANDROID_APPS=sh.sheaf.app=AA:BB:...:FF|11:22:...:EE
+
+# iOS apps allowed to use this instance's passkeys. Comma-separated
+# "TEAMID.bundle.identifier" (the ten-character Apple team id, a dot, the
+# bundle id). See the note above on why this alone does not make a
+# published app work against an arbitrary domain.
+# PASSKEY_IOS_APPS=ABCDE12345.sh.sheaf.app
+```
+
+Both settings are empty by default, and an empty setting means the document is not published: the route answers 404. A malformed entry is dropped with a warning at boot rather than published, because a document with a bad fingerprint in it fails the platform's check in a way that looks exactly like "no document", and the log line is the only place you would learn why. The documents grant only the credential relation; they do not claim the instance's URLs for the app (App Links / Universal Links), which is a separate decision for the app's maintainers. The values to put in them come from whoever publishes the app you want to vouch for; nothing in them is secret, since package names, bundle ids and signing fingerprints are all visible in the store listing or the signed binary.
+
+**Your reverse proxy has to route the two documents to the backend.** The AIO image already does, and both examples in [Reverse proxy](#reverse-proxy) include the routes. If you run your own config, add exact-path routes for `/.well-known/assetlinks.json` and `/.well-known/apple-app-site-association`, the same way `security.txt` is routed, and for the same reason: do not proxy all of `/.well-known/*`, or you hand `/.well-known/acme-challenge/*` to the backend and break certificate issuance. Apple additionally requires the document to be served over https with no redirect and a JSON content type, which the backend's own response satisfies as long as the proxy passes it through unchanged.
+
+```bash
+# Both should be JSON once configured, 404 until then. Neither should ever be HTML.
+curl -s https://your-instance/.well-known/assetlinks.json
+curl -s https://your-instance/.well-known/apple-app-site-association
+```
+
 ---
 
 ## File storage
@@ -1510,6 +1561,15 @@ sheaf.example.com {
     handle /security.txt {
         reverse_proxy localhost:8000
     }
+    # App-to-site association documents for native passkey clients (see
+    # Passkeys below). Same exact-path rule, same reason. Both 404 from the
+    # backend until PASSKEY_ANDROID_APPS / PASSKEY_IOS_APPS are set.
+    handle /.well-known/assetlinks.json {
+        reverse_proxy localhost:8000
+    }
+    handle /.well-known/apple-app-site-association {
+        reverse_proxy localhost:8000
+    }
     # Link-unfurl crawlers on a public profile (/p/) or share link (/s/) get a
     # small server-rendered document carrying that URL's Open Graph tags; every
     # other request falls through to the SPA unchanged. Crawlers do not run
@@ -1672,6 +1732,20 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # App-to-site association documents for native passkey clients (see
+    # Passkeys below). Same exact-path rule, same reason. Both 404 from the
+    # backend until PASSKEY_ANDROID_APPS / PASSKEY_IOS_APPS are set.
+    location = /.well-known/assetlinks.json {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /.well-known/apple-app-site-association {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # Public profiles and share links. A link-unfurl crawler is handed off to
     # @unfurl; everyone else gets the SPA with the headers below.
     #
@@ -1718,9 +1792,9 @@ server {
 }
 ```
 
-#### Updating an existing proxy for link previews and security.txt
+#### Updating an existing proxy for link previews, security.txt and passkey association files
 
-Both of the examples above gained two route groups. If you are running an older config, these are the changes to make; neither is required for Sheaf to work, and you can make them independently.
+The examples above gained three route groups over time. If you are running an older config, these are the changes to make; none is required for Sheaf to work, and you can make them independently.
 
 **Link previews (`/p/` and `/s/`).** Add the User-Agent-matched route that sends link-unfurl crawlers to the backend. Without it, a crawler that fetches a profile URL gets the static SPA shell, so every Sheaf link on your instance unfurls with the same generic site card no matter what a profile owner has chosen. The per-view **Show the system name and avatar in link previews** setting on the Sharing screen has no effect until this route exists. Nothing breaks without it - the setting simply does nothing, which is the safe direction.
 
@@ -1728,7 +1802,9 @@ If you would rather not add it, you can leave it out permanently and every link 
 
 **security.txt.** Add the two exact-path routes for `/.well-known/security.txt` and `/security.txt`. The backend has always served RFC 9116 there, but both example configs routed only `/v1/*` and `/health` to it, so the request fell through to the SPA and anyone looking for the file got the web app's `index.html` instead. Match by **exact path** rather than proxying all of `/.well-known/*`, or you will hand `/.well-known/acme-challenge/*` to the backend and break certificate issuance.
 
-To check either one, ask for it the way a crawler or a researcher would:
+**Passkey association files.** Add the two exact-path routes for `/.well-known/assetlinks.json` and `/.well-known/apple-app-site-association`. They only matter if you want a native app to use passkeys against your instance (see [Passkeys](#passkeys-webauthn)); until you set the matching settings the backend answers 404 on both, so adding the routes early is harmless. Same exact-path rule as security.txt, for the same ACME reason.
+
+To check any of them, ask for it the way a crawler or a researcher would:
 
 ```bash
 # Should be the security.txt body, not HTML
