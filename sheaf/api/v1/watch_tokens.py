@@ -157,7 +157,10 @@ async def update_watch_token(
     db: AsyncSession = Depends(get_db),
 ) -> WatchTokenRead:
     token = await _load_owned_token(db, user, token_id)
-    if body.label is not None:
+    # The label is nullable, so an explicit null is "clear it" and presence in
+    # the body is the signal; checking the value made clearing a silent no-op
+    # (the same shape as the quiet-hours bug on channels).
+    if "label" in body.model_fields_set:
         token.label = body.label
     await db.commit()
     await db.refresh(token)
