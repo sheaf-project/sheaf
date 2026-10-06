@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sheaf.auth.dependencies import get_current_user, get_current_user_allow_unverified
 from sheaf.auth.jwt import TokenType, create_token, decode_token
 from sheaf.auth.lockout import ensure_not_locked, record_login_failure
+from sheaf.auth.passkeys import current_relying_party
 from sheaf.auth.passwords import (
     dummy_verify,
     hash_password,
@@ -170,6 +171,7 @@ async def get_auth_config():
     invite_enabled = (
         settings.registration_mode == "invite" or settings.invite_codes_enabled
     )
+    passkey_rp = current_relying_party()
     return {
         "registration_mode": settings.registration_mode,
         "invite_codes_enabled": invite_enabled,
@@ -191,6 +193,12 @@ async def get_auth_config():
         "status_url": settings.status_url or None,
         "captcha_provider": settings.captcha_provider or None,
         "captcha_on_login": captcha.required_for_login(),
+        # Whether this instance can offer passkey sign-in, and when it
+        # cannot, the stable reason (no https base URL, a refused RP
+        # override). Clients hide the passkey button on false; the reason is
+        # for the selfhosting docs and the operator, not the sign-in screen.
+        "passkeys_available": passkey_rp.available,
+        "passkeys_unavailable_reason": passkey_rp.reason,
     }
 
 
@@ -1061,6 +1069,40 @@ async def change_email(
     }
 
 
+def _account_standing_refusal(
+    user: User,
+) -> tuple[LoginOutcome, HTTPException] | None:
+    """Suspended / banned accounts: refuse the login outright rather than
+    minting a session the user can't use.
+
+    Shared by every credential that can sign someone in, so a passkey cannot
+    get a suspended account past a gate the password cannot. Returns the
+    outcome label and the exception rather than raising, because each caller
+    records the outcome against its own metric and security-event context
+    first. Past-expiry suspends fall through; the background sweep will
+    normalise the status, and the auth dep also treats them as effectively
+    ACTIVE.
+    """
+    if user.account_status == AccountStatus.SUSPENDED:
+        until = user.suspended_until
+        if until is None or until > datetime.now(UTC):
+            parts = ["Account suspended"]
+            if user.suspended_reason:
+                parts.append(f"reason: {user.suspended_reason}")
+            if until is not None:
+                parts.append(f"until: {until.isoformat()}")
+            return "account_suspended", HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="; ".join(parts),
+            )
+    if user.account_status == AccountStatus.BANNED:
+        return "account_banned", HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account banned",
+        )
+    return None
+
+
 async def _finalise_login(
     db: AsyncSession,
     user: User,
@@ -1261,31 +1303,12 @@ async def login(
             detail="Invalid email or password",
         )
 
-    # Suspended / banned accounts: refuse the login outright rather
-    # than minting a session the user can't use. Past-expiry suspends
-    # fall through; the background sweep will normalise the status,
-    # and the auth dep also treats them as effectively ACTIVE.
-    if user.account_status == AccountStatus.SUSPENDED:
-        until = user.suspended_until
-        if until is None or until > datetime.now(UTC):
-            parts = ["Account suspended"]
-            if user.suspended_reason:
-                parts.append(f"reason: {user.suspended_reason}")
-            if until is not None:
-                parts.append(f"until: {until.isoformat()}")
-            auth_logins_total.labels(outcome="account_suspended").inc()
-            await _sec("account_suspended", user.id)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="; ".join(parts),
-            )
-    if user.account_status == AccountStatus.BANNED:
-        auth_logins_total.labels(outcome="account_banned").inc()
-        await _sec("account_banned", user.id)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account banned",
-        )
+    refusal = _account_standing_refusal(user)
+    if refusal is not None:
+        standing_outcome, standing_exc = refusal
+        auth_logins_total.labels(outcome=standing_outcome).inc()
+        await _sec(standing_outcome, user.id)
+        raise standing_exc
 
     # ---- login(): TOTP check + trusted-device handling ----
     # Enforce TOTP if enabled — unless the browser presents a valid

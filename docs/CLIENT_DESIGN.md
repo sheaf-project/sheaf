@@ -58,6 +58,21 @@ X-Sheaf-2FA: required
 
 Prompt for the code and retry with `totp_code` included. Recovery codes (8-char alphanumeric) also work in the `totp_code` field.
 
+**Passkey sign-in (WebAuthn):** when `GET /v1/auth/config` reports `passkeys_available: true`, a user who has enrolled a passkey can sign in with it instead of the password. It is a two-step ceremony with no email involved:
+
+```
+POST /v1/auth/passkeys/sign-in/begin          (no body)
+→ { "options": <PublicKeyCredentialRequestOptions, JSON-encoded> }
+
+   credential = await navigator.credentials.get({ publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(options) })
+
+POST /v1/auth/passkeys/sign-in/complete
+{ "credential": credential.toJSON(), "captcha": "..." }   (captcha only when captcha_on_login)
+→ { "access_token": "eyJ...", "refresh_token": "eyJ...", "token_type": "bearer" }
+```
+
+The response, cookies and session are identical to a password login. The credential is discoverable, so `begin` sends nothing and the browser offers whatever passkeys it holds for this site; the user picks one. A passkey sign-in does not satisfy System Safety's confirmation prompts: a member delete or a profile publish still asks for the password or TOTP code exactly as it would after a password login. TOTP is not asked for at passkey sign-in (the passkey's own user verification is the second factor), and the account always keeps its password. Any refusal about the credential itself is a 401 with the same generic message; an expired or reused challenge is a 400 and the client should start again from `begin`. When `passkeys_available` is false, every `/auth/passkeys/*` route 404s and the client should not show the button.
+
 ### 3. Session Cookies (browser-only)
 
 Set automatically on login/register. HttpOnly, Secure, SameSite=Lax. Clients other than browsers should use JWT or API keys.
@@ -135,6 +150,7 @@ Check `GET /v1/auth/config` first to determine:
 - `email_verification`: `"off"` or `"required"`
 - `email_enabled`: whether the server can send emails
 - `base_url`: the instance's base URL (e.g. `"https://sheaf.example.com"`) — use this for constructing web links (password reset, email verification). `null` if not configured.
+- `passkeys_available`: whether this instance can offer passkey sign-in and enrolment. Requires an `https` base URL (or a loopback one for local development). When `false`, `passkeys_unavailable_reason` carries a stable reason for the operator (`no_base_url`, `malformed_base_url`, `insecure_base_url`, `rp_id_invalid`, `rp_id_not_parent_of_host`) and clients should hide every passkey control.
 
 If registration mode is `"approval"`, the account is created but inactive — the user sees a "pending approval" state until an admin approves them. If `"invite"`, an invite code is required.
 
@@ -294,6 +310,8 @@ Use this for preferences that should sync across devices running the same client
 | POST | `/auth/passkeys/register/complete` | Finish enrolment (`{"credential": <PublicKeyCredential.toJSON()>, "nickname"?: ...}`) |
 | PATCH | `/auth/passkeys/{id}` | Rename a passkey |
 | DELETE | `/auth/passkeys/{id}` | Remove a passkey (never password-gated; the last one may go, the password remains) |
+| POST | `/auth/passkeys/sign-in/begin` | Start a passkey sign-in (no auth, no body; returns `{"options": <PublicKeyCredentialRequestOptions JSON>}`; discoverable, so no email is sent) |
+| POST | `/auth/passkeys/sign-in/complete` | Finish a passkey sign-in (`{"credential": <PublicKeyCredential.toJSON()>, "captcha"?: ...}`; same response and cookies as `/auth/login`) |
 | GET | `/auth/keys` | List API keys |
 | POST | `/auth/keys` | Create API key |
 | DELETE | `/auth/keys/{id}` | Revoke API key |
