@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { User } from "@/types/api";
 import { bootstrapAuth, setAccessToken } from "@/lib/api-client";
 import * as authApi from "@/lib/auth";
+import { getPasskey } from "@/lib/webauthn";
 
 interface AuthState {
   user: User | null;
@@ -22,6 +23,14 @@ interface AuthState {
     newsletter_opt_in?: boolean,
     captcha?: string,
   ) => Promise<void>;
+  /**
+   * Sign in with a passkey: begin, the platform ceremony, complete. No email
+   * and no password; the credential is discoverable. Resolves to the same
+   * signed-in state `login` produces. Throws `PasskeyCancelled` (or a
+   * DOMException) when the platform step did not finish, and `ApiError` for
+   * everything the server refused.
+   */
+  loginWithPasskey: (captcha?: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -127,6 +136,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [queryClient],
   );
 
+  const loginWithPasskey = useCallback(
+    async (captcha?: string) => {
+      const { options } = await authApi.passkeySignInBegin();
+      const credential = await getPasskey(options);
+      const tokens = await authApi.passkeySignInComplete(credential, captcha);
+      // Same tail as login(): a stale session's cache must not leak into the
+      // new one, and the refresh token arrives as an HttpOnly cookie.
+      queryClient.clear();
+      setAccessToken(tokens.access_token);
+      const me = await authApi.getMe();
+      setUser(me);
+    },
+    [queryClient],
+  );
+
   const refreshUser = useCallback(async () => {
     const me = await authApi.getMe();
     setUser(me);
@@ -144,7 +168,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [queryClient]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, register, loginWithPasskey, logout, refreshUser }}
+    >
       {children}
     </AuthContext.Provider>
   );

@@ -13,6 +13,8 @@ const ACTION_LABELS: Record<string, string> = {
   email_changed: "Email changed",
   totp_enabled: "Two-factor enabled",
   totp_disabled: "Two-factor disabled",
+  passkey_added: "Passkey added",
+  passkey_removed: "Passkey removed",
   recovery_codes_regenerated: "Recovery codes regenerated",
   api_key_created: "API key created",
   api_key_revoked: "API key revoked",
