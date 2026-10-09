@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordField } from "@/components/password-field";
+import { PasskeySignInButton } from "@/components/passkey-sign-in-button";
 import { Captcha } from "@/components/captcha";
 import { Logo } from "@/components/logo";
 import { LegalFooter } from "@/components/legal-footer";
@@ -180,6 +181,13 @@ export function LoginPage() {
               >
                 {submitting ? "Signing in..." : "Sign in"}
               </Button>
+              {config?.passkeys_available && (
+                <PasskeySignInButton
+                  captcha={loginCaptcha}
+                  captchaPending={captchaOnLogin && !loginCaptcha}
+                  onError={setError}
+                />
+              )}
               {config?.email_enabled && (
                 <div className="text-center">
                   <Link
@@ -282,6 +290,13 @@ export function LoginPage() {
                   >
                     {submitting ? "Signing in..." : "Sign in"}
                   </Button>
+                  {config?.passkeys_available && (
+                    <PasskeySignInButton
+                      captcha={loginCaptcha}
+                      captchaPending={captchaOnLogin && !loginCaptcha}
+                      onError={setError}
+                    />
+                  )}
                   {config?.email_enabled && (
                     <div className="text-center">
                       <Link

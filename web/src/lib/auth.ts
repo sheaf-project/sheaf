@@ -19,6 +19,10 @@ export interface AuthConfig {
   status_url: string | null;
   captcha_provider: string | null;
   captcha_on_login: boolean;
+  /** Whether this instance offers passkey sign-in and enrolment. False hides
+   *  every passkey control; the reason is for operators, not the UI. */
+  passkeys_available: boolean;
+  passkeys_unavailable_reason: string | null;
 }
 
 export function getAuthConfig() {
@@ -256,6 +260,84 @@ export function revokeSession(id: string) {
 export function revokeOtherSessions() {
   return apiFetch<{ revoked: number }>("/v1/auth/sessions/revoke-others", {
     method: "POST",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Passkeys
+// ---------------------------------------------------------------------------
+
+export interface Passkey {
+  id: string;
+  nickname: string | null;
+  /** The relying-party ID the credential was created under, and whether it
+   *  matches this instance's current one. A domain move leaves old rows
+   *  listed with `usable` false so the owner can see why they stopped
+   *  working and re-enrol. */
+  rp_id: string;
+  usable: boolean;
+  transports: string[];
+  aaguid: string | null;
+  /** Synced passkey (phone keychain, password manager) versus a single
+   *  device or hardware key. */
+  backup_eligible: boolean;
+  backup_state: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export function listPasskeys() {
+  return apiFetch<Passkey[]>("/v1/auth/passkeys");
+}
+
+/** Step up (password, plus a TOTP or recovery code when the account has
+ *  TOTP) and receive the options for `navigator.credentials.create()`. */
+export function passkeyRegisterBegin(password: string, totp_code?: string) {
+  return apiFetch<{ options: Record<string, unknown> }>("/v1/auth/passkeys/register/begin", {
+    method: "POST",
+    skipErrorToast: true,
+    body: JSON.stringify({ password, ...(totp_code ? { totp_code } : {}) }),
+  });
+}
+
+export function passkeyRegisterComplete(
+  credential: Record<string, unknown>,
+  nickname?: string,
+) {
+  return apiFetch<Passkey>("/v1/auth/passkeys/register/complete", {
+    method: "POST",
+    skipErrorToast: true,
+    body: JSON.stringify({ credential, ...(nickname ? { nickname } : {}) }),
+  });
+}
+
+export function renamePasskey(id: string, nickname: string) {
+  return apiFetch<Passkey>(`/v1/auth/passkeys/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nickname }),
+  });
+}
+
+/** Never password-gated, and the last one may go: the password remains. */
+export function deletePasskey(id: string) {
+  return apiFetch<void>(`/v1/auth/passkeys/${id}`, { method: "DELETE" });
+}
+
+/** No body and no account: the credential is discoverable. */
+export function passkeySignInBegin() {
+  return apiFetch<{ options: Record<string, unknown> }>("/v1/auth/passkeys/sign-in/begin", {
+    method: "POST",
+    skipRefresh: true,
+    skipErrorToast: true,
+  });
+}
+
+export function passkeySignInComplete(credential: Record<string, unknown>, captcha?: string) {
+  return apiFetch<TokenResponse>("/v1/auth/passkeys/sign-in/complete", {
+    method: "POST",
+    skipRefresh: true,
+    skipErrorToast: true,
+    body: JSON.stringify({ credential, ...(captcha ? { captcha } : {}) }),
   });
 }
 
