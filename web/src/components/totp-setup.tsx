@@ -8,7 +8,9 @@ import {
   regenerateRecoveryCodes,
   type TOTPSetupResponse,
 } from "@/lib/auth";
+import { toast } from "sonner";
 import { apiErrorMessage } from "@/lib/api-errors";
+import { copyToClipboard } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -182,8 +184,10 @@ export function TOTPSetup() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              navigator.clipboard.writeText(setup.recovery_codes.join("\n"));
+            onClick={async () => {
+              if (await copyToClipboard(setup.recovery_codes.join("\n"), "recovery codes")) {
+                toast.success("Recovery codes copied");
+              }
             }}
           >
             Copy to clipboard
@@ -268,8 +272,10 @@ function TOTPDisable() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              navigator.clipboard.writeText(newCodes.join("\n"));
+            onClick={async () => {
+              if (await copyToClipboard(newCodes.join("\n"), "recovery codes")) {
+                toast.success("Recovery codes copied");
+              }
             }}
           >
             Copy to clipboard

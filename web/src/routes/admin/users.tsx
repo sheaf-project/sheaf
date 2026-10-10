@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { copyToClipboard } from "@/lib/clipboard";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -827,9 +828,9 @@ function UserActions({ user }: { user: AdminUser }) {
     return () => clearTimeout(timer);
   }, [generatedPassword]);
 
-  function copyPassword() {
-    if (generatedPassword) {
-      navigator.clipboard.writeText(generatedPassword);
+  async function copyPassword() {
+    if (!generatedPassword) return;
+    if (await copyToClipboard(generatedPassword, "password")) {
       toast.success("Password copied");
     }
   }

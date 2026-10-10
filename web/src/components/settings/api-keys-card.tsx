@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api-keys";
+import { copyToClipboard } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -209,21 +210,12 @@ export function ApiKeysCard() {
     doCreate(scopes);
   }
 
-  function handleCopy() {
+  async function handleCopy() {
     if (!createdKey) return;
-    // No clipboard API outside a secure context (a plain-http selfhost), so
-    // don't claim a copy that didn't happen.
-    if (!navigator.clipboard) {
-      toast.error("Couldn't copy - select the key and copy it manually");
-      return;
+    if (await copyToClipboard(createdKey.key, "key")) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
-    navigator.clipboard.writeText(createdKey.key).then(
-      () => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      },
-      () => toast.error("Couldn't copy - select the key and copy it manually"),
-    );
   }
 
   return (

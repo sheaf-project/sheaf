@@ -1,5 +1,6 @@
 import { Copy, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
+import { copyToClipboard } from "@/lib/clipboard";
 
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Button } from "@/components/ui/button";
@@ -28,12 +29,9 @@ export function ActivationLinkModal({
   const { formatDateTime } = useDateFormatters();
   if (!url) return null;
 
-  function copy() {
+  async function copy() {
     if (!url) return;
-    navigator.clipboard.writeText(url).then(
-      () => toast.success("Copied"),
-      () => toast.error("Couldn't copy - select and copy manually"),
-    );
+    if (await copyToClipboard(url, "link")) toast.success("Copied");
   }
 
   return (

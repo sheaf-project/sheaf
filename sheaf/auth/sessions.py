@@ -1,14 +1,68 @@
+import functools
 import re
 import secrets
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import redis.asyncio as redis
+from redis.exceptions import RedisError
 
 from sheaf.config import settings
 
 _redis: redis.Redis | None = None
 _redis_bytes: redis.Redis | None = None
+
+# What a Redis call actually raises when the server is unreachable, slow, or
+# mid-failover. `get_redis` only builds a client (redis.from_url does not
+# connect), so the first thing that ever touches the network is the command
+# itself. redis-py wraps socket failures and timeouts into its own hierarchy
+# (ConnectionError, TimeoutError, BusyLoadingError - all RedisError), but a
+# failure raised while the pool is opening the socket can still surface as a
+# bare OSError, so both are caught. Deliberately NOT `Exception`: a bug in our
+# own key building should stay a 500 and be fixed, not be laundered into
+# "Redis is down". Shared with the rate limiter, which has the same problem
+# and the same answer.
+REDIS_ERRORS = (RedisError, OSError)
+
+# Retry-After on a fail-closed 503. Short on purpose - a Redis blip is usually
+# seconds, and the point is to tell a client to come back rather than to spin.
+REDIS_RETRY_AFTER = "5"
+
+
+class SessionStoreUnavailable(Exception):
+    """Redis could not be reached while reading or writing session state.
+
+    The session store is fail-closed, and this is the exception that says so.
+    A JWT or cookie whose session cannot be checked is not accepted, because
+    the session may have been revoked and Redis is the only place that knows;
+    a logout or rotation that cannot be recorded is not reported as done. The
+    app turns this into a 503 with Retry-After (see main.py), the same verdict
+    the rate limiter gives a fail-closed endpoint, instead of the unhandled
+    500 with a stack trace per request that an outage used to produce on
+    every authenticated route.
+    """
+
+
+def _fail_closed[**P, T](fn: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+    """Turn a Redis failure inside a session operation into SessionStoreUnavailable.
+
+    Applied to every function here that talks to Redis, so the policy is
+    decided once rather than at each of the call sites in the auth dependency,
+    the login and refresh handlers, and the session-management endpoints. Only
+    the transport errors are caught; anything else is a bug and stays a 500.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        try:
+            return await fn(*args, **kwargs)
+        except REDIS_ERRORS as exc:
+            raise SessionStoreUnavailable(
+                f"{fn.__name__}: {type(exc).__name__}"
+            ) from exc
+
+    return wrapper
 
 
 async def get_redis() -> redis.Redis:
@@ -96,6 +150,7 @@ def _browser_from_user_agent(user_agent: str) -> str:
     return "Unknown"
 
 
+@_fail_closed
 async def create_session(
     user_id: uuid.UUID,
     ip: str | None = None,
@@ -143,6 +198,7 @@ async def create_session(
     return session_id
 
 
+@_fail_closed
 async def get_session_user_id(session_id: str) -> uuid.UUID | None:
     """Look up the user ID for a session. Returns None if expired/invalid."""
     r = await get_redis()
@@ -152,6 +208,7 @@ async def get_session_user_id(session_id: str) -> uuid.UUID | None:
     return uuid.UUID(user_id_str)
 
 
+@_fail_closed
 async def touch_session(session_id: str, ip: str | None = None) -> None:
     """Update last_active_at, last_active_ip, and extend session TTL."""
     r = await get_redis()
@@ -166,6 +223,7 @@ async def touch_session(session_id: str, ip: str | None = None) -> None:
     await pipe.execute()
 
 
+@_fail_closed
 async def get_session_info(session_id: str) -> dict | None:
     """Return full session metadata as a dict, or None if expired."""
     r = await get_redis()
@@ -175,6 +233,7 @@ async def get_session_info(session_id: str) -> dict | None:
     return data
 
 
+@_fail_closed
 async def list_user_sessions(user_id: uuid.UUID) -> list[dict]:
     """List all active sessions for a user, cleaning up expired entries."""
     r = await get_redis()
@@ -229,6 +288,7 @@ async def resolve_session_handle(user_id: uuid.UUID, handle: str) -> str | None:
     return None
 
 
+@_fail_closed
 async def delete_session(session_id: str) -> None:
     """Delete a session and any child sessions linked to it.
 
@@ -255,6 +315,7 @@ async def delete_session(session_id: str) -> None:
         await r.srem(_user_sessions_key(uuid.UUID(user_id_str)), session_id)
 
 
+@_fail_closed
 async def delete_other_sessions(
     user_id: uuid.UUID, keep_session_id: str,
 ) -> int:
@@ -284,6 +345,7 @@ async def delete_other_sessions(
     return revoked
 
 
+@_fail_closed
 async def delete_all_user_sessions(user_id: uuid.UUID) -> int:
     """Delete all sessions for a user. Returns count deleted."""
     r = await get_redis()
@@ -303,6 +365,7 @@ async def delete_all_user_sessions(user_id: uuid.UUID) -> int:
     return len(session_ids)
 
 
+@_fail_closed
 async def rename_session(session_id: str, nickname: str) -> bool:
     """Set a nickname on a session. Returns False if session doesn't exist."""
     r = await get_redis()
@@ -332,12 +395,14 @@ def _refresh_rotation_key(jti: str) -> str:
 REFRESH_ROTATION_GRACE_SECONDS = 10
 
 
+@_fail_closed
 async def register_refresh_jti(jti: str, session_id: str, ttl_seconds: int) -> None:
     """Record a minted refresh token's jti so we can detect later reuse."""
     r = await get_redis()
     await r.setex(_refresh_jti_key(jti), ttl_seconds, session_id)
 
 
+@_fail_closed
 async def consume_refresh_jti(jti: str) -> str | None:
     """Atomically invalidate a refresh jti and return the bound session_id.
 
@@ -348,6 +413,7 @@ async def consume_refresh_jti(jti: str) -> str | None:
     return await r.getdel(_refresh_jti_key(jti))
 
 
+@_fail_closed
 async def cache_refresh_rotation(jti: str, new_refresh_token: str) -> None:
     """After a successful rotation, cache the freshly-minted refresh token
     keyed by the *old* jti for a brief grace window. A concurrent caller that
@@ -357,6 +423,7 @@ async def cache_refresh_rotation(jti: str, new_refresh_token: str) -> None:
     await r.setex(_refresh_rotation_key(jti), REFRESH_ROTATION_GRACE_SECONDS, new_refresh_token)
 
 
+@_fail_closed
 async def get_cached_refresh_rotation(jti: str) -> str | None:
     """Return the cached new refresh token for a recently-consumed jti, or
     None if the grace window has expired or no rotation was cached."""
@@ -364,6 +431,7 @@ async def get_cached_refresh_rotation(jti: str) -> str | None:
     return await r.get(_refresh_rotation_key(jti))
 
 
+@_fail_closed
 async def revoke_refresh_jti(jti: str) -> None:
     """Best-effort revoke of a refresh jti (e.g. on logout)."""
     r = await get_redis()
@@ -394,6 +462,7 @@ def _step_up_key(user_id: uuid.UUID, session_id: str) -> str:
     return f"sheaf:admin_step_up:{user_id}:{sid_hash}"
 
 
+@_fail_closed
 async def set_admin_step_up(
     user_id: uuid.UUID, session_id: str, ttl: int = 7200
 ) -> None:
@@ -402,6 +471,7 @@ async def set_admin_step_up(
     await r.setex(_step_up_key(user_id, session_id), ttl, "1")
 
 
+@_fail_closed
 async def check_admin_step_up(user_id: uuid.UUID, session_id: str | None) -> bool:
     """Return True if this session has a valid admin step-up token."""
     if session_id is None:
