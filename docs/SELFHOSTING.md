@@ -52,7 +52,7 @@ Other tunnel providers (Tailscale Funnel, ngrok, etc.) work the same way if you 
 
 ### What is bundled, and what is not
 
-- **In the app container:** the backend, the web UI, Caddy, and a small redis (transient session / rate-limit / cache state only; a restart just re-authenticates users). Point `REDIS_URL` at an external server to skip the bundled one.
+- **In the app container:** the backend, the web UI, Caddy, and a small redis (transient session / rate-limit / cache state only; a restart just re-authenticates users). Point `REDIS_URL` at an external server to skip the bundled one. Redis holds nothing durable but is not optional - see [Is Redis required?](#is-redis-required).
 - **A separate container:** Postgres - its data must outlive the app. Point `DATABASE_URL` at an external database to drop the bundled one.
 - **Filesystem storage** on a volume by default; set `STORAGE_BACKEND=s3` for object storage.
 
@@ -240,6 +240,77 @@ ADMIN_AUTH_LEVEL=totp
 The challenge is stored in Redis per-user and valid for 2 hours. Applies to both session-cookie auth and JWT bearer token auth. API keys with `admin:*` scope are exempt and never require step-up.
 
 With `ADMIN_AUTH_LEVEL=totp`: if the admin account does not have TOTP enabled, access to the dashboard is blocked with an explanatory message until 2FA is set up in Settings.
+
+---
+
+## Is Redis required?
+
+**Yes.** Redis holds no durable data, which sometimes reads as "optional cache" - it is not. Sessions live there, and every authenticated request checks them, so an instance without a reachable Redis cannot sign anybody in and cannot serve anybody already signed in.
+
+What that looks like in practice, with Redis unreachable:
+
+| | Behaviour |
+|---|---|
+| Sign in, register, refresh a token | Fail. `503` with rate limiting on, `500` with it off |
+| Any request from a browser session or JWT | Fail (`500`) |
+| The web UI and the phone apps | Unusable, immediately |
+| Requests authenticated with an **API key** | **Work normally, read and write** |
+| `GET /health` (liveness) | `200` - the process is alive |
+| `GET /health/ready` (readiness) | `503`, body names the failed dependency |
+| Rate limiting | Not enforced. Endpoints declared fail-closed (sign-in, registration, password reset) refuse rather than run unprotected |
+| Your data | Untouched. Everything durable is in Postgres |
+
+Two things worth knowing, because both are easy to assume otherwise:
+
+- **Existing sessions do not keep working until they expire.** They stop on the next request. Sheaf re-checks the session on every authenticated call so that a revoked session dies immediately everywhere, which is the behaviour you want from "sign out all other devices" and the wrong behaviour to rely on here.
+- **Turning off rate limiting does not work around it.** `RATE_LIMIT_ENABLED=false` stops the limiter touching Redis, but sign-in still fails, because creating the session is itself a Redis write. The error changes from `503` to `500`; nothing else does.
+
+Nothing is lost when Redis restarts: everyone signs in again and rate-limit counters start from zero. Sizing is modest - sessions and short-lived counters only - which is why the all-in-one image bundles a small one rather than asking you to run a separate service. Point `REDIS_URL` at your own server to use that instead.
+
+Monitor `GET /health/ready` rather than `GET /health`. The first reports dependency status and returns `503` when something it needs is down; the second only says the process is running:
+
+```json
+{"status": "unavailable", "checks": {"database": "ok", "redis": "error"}}
+```
+
+---
+
+## Running without a public domain
+
+Sheaf runs fine on a LAN with no public DNS name, and most of it is unaffected. Some features are not, because they depend on the browser treating the page as a **secure context**, which in practice means HTTPS with a real hostname. Browsers make two exceptions: `localhost` / `127.0.0.1` / `::1` count as secure over plain HTTP, and nothing else does - a private IP like `192.168.1.50` is an ordinary insecure origin.
+
+A LAN hostname works as well as a public one. `https://sheaf.lan` with a certificate from your own CA is a secure context and a valid passkey domain; it does not have to resolve on the public internet.
+
+| Feature | Plain HTTP on a LAN address | HTTPS on a LAN hostname |
+|---|---|---|
+| Everything else (members, fronting, journals, imports, API keys, notifications out to webhooks / ntfy) | Works | Works |
+| Sign-in and sessions | Works, **if** `SHEAF_BASE_URL` is set to the `http://` URL - see below | Works |
+| Passkeys | Unavailable, and says so | Works |
+| Web push (browser notifications) | Unavailable | Works |
+| Copy-to-clipboard buttons | Unavailable | Works |
+| Build verification (Settings) | Unavailable | Works |
+| Public profiles and share links | Reachable only from the LAN | Reachable only from the LAN |
+| Link preview cards in chat apps | Never render | Never render |
+| Mobile push to the Sheaf apps | Phone must be on the LAN or VPN | Phone must be on the LAN or VPN |
+
+### Set `SHEAF_BASE_URL` to match
+
+This is the one that silently breaks a plain-HTTP install. Auth cookies are marked `Secure` unless `SHEAF_BASE_URL` starts with `http://`, and browsers discard `Secure` cookies on a plain-HTTP origin. Leave the base URL unset or `https://` while serving HTTP and sign-in appears to succeed and then does not stick.
+
+```bash
+# Plain-HTTP LAN install: say so, or cookies are dropped.
+SHEAF_BASE_URL=http://192.168.1.50:8000
+```
+
+### Passkeys specifically
+
+Passkeys need the browser to bind a credential to a domain name. On plain HTTP they are cleanly **unavailable rather than broken**: the routes 404, clients hide the controls, and `GET /v1/auth/config` reports the reason. See [Passkeys](#passkeys-webauthn).
+
+> **Known rough edge.** With HTTPS on a bare IP address (`https://192.168.1.50`) Sheaf currently reports passkeys as available, but browsers refuse to bind a credential to an IP literal, so enrolment fails with a browser error instead of Sheaf's own explanation. Use a hostname if you want passkeys.
+
+### If you want it reachable from outside
+
+A Cloudflare Tunnel needs no port forwarding and no public IP, and terminates TLS for you; the all-in-one image bundles `cloudflared`. See [Quick start (all-in-one)](#quick-start-all-in-one).
 
 ---
 
@@ -690,7 +761,7 @@ Users can enrol passkeys (a phone's or laptop's built-in authenticator, a passwo
 
 **Off by default.** `PASSKEYS_ENABLED=true` turns the feature on. With it off, every `/v1/auth/passkeys/*` route answers 404, `GET /v1/auth/config` reports `passkeys_available: false` with the reason `disabled`, and clients show no passkey control; existing enrolled credentials are kept, not deleted, so turning it off and on again loses nothing. The switch exists so a release can carry the code before the clients have their buttons.
 
-**Once on, availability is decided by `SHEAF_BASE_URL`.** Browsers only release a passkey to the exact site it was created for, so the instance has to know its own name. The relying-party ID is the host of `SHEAF_BASE_URL`, and the feature is available when that URL is `https://` (or a `localhost` / `127.0.0.1` / `::1` URL, for local development). Any other configuration, including an unset base URL or a plain-HTTP LAN install, makes passkeys **unavailable rather than broken**: every `/v1/auth/passkeys/*` route answers 404, clients hide the controls, and `GET /v1/auth/config` reports `passkeys_available: false` with the reason in `passkeys_unavailable_reason`. Nothing to configure for the ordinary https deployment.
+**Once on, availability is decided by `SHEAF_BASE_URL`.** Browsers only release a passkey to the exact site it was created for, so the instance has to know its own name. The relying-party ID is the host of `SHEAF_BASE_URL`, and the feature is available when that URL is `https://` (or a `localhost` / `127.0.0.1` / `::1` URL, for local development). Any other configuration, including an unset base URL or a plain-HTTP LAN install, makes passkeys **unavailable rather than broken**: every `/v1/auth/passkeys/*` route answers 404, clients hide the controls, and `GET /v1/auth/config` reports `passkeys_available: false` with the reason in `passkeys_unavailable_reason`. Nothing to configure for the ordinary https deployment. If you are running on a LAN, see [Running without a public domain](#running-without-a-public-domain) for the full list of what a non-HTTPS origin costs you, and for the bare-IP caveat.
 
 ```env
 # The master switch. Off (the default) keeps the feature dark.
