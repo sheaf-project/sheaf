@@ -59,12 +59,24 @@ class _OSErrorRedis:
         return boom
 
 
+# The dead client is installed as the cached singleton, never by replacing the
+# `get_redis` function. Several modules bind that function by name at import
+# time (`from sheaf.auth.sessions import get_redis`), and the app-level test
+# below imports the whole app; a module first imported while the function was
+# swapped would keep the fake after monkeypatch restored the original, and a
+# later test in the same worker would then fail with a ConnectionError raised
+# from this file. That happened once in CI, in a shard that imported the app
+# for the first time here. The singleton is read fresh on every call, so
+# patching it has no such after-effect.
+
+
+def _install(monkeypatch, client) -> None:
+    monkeypatch.setattr(sessions, "_redis", client)
+
+
 @pytest.fixture
 def _redis_is_down(monkeypatch):
-    async def fake_get_redis():
-        return _BoomRedis()
-
-    monkeypatch.setattr(sessions, "get_redis", fake_get_redis)
+    _install(monkeypatch, _BoomRedis())
 
 
 @pytest.mark.asyncio
@@ -106,10 +118,7 @@ async def test_every_session_operation_is_fail_closed(_redis_is_down, call):
 
 @pytest.mark.asyncio
 async def test_a_bare_oserror_from_the_pool_is_caught_too(monkeypatch):
-    async def fake_get_redis():
-        return _OSErrorRedis()
-
-    monkeypatch.setattr(sessions, "get_redis", fake_get_redis)
+    _install(monkeypatch, _OSErrorRedis())
     with pytest.raises(SessionStoreUnavailable):
         await sessions.get_session_user_id("sid")
 
@@ -124,10 +133,7 @@ async def test_our_own_bugs_are_not_laundered_into_an_outage(monkeypatch):
         async def hget(self, *args, **kwargs):
             raise TypeError("our bug")
 
-    async def fake_get_redis():
-        return _BuggyRedis()
-
-    monkeypatch.setattr(sessions, "get_redis", fake_get_redis)
+    _install(monkeypatch, _BuggyRedis())
     with pytest.raises(TypeError):
         await sessions.get_session_user_id("sid")
 
@@ -185,6 +191,21 @@ async def test_the_handler_is_wired_on_a_minimal_app(_redis_is_down):
 
     assert resp.status_code == 503
     assert resp.headers["Retry-After"]
+
+
+def test_no_module_kept_a_fake_redis_accessor():
+    """Guard for the hazard described above `_install`: after this file has
+    run, every loaded sheaf module that bound `get_redis` by name must still
+    hold the real function, and the singleton must not be one of the fakes."""
+    import sys
+
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("sheaf"):
+            continue
+        bound = getattr(module, "get_redis", None)
+        if bound is not None:
+            assert bound is sessions.get_redis, name
+    assert not isinstance(sessions._redis, (_BoomRedis, _OSErrorRedis))
 
 
 def test_rate_limiter_and_sessions_share_one_policy():
