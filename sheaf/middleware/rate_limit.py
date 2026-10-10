@@ -37,10 +37,10 @@ import time
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request, status
-from redis.exceptions import RedisError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from sheaf.auth.sessions import REDIS_ERRORS, REDIS_RETRY_AFTER
 from sheaf.config import settings
 from sheaf.observability.metrics import rate_limit_checks_total
 from sheaf.observability.middleware import route_template
@@ -55,17 +55,11 @@ logger = logging.getLogger("sheaf.ratelimit")
 # 500 with a stack trace, on the exact endpoints whose whole point is to keep
 # answering predictably when something is wrong.
 #
-# redis-py wraps socket failures and timeouts into its own hierarchy
-# (ConnectionError, TimeoutError, BusyLoadingError - all RedisError), but a
-# failure raised while the pool is opening the socket can still surface as a
-# bare OSError, so both are caught. Deliberately NOT `Exception`: a bug in our
-# own key building should stay a 500 and be fixed, not be laundered into
-# "Redis is down".
-_REDIS_ERRORS = (RedisError, OSError)
-
-# Retry-After on a fail-closed 503. Short on purpose - a Redis blip is usually
-# seconds, and the point is to tell a client to come back rather than to spin.
-_REDIS_RETRY_AFTER = "5"
+# The tuple and the Retry-After live with the Redis client in
+# sheaf.auth.sessions, which has the same outage to answer for on every
+# authenticated request, so the two fail-closed paths cannot drift apart.
+_REDIS_ERRORS = REDIS_ERRORS
+_REDIS_RETRY_AFTER = REDIS_RETRY_AFTER
 
 
 def _redis_unavailable(

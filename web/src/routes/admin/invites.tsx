@@ -13,6 +13,7 @@ import {
   type InviteCode,
 } from "@/lib/admin";
 import { timeAgo } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Copy, Plus, Trash2 } from "lucide-react";
 
@@ -30,10 +31,11 @@ function InviteRow({ invite }: { invite: InviteCode }) {
     },
   });
 
-  function copyCode() {
-    navigator.clipboard.writeText(invite.code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  async function copyCode() {
+    if (await copyToClipboard(invite.code, "code")) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }
 
   const usesLabel =

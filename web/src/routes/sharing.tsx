@@ -34,6 +34,7 @@ import {
   showApiErrorToast,
 } from "@/lib/api-errors";
 import { getSystemSafety } from "@/lib/system-safety";
+import { copyToClipboard } from "@/lib/clipboard";
 import { getMySystem } from "@/lib/systems";
 import type {
   ShareAuditEntry,
@@ -2443,17 +2444,8 @@ function CopyableUrl({ url, big }: { url: string; big?: boolean }) {
     selection?.addRange(range);
   }
 
-  function copy() {
-    // navigator.clipboard is undefined outside a secure context - a plain-http
-    // selfhost, say - so this can't assume the write happened.
-    if (!navigator.clipboard) {
-      toast.error("Couldn't copy - select the link and copy it manually");
-      return;
-    }
-    navigator.clipboard.writeText(url).then(
-      () => toast.success("Copied"),
-      () => toast.error("Couldn't copy - select the link and copy it manually"),
-    );
+  async function copy() {
+    if (await copyToClipboard(url, "link")) toast.success("Copied");
   }
 
   return (

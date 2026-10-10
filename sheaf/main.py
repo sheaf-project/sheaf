@@ -15,6 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from sheaf import __version__
 from sheaf.api.link_preview import router as link_preview_router
 from sheaf.api.v1.router import v1_router
+from sheaf.auth.sessions import REDIS_RETRY_AFTER, SessionStoreUnavailable
 from sheaf.config import _validate_settings, settings
 from sheaf.middleware.body_size import BodyTooLargeError, MaxBodySizeMiddleware
 from sheaf.middleware.concurrency import AccountConcurrencyMiddleware
@@ -299,6 +300,32 @@ async def pool_timeout_handler(
         status_code=503,
         content={"detail": "Service busy, try again shortly"},
         headers={"Retry-After": "5"},
+    )
+
+
+@app.exception_handler(SessionStoreUnavailable)
+async def session_store_unavailable_handler(
+    request: Request, exc: SessionStoreUnavailable
+) -> JSONResponse:
+    # Redis is unreachable and the request needed it to check or record a
+    # session. Sessions are fail-closed on purpose: a token whose session
+    # cannot be looked up may have been revoked, and accepting it on the
+    # strength of the JWT alone would turn every Redis blip into a revocation
+    # bypass. So this is the same 503 with the same Retry-After that the rate
+    # limiter gives a fail-closed endpoint, not a 500: the instance is
+    # degraded, not buggy, and a dashboard should read it that way. Logged at
+    # error without a traceback, since an outage produces one of these per
+    # request and the stack is always the same redis-py frames.
+    logger.error(
+        "%s %s -> 503: session store unavailable (%s)",
+        request.method,
+        route_template(request),
+        exc,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Service temporarily unavailable"},
+        headers={"Retry-After": REDIS_RETRY_AFTER},
     )
 
 

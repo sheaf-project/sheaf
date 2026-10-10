@@ -34,7 +34,23 @@ const MOBILE_DESTINATION_TYPES = new Set<DestinationType>([
   "apns_prod",
 ]);
 
+// Service workers, and so web push, exist only in a secure context. On a
+// plain-http instance `navigator.serviceWorker` is simply absent in every
+// browser, which is not the browser's fault, so say what actually needs
+// fixing rather than sending people hunting for a browser bug. Checked before
+// the permission prompt, not after: browsers auto-deny notification permission
+// on an insecure origin too, so a later check would never be reached and the
+// user would read "permission was denied" for a prompt they never saw.
+function requireSecureContext(): void {
+  if (!window.isSecureContext) {
+    throw new Error(
+      "Web push needs a secure connection (HTTPS). This instance is served over plain HTTP, so the browser doesn't offer it here.",
+    );
+  }
+}
+
 async function getOrCreatePushSubscription(): Promise<PushSubscription | null> {
+  requireSecureContext();
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     throw new Error("This browser doesn't support web push.");
   }
@@ -161,6 +177,7 @@ export function NotificationsRedeemPage() {
   async function activateWebPush() {
     setPhase({ kind: "requesting" });
     try {
+      requireSecureContext();
       if (!("Notification" in window)) {
         throw new Error("This browser doesn't support notifications.");
       }
