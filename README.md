@@ -57,6 +57,7 @@ A plural system's records are among the most sensitive data a person can keep, a
 - **Front-history export** - Fronting history on its own as CSV (one row per front, with duration and co-fronters), JSON, or ICS to drop into a calendar app
 - **Display preferences** - Date format and display timezone as per-account settings that sync across your devices, with a per-device override so a machine in another zone can pin its own
 - **2FA** — Optional TOTP with recovery codes
+- **Passkeys** - Sign in with a tap using a phone's or laptop's built-in authenticator, a password manager, or a hardware key such as a YubiKey, with no email or password typed. Built for the case where the headmate at front does not have the memory of a password another headmate set. The account always keeps its password, removing a passkey is never gated, and a passkey sign-in never satisfies System Safety, because a key unlocked by whoever holds the device cannot tell headmates apart the way a password or code can. Needs `PASSKEYS_ENABLED=true` and an `https://` base URL; self-hosters can also vouch for native apps via the published app-association documents.
 - **API keys** — Scoped, named keys (`sk_…`) for scripts and integrations
 - **Account activity log** - A curated record of consequential account actions and automated actions on your data, carrying no member content and no IP, included in the Article 15 access export
 - **Admin dashboard** — User management, invite codes, storage audit, background job monitoring, server announcements (inline links, settable expiry), optional step-up auth
@@ -160,7 +161,7 @@ sheaf/
 All endpoints are under `/v1/`. The OpenAPI spec is auto-generated at `/v1/openapi.json`.
 
 **Auth:** Two methods are supported:
-- **JWT bearer tokens** (15min access + 30d refresh) — for interactive clients. `POST /v1/auth/login` returns tokens; pass as `Authorization: Bearer <token>`.
+- **JWT bearer tokens** (15min access + 30d refresh) — for interactive clients. `POST /v1/auth/login` returns tokens; pass as `Authorization: Bearer <token>`. A passkey sign-in (`POST /v1/auth/passkeys/sign-in/begin` then `.../complete`) mints the same tokens.
 - **API keys** (`sk_…` prefixed) — for scripts and integrations. Create in Settings; pass as `Authorization: Bearer sk_…`. Keys are scoped (e.g. `members:read`, `members:write`) and never expose the plaintext after creation.
 
 Key endpoints:
@@ -169,6 +170,8 @@ Key endpoints:
 |----------|-------------|
 | `POST /v1/auth/register` | Create account |
 | `POST /v1/auth/login` | Login, get tokens |
+| `POST /v1/auth/passkeys/sign-in/begin` | Start a passkey sign-in (no body; the credential is discoverable) |
+| `GET/POST /v1/auth/passkeys` | List / enrol passkeys |
 | `GET /v1/auth/me` | Current user info |
 | `GET/POST /v1/auth/keys` | List/create API keys |
 | `DELETE /v1/auth/keys/{id}` | Revoke API key |
@@ -225,6 +228,7 @@ See **[docs/SELFHOSTING.md](docs/SELFHOSTING.md)** for the full guide covering:
 
 - Secrets and encryption key management
 - Admin access and step-up authentication
+- Passkeys (`PASSKEYS_ENABLED`): the `https://` requirement, what a domain move does to enrolled keys, and vouching for native apps via `/.well-known/`
 - Optional dependencies (S3, SMTP, SES, SendGrid)
 - Email configuration (SMTP / AWS SES / SendGrid) with bounce/complaint handling
 - Registration modes (open / approval / invite / closed), email verification, and the optional Altcha captcha
@@ -310,7 +314,8 @@ Shipped items are listed here for context; the [CHANGELOG](CHANGELOG.md) has the
 - [x] All-in-one Docker image with automatic HTTPS and a Cloudflare Tunnel option
 - [x] Multi-replica deployments via Postgres advisory-lock leader election
 - [ ] Terraform module for cloud deployment
-- [ ] More 2FA methods - WebAuthn/YubiKey, email OTP as a "better than nothing" fallback
+- [x] Passkey and hardware-key (WebAuthn) sign-in
+- [ ] More 2FA methods - email OTP as a "better than nothing" fallback
 - [ ] Alternate secrets management methods - AWS Secrets Manager, Vault, others?
 - [ ] Accessibility improvements - image alt text support, additional TBD
 
