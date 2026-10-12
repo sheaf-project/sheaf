@@ -77,6 +77,12 @@ def parse_android_apps(raw: str) -> tuple[list[AndroidApp], list[str]]:
         bad = False
         for fp in fingerprints_raw.split("|"):
             fp = fp.strip()
+            # keytool and gradle's signingReport print the value as
+            # "SHA256: AA:BB:...", and the label gets pasted along with it.
+            # The example env file even showed it that way for a while. Strip
+            # it rather than drop the entry: the operator meant the value.
+            if fp[:7].upper() in ("SHA256:", "SHA-256"):
+                fp = fp[7:].lstrip(": ").strip()
             if not _FINGERPRINT_RE.match(fp):
                 errors.append(
                     f"{entry!r}: {fp!r} is not a SHA-256 certificate fingerprint "

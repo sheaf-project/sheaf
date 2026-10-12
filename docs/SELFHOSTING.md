@@ -794,7 +794,10 @@ A native app can only use a passkey against a site that has vouched for it, thro
 # "package.name=FINGERPRINT" entries; an app with several signing
 # certificates (debug and release, say) joins them with "|". The fingerprint
 # is the SHA-256 of the signing certificate as keytool or the Play console
-# prints it: 32 colon-separated hex bytes.
+# prints it: 32 colon-separated hex bytes. A leading "SHA256:" label, as
+# keytool prints in front of the value, is tolerated. For a published app
+# use the Play App Signing certificate (Play Console: Test and release >
+# Setup > App signing), not the upload key.
 # PASSKEY_ANDROID_APPS=sh.sheaf.app=AA:BB:...:FF|11:22:...:EE
 
 # iOS apps allowed to use this instance's passkeys. Comma-separated

@@ -49,6 +49,21 @@ def test_fingerprint_case_is_normalised_upwards():
     assert apps[0].fingerprints == (FP1,)
 
 
+@pytest.mark.parametrize(
+    "label",
+    ["SHA256:", "SHA256: ", "sha256:", "SHA-256:", "SHA-256: "],
+)
+def test_the_keytool_label_in_front_of_a_fingerprint_is_tolerated(label):
+    """keytool and gradle's signingReport print `SHA256: AA:BB:...`, and the
+    label travels with the value when it is pasted. The example env file
+    showed it that way too for a release. It is stripped, not refused: an
+    entry dropped for a label the tooling put there is a passkey that fails
+    on every phone with no clue in the UI."""
+    apps, errors = parse_android_apps(f"sh.sheaf.app={label}{FP1.lower()}|{label}{FP2}")
+    assert errors == []
+    assert apps[0].fingerprints == (FP1, FP2)
+
+
 def test_empty_android_setting_is_nothing_not_an_error():
     assert parse_android_apps("") == ([], [])
     assert parse_android_apps(" , ,") == ([], [])
