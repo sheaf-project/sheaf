@@ -27,7 +27,7 @@ host that can reach the app mint credentials for itself.
 from __future__ import annotations
 
 import ipaddress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 # Hostnames browsers treat as a secure context over plain HTTP. Deliberately
@@ -62,10 +62,17 @@ class RelyingParty:
     ``rp_id`` is the value the browser binds the credential to. ``origin`` is
     the exact origin a ceremony's client data must carry (scheme, host and
     an explicit port if the base URL has one), checked server-side.
+    ``extra_origins`` are the native Android apps' origins, accepted
+    alongside it.
     """
 
     rp_id: str
     origin: str
+    extra_origins: tuple[str, ...] = ()
+
+    @property
+    def origins(self) -> list[str]:
+        return [self.origin, *self.extra_origins]
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,4 +226,12 @@ def current_relying_party() -> RelyingPartyResolution:
 
     if not settings.passkeys_enabled:
         return _unavailable(REASON_DISABLED)
-    return resolve_relying_party(settings.sheaf_base_url, settings.passkey_rp_id)
+    resolution = resolve_relying_party(settings.sheaf_base_url, settings.passkey_rp_id)
+    if resolution.rp is None or not settings.passkey_android_apps:
+        return resolution
+
+    from sheaf.auth.app_associations import android_origins, parse_android_apps
+
+    apps, _ = parse_android_apps(settings.passkey_android_apps)
+    rp = replace(resolution.rp, extra_origins=tuple(android_origins(apps)))
+    return RelyingPartyResolution(rp=rp, reason=None)
