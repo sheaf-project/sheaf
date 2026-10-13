@@ -1453,6 +1453,34 @@ function UserActions({ user }: { user: AdminUser }) {
   );
 }
 
+// The Uploads and Animated columns used to show only the per-account override,
+// which reads as "cannot upload" for every ordinary account on an instance
+// where uploads are on for everyone. The server now says which rule actually
+// applies; the override select sits underneath for the case it exists for.
+const EFFECTIVE_LABEL: Record<
+  AdminUser["image_uploads_effective"] | AdminUser["animated_uploads_effective"],
+  string
+> = {
+  admin: "Yes (admin)",
+  instance: "Yes (instance-wide)",
+  override: "Yes (override)",
+  tier: "Yes (tier)",
+  off: "No",
+  instance_off: "No (off instance-wide)",
+};
+
+const EFFECTIVE_TITLE: Record<
+  AdminUser["image_uploads_effective"] | AdminUser["animated_uploads_effective"],
+  string
+> = {
+  admin: "Admins can always upload",
+  instance: "Uploads are enabled for every account on this instance (ALLOW_IMAGE_UPLOADS)",
+  override: "Allowed by the per-account override below",
+  tier: "Allowed by this account's tier",
+  off: "Not allowed: the instance-wide switch is off and this account has no override",
+  instance_off: "ALLOW_ANIMATED_UPLOADS is off for the whole instance; the override below has no effect until it is on",
+};
+
 function UserRow({ user }: { user: AdminUser }) {
   const qc = useQueryClient();
   const { formatDateTime } = useDateFormatters();
@@ -1594,38 +1622,54 @@ function UserRow({ user }: { user: AdminUser }) {
           </Select>
         </td>
         <td className="py-2 pr-4">
-          <Select
-            value={canUploadImages ? "yes" : "no"}
-            onValueChange={(v) => {
-              setCanUploadImages(v === "yes");
-              setDirty(true);
-            }}
-          >
-            <SelectTrigger className="h-7 w-20 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="no">No</SelectItem>
-              <SelectItem value="yes">Yes</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="space-y-1">
+            <div className="text-xs" title={EFFECTIVE_TITLE[user.image_uploads_effective]}>
+              {EFFECTIVE_LABEL[user.image_uploads_effective]}
+            </div>
+            <Select
+              value={canUploadImages ? "yes" : "no"}
+              onValueChange={(v) => {
+                setCanUploadImages(v === "yes");
+                setDirty(true);
+              }}
+            >
+              <SelectTrigger
+                className="h-7 w-32 text-xs"
+                title="Per-account override: lets this account upload even when uploads are off instance-wide"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="no">No override</SelectItem>
+                <SelectItem value="yes">Override on</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </td>
         <td className="py-2 pr-4">
-          <Select
-            value={canUploadAnimated ? "yes" : "no"}
-            onValueChange={(v) => {
-              setCanUploadAnimated(v === "yes");
-              setDirty(true);
-            }}
-          >
-            <SelectTrigger className="h-7 w-20 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="no">No</SelectItem>
-              <SelectItem value="yes">Yes</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="space-y-1">
+            <div className="text-xs" title={EFFECTIVE_TITLE[user.animated_uploads_effective]}>
+              {EFFECTIVE_LABEL[user.animated_uploads_effective]}
+            </div>
+            <Select
+              value={canUploadAnimated ? "yes" : "no"}
+              onValueChange={(v) => {
+                setCanUploadAnimated(v === "yes");
+                setDirty(true);
+              }}
+            >
+              <SelectTrigger
+                className="h-7 w-32 text-xs"
+                title="Per-account override: lets this account upload animated images when the instance allows them and the tier does not"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="no">No override</SelectItem>
+                <SelectItem value="yes">Override on</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </td>
         <td className="py-2 pr-4 text-xs text-muted-foreground">
           {user.member_count}

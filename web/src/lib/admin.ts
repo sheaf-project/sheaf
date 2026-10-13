@@ -21,6 +21,14 @@ export interface AdminUser {
   member_count: number;
   can_upload_images: boolean;
   can_upload_animated_images: boolean;
+  /** Why uploads are or are not allowed for this account right now. */
+  image_uploads_effective: "admin" | "instance" | "override" | "off";
+  animated_uploads_effective:
+    | "instance_off"
+    | "admin"
+    | "override"
+    | "tier"
+    | "off";
   created_at: string;
   last_login_at: string | null;
   suspended_until: string | null;
