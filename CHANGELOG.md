@@ -9,6 +9,7 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 ### Fixed
 
 - **`PASSKEY_ANDROID_APPS` now accepts the fingerprint the way keytool prints it.** The example env file said to write `package.name=SHA256:FINGERPRINT`, and keytool and gradle's `signingReport` put that same `SHA256:` label in front of the value, but the parser refused anything with the label and dropped the entry at boot, so an operator following the example got no association document and no passkeys in the Android app, with only a boot-log warning to say why. The label is now stripped, the example says what the value actually looks like, and the self-hosting guide names which Play Console certificate to copy (App signing, not the upload key).
+- **Passkeys from the Android app now verify.** A native Android client signs its ceremony with the origin `android:apk-key-hash:` plus the base64url SHA-256 of the app's signing certificate, not the instance's web origin, so every passkey enrolment and sign-in from an app vouched for in `PASSKEY_ANDROID_APPS` failed verification even with `assetlinks.json` published. Each fingerprint in that setting is now also accepted as an origin.
 
 ## [1.7.0] - 2026-10-11
 
