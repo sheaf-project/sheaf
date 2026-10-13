@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException
 
 from sheaf.auth.app_associations import (
     AndroidApp,
+    android_origins,
     apple_association_document,
     assetlinks_document,
     parse_android_apps,
@@ -136,6 +137,31 @@ def test_apple_document_is_webcredentials_only():
     doc = apple_association_document(["ABCDE12345.sh.sheaf.app"])
     assert doc == {"webcredentials": {"apps": ["ABCDE12345.sh.sheaf.app"]}}
     assert "applinks" not in doc
+
+
+def test_android_origins_are_the_unpadded_base64url_of_each_fingerprint():
+    apps, _ = parse_android_apps(f"sh.sheaf.app={FP1}|{FP2},org.example.fork={FP1}")
+    assert android_origins(apps) == [
+        "android:apk-key-hash:" + "q6ur" * 10 + "q6s",
+        "android:apk-key-hash:" + "AQEB" * 10 + "AQE",
+    ]
+
+
+def test_android_origins_are_accepted_alongside_the_web_origin(monkeypatch):
+    from sheaf.auth.passkeys import current_relying_party
+    from sheaf.config import settings
+
+    monkeypatch.setattr(settings, "passkeys_enabled", True)
+    monkeypatch.setattr(settings, "sheaf_base_url", "https://sheaf.example.net")
+    monkeypatch.setattr(settings, "passkey_rp_id", "")
+    monkeypatch.setattr(settings, "passkey_android_apps", "")
+    assert current_relying_party().rp.origins == ["https://sheaf.example.net"]
+
+    monkeypatch.setattr(settings, "passkey_android_apps", f"sh.sheaf.app={FP1}")
+    assert current_relying_party().rp.origins == [
+        "https://sheaf.example.net",
+        "android:apk-key-hash:" + "q6ur" * 10 + "q6s",
+    ]
 
 
 # --- the routes ---------------------------------------------------------------------

@@ -32,6 +32,7 @@ operator would ever learn why.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass
 
@@ -114,6 +115,23 @@ def parse_ios_apps(raw: str) -> tuple[list[str], list[str]]:
 
 def _entries(raw: str) -> list[str]:
     return [e.strip() for e in (raw or "").split(",") if e.strip()]
+
+
+def android_origins(apps: list[AndroidApp]) -> list[str]:
+    """The WebAuthn origins an Android app's ceremonies carry.
+
+    A native Android client does not sign with the site's origin; its client
+    data says `android:apk-key-hash:` followed by the unpadded base64url of
+    the signing certificate's SHA-256. One per fingerprint, deduplicated.
+    """
+    out: list[str] = []
+    for app in apps:
+        for fp in app.fingerprints:
+            raw = bytes.fromhex(fp.replace(":", ""))
+            x = "android:apk-key-hash:" + base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+            if x not in out:
+                out.append(x)
+    return out
 
 
 def assetlinks_document(apps: list[AndroidApp]) -> list[dict]:
