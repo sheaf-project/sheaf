@@ -13,10 +13,10 @@ from sheaf.auth.lockout import ensure_not_locked, record_login_failure
 from sheaf.auth.sessions import check_admin_step_up, set_admin_step_up
 from sheaf.auth.totp import TotpCheck, check_code_once, totp_error_detail
 from sheaf.config import settings
-from sheaf.image_processing import animated_upload_source, image_upload_source
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
 from sheaf.encrypted_fields import user_email_aad, user_totp_secret_aad
+from sheaf.image_processing import animated_upload_source, image_upload_source
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.admin_audit_event import AdminAuditAction, AdminAuditTargetType
 from sheaf.models.member import Member
