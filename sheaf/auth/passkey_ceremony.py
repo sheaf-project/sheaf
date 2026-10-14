@@ -200,7 +200,7 @@ def verify_enrolment(
             credential=parsed,
             expected_challenge=expected_challenge,
             expected_rp_id=rp.rp_id,
-            expected_origin=rp.origin,
+            expected_origin=rp.origins,
             require_user_presence=True,
             require_user_verification=True,
         )
@@ -342,7 +342,7 @@ def verify_assertion(
             credential=parse_authentication_credential_json(credential),
             expected_challenge=expected_challenge,
             expected_rp_id=rp.rp_id,
-            expected_origin=rp.origin,
+            expected_origin=rp.origins,
             credential_public_key=public_key,
             credential_current_sign_count=0,
             require_user_verification=True,

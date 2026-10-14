@@ -12,7 +12,9 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ### Fixed
 
+- **The admin user table no longer claims nobody can upload.** Its Uploads and Animated columns showed only the per-account override flag, labelled as if it were the answer, so on an instance where uploads are on for everyone (the default) every ordinary account read "No" while uploading fine. Each column now shows the rule that actually applies to the account, "Yes (instance-wide)", "Yes (admin)", "Yes (override)", "Yes (tier)", "No", or "No (off instance-wide)", with the override control underneath for the case it exists for: letting one account through when the instance-wide switch is off. API clients: `GET /v1/admin/users` gains `image_uploads_effective` and `animated_uploads_effective` carrying those reasons.
 - **`PASSKEY_ANDROID_APPS` now accepts the fingerprint the way keytool prints it.** The example env file said to write `package.name=SHA256:FINGERPRINT`, and keytool and gradle's `signingReport` put that same `SHA256:` label in front of the value, but the parser refused anything with the label and dropped the entry at boot, so an operator following the example got no association document and no passkeys in the Android app, with only a boot-log warning to say why. The label is now stripped, the example says what the value actually looks like, and the self-hosting guide names which Play Console certificate to copy (App signing, not the upload key).
+- **Passkeys from the Android app now verify.** A native Android client signs its ceremony with the origin `android:apk-key-hash:` plus the base64url SHA-256 of the app's signing certificate, not the instance's web origin, so every passkey enrolment and sign-in from an app vouched for in `PASSKEY_ANDROID_APPS` failed verification even with `assetlinks.json` published. Each fingerprint in that setting is now also accepted as an origin.
 
 ## [1.7.0] - 2026-10-11
 
