@@ -258,6 +258,116 @@ def test_admin_create_persists_visible_while_logged_out(admin_client: httpx.Clie
     assert resp.json()["visible_while_logged_out"] is True
 
 
+# ---------------------------------------------------------------------------
+# Platform targeting
+# ---------------------------------------------------------------------------
+
+
+def _titles(resp: httpx.Response) -> list[str]:
+    assert resp.status_code == 200, resp.text
+    return [a["title"] for a in resp.json()]
+
+
+def test_platform_targeting_on_the_authenticated_endpoint(
+    admin_client: httpx.Client, auth_client: httpx.Client
+):
+    """No platform named: only the untargeted ones. A platform named: those
+    plus the ones aimed at it, and not the ones aimed elsewhere."""
+    for title, platforms in (
+        ("For Everyone", []),
+        ("Android Only", ["android"]),
+        ("iOS Only", ["ios"]),
+        ("Phones", ["android", "ios"]),
+    ):
+        resp = admin_client.post(
+            "/v1/admin/announcements",
+            json={"title": title, "body": "Body", "platforms": platforms},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["platforms"] == platforms
+
+    plain = _titles(auth_client.get("/v1/announcements"))
+    assert "For Everyone" in plain
+    assert "Android Only" not in plain
+    assert "iOS Only" not in plain
+    assert "Phones" not in plain
+
+    android = _titles(auth_client.get("/v1/announcements?platform=android"))
+    assert "For Everyone" in android
+    assert "Android Only" in android
+    assert "Phones" in android
+    assert "iOS Only" not in android
+
+    both = _titles(
+        auth_client.get("/v1/announcements?platform=android&platform=watch")
+    )
+    assert "Android Only" in both
+    assert "iOS Only" not in both
+
+
+def test_platform_targeting_on_the_logged_out_endpoint(
+    admin_client: httpx.Client, client: httpx.Client
+):
+    for title, platforms in (("Login Everyone", []), ("Login Web", ["web"])):
+        resp = admin_client.post(
+            "/v1/admin/announcements",
+            json={
+                "title": title,
+                "body": "Body",
+                "visible_while_logged_out": True,
+                "platforms": platforms,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+
+    plain = _titles(client.get("/v1/announcements/public"))
+    assert "Login Everyone" in plain
+    assert "Login Web" not in plain
+
+    web = _titles(client.get("/v1/announcements/public?platform=web"))
+    assert "Login Everyone" in web
+    assert "Login Web" in web
+
+
+def test_unknown_platform_is_refused_everywhere(
+    admin_client: httpx.Client, auth_client: httpx.Client
+):
+    create = admin_client.post(
+        "/v1/admin/announcements",
+        json={"title": "Bad Platform", "body": "Body", "platforms": ["blackberry"]},
+    )
+    assert create.status_code == 422
+    assert auth_client.get("/v1/announcements?platform=blackberry").status_code == 422
+
+
+def test_platforms_are_normalised_and_updatable(admin_client: httpx.Client):
+    """Case and duplicates are folded on the way in; [] on PATCH returns the
+    announcement to everyone; omitting the field leaves it alone."""
+    create = admin_client.post(
+        "/v1/admin/announcements",
+        json={"title": "Normalise", "body": "Body", "platforms": ["IOS", "ios", " web "]},
+    )
+    assert create.status_code == 201, create.text
+    assert create.json()["platforms"] == ["ios", "web"]
+    ann_id = create.json()["id"]
+
+    untouched = admin_client.patch(
+        f"/v1/admin/announcements/{ann_id}", json={"title": "Normalise 2"}
+    )
+    assert untouched.json()["platforms"] == ["ios", "web"]
+
+    cleared = admin_client.patch(
+        f"/v1/admin/announcements/{ann_id}", json={"platforms": []}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["platforms"] == []
+
+    nulled = admin_client.patch(
+        f"/v1/admin/announcements/{ann_id}", json={"platforms": None}
+    )
+    assert nulled.status_code == 422
+
+
 def test_admin_update_visible_while_logged_out(admin_client: httpx.Client):
     create = admin_client.post(
         "/v1/admin/announcements",

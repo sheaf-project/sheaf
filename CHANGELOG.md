@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Server announcements can be aimed at particular clients.** An announcement gains a platform list (web, Android, iOS, watch) in the admin page, empty by default, which still means everyone. Tick one or more and only those clients show it: "update your Android app" stops appearing on the website, and a web-only notice stops appearing on phones. Clients name what they are with `?platform=` on `GET /v1/announcements` (and the logged-out `/public` variant), repeatable for a client that is several things at once; announcements aimed at no platform always come back, and a client that names nothing gets only those, so an app built before this existed never sees a banner it was not meant for. The web app names itself; the mobile apps pick this up in their own releases, and until they do, announcements aimed only at them reach nobody, which the admin page's platform label makes visible.
+
 ### Fixed
 
 - **`PASSKEY_ANDROID_APPS` now accepts the fingerprint the way keytool prints it.** The example env file said to write `package.name=SHA256:FINGERPRINT`, and keytool and gradle's `signingReport` put that same `SHA256:` label in front of the value, but the parser refused anything with the label and dropped the entry at boot, so an operator following the example got no association document and no passkeys in the Android app, with only a boot-log warning to say why. The label is now stripped, the example says what the value actually looks like, and the self-hosting guide names which Play Console certificate to copy (App signing, not the upload key).
