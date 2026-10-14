@@ -20,7 +20,9 @@ import {
   createAnnouncement,
   updateAnnouncement,
   deleteAnnouncement,
+  ANNOUNCEMENT_PLATFORMS,
   type Announcement,
+  type AnnouncementPlatform,
 } from "@/lib/announcements";
 import { timeAgo } from "@/lib/utils";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
@@ -106,6 +108,15 @@ function AnnouncementRow({ announcement }: { announcement: Announcement }) {
           {announcement.visible_while_logged_out && (
             <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
               Logged-out
+            </Badge>
+          )}
+          {announcement.platforms.length > 0 && (
+            <Badge
+              variant="secondary"
+              className="text-[10px] px-1.5 py-0"
+              title="Only clients on these platforms see this announcement"
+            >
+              {announcement.platforms.map(platformLabel).join(", ")} only
             </Badge>
           )}
         </div>
@@ -202,6 +213,9 @@ function EditAnnouncementForm({
   const [visibleWhileLoggedOut, setVisibleWhileLoggedOut] = useState(
     announcement.visible_while_logged_out,
   );
+  const [platforms, setPlatforms] = useState<AnnouncementPlatform[]>(
+    announcement.platforms,
+  );
   const [expiresAt, setExpiresAt] = useState(
     toDateTimeLocal(announcement.expires_at),
   );
@@ -214,6 +228,7 @@ function EditAnnouncementForm({
         severity,
         dismissible,
         visible_while_logged_out: visibleWhileLoggedOut,
+        platforms,
         ...(expiresAt
           ? { expires_at: fromDateTimeLocal(expiresAt) }
           : { clear_expires_at: true }),
@@ -299,6 +314,7 @@ function EditAnnouncementForm({
           Visible while logged out (shows on login page)
         </Label>
       </div>
+      <PlatformPicker idPrefix="edit" value={platforms} onChange={setPlatforms} />
       <div className="flex gap-2">
         <Button
           size="sm"
@@ -315,6 +331,53 @@ function EditAnnouncementForm({
   );
 }
 
+function platformLabel(p: AnnouncementPlatform): string {
+  return ANNOUNCEMENT_PLATFORMS.find((x) => x.value === p)?.label ?? p;
+}
+
+/**
+ * Which clients an announcement is for. Nothing ticked means everyone,
+ * which is what every announcement was before this existed; ticking one or
+ * more narrows it to clients that identify as one of them.
+ */
+function PlatformPicker({
+  idPrefix,
+  value,
+  onChange,
+}: {
+  idPrefix: string;
+  value: AnnouncementPlatform[];
+  onChange: (next: AnnouncementPlatform[]) => void;
+}) {
+  function toggle(p: AnnouncementPlatform, on: boolean) {
+    onChange(on ? [...value.filter((x) => x !== p), p] : value.filter((x) => x !== p));
+  }
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs">Platforms</Label>
+      <div className="flex flex-wrap items-center gap-4">
+        {ANNOUNCEMENT_PLATFORMS.map((p) => (
+          <div key={p.value} className="flex items-center gap-2">
+            <Checkbox
+              id={`${idPrefix}-platform-${p.value}`}
+              checked={value.includes(p.value)}
+              onCheckedChange={(c) => toggle(p.value, c === true)}
+            />
+            <Label htmlFor={`${idPrefix}-platform-${p.value}`} className="text-xs">
+              {p.label}
+            </Label>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {value.length === 0
+          ? "Shown on every client. Tick platforms to show it only there."
+          : `Shown only on ${value.map(platformLabel).join(", ")}.`}
+      </p>
+    </div>
+  );
+}
+
 function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
   const { fromDateTimeLocal } = useDateFormatters();
   const [title, setTitle] = useState("");
@@ -322,6 +385,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
   const [severity, setSeverity] = useState("info");
   const [dismissible, setDismissible] = useState(true);
   const [visibleWhileLoggedOut, setVisibleWhileLoggedOut] = useState(false);
+  const [platforms, setPlatforms] = useState<AnnouncementPlatform[]>([]);
   const [expiresAt, setExpiresAt] = useState("");
 
   const create = useMutation({
@@ -332,6 +396,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
         severity,
         dismissible,
         visible_while_logged_out: visibleWhileLoggedOut,
+        platforms,
         expires_at: fromDateTimeLocal(expiresAt),
       }),
     onSuccess: () => {
@@ -340,6 +405,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
       setSeverity("info");
       setDismissible(true);
       setVisibleWhileLoggedOut(false);
+      setPlatforms([]);
       setExpiresAt("");
       onCreated();
       toast.success("Announcement created");
@@ -419,6 +485,7 @@ function CreateAnnouncementForm({ onCreated }: { onCreated: () => void }) {
             Dismissible (users can hide this)
           </Label>
         </div>
+        <PlatformPicker idPrefix="ann" value={platforms} onChange={setPlatforms} />
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Checkbox

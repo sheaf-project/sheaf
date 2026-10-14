@@ -608,6 +608,19 @@ Magic-link redemption:
 - `GET /v1/notifications/redeem-preview?code=...` is a public read-only endpoint that returns `{destination_type, channel_name, system_label, expires_at}` for a pending channel without consuming the code. The web redeem page calls it on mount and uses it to decide between running the in-browser web-push flow and presenting an "Open in Sheaf" button that fires `sheaf://notifications/redeem?code=<code>&channel=<uuid>`. The native apps register an intent filter for that URI scheme and handle redemption in-app under the user's session.
 - App Links / Universal Links auto-verification is intentionally **not** wired, because per-instance domain verification doesn't compose well with self-hosted deployments. The web fallback always renders, and either flows the user through web push (if their browser supports it and the channel is web-push) or invokes the deep link (for mobile channels). 404 / 410 from `redeem-preview` cleanly surface "invalid" / "expired" before any browser permission prompt fires.
 
+### Server announcements
+
+Operators post banners (title, markdown-link body, severity `info` / `warning` / `critical`, dismissible or not, optional start and expiry). Clients fetch them and render them above the app's content:
+
+```
+GET /v1/announcements?platform=<name>         # signed in
+GET /v1/announcements/public?platform=<name>  # no auth; only the ones flagged visible while logged out
+```
+
+`platform` names what the client is: `web`, `android`, `ios` or `watch`, repeatable (`?platform=android&platform=watch`). Announcements aimed at no platform always come back; ones an operator aimed at specific platforms come back only when one of them is named. Leave it off and you get the untargeted set and nothing else, so an old build never sees a banner it was not meant for. Each row carries its `platforms` list, empty for "everyone", in case a client wants to label it. Unknown names are a 422.
+
+Dismissal is client-side. The web app keeps session dismissals in memory and permanent ones in its client settings under `dismissed_announcements` (a list of ids); a native client can do the same in its own settings namespace.
+
 ### Analytics
 
 | Method | Path | Description |

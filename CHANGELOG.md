@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Server announcements can be aimed at particular clients.** An announcement gains a platform list (web, Android, iOS, watch) in the admin page, empty by default, which still means everyone. Tick one or more and only those clients show it: "update your Android app" stops appearing on the website, and a web-only notice stops appearing on phones. Clients name what they are with `?platform=` on `GET /v1/announcements` (and the logged-out `/public` variant), repeatable for a client that is several things at once; announcements aimed at no platform always come back, and a client that names nothing gets only those, so an app built before this existed never sees a banner it was not meant for. The web app names itself; the mobile apps pick this up in their own releases, and until they do, announcements aimed only at them reach nobody, which the admin page's platform label makes visible.
+
 ### Fixed
 
 - **The admin user table no longer claims nobody can upload.** Its Uploads and Animated columns showed only the per-account override flag, labelled as if it were the answer, so on an instance where uploads are on for everyone (the default) every ordinary account read "No" while uploading fine. Each column now shows the rule that actually applies to the account, "Yes (instance-wide)", "Yes (admin)", "Yes (override)", "Yes (tier)", "No", or "No (off instance-wide)", with the override control underneath for the case it exists for: letting one account through when the instance-wide switch is off. API clients: `GET /v1/admin/users` gains `image_uploads_effective` and `animated_uploads_effective` carrying those reasons.

@@ -1,5 +1,15 @@
 import { apiFetch } from "./api-client";
 
+/** The clients an announcement can be aimed at. Empty means everyone. */
+export type AnnouncementPlatform = "web" | "android" | "ios" | "watch";
+
+export const ANNOUNCEMENT_PLATFORMS: { value: AnnouncementPlatform; label: string }[] = [
+  { value: "web", label: "Web" },
+  { value: "android", label: "Android" },
+  { value: "ios", label: "iOS" },
+  { value: "watch", label: "Watch" },
+];
+
 export interface Announcement {
   id: string;
   title: string;
@@ -8,6 +18,7 @@ export interface Announcement {
   dismissible: boolean;
   active: boolean;
   visible_while_logged_out: boolean;
+  platforms: AnnouncementPlatform[];
   created_by: string | null;
   starts_at: string | null;
   expires_at: string | null;
@@ -22,6 +33,7 @@ export interface AnnouncementCreate {
   dismissible?: boolean;
   active?: boolean;
   visible_while_logged_out?: boolean;
+  platforms?: AnnouncementPlatform[];
   starts_at?: string | null;
   expires_at?: string | null;
 }
@@ -33,20 +45,26 @@ export interface AnnouncementUpdate {
   dismissible?: boolean;
   active?: boolean;
   visible_while_logged_out?: boolean;
+  /** [] goes back to "every client"; omit to leave unchanged. */
+  platforms?: AnnouncementPlatform[];
   starts_at?: string | null;
   expires_at?: string | null;
   clear_starts_at?: boolean;
   clear_expires_at?: boolean;
 }
 
-// Public — active announcements for the current user
+// This client names itself so announcements aimed at the web app reach it.
+// Untargeted announcements come back regardless.
+const WEB_PLATFORM = "?platform=web";
+
+// Public: active announcements for the current user
 export function getActiveAnnouncements() {
-  return apiFetch<Announcement[]>("/v1/announcements");
+  return apiFetch<Announcement[]>(`/v1/announcements${WEB_PLATFORM}`);
 }
 
-// Unauthenticated — announcements flagged visible while logged out
+// Unauthenticated: announcements flagged visible while logged out
 export function getLoggedOutAnnouncements() {
-  return apiFetch<Announcement[]>("/v1/announcements/public");
+  return apiFetch<Announcement[]>(`/v1/announcements/public${WEB_PLATFORM}`);
 }
 
 // Admin — all announcements

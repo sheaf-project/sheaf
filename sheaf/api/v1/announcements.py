@@ -1,13 +1,14 @@
 import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.auth.dependencies import get_admin_user, get_admin_write_user, get_current_user
 from sheaf.database import get_db
-from sheaf.models.announcement import ServerAnnouncement
+from sheaf.models.announcement import AnnouncementPlatform, ServerAnnouncement
 from sheaf.models.user import User
 from sheaf.schemas.announcement import (
     AnnouncementCreate,
@@ -49,6 +50,7 @@ async def create_announcement(
         dismissible=body.dismissible,
         active=body.active,
         visible_while_logged_out=body.visible_while_logged_out,
+        platforms=body.platforms,
         created_by=admin.id,
         starts_at=body.starts_at,
         expires_at=body.expires_at,
@@ -86,6 +88,8 @@ async def update_announcement(
         announcement.active = body.active
     if body.visible_while_logged_out is not None:
         announcement.visible_while_logged_out = body.visible_while_logged_out
+    if body.platforms is not None:
+        announcement.platforms = body.platforms
     if body.clear_starts_at:
         announcement.starts_at = None
     elif body.starts_at is not None:
@@ -124,8 +128,20 @@ async def delete_announcement(
 public_router = APIRouter(prefix="/announcements", tags=["announcements"])
 
 
+PlatformQuery = Annotated[
+    list[AnnouncementPlatform] | None,
+    Query(
+        description=(
+            "The platform(s) this client is. Announcements aimed at no platform "
+            "are always returned; those aimed at a platform are returned only "
+            "when it is named here. Repeat the parameter for several."
+        ),
+    ),
+]
+
+
 async def _active_announcements(
-    db: AsyncSession, *, only_logged_out: bool
+    db: AsyncSession, *, only_logged_out: bool, platforms: list[str] | None
 ) -> list[ServerAnnouncement]:
     now = datetime.now(UTC)
     stmt = select(ServerAnnouncement).where(
@@ -135,6 +151,16 @@ async def _active_announcements(
         stmt = stmt.where(
             ServerAnnouncement.visible_while_logged_out == True,  # noqa: E712
         )
+    # Untargeted announcements go to every client. Targeted ones go only to
+    # a client that named one of their platforms; a client that named none
+    # gets the untargeted set and nothing else.
+    for_everyone = func.cardinality(ServerAnnouncement.platforms) == 0
+    if platforms:
+        stmt = stmt.where(
+            or_(for_everyone, ServerAnnouncement.platforms.overlap(list(platforms)))
+        )
+    else:
+        stmt = stmt.where(for_everyone)
     stmt = stmt.order_by(
         # Critical first, then warning, then info
         ServerAnnouncement.severity.desc(),
@@ -153,16 +179,33 @@ async def _active_announcements(
 
 @public_router.get("", response_model=list[AnnouncementPublic])
 async def get_active_announcements(
+    platform: PlatformQuery = None,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get active announcements for authenticated users."""
-    return await _active_announcements(db, only_logged_out=False)
+    """Get active announcements for authenticated users.
+
+    `?platform=` names what this client is (repeatable). Announcements aimed
+    at no platform always come back; ones aimed at a platform come back only
+    when that platform is named.
+    """
+    return await _active_announcements(
+        db, only_logged_out=False, platforms=_platform_values(platform)
+    )
+
+
+def _platform_values(platform: list[AnnouncementPlatform] | None) -> list[str] | None:
+    if not platform:
+        return None
+    return [p.value for p in platform]
 
 
 @public_router.get("/public", response_model=list[AnnouncementPublic])
 async def get_logged_out_announcements(
+    platform: PlatformQuery = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Active announcements flagged visible_while_logged_out — no auth."""
-    return await _active_announcements(db, only_logged_out=True)
+    return await _active_announcements(
+        db, only_logged_out=True, platforms=_platform_values(platform)
+    )
