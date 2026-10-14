@@ -63,13 +63,45 @@ def animation_allowed(user: User, settings: Settings) -> bool:
       3. Per-user override.
       4. Tier eligibility.
     """
-    if not settings.allow_animated_uploads:
-        return False
+    return animated_upload_source(user, settings) not in ("instance_off", "off")
+
+
+def image_upload_source(user: User, settings: Settings) -> str:
+    """Why `user` may (or may not) upload images, as one word.
+
+    The upload endpoint allows a request when the user is an admin, when
+    the instance-wide `allow_image_uploads` switch is on, or when the
+    per-user `can_upload_images` override is set, in that order. The admin
+    UI used to show only the override, labelled "Uploads", which read as
+    "cannot upload" for every ordinary account on an instance where the
+    switch is on and everyone can. This names the rule that actually
+    applied: `admin`, `instance`, `override`, or `off`.
+    """
     if user.is_admin:
-        return True
+        return "admin"
+    if settings.allow_image_uploads:
+        return "instance"
+    if user.can_upload_images:
+        return "override"
+    return "off"
+
+
+def animated_upload_source(user: User, settings: Settings) -> str:
+    """Why `user` may (or may not) upload animated images, as one word.
+
+    Same order as `animation_allowed`, which is defined in terms of this:
+    `instance_off` (master switch off, nothing else matters), `admin`,
+    `override`, `tier`, or `off`.
+    """
+    if not settings.allow_animated_uploads:
+        return "instance_off"
+    if user.is_admin:
+        return "admin"
     if user.can_upload_animated_images:
-        return True
-    return user.tier in ANIMATED_AVATAR_TIERS
+        return "override"
+    if user.tier in ANIMATED_AVATAR_TIERS:
+        return "tier"
+    return "off"
 
 
 # Map sniffed input MIME to output MIME + Pillow format. The animated-gate

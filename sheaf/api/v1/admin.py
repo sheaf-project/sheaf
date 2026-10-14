@@ -16,6 +16,7 @@ from sheaf.config import settings
 from sheaf.crypto import decrypt_field
 from sheaf.database import get_db
 from sheaf.encrypted_fields import user_email_aad, user_totp_secret_aad
+from sheaf.image_processing import animated_upload_source, image_upload_source
 from sheaf.middleware.rate_limit import rate_limit
 from sheaf.models.admin_audit_event import AdminAuditAction, AdminAuditTargetType
 from sheaf.models.member import Member
@@ -236,6 +237,12 @@ class AdminUserRead(BaseModel):
     member_count: int
     can_upload_images: bool
     can_upload_animated_images: bool
+    # Why uploads are or are not allowed for this account right now, so the
+    # admin UI can show the effective answer and not just the per-user
+    # override: "admin" | "instance" | "override" | "off", and for animated
+    # uploads additionally "instance_off" and "tier".
+    image_uploads_effective: str
+    animated_uploads_effective: str
     created_at: datetime
     last_login_at: datetime | None
     suspended_until: datetime | None
@@ -341,6 +348,8 @@ async def list_users(
             member_count=member_count,
             can_upload_images=user.can_upload_images,
             can_upload_animated_images=user.can_upload_animated_images,
+            image_uploads_effective=image_upload_source(user, settings),
+            animated_uploads_effective=animated_upload_source(user, settings),
             created_at=user.created_at,
             last_login_at=user.last_login_at,
             suspended_until=user.suspended_until,
@@ -444,6 +453,8 @@ async def update_user(
         member_count=member_count,
         can_upload_images=target.can_upload_images,
         can_upload_animated_images=target.can_upload_animated_images,
+        image_uploads_effective=image_upload_source(target, settings),
+        animated_uploads_effective=animated_upload_source(target, settings),
         created_at=target.created_at,
         last_login_at=target.last_login_at,
         suspended_until=target.suspended_until,
