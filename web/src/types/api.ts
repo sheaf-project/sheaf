@@ -463,7 +463,28 @@ export interface TagUpdate {
   color?: string | null;
 }
 
-export type FieldType = "text" | "number" | "date" | "boolean" | "select" | "multiselect";
+export type FieldType =
+  | "text"
+  | "number"
+  | "date"
+  | "boolean"
+  | "select"
+  | "multiselect"
+  | "slider";
+
+/** A slider field's options, always in full (the server fills defaults in).
+ *  `labeled` is 0..100 between two labels and reads as a percentage;
+ *  `numeric` is a quantity between min and max with an optional unit. */
+export interface SliderOptions {
+  mode: "labeled" | "numeric";
+  min: number;
+  max: number;
+  step: number | null;
+  unit: string | null;
+  labels: { left: string | null; center: string | null; right: string | null };
+  /** Two to eight #RRGGBB colours across the track, or null for a plain one. */
+  gradient: string[] | null;
+}
 
 export interface CustomField {
   id: string;
@@ -1564,6 +1585,19 @@ export interface AdultAttestation {
 export interface PublicMemberField {
   name: string;
   value: unknown;
+  /** Present on a slider field: the number and the track to draw it on.
+   *  `value` is still the reading ("62%"), so a card can ignore this. */
+  slider?: PublicSliderTrack;
+}
+
+export interface PublicSliderTrack {
+  number: number;
+  mode: "labeled" | "numeric";
+  min: number;
+  max: number;
+  unit: string | null;
+  labels: { left: string | null; center: string | null; right: string | null };
+  gradient: string[] | null;
 }
 
 export interface PublicMemberView {

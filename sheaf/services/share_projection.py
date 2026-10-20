@@ -44,7 +44,11 @@ from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
 from sheaf.files import resolve_avatar_url_public, resolve_description_urls_public
-from sheaf.models.custom_field import CustomFieldDefinition, CustomFieldValue
+from sheaf.models.custom_field import (
+    CustomFieldDefinition,
+    CustomFieldValue,
+    FieldType,
+)
 from sheaf.models.front import Front
 from sheaf.models.group import Group
 from sheaf.models.member import Member, front_members, group_members
@@ -73,8 +77,11 @@ from sheaf.schemas.public_profile import (
     PublicRelationship,
     PublicRelationshipEndpoint,
     PublicRelationshipsView,
+    PublicSliderField,
+    PublicSliderTrack,
     PublicSystemView,
 )
+from sheaf.services import slider_fields
 from sheaf.services.custom_fields import field_value_plaintext
 from sheaf.services.members import (
     member_description_plaintext,
@@ -271,6 +278,19 @@ NOT_SERVED_REASONS: tuple[str, ...] = (
 )
 
 
+class ExposedField(NamedTuple):
+    """A custom field a view exposes: what a card needs to render its value.
+
+    `field_type` and `options` ride along for the one type whose stored
+    value is not its reading: a slider stores a number and reads as "62%"
+    or "7.5 kg", and `_member_view` does that formatting from these.
+    """
+
+    name: str
+    field_type: FieldType
+    options: dict | None
+
+
 class MemberServiceState(NamedTuple):
     """Whether one curated member is actually being served, and why not.
 
@@ -366,8 +386,8 @@ async def member_service_states(
 
 async def _exposed_fields(
     db: AsyncSession, view: ShareView
-) -> dict[uuid.UUID, str]:
-    """{field_definition_id: name} for the custom fields this view exposes.
+) -> dict[uuid.UUID, ExposedField]:
+    """{field_definition_id: ExposedField} for the custom fields this view exposes.
 
     THE choke point for custom-field exposure, in the same spirit as
     `_active_member_filter`: one place decides "is this field in the view AND
@@ -407,7 +427,12 @@ async def _exposed_fields(
     been correct.
     """
     result = await db.execute(
-        select(CustomFieldDefinition.id, CustomFieldDefinition.name)
+        select(
+            CustomFieldDefinition.id,
+            CustomFieldDefinition.name,
+            CustomFieldDefinition.field_type,
+            CustomFieldDefinition.options,
+        )
         .join(ShareViewField, ShareViewField.field_id == CustomFieldDefinition.id)
         # The owner's field order (name tiebreak), so the insertion-ordered
         # dict this returns carries it and every card renders fields the same
@@ -425,7 +450,10 @@ async def _exposed_fields(
             ),
         )
     )
-    return {row[0]: row[1] for row in result}
+    return {
+        row[0]: ExposedField(name=row[1], field_type=row[2], options=row[3])
+        for row in result
+    }
 
 
 async def projectable_fields(
@@ -447,7 +475,8 @@ async def projectable_fields(
     read as "your curation is gone" for a flag that destroyed nothing. Same
     reasoning as the member count it sits next to.
     """
-    return await _exposed_fields(db, view)
+    exposed = await _exposed_fields(db, view)
+    return {fid: f.name for fid, f in exposed.items()}
 
 
 async def _field_values_by_member(
@@ -479,11 +508,32 @@ def _sort_key(m: Member) -> str:
     return _shown_name(m).casefold()
 
 
+def _slider_track(value: object, options: dict | None) -> PublicSliderTrack | None:
+    """The track a public card draws for a slider value, or None when the
+    stored value is not a number. Bounds, labels and gradient come from the
+    definition's options, normalised so an older row still yields a complete
+    track."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        opts = slider_fields.normalise_options(options)
+    except ValueError:
+        opts = slider_fields.default_options()
+    return PublicSliderTrack(
+        number=float(value),
+        mode=opts["mode"],
+        min=float(opts["min"]),
+        max=float(opts["max"]),
+        unit=opts["unit"],
+        labels=dict(opts["labels"]),
+        gradient=opts["gradient"],
+    )
+
 def _member_view(
     m: Member,
     *,
     include_bio: bool,
-    field_names: dict[uuid.UUID, str],
+    field_names: dict[uuid.UUID, ExposedField],
     values: list[CustomFieldValue],
     owner_id: uuid.UUID,
 ) -> PublicMemberView:
@@ -505,17 +555,31 @@ def _member_view(
     rank = {fid: i for i, fid in enumerate(field_names)}
     values = sorted(values, key=lambda v: rank.get(v.field_id, len(rank)))
     for v in values:
-        name = field_names.get(v.field_id)
-        if name is not None:
+        exposed = field_names.get(v.field_id)
+        if exposed is not None:
             # An ordered list, one entry per value, rather than a name-keyed map:
             # field names are not unique, so two exposed definitions sharing a
             # name both belong on the card - keying by name dropped the first.
             # Field values are text by contract: the public page renders them as
             # plain strings in a badge, never as markdown or a URL, so they need
             # no image handling.
-            fields.append(
-                PublicMemberField(name=name, value=field_value_plaintext(v))
-            )
+            value = field_value_plaintext(v)
+            if exposed.field_type == FieldType.SLIDER:
+                # A visitor reads "62%" or "7.5 kg" in `value`, and a client
+                # that draws sliders gets the number and the track beside it.
+                # A value that is not a number (an old text import, say) is
+                # served as a plain entry, the way it is stored.
+                track = _slider_track(value, exposed.options)
+                if track is not None:
+                    fields.append(
+                        PublicSliderField(
+                            name=exposed.name,
+                            value=slider_fields.format_value(value, exposed.options),
+                            slider=track,
+                        )
+                    )
+                    continue
+            fields.append(PublicMemberField(name=exposed.name, value=value))
     return PublicMemberView(
         id=str(m.id),
         name=_shown_name(m),
@@ -538,7 +602,7 @@ def _build_member_views(
     members: list[Member],
     *,
     include_bio: bool,
-    field_names: dict[uuid.UUID, str],
+    field_names: dict[uuid.UUID, ExposedField],
     values_by_member: dict[uuid.UUID, list[CustomFieldValue]],
     owner_id: uuid.UUID,
 ) -> list[PublicMemberView]:

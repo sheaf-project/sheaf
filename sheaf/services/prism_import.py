@@ -26,11 +26,16 @@ decisions:
 - `sleepSessions` -> dropped with warning. Sheaf doesn't model
   sleep tracking.
 - `memberGroups` + `memberGroupEntries` -> Group + group_members.
-- `customFields` -> CustomFieldDefinition. `fieldTypeId` text/date/
-  number/boolean map directly; slider and other Prism-specific
-  types collapse to TEXT with a warning.
-- `customFieldValues` -> CustomFieldValue, JSON-encoded value
-  carrying whatever shape Prism stored.
+- `customFields` -> CustomFieldDefinition. text/long_text/color/date
+  map directly; `choice` becomes select or multiselect with the
+  config's option labels as choices; `slider` becomes a Sheaf slider
+  in the same mode with the gradient resolved to colours; `scale`
+  becomes a numeric 1..N slider; `group` is a folder and is skipped;
+  `member` (a reference to another member) lands as text with a
+  warning. See `_translate_prism_field`.
+- `customFieldValues` -> CustomFieldValue. Choice values arrive as a
+  JSON blob of option ids and become labels; slider values become
+  numbers; everything else is stored as Prism had it.
 - `notes` -> JournalEntry. Per-member entries when `memberId` is
   set; system-wide otherwise.
 - `polls` + `pollOptions` + per-option `votes[]` -> Poll +
@@ -113,6 +118,7 @@ from sheaf.schemas.prism_import import (
     PrismPreviewSummary,
 )
 from sheaf.services import import_limits as il
+from sheaf.services import slider_fields
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
@@ -143,6 +149,7 @@ from sheaf.services.import_media import (
 )
 from sheaf.services.import_parsing import (
     ImportPayloadError,
+    safe_json_loads,
     sanitize_external_avatar_url,
 )
 from sheaf.services.member_limits import enforce_import_member_cap
@@ -832,25 +839,277 @@ async def _import_groups(
     return created
 
 
-def _map_prism_field_type(raw: Any) -> tuple[FieldType, bool]:
-    """Coerce Prism's `fieldTypeId` string to a Sheaf FieldType.
+# Prism's built-in slider gradient presets, by id, as the hex stops Prism
+# paints them with. A Prism slider configured with a preset carries only the
+# preset's id, so the colours have to be known here for the gradient to
+# survive the move. Values transcribed from Prism's
+# lib/domain/custom_fields/slider_gradient_presets.dart; an unknown id (a
+# preset added after this list) imports as a plain track.
+_PRISM_GRADIENT_PRESETS: dict[str, list[str]] = {
+    "femme-masc": ["#E89BB8", "#F0E6D6", "#8FAA9A"],
+    "high-low-gender": ["#F0D070", "#5B4378"],
+    "soft-hard": ["#F4EBD8", "#A89B8C", "#3A2E4D"],
+    "calm-intense": ["#7BAA7E", "#D6534D"],
+    "sad-happy": ["#5479AE", "#E4C44F"],
+    "low-high-energy": ["#8A8A8A", "#E69248"],
+    "soft-bold": ["#D8C7E0", "#2D1B36"],
+    "cool-warm": ["#5B92C9", "#E08D5E"],
+    "day-night": ["#F4D86E", "#1E2444"],
+    "palette-rose-dusk": ["#F4B89E", "#D17A8E", "#5B4378"],
+    "palette-sage-meadow": ["#C5D9B5", "#4A6B47"],
+    "palette-last-light": ["#F0C166", "#E68769", "#8F4438"],
+    "palette-amber-fire": ["#F0D88E", "#C44848"],
+    "palette-mauve-bloom": ["#EAD9E8", "#5B4378"],
+    "palette-warm-ink": ["#F4EBD8", "#3A2E2A"],
+    "solid-accent": ["#7B5EA8", "#7B5EA8"],
+    "monochrome": ["#E4DEEC", "#3A2E4D"],
+}
 
-    Returns `(FieldType, surfaced_as_text)`. Prism-specific types
-    (slider, etc.) collapse to TEXT with the second tuple element
-    set so the caller can surface a warning.
+# Prism field types that are a header, not a field: a "group" is a folder
+# other fields sit inside (`parentFieldId`). It holds no values, so it gets
+# no Sheaf definition; the fields inside it import flat.
+_PRISM_CONTAINER_TYPES = {"group"}
+
+
+@dataclass
+class _PrismField:
+    """A Prism field definition translated to what Sheaf stores."""
+
+    field_type: FieldType
+    options: dict | None
+    # Prism option id -> Sheaf choice label, for choice fields. Values are
+    # stored as option ids in Prism and as labels here.
+    choice_labels: dict[str, str] = field(default_factory=dict)
+    allows_multiple: bool = False
+    # Prism "scale" fields are 1..N; the value is the step index.
+    scale_offset: int = 0
+
+
+# Prism nests JSON documents inside string fields (a field's type config, a
+# choice value). The outer file already went through the element-count guard,
+# but a string is one element to that guard however much JSON it holds, so
+# each nested document gets its own, smaller cap when it is opened.
+_NESTED_JSON_MAX_ELEMENTS = 10_000
+
+
+def _nested_json(raw: Any) -> Any:
+    """Parse a JSON document carried inside a string. None when it is not
+    one, is malformed, or is bigger than any real config or value."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return safe_json_loads(raw, max_elements=_NESTED_JSON_MAX_ELEMENTS)
+    except (ImportPayloadError, RecursionError):
+        return None
+
+
+def _type_config(f: dict) -> dict:
+    """Prism's per-type config, serialised as a JSON string in the export."""
+    raw = f.get("typeConfigJson") or f.get("typeConfig")
+    if isinstance(raw, dict):
+        return raw
+    parsed = _nested_json(raw)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _prism_gradient(cfg: dict) -> list[str] | None:
+    """The track colours a Prism slider paints, from whichever of its three
+    ways of saying so is set: an explicit colour list, a preset id, or the
+    left/centre/right colours."""
+    explicit = cfg.get("gradientColorsHex")
+    if isinstance(explicit, list) and len(explicit) >= 2:
+        return [c for c in explicit if isinstance(c, str)]
+    preset = _PRISM_GRADIENT_PRESETS.get(str(cfg.get("gradientPresetId") or ""))
+    if preset:
+        return list(preset)
+    left, centre, right = (
+        cfg.get("leftColorHex"),
+        cfg.get("centerColorHex"),
+        cfg.get("rightColorHex"),
+    )
+    if isinstance(left, str) and isinstance(right, str):
+        stops = [left, centre, right] if isinstance(centre, str) else [left, right]
+        return stops
+    return None
+
+
+def _translate_prism_field(f: dict) -> _PrismField | None:
+    """Work out what a Prism field becomes here, or None for a container.
+
+    Prism types and where they land:
+      text, long_text, color -> TEXT (colour is its hex string)
+      date -> DATE
+      choice -> SELECT or MULTISELECT by `allowsMultiple`, choices from the
+        config's option labels
+      slider -> SLIDER, labeled or numeric exactly as Prism had it, with the
+        gradient resolved to colours
+      scale -> SLIDER, numeric 1..steps in whole steps (the emoji is lost)
+      member -> TEXT, with a warning: the value is another member's id, and
+        Sheaf has no member-reference field
+      group -> nothing; it is a folder
+    Anything unrecognised lands as TEXT with a warning.
     """
-    if not isinstance(raw, str):
-        return FieldType.TEXT, True
-    norm = raw.strip().lower()
-    if norm in ("text",):
-        return FieldType.TEXT, False
-    if norm in ("date",):
-        return FieldType.DATE, False
+    raw = f.get("fieldTypeId")
+    norm = raw.strip().lower() if isinstance(raw, str) else ""
+    cfg = _type_config(f)
+
+    if norm in _PRISM_CONTAINER_TYPES:
+        return None
+    if norm in ("text", "long_text", "longtext", "color", "colour"):
+        return _PrismField(FieldType.TEXT, None)
+    if norm == "date":
+        return _PrismField(FieldType.DATE, None)
     if norm in ("number", "integer", "int"):
-        return FieldType.NUMBER, False
+        return _PrismField(FieldType.NUMBER, None)
     if norm in ("boolean", "bool"):
-        return FieldType.BOOLEAN, False
-    return FieldType.TEXT, True
+        return _PrismField(FieldType.BOOLEAN, None)
+
+    if norm == "choice":
+        labels: dict[str, str] = {}
+        ordered: list[tuple[int, str]] = []
+        for opt in _list(cfg.get("options")):
+            if not isinstance(opt, dict) or opt.get("isDeleted"):
+                continue
+            oid = _clean_str(opt.get("id"))
+            label = _clean_str(opt.get("label"))
+            if not oid or not label:
+                continue
+            labels[oid] = label
+            order = opt.get("sortOrder")
+            ordered.append((order if isinstance(order, int) else 0, label))
+        ordered.sort(key=lambda x: x[0])
+        choices: list[str] = []
+        seen: set[str] = set()
+        for _, label in ordered:
+            key = label.casefold()
+            if key not in seen:
+                seen.add(key)
+                choices.append(label[:100])
+        multiple = bool(cfg.get("allowsMultiple"))
+        return _PrismField(
+            FieldType.MULTISELECT if multiple else FieldType.SELECT,
+            {"choices": choices} if choices else None,
+            choice_labels=labels,
+            allows_multiple=multiple,
+        )
+
+    if norm == "slider":
+        mode = str(cfg.get("mode") or "labeled").lower()
+        options: dict[str, Any]
+        if mode == "numeric":
+            options = {
+                "mode": "numeric",
+                "min": cfg.get("min") if isinstance(cfg.get("min"), int | float) else 0,
+                "max": cfg.get("max") if isinstance(cfg.get("max"), int | float) else 10,
+                "step": cfg.get("step") if isinstance(cfg.get("step"), int | float) else None,
+                "unit": cfg.get("unit") if isinstance(cfg.get("unit"), str) else None,
+                "labels": {},
+                "gradient": _prism_gradient(cfg),
+            }
+        else:
+            options = {
+                "mode": "labeled",
+                "labels": {
+                    "left": cfg.get("leftLabel"),
+                    "center": cfg.get("centerLabel"),
+                    "right": cfg.get("rightLabel"),
+                },
+                "gradient": _prism_gradient(cfg),
+            }
+        return _PrismField(FieldType.SLIDER, _safe_slider_options(options))
+
+    if norm == "scale":
+        steps = cfg.get("steps") if isinstance(cfg.get("steps"), int) else 5
+        steps = max(2, min(steps, 100))
+        step_labels = [s for s in _list(cfg.get("stepLabels")) if isinstance(s, str)]
+        options = {
+            "mode": "numeric",
+            "min": 1,
+            "max": steps,
+            "step": 1,
+            "unit": None,
+            "labels": {
+                "left": step_labels[0] if step_labels else None,
+                "right": step_labels[-1] if len(step_labels) > 1 else None,
+            },
+            "gradient": None,
+        }
+        return _PrismField(
+            FieldType.SLIDER, _safe_slider_options(options), scale_offset=1
+        )
+
+    # member (a reference to another member), and anything newer than this
+    # list: kept as text so nothing is lost, flagged so the owner knows.
+    return _PrismField(FieldType.TEXT, None, choice_labels={"__surfaced__": norm or "<unknown>"})
+
+
+def _safe_slider_options(options: dict) -> dict:
+    """Prism's config through Sheaf's validator, falling back to the mode's
+    defaults when something in it (a bad colour, min >= max) would be
+    refused: the field still imports, just with a plain track."""
+    try:
+        return slider_fields.normalise_options(options)
+    except ValueError:
+        fallback = {k: v for k, v in options.items() if k in ("mode", "labels", "unit")}
+        try:
+            return slider_fields.normalise_options(fallback)
+        except ValueError:
+            return slider_fields.default_options()
+
+
+def _translate_prism_value(raw_value: Any, pf: _PrismField) -> Any:
+    """Turn Prism's stored string for one value into what Sheaf stores for
+    the field's type. None means "nothing to store"."""
+    if pf.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
+        # Prism stores a JSON blob of option ids, plus an "other" free text
+        # when the field allows it. The ids become their labels; "other"
+        # rides along as one more entry, since it is the user's own words.
+        picked: list[str] = []
+        other: str | None = None
+        if isinstance(raw_value, str):
+            parsed = _nested_json(raw_value)
+            if isinstance(parsed, dict):
+                for oid in _list(parsed.get("options")):
+                    label = pf.choice_labels.get(str(oid))
+                    if label and label not in picked:
+                        picked.append(label)
+                other = _clean_str(parsed.get("other"))
+            elif parsed is None:
+                # Not JSON at all: a plain label from an older export shape.
+                other = _clean_str(raw_value)
+        if other and other not in picked:
+            picked.append(other)
+        if not picked:
+            return None
+        if pf.field_type is FieldType.MULTISELECT:
+            return picked
+        return picked[0]
+
+    if pf.field_type is FieldType.SLIDER:
+        number = slider_fields.clamp_value(raw_value, pf.options)
+        if number is None:
+            return None
+        return number
+
+    if pf.field_type is FieldType.NUMBER:
+        if isinstance(raw_value, int | float) and not isinstance(raw_value, bool):
+            return raw_value
+        try:
+            return float(str(raw_value).strip())
+        except ValueError:
+            return None
+
+    if pf.field_type is FieldType.BOOLEAN:
+        if isinstance(raw_value, bool):
+            return raw_value
+        text = str(raw_value).strip().lower()
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no"):
+            return False
+        return None
+
+    return raw_value
 
 
 async def _import_custom_fields(
@@ -877,7 +1136,7 @@ async def _import_custom_fields(
         (fd.name.lower(), fd.field_type.value): fd
         for fd in existing.scalars().all()
     }
-    by_prism_id: dict[str, CustomFieldDefinition] = {}
+    by_prism_id: dict[str, tuple[CustomFieldDefinition, _PrismField]] = {}
     created = 0
     surfaced_types: set[str] = set()
     for f in fields_in:
@@ -886,31 +1145,39 @@ async def _import_custom_fields(
         name = _clean_str(f.get("name"))
         if not name:
             continue
-        ftype, surfaced = _map_prism_field_type(f.get("fieldTypeId"))
+        pf = _translate_prism_field(f)
+        if pf is None:
+            continue  # a folder, not a field
+        surfaced = pf.choice_labels.pop("__surfaced__", None)
         if surfaced:
-            surfaced_types.add(str(f.get("fieldTypeId") or "<unknown>"))
-        key = (name.lower(), ftype.value)
+            surfaced_types.add(surfaced)
+        key = (name.lower(), pf.field_type.value)
         field_def = by_key.get(key)
         if field_def is None:
             field_def = CustomFieldDefinition(
                 id=uuid.uuid4(),
                 system_id=system_id,
                 name=clamp_str(name, il.CF_NAME, report=report),
-                field_type=ftype,
+                field_type=pf.field_type,
+                options=pf.options,
                 privacy=PrivacyLevel.PRIVATE,
             )
             db.add(field_def)
             by_key[key] = field_def
             created += 1
+        elif field_def.options is None and pf.options is not None:
+            # A re-import onto a definition created before this importer knew
+            # how to carry choices or slider settings: fill them in now.
+            field_def.options = pf.options
         prism_id = _clean_str(f.get("id"))
         if prism_id:
-            by_prism_id[prism_id] = field_def
+            by_prism_id[prism_id] = (field_def, pf)
 
     if surfaced_types:
         warnings.append(
             "Prism custom fields of type "
             f"{sorted(surfaced_types)} were imported as plain text "
-            "(Sheaf doesn't have a slider / sticker / etc. equivalent)."
+            "(Sheaf has no equivalent of a member-reference field)."
         )
 
     await db.flush()
@@ -926,12 +1193,16 @@ async def _import_custom_fields(
             continue
         field_id = _clean_str(v.get("fieldId")) or _clean_str(v.get("customFieldId"))
         member_id = _clean_str(v.get("memberId")) or _clean_str(v.get("headmateId"))
-        field_def = by_prism_id.get(field_id) if field_id else None
+        found = by_prism_id.get(field_id) if field_id else None
         handle = ps_id_to_handle.get(member_id) if member_id else None
-        if field_def is None or handle is None:
+        if found is None or handle is None:
             continue
+        field_def, pf = found
         raw_value = v.get("value")
         if raw_value is None or raw_value == "":
+            continue
+        raw_value = _translate_prism_value(raw_value, pf)
+        if raw_value is None:
             continue
         if not value_guard.add((field_def.id, handle.member.id)):
             continue

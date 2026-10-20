@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sheaf.models.custom_field import FieldType
 from sheaf.models.system import PrivacyLevel
+from sheaf.services import slider_fields
 
 # Choices are a list of distinct, non-empty, trimmed strings. Mobile
 # clients currently pass options=null for select/multiselect (the
@@ -92,9 +93,15 @@ def _validate_options_for_type(
             raise ValueError("options.choices must be a list")
         return {"choices": _normalise_choices(raw)}
 
+    if field_type is FieldType.SLIDER:
+        # Always stored in full canonical shape, defaults filled in, so every
+        # client reads the same keys. See sheaf.services.slider_fields.
+        return slider_fields.normalise_options(options)
+
     if options:
         raise ValueError(
-            f"options is only supported for select/multiselect, not {field_type}"
+            f"options is only supported for select, multiselect and slider, "
+            f"not {field_type}"
         )
     return None
 
@@ -268,6 +275,8 @@ def _validate_value_for_field(
                 raise ValueError(
                     f"'{item}' is not one of the defined choices"
                 )
+    elif field_type is FieldType.SLIDER:
+        slider_fields.validate_value(unwrapped, options)
 
 
 class CustomFieldValueSet(BaseModel):

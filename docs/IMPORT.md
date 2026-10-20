@@ -235,8 +235,7 @@ the file. The passphrase is handled like the PluralKit token: encrypted at rest 
 life of the job and wiped when it finishes. Both the preview and the commit path are rate
 limited, because deriving the key from the passphrase is deliberately expensive.
 
-Two conversions to expect: Prism's sleep sessions have no Sheaf equivalent and are dropped
-with a warning, and Prism's slider custom-field type collapses to a text field.
+Custom fields come across by type. Prism's choice fields become a select or multi-select (whichever the field allowed) with the option labels as the choices, and an "other" value a member typed in is kept as an extra entry. Sliders become Sheaf sliders, keeping their mode (labeled 0 to 100, or a numeric range with min, max, step and unit), end labels and colour gradient; a scale field becomes a numeric slider from 1 to its number of steps. Prism's folders only group fields, so they are not imported as fields, and a field that points at another member has no Sheaf equivalent and comes across as text with a warning. Sleep sessions have no Sheaf equivalent either and are dropped with a warning.
 
 ---
 

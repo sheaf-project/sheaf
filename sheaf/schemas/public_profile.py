@@ -33,6 +33,29 @@ class PublicMemberField(BaseModel):
     value: object
 
 
+class PublicSliderTrack(BaseModel):
+    # What a slider field's card needs beyond the reading: the number itself
+    # and the shape of the track (bounds, end labels, gradient), copied from
+    # the field definition's options. The definition's options are the owner's
+    # design for the field, not member data, and the reading in `value`
+    # already says where on the track the member sits, so this exposes
+    # nothing the card did not. `step` stays out: a visitor is not editing.
+    number: float
+    mode: str
+    min: float
+    max: float
+    unit: str | None = None
+    labels: dict[str, str | None]
+    gradient: list[str] | None = None
+
+
+class PublicSliderField(PublicMemberField):
+    # A slider entry: `value` is still the reading ("62%", "172.5 cm"), so a
+    # client that knows only {name, value} shows the same thing as before;
+    # a client that knows sliders draws the track from `slider`.
+    slider: PublicSliderTrack
+
+
 class PublicMemberView(BaseModel):
     # Identity always shown for a member the owner put in a view.
     id: str
@@ -48,7 +71,7 @@ class PublicMemberView(BaseModel):
     # One entry per custom field this view exposes that this member has a value
     # for, in selection order. Empty when the view exposes no fields. A list, not
     # a map: field names are not unique, so same-named fields must both appear.
-    fields: list[PublicMemberField] = []
+    fields: list[PublicSliderField | PublicMemberField] = []
 
 
 class PublicSystemView(BaseModel):

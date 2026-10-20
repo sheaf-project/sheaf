@@ -125,10 +125,14 @@ def _make_export(
             )
 
     custom_fields: list[dict] = []
+    custom_field_values: list[dict] = []
     if with_custom_fields:
+        species_id = str(uuid.uuid4())
+        mood_id = str(uuid.uuid4())
+        roles_id = str(uuid.uuid4())
         custom_fields.append(
             {
-                "id": str(uuid.uuid4()),
+                "id": species_id,
                 "name": "Species",
                 "fieldType": 0,
                 "displayOrder": 0,
@@ -136,16 +140,70 @@ def _make_export(
                 "fieldTypeId": "text",
             }
         )
-        # Slider-type field: should land as TEXT with a warning.
+        # A labeled 0..100 slider with a named gradient: becomes a slider.
         custom_fields.append(
             {
-                "id": str(uuid.uuid4()),
+                "id": mood_id,
                 "name": "Mood",
                 "fieldType": 0,
                 "displayOrder": 1,
                 "createdAt": "2026-01-01T00:00:00.000Z",
                 "fieldTypeId": "slider",
+                "typeConfigJson": json.dumps(
+                    {
+                        "runtimeType": "slider",
+                        "mode": "labeled",
+                        "leftLabel": "Low",
+                        "rightLabel": "High",
+                        "gradientPresetId": "sad-happy",
+                    }
+                ),
             }
+        )
+        # A multi-choice field: the options live in the type config and each
+        # value is a JSON blob of option ids (issue #357).
+        custom_fields.append(
+            {
+                "id": roles_id,
+                "name": "Roles",
+                "fieldType": 0,
+                "displayOrder": 2,
+                "createdAt": "2026-01-01T00:00:00.000Z",
+                "fieldTypeId": "choice",
+                "typeConfigJson": json.dumps(
+                    {
+                        "runtimeType": "choice",
+                        "allowsMultiple": True,
+                        "options": [
+                            {"id": "opt-a", "label": "Caretaker", "sortOrder": 0},
+                            {"id": "opt-b", "label": "Protector", "sortOrder": 1},
+                        ],
+                    }
+                ),
+            }
+        )
+        first = headmates[0]["id"]
+        custom_field_values.extend(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "customFieldId": species_id,
+                    "memberId": first,
+                    "value": "fox",
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "customFieldId": mood_id,
+                    "memberId": first,
+                    "value": "49.6098104",
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "customFieldId": roles_id,
+                    "memberId": first,
+                    "value": json.dumps({"options": ["opt-b", "opt-a"], "other": ""}),
+                },
+            ]
         )
 
     notes: list[dict] = []
@@ -333,6 +391,7 @@ def _make_export(
         "memberGroups": groups,
         "memberGroupEntries": group_entries,
         "customFields": custom_fields,
+        "customFieldValues": custom_field_values,
         "notes": notes,
         "reminders": [
             {
@@ -476,7 +535,7 @@ def test_runner_imports_members_groups_fields_polls(auth_client: httpx.Client):
     counts = final["counts"]
     assert counts["members_imported"] == 2
     assert counts["groups_imported"] == 1
-    assert counts["custom_fields_imported"] == 2
+    assert counts["custom_fields_imported"] == 3
     assert counts["fronts_imported"] == 1
     assert counts["journals_imported"] == 1
     assert counts["polls_imported"] == 1
@@ -549,7 +608,11 @@ def test_runner_skips_sleep_habits_reminders_with_warning(auth_client: httpx.Cli
     assert any("reminder" in m for m in msgs)
 
 
-def test_runner_surfaces_slider_field_as_text_warning(auth_client: httpx.Client):
+def test_runner_translates_choice_and_slider_fields(auth_client: httpx.Client):
+    """Issue #357: a Prism choice value is a JSON blob of option ids and used
+    to land verbatim as text. It must become the labels on a multiselect
+    field with those labels as its choices, and a slider must become a
+    slider (labels, gradient and all) with its value stored as a number."""
     payload, _ = _make_export()
     envelope = synthesize_envelope(payload, _PASSPHRASE)
     job = _post_file(auth_client, envelope)
@@ -557,10 +620,33 @@ def test_runner_surfaces_slider_field_as_text_warning(auth_client: httpx.Client)
     final = wait_for_terminal(auth_client, job["id"])
 
     assert final["status"] == "complete", final
-    assert any(
+    assert not any(
         "slider" in e["message"].lower() and e["level"] == "warning"
         for e in final["events"]
     ), final["events"]
+
+    fields = {f["name"]: f for f in auth_client.get("/v1/fields").json()}
+    assert fields["Species"]["field_type"] == "text"
+    assert fields["Roles"]["field_type"] == "multiselect"
+    assert fields["Roles"]["options"] == {"choices": ["Caretaker", "Protector"]}
+    assert fields["Mood"]["field_type"] == "slider"
+    assert fields["Mood"]["options"]["mode"] == "labeled"
+    assert fields["Mood"]["options"]["labels"] == {
+        "left": "Low",
+        "center": None,
+        "right": "High",
+    }
+    assert fields["Mood"]["options"]["gradient"] == ["#5479AE", "#E4C44F"]
+
+    members = {m["name"]: m for m in auth_client.get("/v1/members").json()}
+    first = members[payload["headmates"][0]["name"]]
+    values = {
+        v["field_id"]: v["value"]
+        for v in auth_client.get(f"/v1/members/{first['id']}/fields").json()
+    }
+    assert values[fields["Species"]["id"]] == "fox"
+    assert values[fields["Roles"]["id"]] == ["Protector", "Caretaker"]
+    assert values[fields["Mood"]["id"]] == 49.6098104
 
 
 def test_runner_fails_when_credential_missing(auth_client: httpx.Client):

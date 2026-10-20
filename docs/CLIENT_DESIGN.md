@@ -386,6 +386,25 @@ way to write custom-field values. Sending `value: null` clears that field; so do
 rather than writing them. Fields you do not name are left alone, so clearing one means
 sending it explicitly rather than leaving it out.
 
+#### Custom field types
+
+A field definition carries a `field_type` of `text`, `number`, `date`, `boolean`, `select`, `multiselect` or `slider`, and an `options` object whose shape depends on the type. The server may add types; a client that meets a `field_type` it does not know should treat the field as text (show the value's string form, do not offer an editor) rather than fail to decode the list.
+
+`select` and `multiselect` take `options: {"choices": [...]}`; with no options at all the field is freeform and any string (or list of strings) is accepted.
+
+`slider` takes an `options` object the server always fills in completely:
+
+```json
+{
+  "mode": "labeled",
+  "min": 0, "max": 100, "step": 1, "unit": null,
+  "labels": {"left": "Calm", "center": null, "right": "Intense"},
+  "gradient": ["#5B92C9", "#E08D5E"]
+}
+```
+
+`mode` is `labeled` (fixed 0 to 100, read as a percentage, the labels say what the ends mean) or `numeric` (`min` and `max` are the field's own, `step` is a hint for the control and may be `null` for any value, `unit` is up to 12 characters and shown after the number). `labels` are each up to 50 characters or `null`. `gradient` is `null` or 2 to 8 `#RRGGBB` colours to paint left to right across the track. Values are JSON numbers inside `[min, max]`, never strings; a value off the step grid is accepted. On the public profile and share-link projections a slider entry keeps `value` as the reading (`"62%"`, `"172.5 cm"`), so a client that knows only `{name, value}` shows the same thing as any other field, and adds `slider: {number, mode, min, max, unit, labels, gradient}` for a client that draws the track. `step` is not on that surface.
+
 The two `reorder` endpoints take `{"group_ids": [...]}` / `{"field_ids": [...]}` and set each
 named item's order to its index, in one transaction, returning the full re-sorted list. Items
 you do not name keep the order they had, so sending the whole list is the reliable way to
