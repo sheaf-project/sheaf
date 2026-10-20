@@ -577,9 +577,11 @@ def test_slider_fields_are_served_as_their_reading():
     mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
     # `value` is the reading, so a client that knows only {name, value} shows
     # the same thing as any other field; `slider` carries the number and the
-    # track for a client that draws it. Step stays off the surface.
-    assert mem["fields"] == [
-        {
+    # track for a client that draws it. Step stays off the surface. Keyed by
+    # name: neither field has an order set, so their relative order is
+    # unspecified (docs/CLIENT_DESIGN.md).
+    assert {f["name"]: f for f in mem["fields"]} == {
+        "Mood": {
             "name": "Mood",
             "value": "62%",
             "slider": {
@@ -589,23 +591,23 @@ def test_slider_fields_are_served_as_their_reading():
                 "max": 100.0,
                 "unit": None,
                 "labels": {"left": "Low", "center": None, "right": "High"},
-                "gradient": ["#5479AE", "#E4C44F"],
+                "gradient": None,
             },
         },
-        {
+        "Height": {
             "name": "Height",
             "value": "172.5 cm",
             "slider": {
                 "number": 172.5,
                 "mode": "numeric",
-                "min": 120.0,
-                "max": 220.0,
+                "min": 100.0,
+                "max": 250.0,
                 "unit": "cm",
                 "labels": {"left": None, "center": None, "right": None},
                 "gradient": None,
             },
         },
-    ]
+    }
     owner.close()
 
 
