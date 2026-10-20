@@ -17,6 +17,12 @@ class FieldType(enum.StrEnum):
     BOOLEAN = "boolean"
     SELECT = "select"
     MULTISELECT = "multiselect"
+    # A position on a range: 0..100 between two labelled ends ("labeled"
+    # mode), or a number within an operator-chosen min/max with a unit
+    # ("numeric" mode). Options carry the mode, bounds, labels and an optional
+    # colour gradient for the track; the value is a number. Shaped after
+    # Prism's slider field so its exports round-trip.
+    SLIDER = "slider"
 
 
 class CustomFieldDefinition(UUIDMixin, TimestampMixin, Base):

@@ -533,6 +533,79 @@ def test_only_exposed_custom_fields_appear():
     assert mem["fields"] == [{"name": "Role", "value": "Protector"}]
     # Secret is doubly held: never selected, and still at the private default.
     assert all(f["name"] != "Secret" for f in mem["fields"])
+
+
+@pytest.mark.public_profiles
+def test_slider_fields_are_served_as_their_reading():
+    """A slider stores a number; a visitor reads "62%" or "7.5 kg". The
+    reading stays in `value` so a {name, value}-only client shows it like
+    any other field, and the track rides along in `slider`."""
+    owner = _register()
+    m = _member(owner, "Slidey")
+    mood = owner.post(
+        "/v1/fields",
+        json={
+            "name": "Mood",
+            "field_type": "slider",
+            "options": {"labels": {"left": "Low", "right": "High"}},
+        },
+    ).json()
+    height = owner.post(
+        "/v1/fields",
+        json={
+            "name": "Height",
+            "field_type": "slider",
+            "options": {"mode": "numeric", "min": 100, "max": 250, "unit": "cm"},
+        },
+    ).json()
+    r = owner.put(
+        f"/v1/members/{m}/fields",
+        json=[
+            {"field_id": mood["id"], "value": 62},
+            {"field_id": height["id"], "value": 172.5},
+        ],
+    )
+    assert r.status_code == 200, r.text
+
+    _, view = _published_system(owner, members=[m])
+    for f in (mood, height):
+        owner.post(f"/v1/share-views/{view}/fields", json={"field_id": f["id"]})
+        r = owner.patch(f"/v1/fields/{f['id']}", json={"privacy": "public"})
+        assert r.status_code == 200, r.text
+    system_id = owner.get("/v1/systems/me").json()["id"]
+
+    mem = _anon().get(f"/v1/public/systems/{system_id}/members").json()[0]
+    # `value` is the reading, so a client that knows only {name, value} shows
+    # the same thing as any other field; `slider` carries the number and the
+    # track for a client that draws it. Step stays off the surface.
+    assert mem["fields"] == [
+        {
+            "name": "Mood",
+            "value": "62%",
+            "slider": {
+                "number": 62.0,
+                "mode": "labeled",
+                "min": 0.0,
+                "max": 100.0,
+                "unit": None,
+                "labels": {"left": "Low", "center": None, "right": "High"},
+                "gradient": ["#5479AE", "#E4C44F"],
+            },
+        },
+        {
+            "name": "Height",
+            "value": "172.5 cm",
+            "slider": {
+                "number": 172.5,
+                "mode": "numeric",
+                "min": 120.0,
+                "max": 220.0,
+                "unit": "cm",
+                "labels": {"left": None, "center": None, "right": None},
+                "gradient": None,
+            },
+        },
+    ]
     owner.close()
 
 

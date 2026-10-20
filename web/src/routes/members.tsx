@@ -51,6 +51,8 @@ const BioEditor = lazy(() => import("@/components/bio-editor").then(m => ({ defa
 const MarkdownPreview = lazy(() => import("@/components/bio-editor").then(m => ({ default: m.MarkdownPreview })));
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DatePicker } from "@/components/date-picker";
+import { SliderInput } from "@/components/slider-field";
+import { formatSliderValue, sliderOptions } from "@/lib/slider-fields";
 import { PageHeader } from "@/components/page-header";
 import { BookOpen, History, MessageSquare, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -426,6 +428,8 @@ function MemberForm({
 //  - date              -> string ("YYYY-MM-DD" from DatePicker)
 //  - boolean           -> boolean
 //  - multiselect       -> string[]
+//  - slider            -> string (the range input's value), coerced to a
+//                         number on save when non-empty
 type FieldEditValue = string | boolean | string[];
 
 /** Strip the legacy {v: ...} envelope; everything else is passed through. */
@@ -467,6 +471,12 @@ function valueForEditor(
       return Array.isArray(unwrapped)
         ? unwrapped.filter((x): x is string => typeof x === "string")
         : [];
+    case "slider":
+      // A number on the wire; anything else (an old text import, say) is
+      // treated as unset rather than shown as a bogus reading.
+      return typeof unwrapped === "number" && Number.isFinite(unwrapped)
+        ? String(unwrapped)
+        : "";
     case "number":
     case "text":
     case "date":
@@ -489,7 +499,7 @@ function isEmptyValue(field_type: FieldType, value: FieldEditValue): boolean {
  *  Sends raw values (no `{v: ...}` envelope); the backend tolerates both
  *  shapes via _unwrap_value in custom_field.py. */
 function valueForWire(field_type: FieldType, value: FieldEditValue): unknown {
-  if (field_type === "number") {
+  if (field_type === "number" || field_type === "slider") {
     if (typeof value !== "string" || value === "") return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
@@ -617,6 +627,13 @@ function MemberFieldValues({ memberId }: { memberId: string }) {
                 value={String(effectiveValue(f.id, ""))}
                 onChange={(next) => updateField(f.id, next)}
                 placeholder="Pick a date"
+              />
+            ) : f.field_type === "slider" ? (
+              <SliderInput
+                id={id}
+                value={String(effectiveValue(f.id, ""))}
+                options={sliderOptions(f.options)}
+                onChange={(next) => updateField(f.id, next)}
               />
             ) : f.field_type === "select" ? (
               choices.length > 0 ? (
@@ -1114,11 +1131,21 @@ function MemberView({
 
   const fieldDisplay = useMemo(() => {
     if (!fields || !values) return [];
+    const byField = new Map(fields.map((f) => [f.id, f]));
     const valMap: Record<string, string> = {};
     for (const v of values) {
-      valMap[v.field_id] = typeof v.value === "object" && v.value !== null
-        ? ((v.value as Record<string, unknown>).v as string ?? "")
-        : String(v.value ?? "");
+      const field = byField.get(v.field_id);
+      const raw = unwrapValue(v.value);
+      if (field?.field_type === "slider") {
+        // The same reading the public profile shows ("62%", "172.5 cm").
+        valMap[v.field_id] = formatSliderValue(raw, sliderOptions(field.options));
+        continue;
+      }
+      valMap[v.field_id] = Array.isArray(raw)
+        ? raw.map(String).join(", ")
+        : typeof raw === "object" && raw !== null
+          ? ""
+          : String(raw ?? "");
     }
     return fields
       .filter((f) => valMap[f.id])

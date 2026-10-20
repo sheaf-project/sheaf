@@ -20,8 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { DestructiveConfirmDialog } from "@/components/destructive-confirm-dialog";
 import { PendingDeleteBadge } from "@/components/pending-delete-badge";
+import { SliderReadout } from "@/components/slider-field";
+import { sliderOptions } from "@/lib/slider-fields";
 import {
   PrivacyLevelSelect,
   PublishingOffNote,
@@ -36,6 +39,7 @@ import type {
   DestructiveConfirm,
   FieldType,
   PrivacyLevel,
+  SliderOptions,
 } from "@/types/api";
 
 /** Permission, never a promise: a public field still has to be added to a
@@ -168,12 +172,275 @@ const FIELD_TYPE_LABEL: Record<FieldType, string> = {
   boolean: "Yes/No",
   select: "Select (single)",
   multiselect: "Multi-select",
+  slider: "Slider",
 };
 
 const FIELD_TYPES_WITH_CHOICES: ReadonlySet<FieldType> = new Set([
   "select",
   "multiselect",
 ]);
+
+/** Gradients offered by name. Two or three stops each; the owner can also
+ *  pick their own colours. Ids are what the options store, so an import from
+ *  an app with the same idea can land on a named one. */
+const GRADIENT_PRESETS: { id: string; label: string; stops: string[] }[] = [
+  { id: "none", label: "No gradient", stops: [] },
+  { id: "cool-warm", label: "Cool to warm", stops: ["#5B92C9", "#E08D5E"] },
+  { id: "calm-intense", label: "Calm to intense", stops: ["#7BAA7E", "#D6534D"] },
+  { id: "sad-happy", label: "Low to high", stops: ["#5479AE", "#E4C44F"] },
+  { id: "soft-hard", label: "Soft to hard", stops: ["#F4EBD8", "#A89B8C", "#3A2E4D"] },
+  { id: "day-night", label: "Day to night", stops: ["#F4D86E", "#1E2444"] },
+  { id: "rose-dusk", label: "Rose dusk", stops: ["#F4B89E", "#D17A8E", "#5B4378"] },
+  { id: "sage-meadow", label: "Sage meadow", stops: ["#C5D9B5", "#4A6B47"] },
+  { id: "monochrome", label: "Monochrome", stops: ["#E4DEEC", "#3A2E4D"] },
+  { id: "custom", label: "Custom colours", stops: [] },
+];
+
+function presetFor(gradient: string[] | null): string {
+  if (!gradient || gradient.length === 0) return "none";
+  const match = GRADIENT_PRESETS.find(
+    (p) => p.stops.length > 0 && p.stops.join(",") === gradient.map((c) => c.toUpperCase()).join(","),
+  );
+  return match ? match.id : "custom";
+}
+
+/** What the API accepts: the labeled kind has fixed bounds and no unit, so
+ *  only send the parts that mean something for the chosen mode. */
+function sliderOptionsForWire(o: SliderOptions): Record<string, unknown> {
+  const labels = {
+    left: o.labels.left?.trim() || null,
+    center: o.labels.center?.trim() || null,
+    right: o.labels.right?.trim() || null,
+  };
+  const gradient = o.gradient && o.gradient.length >= 2 ? o.gradient : null;
+  if (o.mode === "numeric") {
+    return {
+      mode: "numeric",
+      min: o.min,
+      max: o.max,
+      step: o.step,
+      unit: o.unit?.trim() || null,
+      labels,
+      gradient,
+    };
+  }
+  return { mode: "labeled", labels, gradient };
+}
+
+function defaultSliderOptions(): SliderOptions {
+  return {
+    mode: "labeled",
+    min: 0,
+    max: 100,
+    step: null,
+    unit: null,
+    labels: { left: null, center: null, right: null },
+    gradient: null,
+  };
+}
+
+/** Everything a slider field needs: mode, bounds, labels, track colours. */
+function SliderOptionsEditor({
+  value,
+  onChange,
+  idPrefix,
+}: {
+  value: SliderOptions;
+  onChange: (next: SliderOptions) => void;
+  idPrefix: string;
+}) {
+  // "Custom colours" starts from whatever stops are showing, so without this
+  // flag the picker would snap straight back to the preset those stops match
+  // and the swatches would never appear.
+  const [customColours, setCustomColours] = useState(false);
+  const preset = customColours && value.gradient ? "custom" : presetFor(value.gradient);
+  const patch = (p: Partial<SliderOptions>) => onChange({ ...value, ...p });
+  const patchLabels = (side: "left" | "center" | "right", text: string) =>
+    patch({ labels: { ...value.labels, [side]: text.trim() ? text : null } });
+  const numeric = value.mode === "numeric";
+  const previewOptions = sliderOptions(value);
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <Label className="text-xs">Kind</Label>
+        <RadioGroup
+          value={value.mode}
+          onValueChange={(m) =>
+            patch(
+              m === "numeric"
+                ? { mode: "numeric", min: 0, max: 10, step: null }
+                : { mode: "labeled", min: 0, max: 100, step: null, unit: null },
+            )
+          }
+          className="flex flex-wrap gap-4"
+        >
+          <div className="flex items-center gap-2">
+            <RadioGroupItem value="labeled" id={`${idPrefix}-slider-labeled`} />
+            <Label htmlFor={`${idPrefix}-slider-labeled`} className="text-xs font-normal">
+              Between two labels (0 to 100)
+            </Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <RadioGroupItem value="numeric" id={`${idPrefix}-slider-numeric`} />
+            <Label htmlFor={`${idPrefix}-slider-numeric`} className="text-xs font-normal">
+              A number with a range
+            </Label>
+          </div>
+        </RadioGroup>
+      </div>
+
+      {numeric ? (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="space-y-1">
+            <Label htmlFor={`${idPrefix}-slider-min`} className="text-xs">Min</Label>
+            <Input
+              id={`${idPrefix}-slider-min`}
+              type="number"
+              className="h-8 text-sm"
+              value={value.min}
+              onChange={(e) => patch({ min: Number(e.target.value) })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`${idPrefix}-slider-max`} className="text-xs">Max</Label>
+            <Input
+              id={`${idPrefix}-slider-max`}
+              type="number"
+              className="h-8 text-sm"
+              value={value.max}
+              onChange={(e) => patch({ max: Number(e.target.value) })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`${idPrefix}-slider-step`} className="text-xs">Step</Label>
+            <Input
+              id={`${idPrefix}-slider-step`}
+              type="number"
+              className="h-8 text-sm"
+              placeholder="any"
+              min={0}
+              value={value.step ?? ""}
+              onChange={(e) =>
+                patch({ step: e.target.value === "" ? null : Number(e.target.value) })
+              }
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`${idPrefix}-slider-unit`} className="text-xs">Unit</Label>
+            <Input
+              id={`${idPrefix}-slider-unit`}
+              className="h-8 text-sm"
+              placeholder="e.g. cm"
+              maxLength={12}
+              value={value.unit ?? ""}
+              onChange={(e) => patch({ unit: e.target.value.trim() ? e.target.value : null })}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-3 gap-2">
+        {(["left", "center", "right"] as const).map((side) => (
+          <div key={side} className="space-y-1">
+            <Label htmlFor={`${idPrefix}-slider-label-${side}`} className="text-xs">
+              {side === "left" ? "Left label" : side === "center" ? "Centre label" : "Right label"}
+            </Label>
+            <Input
+              id={`${idPrefix}-slider-label-${side}`}
+              className="h-8 text-sm"
+              maxLength={50}
+              placeholder={side === "center" ? "optional" : numeric ? "optional" : side === "left" ? "e.g. Calm" : "e.g. Intense"}
+              value={value.labels[side] ?? ""}
+              onChange={(e) => patchLabels(side, e.target.value)}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-1">
+        <Label htmlFor={`${idPrefix}-slider-gradient`} className="text-xs">Track colours</Label>
+        <Select
+          value={preset}
+          onValueChange={(id) => {
+            setCustomColours(id === "custom");
+            if (id === "none") patch({ gradient: null });
+            else if (id === "custom") patch({ gradient: value.gradient ?? ["#5B92C9", "#E08D5E"] });
+            else patch({ gradient: GRADIENT_PRESETS.find((p) => p.id === id)?.stops ?? null });
+          }}
+        >
+          <SelectTrigger id={`${idPrefix}-slider-gradient`} className="h-8 w-56 text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {GRADIENT_PRESETS.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                <span className="flex items-center gap-2">
+                  {p.stops.length > 0 && (
+                    <span
+                      className="inline-block h-3 w-10 rounded-full"
+                      style={{ background: `linear-gradient(to right, ${p.stops.join(", ")})` }}
+                    />
+                  )}
+                  {p.label}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {preset === "custom" && value.gradient && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {value.gradient.map((colour, i) => (
+              <span key={i} className="flex items-center gap-1">
+                <input
+                  type="color"
+                  aria-label={`Colour ${i + 1}`}
+                  value={colour}
+                  onChange={(e) => {
+                    const next = [...value.gradient!];
+                    next[i] = e.target.value.toUpperCase();
+                    patch({ gradient: next });
+                  }}
+                  className="h-8 w-10 cursor-pointer rounded border bg-transparent p-0.5"
+                />
+                {value.gradient!.length > 2 && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    aria-label={`Remove colour ${i + 1}`}
+                    onClick={() => patch({ gradient: value.gradient!.filter((_, j) => j !== i) })}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </span>
+            ))}
+            {value.gradient.length < 8 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => patch({ gradient: [...value.gradient!, "#888888"] })}
+              >
+                <Plus className="mr-1 h-3 w-3" />
+                Add colour
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Preview</Label>
+        <SliderReadout
+          value={previewOptions.min + (previewOptions.max - previewOptions.min) * 0.62}
+          options={previewOptions}
+        />
+      </div>
+    </div>
+  );
+}
 
 function choicesFromOptions(
   options: CustomField["options"] | null | undefined,
@@ -248,9 +515,11 @@ export function CustomFieldsCard() {
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState<FieldType>("text");
   const [newChoices, setNewChoices] = useState<string[]>([]);
+  const [newSlider, setNewSlider] = useState<SliderOptions>(defaultSliderOptions);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editChoices, setEditChoices] = useState<string[]>([]);
+  const [editSlider, setEditSlider] = useState<SliderOptions>(defaultSliderOptions);
   const [editType, setEditType] = useState<FieldType>("text");
   const [deletingField, setDeletingField] = useState<{
     id: string;
@@ -279,12 +548,15 @@ export function CustomFieldsCard() {
       if (trimmed.length > 0) {
         body.options = { choices: trimmed };
       }
+    } else if (newType === "slider") {
+      body.options = sliderOptionsForWire(newSlider);
     }
     createField.mutate(body, {
       onSuccess: () => {
         setNewName("");
         setNewType("text");
         setNewChoices([]);
+        setNewSlider(defaultSliderOptions());
       },
     });
   }
@@ -294,6 +566,7 @@ export function CustomFieldsCard() {
     setEditName(field.name);
     setEditType(field.field_type);
     setEditChoices(choicesFromOptions(field.options));
+    setEditSlider(field.field_type === "slider" ? sliderOptions(field.options) : defaultSliderOptions());
   }
 
   /** Swap a field with its neighbour and send the FULL ordered id list, so
@@ -317,6 +590,8 @@ export function CustomFieldsCard() {
     if (FIELD_TYPES_WITH_CHOICES.has(editType)) {
       const trimmed = editChoices.map((c) => c.trim()).filter(Boolean);
       data.options = trimmed.length > 0 ? { choices: trimmed } : null;
+    } else if (editType === "slider") {
+      data.options = sliderOptionsForWire(editSlider);
     }
     updateField.mutate(
       { id: editingId, data },
@@ -377,6 +652,11 @@ export function CustomFieldsCard() {
               </p>
             </div>
           )}
+          {newType === "slider" && (
+            <div className="rounded-md border bg-muted/30 p-3">
+              <SliderOptionsEditor idPrefix="new" value={newSlider} onChange={setNewSlider} />
+            </div>
+          )}
         </form>
 
         <div className="space-y-2">
@@ -415,6 +695,13 @@ export function CustomFieldsCard() {
                   <ChoicesEditor
                     value={editChoices}
                     onChange={setEditChoices}
+                  />
+                )}
+                {editType === "slider" && (
+                  <SliderOptionsEditor
+                    idPrefix={`edit-${f.id}`}
+                    value={editSlider}
+                    onChange={setEditSlider}
                   />
                 )}
               </form>

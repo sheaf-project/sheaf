@@ -35,6 +35,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ColorDot } from "@/components/color-dot";
 import { Logo } from "@/components/logo";
 import { RelationshipGraphCanvas } from "@/components/relationship-graph";
+import { SliderReadout } from "@/components/slider-field";
 import { ThemeModeToggle } from "@/components/theme-mode-toggle";
 import { ApiError } from "@/lib/api-error";
 import { getAuthConfig } from "@/lib/auth";
@@ -44,6 +45,7 @@ import {
   type GraphEdge,
   type GraphNode,
 } from "@/lib/relationship-graph";
+import { sliderOptions } from "@/lib/slider-fields";
 import { cn } from "@/lib/utils";
 import {
   getPublicFronting,
@@ -1028,17 +1030,32 @@ function MemberCardBody({
             </Suspense>
           </div>
         )}
-        {fields.length > 0 && (
+        {fields.some((f) => !f.slider) && (
           <div className="flex flex-wrap gap-1.5">
-            {fields.map((f, i) => (
-              // Index in the key because field names are not unique: two
-              // same-named fields must render as two distinct badges.
-              <Badge key={i} variant="secondary" className="font-normal">
-                <span className="text-muted-foreground">{f.name}:</span>&nbsp;
-                {formatFieldValue(f.value)}
-              </Badge>
-            ))}
+            {fields.map((f, i) =>
+              f.slider ? null : (
+                // Index in the key because field names are not unique: two
+                // same-named fields must render as two distinct badges.
+                <Badge key={i} variant="secondary" className="font-normal">
+                  <span className="text-muted-foreground">{f.name}:</span>&nbsp;
+                  {formatFieldValue(f.value)}
+                </Badge>
+              ),
+            )}
           </div>
+        )}
+        {fields.map((f, i) =>
+          f.slider ? (
+            // A slider gets its track, the same bar the owner sees, with the
+            // reading beside it. Full width, below the badges.
+            <div key={`slider-${i}`} className="space-y-1">
+              <span className="text-xs text-muted-foreground">{f.name}</span>
+              <SliderReadout
+                value={f.slider.number}
+                options={sliderOptions(f.slider)}
+              />
+            </div>
+          ) : null,
         )}
       </CardContent>
     </>

@@ -103,6 +103,7 @@ from sheaf.models.user import User
 from sheaf.models.watch_token import WatchToken
 from sheaf.schemas.custom_field import value_over_text_cap
 from sheaf.services import import_limits as il
+from sheaf.services import slider_fields
 from sheaf.services.custom_fields import encrypt_field_value
 from sheaf.services.import_content_dedup import (
     ContentMatchIndex,
@@ -1522,7 +1523,9 @@ async def run_import(
                     system_id=system.id,
                     name=name,
                     field_type=ftype,
-                    options=_clamp_field_options(fd_data.get("options"), report),
+                    options=_clamp_field_options(
+                        fd_data.get("options"), report, ftype
+                    ),
                     order=_coerce_int(fd_data.get("order"), default=0),
                     privacy=_privacy(fd_data.get("privacy")),
                 )
@@ -2842,12 +2845,25 @@ def _trunc(val: str | None, max_len: int) -> str | None:
     return val[:max_len]
 
 
-def _clamp_field_options(options: object, report: ClampReport) -> object:
-    """Cap a custom field's choice list to the schema limits (count +
-    per-choice length), mirroring sheaf/schemas/custom_field.py. Non-dict /
-    non-list shapes pass through untouched - the field-type validator owns
-    those - so this only ever trims an oversized SELECT/MULTISELECT choice set.
+def _clamp_field_options(
+    options: object, report: ClampReport, field_type: FieldType = FieldType.TEXT
+) -> object:
+    """Cap a custom field's options to the schema limits, mirroring
+    sheaf/schemas/custom_field.py. A slider's options go through the same
+    normaliser the API uses (label and unit lengths, gradient shape, bounds),
+    falling back to the defaults when the file's version is not usable, so an
+    export cannot plant options the API would have refused. For the choice
+    types this trims an oversized SELECT/MULTISELECT choice set; other shapes
+    pass through untouched, as the field-type validator owns those.
     """
+    if field_type is FieldType.SLIDER:
+        try:
+            return slider_fields.normalise_options(
+                options if isinstance(options, dict) else None
+            )
+        except ValueError as exc:
+            logger.warning("slider options in import not usable, using defaults: %s", exc)
+            return slider_fields.default_options()
     if not isinstance(options, dict):
         return options
     choices = options.get("choices")
