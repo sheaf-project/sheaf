@@ -1956,3 +1956,10 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
+
+
+# Public names for the two translators the PluralPort importer borrows to
+# recover Prism's typed fields from behind `field_type: "json"` (see the
+# FIXME(pluralport-0.2) in sheaf/services/pluralport_import.py).
+translate_prism_field = _translate_prism_field
+translate_prism_value = _translate_prism_value

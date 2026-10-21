@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from sheaf.services.import_parsing import ImportPayloadError, expect_dict, safe_json_loads
 from sheaf.services.member_defaults import default_fronting_private
 from sheaf.services.pluralport_export import EXT_NS
+from sheaf.services.prism_import import translate_prism_field, translate_prism_value
 
 # Versions this importer understands. The spec mandates rejecting an
 # unknown pluralport_version rather than silently part-importing it.
@@ -378,15 +379,29 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
     for fd in envelope.get("custom_fields", []) or []:
         if not isinstance(fd, dict):
             continue
+        field_type = fd.get("field_type")
+        options = fd.get("options")
+        values = field_values.get(fd.get("id"), [])
+        bridged = _prism_typed_field(fd)
+        if bridged is _SKIP_FIELD:
+            continue
+        if bridged is not None:
+            field_type = bridged.field_type.value
+            options = bridged.options
+            values = [
+                {"member_id": v["member_id"], "value": translated}
+                for v in values
+                if (translated := translate_prism_value(v.get("value"), bridged)) is not None
+            ]
         fields.append(
             {
                 "id": fd.get("id"),
                 "name": fd.get("name"),
-                "field_type": fd.get("field_type"),
-                "options": fd.get("options"),
+                "field_type": field_type,
+                "options": options,
                 "order": fd.get("sort_order"),
                 "privacy": _op_privacy(fd.get("privacy")),
-                "values": field_values.get(fd.get("id"), []),
+                "values": values,
             }
         )
     native["custom_fields"] = fields
@@ -587,6 +602,48 @@ def _assignment_index(assignments: object) -> dict[str, list[str]]:
         ):
             out.setdefault(row["term_id"], []).append(row["subject_id"])
     return out
+
+
+# FIXME(pluralport-0.2): a typed range field in the spec should supersede
+# this. PluralPort v0.1 has no field type for a slider or scale, so Prism's
+# PluralPort exporter writes every field it cannot express as
+# `field_type: "json"` with no `options`, and parks its real definition under
+# `extensions.prism.native` (the whole native row, `typeConfigJson` included).
+# Without this bridge a Prism slider arrives as a text field holding a bare
+# number, and because Sheaf does not keep per-record foreign extensions the
+# definition is gone for good. The bridge recovers the type through the same
+# translator the native Prism importer uses (sheaf/services/prism_import.py),
+# so the two paths agree. It is a per-app special case of exactly the kind
+# the interchange format exists to make unnecessary; once the spec carries a
+# range field and Prism emits it, delete this and `_prism_typed_field`.
+_SKIP_FIELD = object()
+
+
+def _prism_native(obj: dict) -> dict:
+    """``extensions.prism.native`` on a record: Prism's own row, verbatim."""
+    ext = obj.get("extensions") if isinstance(obj, dict) else None
+    prism = ext.get("prism") if isinstance(ext, dict) else None
+    native = prism.get("native") if isinstance(prism, dict) else None
+    return native if isinstance(native, dict) else {}
+
+
+def _prism_typed_field(fd: dict):
+    """The Sheaf field a Prism ``json`` field really is, from Prism's parked
+    definition; None when the record is not that case; ``_SKIP_FIELD`` for a
+    Prism folder, which groups fields and is not one."""
+    if fd.get("field_type") != "json":
+        return None
+    native = _prism_native(fd)
+    if not isinstance(native.get("fieldTypeId"), str):
+        return None
+    translated = translate_prism_field(
+        {
+            "name": fd.get("name"),
+            "fieldTypeId": native["fieldTypeId"],
+            "typeConfigJson": native.get("typeConfigJson"),
+        }
+    )
+    return _SKIP_FIELD if translated is None else translated
 
 
 def _field_value_index(values: object) -> dict[str, list[dict]]:
