@@ -187,7 +187,11 @@ class _AssetMap:
             if not aid:
                 continue
             uri = a.get("uri")
-            bundle_path = _ext(a).get("bundle_path")
+            # Core first (the ZIP transport's field, which Prism writes),
+            # then the Sheaf-namespaced pointer older Sheaf exports carry.
+            bundle_path = a.get("bundle_path")
+            if not isinstance(bundle_path, str):
+                bundle_path = _ext(a).get("bundle_path")
             raw = _decode_inline_asset(a)
             if raw is not None:
                 # Self-contained inline bytes win over a fragile external
@@ -198,7 +202,14 @@ class _AssetMap:
             elif isinstance(uri, str) and uri:
                 self.by_id[aid] = uri
             if isinstance(bundle_path, str) and bundle_path.startswith(_ASSET_PREFIX):
-                self.bundle_keys.add(bundle_path[len(_ASSET_PREFIX):])
+                key = bundle_path[len(_ASSET_PREFIX):]
+                self.bundle_keys.add(key)
+                if aid not in self.by_id and key:
+                    # A producer that bundles bytes without a `uri` (Prism
+                    # writes only the pointer plus a sha256). Reference the
+                    # blob the way Sheaf's own bundles do, so the archive
+                    # restore lines it up by the same bare key.
+                    self.by_id[aid] = f"/v1/files/{key}"
 
     def url(self, asset_id: object) -> str | None:
         if isinstance(asset_id, str):
@@ -431,7 +442,10 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
         journals.append(
             {
                 "id": n.get("id"),
-                "member_id": ext.get("member_id"),
+                # The core Note has a member_id (the entry's subject member);
+                # Sheaf used to carry it only in its own namespace, so read
+                # the core field first and fall back for older Sheaf files.
+                "member_id": n.get("member_id") or ext.get("member_id"),
                 "title": n.get("title"),
                 "body": n.get("body"),
                 "visibility": n.get("visibility"),

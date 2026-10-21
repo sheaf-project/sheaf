@@ -2848,13 +2848,18 @@ def _trunc(val: str | None, max_len: int) -> str | None:
 def _clamp_field_options(
     options: object, report: ClampReport, field_type: FieldType = FieldType.TEXT
 ) -> object:
-    """Cap a custom field's options to the schema limits, mirroring
-    sheaf/schemas/custom_field.py. A slider's options go through the same
-    normaliser the API uses (label and unit lengths, gradient shape, bounds),
-    falling back to the defaults when the file's version is not usable, so an
-    export cannot plant options the API would have refused. For the choice
-    types this trims an oversized SELECT/MULTISELECT choice set; other shapes
-    pass through untouched, as the field-type validator owns those.
+    """Bring a custom field's options into the shape the API stores, mirroring
+    sheaf/schemas/custom_field.py, so nothing an import writes can be a row
+    the read schema (`options: dict | None`) then refuses to serve.
+
+    A slider's options go through the same normaliser the API uses (label
+    and unit lengths, gradient shape, bounds), falling back to the defaults
+    when the file's version is not usable. The choice types accept both
+    option shapes PluralPort allows: Sheaf's own `{"choices": [...]}` and the
+    bare string array other apps emit (Prism, for one), which becomes
+    `{"choices": [...]}`; the list is then capped to the schema limits.
+    Anything else is not an options object for that type and is dropped,
+    which is also what the API would have said to it.
     """
     if field_type is FieldType.SLIDER:
         try:
@@ -2864,17 +2869,22 @@ def _clamp_field_options(
         except ValueError as exc:
             logger.warning("slider options in import not usable, using defaults: %s", exc)
             return slider_fields.default_options()
-    if not isinstance(options, dict):
-        return options
-    choices = options.get("choices")
+    if field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
+        return None
+    if isinstance(options, list):
+        choices: object = options
+    elif isinstance(options, dict):
+        choices = options.get("choices")
+    else:
+        return None
     if not isinstance(choices, list):
-        return options
+        return None
     capped = clamp_list(choices, il.CF_CHOICES_COUNT, report=report)
     capped = [
         clamp_str(c, il.CF_CHOICE, report=report) if isinstance(c, str) else c
         for c in capped
     ]
-    return {**options, "choices": capped}
+    return {"choices": capped}
 
 
 def _coerce_pin(val: object) -> int | None:

@@ -80,6 +80,18 @@ def _asset_id(key: str) -> str:
     return str(uuid.uuid5(_ASSET_NS, key))
 
 
+# The spec requires an `id` on every record, including the normalised edge
+# records Sheaf derives from inline lists (group memberships, taxonomy
+# assignments, custom field values); an importer that treats ids as mandatory
+# (Prism does) refuses the whole file without them. They are derived from the
+# edge's own key so a re-export of unchanged data yields the same ids.
+_EDGE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://sheaf.sh/pluralport/edge")
+
+
+def _edge_id(kind: str, *parts: object) -> str:
+    return str(uuid.uuid5(_EDGE_NS, "\x1f".join([kind, *(str(p) for p in parts)])))
+
+
 def _internal_key(url: str) -> str | None:
     """Bare storage key for a Sheaf-internal reference, else None (external).
 
@@ -136,11 +148,13 @@ class _AssetTable:
         # uri-only in both delivery shapes.
         internal_key = _internal_key(url)
         if self._include_bytes and internal_key is not None:
-            # The builder writes the blob under this path; until the spec
-            # ratifies a bundle-path convention (issue #9) it lives in our
-            # namespace and the importer reads it from here. The path keys
-            # on the bare storage key so the importer's _to_internal_key
-            # of the (unchanged) uri recovers the same key.
+            # The builder writes the blob under this path. The pointer goes
+            # in the core `bundle_path` field the ZIP transport (spec PR #15,
+            # what Prism reads) names, and is repeated in Sheaf's namespace
+            # for Sheaf releases that only knew the latter. The path keys on
+            # the bare storage key so the importer's _to_internal_key of the
+            # (unchanged) uri recovers the same key.
+            asset["bundle_path"] = f"assets/{internal_key}"
             asset.setdefault("extensions", {})[EXT_NS] = {
                 "bundle_path": f"assets/{internal_key}",
                 "storage_key": internal_key,
@@ -284,7 +298,13 @@ def build_envelope(
             }
         )
         for mid in g.get("member_ids", []) or []:
-            group_memberships.append({"group_id": g.get("id"), "member_id": mid})
+            group_memberships.append(
+                {
+                    "id": _edge_id("group_membership", g.get("id"), mid),
+                    "group_id": g.get("id"),
+                    "member_id": mid,
+                }
+            )
 
     # --- Tags -> taxonomy (kind=tag) + assignments ------------------------
     for t in native.get("tags", []):
@@ -295,7 +315,12 @@ def build_envelope(
         )
         for mid in t.get("member_ids", []) or []:
             taxonomy_assignments.append(
-                {"term_id": t.get("id"), "subject_type": "member", "subject_id": mid}
+                {
+                    "id": _edge_id("taxonomy_assignment", t.get("id"), mid),
+                    "term_id": t.get("id"),
+                    "subject_type": "member",
+                    "subject_id": mid,
+                }
             )
 
     # --- Custom fields ----------------------------------------------------
@@ -317,6 +342,7 @@ def build_envelope(
                 continue
             custom_field_values.append(
                 {
+                    "id": _edge_id("custom_field_value", fd.get("id"), v.get("member_id")),
                     "field_id": fd.get("id"),
                     "subject_type": "member",
                     "subject_id": v.get("member_id"),
@@ -351,6 +377,10 @@ def build_envelope(
         notes.append(
             {
                 "id": j.get("id"),
+                # The core Note has a member_id (its subject member). It is
+                # repeated in Sheaf's namespace for Sheaf releases that read
+                # it only from there.
+                "member_id": j.get("member_id"),
                 "title": j.get("title"),
                 "body": j.get("body"),
                 "visibility": _privacy(j.get("visibility")),
@@ -414,9 +444,21 @@ def build_envelope(
     file_ext["lineage"] = lineage
 
     # --- Capabilities -----------------------------------------------------
-    modules: list[str] = []
-    if board_posts:
-        modules.append("boards")
+    # The modules this file actually carries, so an importer can trust the
+    # list instead of scanning (the spec's reason for the field). Keyed on
+    # what is populated, in the spec's own module names.
+    populated = {
+        "systems": systems,
+        "members": members,
+        "groups": groups or group_memberships,
+        "taxonomy": taxonomy_terms or taxonomy_assignments,
+        "custom_fields": custom_fields or custom_field_values,
+        "front_periods": front_periods,
+        "notes": notes,
+        "assets": assets.as_list(),
+        "boards": board_posts,
+    }
+    modules: list[str] = [name for name, rows in populated.items() if rows]
 
     if assets.uri_only_used:
         warnings.append(

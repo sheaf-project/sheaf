@@ -155,6 +155,7 @@ bundled asset additionally carries pointers under its own namespace:
   "id": "…",
   "kind": "avatar",
   "uri": "/v1/files/<key>",
+  "bundle_path": "assets/<storage_key>",
   "extensions": {
     "sheaf": {
       "bundle_path": "assets/<storage_key>",
@@ -170,10 +171,11 @@ bytes to bundle for them. The bare storage key is recoverable from the unchanged
 `uri` via `_to_internal_key`, which is how the importer's `_AssetMap` lines the
 in-zip blob back up with its asset.
 
-Note that the official bundle-path convention is still pending upstream issue #9.
-Until that lands, the pointer lives in Sheaf's namespace and `uri` is always kept
-present so the document stays spec-valid for an app that does not understand
-`extensions.sheaf.bundle_path`.
+The pointer is written twice: in the core `bundle_path` field named by the ZIP
+transport proposal (spec PR #15, the field Prism writes and reads), and in
+`extensions.sheaf.bundle_path` for Sheaf releases before 1.8 that only read the
+latter. On import the core field is read first. `uri` is always kept present so
+the document stays spec-valid for an app that understands neither.
 
 ---
 
@@ -260,7 +262,7 @@ opaque to apps that do not speak Sheaf.
 | Member | `notify_on_front_global`, `notify_on_front_self`, `notify_on_front_member_ids` | Front-notification preferences; await a notifications module. |
 | Member | `never_shareable`, `fronting_private` | Sheaf's two hard per-member share guards; v0.1 has no equivalent, and without these a round-trip would return someone less protected than the backup was. A file that omits `fronting_private` is a foreign one that has no notion of the guard, so the import applies Sheaf's own default rather than `false`: on for a custom front, off for an ordinary member. A Sheaf-produced file always carries the key and round-trips unchanged. |
 | Group | `privacy` | v0.1 has no group privacy field; without this a group's exposure ceiling would be lost on a round-trip. |
-| Note (journal) | `member_id` | Sheaf journals can be scoped to one member; the core `Note` has no owning-member field. |
+| Note (journal) | `member_id` | A copy of the core `Note.member_id` (the entry's subject member), kept for Sheaf releases before 1.8 that read it only from here. The core field is read first on import. |
 | Note (journal) | `author_member_names` | Denormalised author names retained alongside `author_member_ids` for display fidelity. |
 | Note (journal) | `pinned_at` | When the entry was pinned to the top of the journal list; null or absent when not pinned. |
 | Board post | `board_kind` | Distinguishes system board vs per-member wall; no core distinction yet. |
@@ -320,9 +322,13 @@ lifted directly into the native dict.
   being mistaken for a tag.
 - **PluralKit IDs are source refs.** `pluralkit_id` becomes a
   `source_refs[]` entry with `app: "pluralkit"` and back again (see Provenance).
-- **Custom-field options pass through as-is.** Sheaf stores `options` as JSONB
-  (`dict | None`); it is emitted and re-read unchanged, so both the array-style
-  and object-style option shapes survive.
+- **Custom-field options are emitted as Sheaf stores them and normalised on
+  the way in.** Sheaf writes its own object shape (`{"choices": [...]}` for
+  the choice types, the full options object for a slider). On import both
+  shapes the spec allows are accepted: a bare string array (what Prism
+  writes) becomes `{"choices": [...]}`, so the field reads back as a normal
+  select or multiselect. A `field_type` Sheaf has no equivalent for (`json`,
+  `date_range`, ...) lands as text with its options dropped.
 - **Lineage is not persisted.** A Sheaf re-export does not carry forward the
   lineage of a file it imported; see the limitation under
   [Provenance and lineage](#provenance-and-lineage) and issue #7.
