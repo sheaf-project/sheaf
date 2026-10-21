@@ -119,19 +119,34 @@ def test_core_records_mapped():
     m2 = next(m for m in env["members"] if m["id"] == "m2")
     assert m2["birthday"]["precision"] == "month_day"
     assert m2["birthday"]["year_visible"] is False
-    # normalized memberships / assignments.
-    assert {"group_id": "g1", "member_id": "m1"} in env["group_memberships"]
+    # normalized memberships / assignments, each with the id the spec
+    # requires on every record (an importer may refuse the file without it).
+    (gm,) = env["group_memberships"]
+    assert (gm["group_id"], gm["member_id"]) == ("g1", "m1") and gm["id"]
     assert env["taxonomy_terms"][0]["kind"] == "tag"
-    assert {"term_id": "t1", "subject_type": "member", "subject_id": "m1"} in env[
-        "taxonomy_assignments"
-    ]
+    (ta,) = env["taxonomy_assignments"]
+    assert (ta["term_id"], ta["subject_type"], ta["subject_id"]) == ("t1", "member", "m1")
+    assert ta["id"]
+    (cv,) = env["custom_field_values"]
+    assert (cv["field_id"], cv["subject_id"], cv["value"]) == ("c1", "m1", "v") and cv["id"]
+    # the same data yields the same edge ids on a re-export.
+    again = build_envelope(_native(), exported_at=_EXPORTED_AT)
+    assert again["group_memberships"][0]["id"] == gm["id"]
+    assert again["custom_field_values"][0]["id"] == cv["id"]
+    # the core Note subject member, not only the namespaced copy.
+    assert env["notes"][0]["member_id"] == "m1"
+    assert env["notes"][0]["extensions"]["sheaf"]["member_id"] == "m1"
     # front assignments.
     fp = env["front_periods"][0]
     assert {a["member_id"] for a in fp["assignments"]} == {"m1", "m2"}
     assert fp["status"] == "busy"
     # boards module.
     assert env["boards"]["posts"][0]["body"] == "hi"
-    assert "boards" in env["capabilities"]["modules"]
+    # capabilities name what the file carries, so an importer need not scan.
+    assert set(env["capabilities"]["modules"]) == {
+        "systems", "members", "groups", "taxonomy", "custom_fields",
+        "front_periods", "notes", "assets", "boards",
+    }
 
 
 def test_extensions_passthrough_and_uri_only_warning():
@@ -141,8 +156,9 @@ def test_extensions_passthrough_and_uri_only_warning():
         assert sheaf_ext[section], section
     # uri-only assets warn (sync path, no bundle bytes).
     assert any(w["code"] == "asset_uri_only" for w in env["warnings"])
-    # assets are uri-only: no bundle_path recorded.
+    # assets are uri-only: no bundle_path recorded, core or namespaced.
     for a in env["assets"]:
+        assert "bundle_path" not in a
         assert "bundle_path" not in (a.get("extensions", {}).get("sheaf", {}))
 
 
@@ -158,6 +174,8 @@ def test_bundle_mode_records_bundle_path():
     assert avatars, env["assets"]
     sk = avatars[0]["extensions"]["sheaf"]["storage_key"]
     assert avatars[0]["extensions"]["sheaf"]["bundle_path"] == f"assets/{sk}"
+    # ... and the same pointer in the core field the ZIP transport names.
+    assert avatars[0]["bundle_path"] == f"assets/{sk}"
     assert not any(w["code"] == "asset_uri_only" for w in env["warnings"])
 
 

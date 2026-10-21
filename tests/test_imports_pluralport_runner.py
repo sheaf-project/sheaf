@@ -12,6 +12,7 @@ member-cap precheck, and the zip guards inherited from the archive path.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import uuid
@@ -585,3 +586,88 @@ def test_native_import_archive_key_pluralport_wins(auth_client: httpx.Client):
     env = auth_client.get("/v1/export", params={"format": "pluralport"}).json()
     assert env["extensions"].get("newapp") == {"win": 1}, env["extensions"]
     assert "oldapp" not in env["extensions"], env["extensions"]
+
+
+def test_string_array_select_options_land_as_choices(auth_client: httpx.Client):
+    """The spec allows `options` on a select/multiselect to be a bare string
+    array, which is what Prism writes. Sheaf stores options as an object, and
+    its read schema refuses anything else, so a file in that shape used to
+    import cleanly and then break `GET /v1/fields` for the account with a
+    500. The array becomes `{"choices": [...]}` and the field reads back."""
+    native = {
+        "version": "2",
+        "system": {"id": "s1", "name": "Sys", "privacy": "private"},
+        "members": [{"id": "m1", "name": "Ember", "privacy": "private"}],
+        "custom_fields": [
+            {
+                "id": "c1", "name": "Role", "field_type": "multiselect",
+                "options": None, "order": 0, "privacy": "private",
+                "values": [{"member_id": "m1", "value": ["Protector", "Caretaker"]}],
+            },
+            # A type Sheaf has no equivalent for, as Prism emits for its
+            # slider, scale and member fields: lands as text, options dropped.
+            {
+                "id": "c2", "name": "Mood", "field_type": "json",
+                "options": {"anything": True}, "order": 1, "privacy": "private",
+                "values": [{"member_id": "m1", "value": 49.6}],
+            },
+        ],
+    }
+    env = build_envelope(native, exported_at=_EXPORTED_AT)
+    for f in env["custom_fields"]:
+        if f["name"] == "Role":
+            f["options"] = ["Protector", "Caretaker", "Little"]
+    job = _post(auth_client, json.dumps(env).encode("utf-8"))
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+
+    listed = auth_client.get("/v1/fields")
+    assert listed.status_code == 200, listed.text
+    fields = {f["name"]: f for f in listed.json()}
+    assert fields["Role"]["field_type"] == "multiselect"
+    assert fields["Role"]["options"] == {"choices": ["Protector", "Caretaker", "Little"]}
+    assert fields["Mood"]["field_type"] == "text"
+    assert fields["Mood"]["options"] is None
+
+    member = next(m for m in auth_client.get("/v1/members").json() if m["name"] == "Ember")
+    stored = auth_client.get(f"/v1/members/{member['id']}/fields").json()
+    values = {v["field_id"]: v["value"] for v in stored}
+    assert values[fields["Role"]["id"]] == ["Protector", "Caretaker"]
+
+
+def test_bundle_with_core_bundle_path_only_restores_avatar(auth_client: httpx.Client):
+    """A bundle from another producer (Prism's shape): the asset carries the
+    ZIP transport's core `bundle_path` and a sha256, but no `uri`, no inline
+    bytes and nothing under `extensions.sheaf`. The blob still has to land
+    as the member's avatar."""
+    digest = hashlib.sha256(_TINY_PNG).hexdigest()
+    asset_id = str(uuid.uuid4())
+    env = {
+        "pluralport_version": "0.1",
+        "exported_at": _EXPORTED_AT,
+        "producer": {"app": "Prism", "app_id": "prism", "exporter_version": "0.1.0"},
+        "capabilities": {"modules": ["systems", "members", "assets"]},
+        "systems": [{"id": "s1", "name": "Prism System"}],
+        "members": [
+            {"id": "m1", "system_id": "s1", "name": "OpIris", "avatar_asset_id": asset_id},
+            {"id": "m2", "system_id": "s1", "name": "OpJay"},
+        ],
+        "assets": [
+            {
+                "id": asset_id,
+                "kind": "image",
+                "bundle_path": f"assets/{digest}",
+                "size_bytes": len(_TINY_PNG),
+                "sha256": digest,
+            }
+        ],
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("pluralport.json", json.dumps(env))
+        zf.writestr("README.txt", "prism bundle")
+        zf.writestr(f"assets/{digest}", _TINY_PNG)
+    job = _post(auth_client, buf.getvalue(), filename="prism.pluralport.zip")
+    drive_import_runner()
+    _assert_inline_avatar_restored(auth_client, job["id"])
