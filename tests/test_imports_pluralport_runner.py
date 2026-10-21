@@ -604,12 +604,19 @@ def test_string_array_select_options_land_as_choices(auth_client: httpx.Client):
                 "options": None, "order": 0, "privacy": "private",
                 "values": [{"member_id": "m1", "value": ["Protector", "Caretaker"]}],
             },
-            # A type Sheaf has no equivalent for, as Prism emits for its
-            # slider, scale and member fields: lands as text, options dropped.
+            # What Prism writes for a slider: `json`, with the real definition
+            # parked under extensions.prism.native (added below). The bridge
+            # in pluralport_import turns it back into a slider.
             {
                 "id": "c2", "name": "Mood", "field_type": "json",
-                "options": {"anything": True}, "order": 1, "privacy": "private",
+                "options": None, "order": 1, "privacy": "private",
                 "values": [{"member_id": "m1", "value": 49.6}],
+            },
+            # A `json` field from anyone else: lands as text, options dropped.
+            {
+                "id": "c3", "name": "Blob", "field_type": "json",
+                "options": {"anything": True}, "order": 2, "privacy": "private",
+                "values": [{"member_id": "m1", "value": "x"}],
             },
         ],
     }
@@ -617,6 +624,17 @@ def test_string_array_select_options_land_as_choices(auth_client: httpx.Client):
     for f in env["custom_fields"]:
         if f["name"] == "Role":
             f["options"] = ["Protector", "Caretaker", "Little"]
+        if f["name"] == "Mood":
+            f["extensions"] = {
+                "prism": {
+                    "native": {
+                        "fieldTypeId": "slider",
+                        "typeConfigJson": json.dumps(
+                            {"mode": "labeled", "leftLabel": "Low", "rightLabel": "High"}
+                        ),
+                    }
+                }
+            }
     job = _post(auth_client, json.dumps(env).encode("utf-8"))
     drive_import_runner()
     final = wait_for_terminal(auth_client, job["id"])
@@ -627,13 +645,16 @@ def test_string_array_select_options_land_as_choices(auth_client: httpx.Client):
     fields = {f["name"]: f for f in listed.json()}
     assert fields["Role"]["field_type"] == "multiselect"
     assert fields["Role"]["options"] == {"choices": ["Protector", "Caretaker", "Little"]}
-    assert fields["Mood"]["field_type"] == "text"
-    assert fields["Mood"]["options"] is None
+    assert fields["Mood"]["field_type"] == "slider"
+    assert fields["Mood"]["options"]["labels"] == {"left": "Low", "center": None, "right": "High"}
+    assert fields["Blob"]["field_type"] == "text"
+    assert fields["Blob"]["options"] is None
 
     member = next(m for m in auth_client.get("/v1/members").json() if m["name"] == "Ember")
     stored = auth_client.get(f"/v1/members/{member['id']}/fields").json()
     values = {v["field_id"]: v["value"] for v in stored}
     assert values[fields["Role"]["id"]] == ["Protector", "Caretaker"]
+    assert values[fields["Mood"]["id"]] == 49.6
 
 
 def test_bundle_with_core_bundle_path_only_restores_avatar(auth_client: httpx.Client):

@@ -328,7 +328,12 @@ lifted directly into the native dict.
   shapes the spec allows are accepted: a bare string array (what Prism
   writes) becomes `{"choices": [...]}`, so the field reads back as a normal
   select or multiselect. A `field_type` Sheaf has no equivalent for (`json`,
-  `date_range`, ...) lands as text with its options dropped.
+  `date_range`, ...) lands as text with its options dropped, with one
+  exception: a `json` field that carries Prism's parked definition under
+  `extensions.prism.native` is translated back to the slider, number or
+  boolean it really is, through the same code as the native Prism importer.
+  That is a stopgap marked `FIXME(pluralport-0.2)` in the importer; a spec
+  range type should replace it.
 - **Lineage is not persisted.** A Sheaf re-export does not carry forward the
   lineage of a file it imported; see the limitation under
   [Provenance and lineage](#provenance-and-lineage) and issue #7.
