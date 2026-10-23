@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-22
+
 ### Added
 
 - **A slider custom field type.** Alongside text, number, date, yes/no and the two choice kinds, a field can now be a slider: either a labeled one from 0 to 100 between two words of your choosing ("Calm" to "Intense", read as a percentage), or a numeric one with its own range, step and unit ("172.5 cm"). Either can paint a colour gradient across the track, picked from a handful of named ones or built from your own colours. The settings page shows a live preview while you set one up, the member editor gets a draggable control with the reading beside it, and public profiles and share links draw the same bar with the reading beside it. API clients: `field_type: "slider"` with an `options` object described in the client design notes; a client built before this type existed should treat an unknown `field_type` as text.
