@@ -154,7 +154,7 @@ export function PollDetailPage() {
             </span>
           </div>
           {poll.description ? (
-            <p className="mt-3 whitespace-pre-wrap text-sm">
+            <p className="mt-3 whitespace-pre-wrap wrap-anywhere text-sm">
               {poll.description}
             </p>
           ) : null}
