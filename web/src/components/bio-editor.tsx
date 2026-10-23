@@ -97,7 +97,11 @@ function MarkdownPreview({
   }
 
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none">
+    // `wrap-anywhere` (overflow-wrap: anywhere) rather than break-words: only
+    // the former shrinks the min-content width, and a long URL in a bio
+    // otherwise widens the dialog's grid column and pushes every input in it
+    // past the edge of the box, not just the paragraph it is in.
+    <div className="prose prose-sm dark:prose-invert max-w-none wrap-anywhere">
       <ReactMarkdown
         remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
         rehypePlugins={[

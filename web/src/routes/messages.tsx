@@ -591,7 +591,7 @@ function MessageRow({
           )}
         </span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-sm">{msg.body}</p>
+      <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-sm">{msg.body}</p>
       <PendingDeleteBadge
         finalizeAt={msg.pending_delete_at}
         className="mt-2"

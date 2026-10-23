@@ -1036,8 +1036,8 @@ function MemberCardBody({
               f.slider ? null : (
                 // Index in the key because field names are not unique: two
                 // same-named fields must render as two distinct badges.
-                <Badge key={i} variant="secondary" className="font-normal">
-                  <span className="text-muted-foreground">{f.name}:</span>&nbsp;
+                <Badge key={i} variant="secondary" className="max-w-full font-normal whitespace-normal wrap-anywhere">
+                  <span className="shrink-0 text-muted-foreground">{f.name}:</span>&nbsp;
                   {formatFieldValue(f.value)}
                 </Badge>
               ),

@@ -1297,7 +1297,7 @@ function MemberView({
               {fieldDisplay.map((f) => (
                 <div key={f.name} className="flex items-baseline gap-2 text-sm">
                   <span className="text-muted-foreground">{f.name}:</span>
-                  <span>{f.value}</span>
+                  <span className="min-w-0 wrap-anywhere">{f.value}</span>
                   {/* Same read-only level tag the editor shows, so the two
                       views of a member never disagree about who can see a
                       field. */}

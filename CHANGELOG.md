@@ -6,6 +6,11 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **Long text no longer runs out of the member dialog.** A long link or unbroken word in a bio, in notes or in a text field used to widen the member view and edit dialog past its own edge, pushing every input in it off the right-hand side with nothing to scroll to. Such text now wraps inside its box, in the dialog and wherever else the same text is shown: public profile field badges, wall messages and poll descriptions.
+- **Settings pages no longer let the window scroll below the app.** The hidden native controls behind the dropdowns and checkboxes measured their position against the window rather than the scrolling pane, so on a long settings page the browser could scroll the whole app up out of view and leave a blank area beneath it.
+
 ## [1.7.1] - 2026-10-22
 
 ### Added
