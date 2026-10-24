@@ -105,7 +105,7 @@ from sheaf.schemas.user import (
     UserRegister,
     UserUpdate,
 )
-from sheaf.services import captcha
+from sheaf.services import captcha, shield_mode
 from sheaf.services.activity_log import log_activity
 from sheaf.services.security_events import record_security_event
 from sheaf.timezones import localize
@@ -1363,6 +1363,16 @@ async def login(
     else:
         outcome = "success"
 
+    # Last gate before a session exists: a user who opted out of Cloudflare
+    # proxying is refused while mitigation is engaged. After the credential
+    # checks on purpose, so the refusal never doubles as a credential oracle.
+    try:
+        await shield_mode.ensure_not_locked_out(user)
+    except HTTPException:
+        auth_logins_total.labels(outcome="shield_opted_out").inc()
+        await _sec("shield_opted_out", user.id)
+        raise
+
     return await _finalise_login(
         db,
         user,
@@ -1407,7 +1417,28 @@ class SessionRename(BaseModel):
     nickname: str
 
 
-@router.get("/sessions")
+def _interactive_auth_only(
+    request: Request, _user: User = Depends(get_current_user)
+) -> None:
+    """Dependency form of `_reject_api_key_auth` for the routes that manage
+    the account's own credentials: sessions and trusted devices.
+
+    The auth router carries no scope enforcement, so without this a key
+    minted for a read-only fronting integration could list every session
+    with its IP, rename or revoke them, or strip the trusted devices that
+    gate TOTP. None of that is something an integration needs; it is what
+    a leaked key would want.
+
+    Depends on `get_current_user` because that is what stamps
+    `request.state.auth_method`; decorator dependencies run before the
+    endpoint's own, so without the edge this would read an unset state and
+    wave every key through. FastAPI caches the user for the request, so
+    the endpoint's own `get_current_user` does not authenticate twice.
+    """
+    _reject_api_key_auth(request)
+
+
+@router.get("/sessions", dependencies=[Depends(_interactive_auth_only)])
 async def get_sessions(
     request: Request,
     user: User = Depends(get_current_user),
@@ -1440,7 +1471,10 @@ async def get_sessions(
     ]
 
 
-@router.patch("/sessions/{target_session_handle}")
+@router.patch(
+    "/sessions/{target_session_handle}",
+    dependencies=[Depends(_interactive_auth_only)],
+)
 async def update_session(
     target_session_handle: str,
     body: SessionRename,
@@ -1490,7 +1524,7 @@ async def revoke_session(
     await db.commit()
 
 
-@router.post("/sessions/revoke-others")
+@router.post("/sessions/revoke-others", dependencies=[Depends(_interactive_auth_only)])
 async def revoke_other_sessions(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1596,7 +1630,7 @@ class TrustedDeviceRename(BaseModel):
     nickname: str
 
 
-@router.get("/trusted-devices")
+@router.get("/trusted-devices", dependencies=[Depends(_interactive_auth_only)])
 async def get_trusted_devices(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1635,7 +1669,10 @@ async def get_trusted_devices(
     ]
 
 
-@router.patch("/trusted-devices/{device_id}")
+@router.patch(
+    "/trusted-devices/{device_id}",
+    dependencies=[Depends(_interactive_auth_only)],
+)
 async def rename_trusted_device(
     device_id: uuid.UUID,
     body: TrustedDeviceRename,
@@ -1701,7 +1738,10 @@ async def revoke_trusted_device_endpoint(
         response.delete_cookie(TRUSTED_DEVICE_COOKIE, path="/v1/auth")
 
 
-@router.post("/trusted-devices/revoke-all")
+@router.post(
+    "/trusted-devices/revoke-all",
+    dependencies=[Depends(_interactive_auth_only)],
+)
 async def revoke_all_trusted_devices_endpoint(
     response: Response,
     user: User = Depends(get_current_user),

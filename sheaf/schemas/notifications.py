@@ -258,6 +258,9 @@ class RedeemResponse(BaseModel):
     # the app via /v1/notifications/receiving/{channel_id}/unsubscribe.
     management_url: str
     channel_name: str
+    # Always null. A recipient is never told the sending system's name: the
+    # channel name is the label the sender chose for them to see. Kept in
+    # the shape so clients built against it keep decoding.
     system_label: str | None = None
 
 

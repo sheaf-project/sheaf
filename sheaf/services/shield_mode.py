@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -135,6 +136,36 @@ async def apply_transition(*, active: bool, db: AsyncSession) -> ShieldState:
         logger.warning("shield_mode: disengaged at %s", now.isoformat())
 
     return new_state
+
+
+async def ensure_not_locked_out(user: User) -> None:
+    """Refuse sign-in for a user who opted out of Cloudflare while shield
+    mode is engaged.
+
+    The opt-out promises that the account's traffic is never proxied
+    through Cloudflare. Engagement already ends their live sessions; a
+    sign-in during the window would simply mint a new one over the proxied
+    path, which is the thing they said no to. So the refusal has to live at
+    sign-in as well, for every credential that can mint a session.
+
+    Dormant when the feature is off, so a self-hoster without cf-shield
+    never pays the Redis read. A user who changes their mind mid-incident
+    currently has to wait it out; an in-band way to flip the setting from
+    the refusal is tracked as a follow-up.
+    """
+    if not settings.shield_mode_enabled or not user.disable_cdn_during_ddos:
+        return
+    state = await get_state()
+    if not state.active:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Sign-in is paused for this account while DDoS mitigation is "
+            "active, because it opted out of Cloudflare proxying. Try again "
+            "once mitigation clears."
+        ),
+    )
 
 
 async def _invalidate_opted_out_users(db: AsyncSession) -> int:

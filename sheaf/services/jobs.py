@@ -299,6 +299,7 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
     from sheaf.auth.sessions import delete_all_user_sessions
     from sheaf.models.uploaded_file import UploadedFile
     from sheaf.models.user import AccountStatus, User
+    from sheaf.services import export_storage
     from sheaf.storage import get_storage
 
     grace = timedelta(days=settings.account_deletion_grace_days)
@@ -336,6 +337,17 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
             except Exception:
                 all_blobs_deleted = False
                 logger.warning("Failed to delete file %s for user %s", f.key, user.id)
+
+        # Data exports are the other storage the user owns, and the same
+        # orphaning applies: the ExportJob rows cascade with the user and
+        # the TTL sweep only finds files through rows. Delete by prefix so
+        # a build in flight or a row without a location is covered too.
+        exports_removed = 0
+        try:
+            exports_removed = await export_storage.delete_all_for_user(user.id)
+        except Exception:
+            all_blobs_deleted = False
+            logger.warning("Failed to delete exports for user %s", user.id)
 
         # Don't drop the user row while blobs survive: the CASCADE would
         # erase the UploadedFile records too, orphaning the storage objects
@@ -375,6 +387,8 @@ async def _process_account_deletions(db: AsyncSession) -> dict:
         line = f"Deleted user {user.id}"
         if file_keys:
             line += f" ({len(file_keys)} files: {', '.join(file_keys)})"
+        if exports_removed:
+            line += f" ({exports_removed} exports)"
         detail_lines.append(line)
 
     return {

@@ -58,6 +58,9 @@ LoginOutcome = Literal[
     # login outcomes even though nothing was wrong with the password.
     "account_suspended",
     "account_banned",
+    # The account opted out of Cloudflare proxying and shield mode is
+    # engaged: the credential was fine, the sign-in is refused anyway.
+    "shield_opted_out",
     # Passkey sign-in. `passkey` is the success; the three refusals are what
     # an assertion can fail on once it has reached the server at all. Every
     # other refusal (locked, suspended, banned, captcha) reuses the label
@@ -1342,6 +1345,7 @@ def prewarm_metrics() -> None:
         "email_revalidation_required",
         "account_suspended",
         "account_banned",
+        "shield_opted_out",
         "passkey",
         "passkey_unknown_credential",
         "passkey_invalid",

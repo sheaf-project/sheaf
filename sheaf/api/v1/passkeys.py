@@ -85,7 +85,7 @@ from sheaf.schemas.passkey import (
     PasskeyUpdate,
 )
 from sheaf.schemas.user import TokenResponse
-from sheaf.services import captcha
+from sheaf.services import captcha, shield_mode
 from sheaf.services.activity_log import log_activity
 from sheaf.services.security_events import record_security_event
 
@@ -632,5 +632,20 @@ async def sign_in_complete(
             last_used_ip=event_ip,
         )
     )
+
+    # Same last gate as the password path: an opted-out user is refused
+    # while shield mode is engaged, whatever credential they arrived with.
+    try:
+        await shield_mode.ensure_not_locked_out(user)
+    except HTTPException:
+        auth_logins_total.labels(outcome="shield_opted_out").inc()
+        await record_security_event(
+            event_type=SecurityEventType.LOGIN,
+            outcome="shield_opted_out",
+            user_id=user.id,
+            ip=event_ip,
+            user_agent=request.headers.get("user-agent"),
+        )
+        raise
 
     return await _finalise_login(db, user, request, response, outcome="passkey")

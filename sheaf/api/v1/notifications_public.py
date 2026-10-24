@@ -31,9 +31,7 @@ from sheaf.models.notification_channel import (
     DestinationType,
     NotificationChannel,
 )
-from sheaf.models.system import System
 from sheaf.models.user import User
-from sheaf.models.watch_token import WatchToken
 from sheaf.observability.metrics import watch_redemptions_total
 from sheaf.schemas.notifications import (
     ManageChannelView,
@@ -102,20 +100,9 @@ async def preview_activation(
             detail="Activation code has expired",
         )
 
-    token_result = await db.execute(
-        select(WatchToken).where(WatchToken.id == channel.watch_token_id)
-    )
-    token = token_result.scalar_one()
-    system_result = await db.execute(select(System).where(System.id == token.system_id))
-    system = system_result.scalar_one_or_none()
-    system_label = (
-        getattr(system, "display_name", None) if system is not None else None
-    )
-
     return RedeemPreview(
         destination_type=channel.destination_type,
         channel_name=channel.name,
-        system_label=system_label,
         expires_at=channel.activation_code_expires_at,
     )
 
@@ -245,21 +232,9 @@ async def redeem_activation(
         destination_type=dest_label, outcome="redeemed"
     ).inc()
 
-    # Look up watch token + system for the response label.
-    token_result = await db.execute(
-        select(WatchToken).where(WatchToken.id == channel.watch_token_id)
-    )
-    token = token_result.scalar_one()
-    system_result = await db.execute(select(System).where(System.id == token.system_id))
-    system = system_result.scalar_one_or_none()
-    system_label = (
-        getattr(system, "display_name", None) if system is not None else None
-    )
-
     return RedeemResponse(
         management_url=management_url,
         channel_name=channel.name,
-        system_label=system_label,
     )
 
 
@@ -316,22 +291,9 @@ async def view_managed(
     channel = await _channel_by_management_token(
         db, mgmt_token, session_id=session_id
     )
-    token_result = await db.execute(
-        select(WatchToken).where(WatchToken.id == channel.watch_token_id)
-    )
-    token = token_result.scalar_one_or_none()
-    system_label = None
-    if token is not None:
-        system_result = await db.execute(
-            select(System).where(System.id == token.system_id)
-        )
-        system = system_result.scalar_one_or_none()
-        if system is not None:
-            system_label = getattr(system, "display_name", None)
     return ManageChannelView(
         channel_id=channel.id,
         channel_name=channel.name,
-        system_label=system_label,
         destination_type=channel.destination_type,
         destination_state=channel.destination_state,
         paused_by_sender=channel.paused_by_sender,

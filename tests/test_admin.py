@@ -249,6 +249,35 @@ def test_admin_read_key_cannot_mutate(admin_client: httpx.Client, auth_client: h
     assert resp.status_code == 403
 
 
+def test_admin_scoped_key_stops_working_when_owner_is_demoted(
+    admin_client: httpx.Client, auth_client: httpx.Client
+):
+    """Demotion does not rewrite keys, so the dependency has to check the
+    owner's current standing as well as the key's scopes."""
+    user_id = auth_client.get("/v1/auth/me").json()["id"]
+    resp = admin_client.patch(f"/v1/admin/users/{user_id}", json={"is_admin": True})
+    assert resp.status_code == 200, resp.text
+
+    key = auth_client.post(
+        "/v1/auth/keys",
+        json={"name": "soon demoted", "scopes": ["admin:read", "admin:write"]},
+    )
+    assert key.status_code == 201, key.text
+    plaintext = key.json()["key"]
+    with _key_client(plaintext) as c:
+        assert c.get("/v1/admin/stats").status_code == 200
+
+    resp = admin_client.patch(f"/v1/admin/users/{user_id}", json={"is_admin": False})
+    assert resp.status_code == 200, resp.text
+
+    with _key_client(plaintext) as c:
+        assert c.get("/v1/admin/stats").status_code == 403
+        assert c.patch(f"/v1/admin/users/{user_id}", json={"tier": "plus"}).status_code == 403
+    # The key itself is still a valid credential for non-admin routes.
+    with _key_client(plaintext) as c:
+        assert c.get("/v1/auth/me").status_code == 200
+
+
 def test_admin_write_key_can_mutate(admin_client: httpx.Client, auth_client: httpx.Client):
     key = admin_client.post(
         "/v1/auth/keys",
