@@ -476,18 +476,22 @@ export function PublicProfileBody({
                 className="text-2xl"
                 style={accent ? { backgroundColor: accent, color: "#fff" } : undefined}
               >
-                {sys.name.charAt(0).toUpperCase()}
+                {(sys.name ?? "").charAt(0).toUpperCase()}
               </AvatarFallback>
             </Avatar>
             <div>
-              <h1 className="text-2xl font-semibold">
-                {sys.name}
-                {sys.tag && (
-                  <span className="ml-2 align-middle text-sm text-muted-foreground">
-                    {sys.tag}
-                  </span>
-                )}
-              </h1>
+              {/* No name when the owner keeps it off the public surface: the
+                  page is then the members, not a nameless heading. */}
+              {(sys.name || sys.tag) && (
+                <h1 className="text-2xl font-semibold">
+                  {sys.name}
+                  {sys.tag && (
+                    <span className="ml-2 align-middle text-sm text-muted-foreground">
+                      {sys.tag}
+                    </span>
+                  )}
+                </h1>
+              )}
               {/* Null when the view doesn't serve its roster: no count either,
                   since "23 members you cannot see" is the fact somebody
                   turning the roster off was trying not to publish. */}
@@ -1225,7 +1229,7 @@ function PublicMemberPageView({
             className="inline-flex min-w-0 items-center gap-1.5 truncate text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4 shrink-0" />
-            Back to {sys.name}
+            Back to {sys.name ?? "profile"}
           </Link>
         </PublicPageHeader>
 

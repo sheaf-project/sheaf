@@ -897,3 +897,20 @@ def test_an_unknown_mode_is_refused(auth_client: httpx.Client):
         f"/v1/share-views/{vid}", json={"link_preview_mode": "everything"}
     )
     assert r.status_code == 422, r.text
+
+
+def test_hidden_system_name_falls_back_to_the_generic_card(auth_client: httpx.Client):
+    """A rich card with no title would be worse than the generic one, so a
+    system that keeps its name off the public surface previews generic even
+    with the detailed mode on."""
+    system_id, vid = _published(auth_client)
+    _set_system(auth_client, name="Should Not Appear", description="Nor this.")
+    auth_client.patch(f"/v1/share-views/{vid}", json={"link_preview_mode": "system_details"})
+    r = auth_client.patch("/v1/systems/me", json={"show_name_publicly": False})
+    assert r.status_code == 200, r.text
+
+    with _anon() as anon:
+        page = _preview_system(anon, system_id)
+    assert _is_generic(page)
+    assert "Should Not Appear" not in page.text
+    assert "Nor this." not in page.text

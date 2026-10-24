@@ -186,3 +186,22 @@ def test_channel_patch_rejects_null_debounce_seconds(auth_client: httpx.Client):
         f"/v1/channels/{_uuid.uuid4()}", json={"debounce_seconds": None}
     )
     assert resp.status_code == 422
+
+
+def test_systems_patch_rejects_null_show_name_publicly(auth_client: httpx.Client):
+    resp = auth_client.patch("/v1/systems/me", json={"show_name_publicly": None})
+    assert resp.status_code == 422
+
+
+def test_systems_show_name_publicly_defaults_on_and_round_trips(auth_client: httpx.Client):
+    """On by default (the behaviour before the switch existed); PATCH turns it
+    off and it reads back on SystemRead. No profile is live here, so neither
+    direction needs credentials."""
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is True
+    r = auth_client.patch("/v1/systems/me", json={"show_name_publicly": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["show_name_publicly"] is False
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is False
+    r = auth_client.patch("/v1/systems/me", json={"show_name_publicly": True})
+    assert r.status_code == 200, r.text
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is True

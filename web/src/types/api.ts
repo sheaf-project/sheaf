@@ -99,6 +99,9 @@ export interface System {
   replace_fronts_default: boolean;
   coalesce_contiguous_fronts: boolean;
   show_member_created_date: boolean;
+  /** Whether the system's name appears on its public profile, share links
+   *  and link previews. On by default. */
+  show_name_publicly: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -119,6 +122,10 @@ export interface SystemUpdate {
   replace_fronts_default?: boolean;
   coalesce_contiguous_fronts?: boolean;
   show_member_created_date?: boolean;
+  /** Turning this on is an exposure raise (step-up when the profile
+   *  visibility category is armed and the profile is live); turning it off
+   *  is instant. */
+  show_name_publicly?: boolean;
   /** Step-up credentials, only consulted when raising privacy to public is a
    *  deferred exposure (the profile-visibility safety category is armed and a
    *  grant would actually serve). Never stored. */
@@ -1622,7 +1629,8 @@ export interface PublicSystemView {
    *  the body would have let two links, or a link and a public profile, be
    *  tied back to one system by anything reading the JSON. */
   id: string | null;
-  name: string;
+  /** Null when the owner keeps the system's name off its public surface. */
+  name: string | null;
   description: string | null;
   avatar_url: string | null;
   banner_url: string | null;

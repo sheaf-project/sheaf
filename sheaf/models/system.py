@@ -119,6 +119,14 @@ class System(UUIDMixin, TimestampMixin, Base):
     show_member_created_date: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # Whether the system's name appears on its public surface: the public
+    # profile, share links, and the rich link preview. On by default, which is
+    # the behaviour that existed before the switch. Off lets a system publish
+    # its members under their own names without naming the system itself; the
+    # name stays the system's own everywhere the owner is signed in.
+    show_name_publicly: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
 
     # System Safety — grace period + per-category toggles for destructive actions.
     # 0 days means no grace; paired with all category toggles off by default.

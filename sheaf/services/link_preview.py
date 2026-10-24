@@ -293,8 +293,9 @@ def build_link_preview(
     decides and one place that renders.
 
     A `None` projection, or `rich=False`, gives the generic card. So does a
-    projection with an empty name, which cannot happen through the API but would
-    otherwise render a card with a blank title if it ever did.
+    projection without a name: the owner can keep the system's name off its
+    public surface (`show_name_publicly`), and a rich card whose title is
+    blank would be worse than the generic one.
 
     `image_url` is passed in rather than derived from `projection.avatar_url`,
     because the card must point at a STABLE address that resolves the avatar per
@@ -302,10 +303,10 @@ def build_link_preview(
     signed URL the projection hands out. Deriving it here is what the first cut did,
     and it meant a card whose picture died with the capability behind it.
     """
-    if projection is None or not rich or not projection.name.strip():
+    if projection is None or not rich or not (projection.name or "").strip():
         return generic_preview(page_url, image_url=logo_url)
     return LinkPreview(
-        title=projection.name.strip(),
+        title=(projection.name or "").strip(),
         # Falling back to the generic blurb rather than to an empty string: a
         # system with no description still gets a card that explains what the
         # link is.

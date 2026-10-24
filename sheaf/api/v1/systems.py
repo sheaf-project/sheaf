@@ -131,13 +131,38 @@ async def update_own_system(
     ):
         exposes = await system_privacy_raise_exposes(db, system)
 
+    # The second exposure axis: whether the system's name is shown on its
+    # public surface. Turning it on is a raise, turning it off is a lowering
+    # and stays instant and ungated. The raise reveals something only when the
+    # surface is live right now (system public, a grant that serves), so that
+    # is when it demands step-up. It is applied immediately once re-authed
+    # rather than staged: it reveals one string on a page that is already up,
+    # and the grace window exists for exposures that put new people up.
+    requested_show_name = update_data.get("show_name_publicly")
+    name_raise = requested_show_name is True and not system.show_name_publicly
+    name_lower = requested_show_name is False and system.show_name_publicly
+    name_exposes = False
+    if (
+        name_raise
+        and visibility_step_up_required(system)
+        and system.privacy == PrivacyLevel.PUBLIC
+    ):
+        name_exposes = await system_privacy_raise_exposes(db, system)
+    privacy_lowers = (
+        requested_privacy is not None
+        and requested_privacy != PrivacyLevel.PUBLIC
+        and system.privacy == PrivacyLevel.PUBLIC
+    )
+
     # Same uniform check as the other exposure PATCHes: one body may not both
     # raise and lower exposure, or the raise's step-up gets to fail the
-    # lowering with it. `privacy` is this endpoint's only exposure axis - the
-    # rest of a system edit is name, avatar, colour, tag, description - so it
-    # cannot fire today; it is here so a second axis added later inherits the
-    # rule instead of rediscovering the bug.
-    reject_mixed_exposure_directions(raises=exposes, lowers=False)
+    # lowering with it. With two axes here it can fire: hiding the name while
+    # going public, or showing it while going private, is two requests.
+    reject_mixed_exposure_directions(
+        raises=exposes or name_exposes, lowers=name_lower or privacy_lowers
+    )
+    if exposes or name_exposes:
+        await verify_destructive_auth(user, system, password, totp_code, db)
 
     # The master switch to public is the broadest exposure an owner can make, so
     # a hijacked session flipping it leaves an IP/UA-stamped trail whether it
@@ -151,7 +176,6 @@ async def update_own_system(
     # un-exposes and stays silent. Recorded after the commit, best-effort.
     raise_outcome: str | None = None
     if exposes:
-        await verify_destructive_auth(user, system, password, totp_code, db)
         grace = visibility_grace_days(system)
         if grace > 0:
             system.pending_privacy = PrivacyLevel.PUBLIC
