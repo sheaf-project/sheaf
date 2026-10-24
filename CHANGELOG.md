@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-24
+
 ### Added
 
 - **A public profile can leave the system unnamed.** A new switch on the System settings page, on by default, controls whether the system's name appears on its public profile, share links and link previews. Untick it and visitors see the members and the description without the system being named (the tag goes with the name, since it is usually an abbreviation of it); the rich link preview falls back to the generic card, since a card with a blank title would be worse. Turning the name back on while the profile is live counts as making more visible, so it asks for re-auth when System Safety covers profile visibility; turning it off is instant, like every other lowering. API clients: `show_name_publicly` on `GET/PATCH /v1/systems/me`, and `name` and `tag` on the public system view are null while it is off.
