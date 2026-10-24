@@ -480,9 +480,10 @@ export function PublicProfileBody({
               </AvatarFallback>
             </Avatar>
             <div>
-              {/* No name when the owner keeps it off the public surface: the
-                  page is then the members, not a nameless heading. */}
-              {(sys.name || sys.tag) && (
+              {/* No name (and no tag, which comes with it) when the owner
+                  keeps it off the public surface: the page is then the
+                  members, not a nameless heading. */}
+              {sys.name && (
                 <h1 className="text-2xl font-semibold">
                   {sys.name}
                   {sys.tag && (
