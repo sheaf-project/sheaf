@@ -253,6 +253,56 @@ def test_apply_transition_clears_redis_state_after_down(
     asyncio.run(_run())
 
 
+def test_sign_in_is_refused_for_opted_out_users_while_engaged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engagement ends an opted-out user's sessions; a fresh sign-in during
+    the window would mint a new one over the proxied path they said no
+    to, so the same gate has to hold at sign-in. Users who did not opt
+    out, and everyone once mitigation clears, are unaffected."""
+    from datetime import UTC, datetime
+
+    from fastapi import HTTPException
+
+    from sheaf.config import settings
+    from sheaf.services.shield_mode import (
+        ShieldState,
+        _write_state,
+        ensure_not_locked_out,
+    )
+
+    _patch_redis_url_for_host(monkeypatch)
+    _reset_redis_singleton()
+    monkeypatch.setattr(settings, "shield_mode_enabled", True)
+
+    class _OptedOut:
+        disable_cdn_during_ddos = True
+
+    class _Default:
+        disable_cdn_during_ddos = False
+
+    async def _run() -> None:
+        try:
+            await _write_state(ShieldState(active=True, since=datetime.now(UTC)))
+            with pytest.raises(HTTPException) as exc:
+                await ensure_not_locked_out(_OptedOut())
+            assert exc.value.status_code == 403
+            assert "mitigation" in exc.value.detail
+            await ensure_not_locked_out(_Default())
+
+            await _write_state(ShieldState(active=False, since=None))
+            await ensure_not_locked_out(_OptedOut())
+
+            # Feature off: dormant even with stale "active" state in Redis.
+            await _write_state(ShieldState(active=True, since=datetime.now(UTC)))
+            monkeypatch.setattr(settings, "shield_mode_enabled", False)
+            await ensure_not_locked_out(_OptedOut())
+        finally:
+            await _write_state(ShieldState(active=False, since=None))
+
+    asyncio.run(_run())
+
+
 def test_mass_invalidate_only_touches_opted_out_users(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

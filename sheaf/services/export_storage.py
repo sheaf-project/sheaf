@@ -195,6 +195,44 @@ async def delete(file_location: str) -> None:
         return
 
 
+async def delete_all_for_user(user_id: uuid.UUID) -> int:
+    """Remove every export a user has, by storage prefix rather than by row.
+
+    Account deletion is the caller. The ExportJob rows cascade away with the
+    user, and the TTL sweep finds files only through rows, so anything not
+    deleted here before the user row goes would sit in storage with nothing
+    left to find it by. Listing the prefix means a half-finished build or a
+    row that never got its file_location still gets cleaned up. Returns the
+    number of objects removed; raises on a failure so the caller can defer
+    the account deletion and retry, the same way it does for uploads.
+    """
+    if _is_s3():
+        client = _client(_endpoint())
+        prefix = f"exports/{user_id}/"
+        removed = 0
+        token: str | None = None
+        while True:
+            kwargs = {"Bucket": _bucket(), "Prefix": prefix}
+            if token:
+                kwargs["ContinuationToken"] = token
+            page = await observe_s3("list", _run(client.list_objects_v2, **kwargs))
+            for obj in page.get("Contents", []):
+                await observe_s3(
+                    "delete",
+                    _run(client.delete_object, Bucket=_bucket(), Key=obj["Key"]),
+                )
+                removed += 1
+            if not page.get("IsTruncated"):
+                return removed
+            token = page.get("NextContinuationToken")
+    user_dir = _filesystem_root() / str(user_id)
+    if not user_dir.is_dir():
+        return 0
+    removed = sum(1 for p in user_dir.iterdir() if p.is_file())
+    await _run(shutil.rmtree, user_dir)
+    return removed
+
+
 async def download_response(file_location: str, filename: str) -> Response:
     """Return a FastAPI response that delivers the export to the caller.
 

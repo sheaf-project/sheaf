@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -220,6 +221,49 @@ def test_job_deletes_account_past_grace_period(admin_client: httpx.Client, clien
 
     # User should be gone
     assert not _user_exists(email)
+
+
+def test_job_deletes_export_files_with_the_account(
+    admin_client: httpx.Client, client: httpx.Client
+):
+    """A finished data export must not outlive the account. The ExportJob
+    rows cascade with the user and the TTL sweep only finds files through
+    rows, so the deletion job has to remove the files itself first."""
+    email = f"delete-exports-{uuid.uuid4().hex[:8]}@sheaf.dev"
+    resp = client.post(
+        "/v1/auth/register",
+        json={"email": email, "password": "testpassword123"},
+    )
+    assert resp.status_code == 201
+    headers = {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    user_id = client.get("/v1/auth/me", headers=headers).json()["id"]
+
+    job = client.post(
+        "/v1/export/jobs",
+        json={"include_images": False, "password": "testpassword123"},
+        headers=headers,
+    )
+    assert job.status_code == 202, job.text
+    job_id = job.json()["id"]
+    assert admin_client.post("/v1/admin/jobs/build_export_jobs/run").status_code == 200
+    deadline = time.monotonic() + 30
+    while True:
+        state = client.get(f"/v1/export/jobs/{job_id}", headers=headers).json()
+        if state["status"] == "done":
+            break
+        assert state["status"] in ("pending", "running"), state
+        assert time.monotonic() < deadline, "export build did not finish"
+        time.sleep(0.5)
+
+    _set_deletion_requested_at(email, days_ago=15)
+    resp = admin_client.post("/v1/admin/jobs/process_account_deletions/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+    assert not _user_exists(email)
+
+    # The job reports what it removed per user; the export counts as one.
+    lines = [ln for ln in (resp.json().get("details") or "").splitlines() if user_id in ln]
+    assert lines and "(1 exports)" in lines[0], resp.json().get("details")
 
 
 def test_job_does_not_delete_within_grace_period(admin_client: httpx.Client, client: httpx.Client):

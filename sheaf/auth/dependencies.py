@@ -412,6 +412,23 @@ async def _check_admin_step_up(request: Request, user: User) -> None:
         )
 
 
+def _require_admin_owner(request: Request, user: User) -> None:
+    """Refuse an admin-scoped API key whose owner is no longer an admin."""
+    if user.is_admin:
+        return
+    logger.warning(
+        "auth: admin-scoped API key used by a non-admin owner "
+        "(demoted after minting): api_key_id=%s user=%s ip=%s",
+        getattr(request.state, "api_key_id", None),
+        user.id,
+        client_ip(request),
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin access required",
+    )
+
+
 async def get_admin_user(
     request: Request,
     user: User = Depends(get_current_user),
@@ -431,6 +448,11 @@ async def get_admin_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Missing scope: admin:read",
             )
+        # The scopes were granted while the owner was an admin, and
+        # demotion does not rewrite keys, so the owner's current standing
+        # has to be checked as well or an admin-scoped key outlives the
+        # admin who minted it.
+        _require_admin_owner(request, user)
     elif not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -462,6 +484,7 @@ async def get_admin_write_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Missing scope: admin:write",
             )
+        _require_admin_owner(request, user)
     elif not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

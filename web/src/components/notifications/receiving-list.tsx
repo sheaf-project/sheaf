@@ -106,9 +106,6 @@ function ReceivingRow({
         <div className="flex-1 min-w-0">
           <p className="font-medium truncate">{channel.channel_name}</p>
           <p className="text-xs text-muted-foreground">
-            {channel.system_label
-              ? `from ${channel.system_label} · `
-              : ""}
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
             {destinationLabel(channel.destination_type as any)}
             {channel.last_delivered_at && (

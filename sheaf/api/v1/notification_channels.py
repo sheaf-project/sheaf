@@ -1152,20 +1152,19 @@ async def list_receiving(
     db: AsyncSession = Depends(get_db),
 ) -> list[ReceivingChannelView]:
     """List channels currently delivering to this account."""
+    # No join to the sending system: a recipient is not told its name. The
+    # channel name is the label the sender chose for them.
     result = await db.execute(
-        select(NotificationChannel, WatchToken, System)
-        .join(WatchToken, NotificationChannel.watch_token_id == WatchToken.id)
-        .join(System, WatchToken.system_id == System.id)
+        select(NotificationChannel)
         .where(NotificationChannel.redeemed_by_account_id == user.id)
         .order_by(NotificationChannel.redeemed_at.desc())
     )
     rows: list[ReceivingChannelView] = []
-    for channel, _token, system in result.all():
+    for channel in result.scalars().all():
         rows.append(
             ReceivingChannelView(
                 channel_id=channel.id,
                 channel_name=channel.name,
-                system_label=getattr(system, "display_name", None),
                 destination_type=channel.destination_type,
                 destination_state=channel.destination_state,
                 paused_by_sender=channel.paused_by_sender,

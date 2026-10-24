@@ -307,11 +307,12 @@ async def get_account_data(
         share_grants = list(grants_result.all())
 
     # Notification channels this user is the recipient of (across any
-    # system). Owner-side channels live with their system data.
+    # system). Owner-side channels live with their system data. The sending
+    # system's name is not this user's data and the live receiving view
+    # never shows it; the channel name is the sender's chosen label.
     receiving_result = await db.execute(
-        select(NotificationChannel, WatchToken, System)
+        select(NotificationChannel, WatchToken)
         .join(WatchToken, NotificationChannel.watch_token_id == WatchToken.id)
-        .join(System, WatchToken.system_id == System.id)
         .where(NotificationChannel.redeemed_by_account_id == user.id)
         .order_by(NotificationChannel.redeemed_at.desc())
     )
@@ -517,14 +518,13 @@ async def get_account_data(
             {
                 "channel_id": str(channel.id),
                 "channel_name": channel.name,
-                "system_id": str(system_row.id),
-                "system_name": system_row.name,
+                "system_id": str(token.system_id),
                 "destination_type": channel.destination_type,
                 "destination_state": channel.destination_state,
                 "redeemed_at": _iso(channel.redeemed_at),
                 "last_delivered_at": _iso(channel.last_delivered_at),
             }
-            for channel, _token, system_row in receiving_rows
+            for channel, token in receiving_rows
         ],
         "retention_trim_notices": [
             {

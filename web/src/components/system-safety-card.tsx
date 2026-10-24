@@ -249,8 +249,12 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
   const dirty = hasDiff(settings, draft);
   const arming = newlyEnforced(settings, draft);
   const loosening = detectLoosening(settings, draft);
-  const needsReauth =
-    loosening && (settings.grace_period_days > 0 || draft.grace_period_days > 0);
+  // The server asks for credentials on every loosening change, whatever
+  // the grace period is; the grace period only decides when the change
+  // lands. Gate on the tier, not the grace, or a password/TOTP tier at
+  // grace 0 can never be loosened from here.
+  const needsReauth = loosening && settings.auth_tier !== "none";
+  const gracePending = settings.grace_period_days > 0 || draft.grace_period_days > 0;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -382,8 +386,9 @@ function SafetyForm({ settings }: { settings: SystemSafetySettings }) {
       {needsReauth && (
         <div className="space-y-3 border-t pt-3">
           <p className="text-sm text-muted-foreground">
-            Loosening safety requires re-auth and will take effect after the
-            current grace period.
+            {gracePending
+              ? "Loosening safety requires re-auth and will take effect after the current grace period."
+              : "Loosening safety requires re-auth."}
           </p>
           {(settings.auth_tier === "password" || settings.auth_tier === "both") && (
             <div className="space-y-1">

@@ -434,7 +434,7 @@ async def _send_completion_email(*, user_email: str, job_id: uuid.UUID) -> None:
         f"{settings.export_job_ttl_hours} hours, after which it's "
         "automatically deleted from our storage.\n\nIf you didn't "
         "request this export, sign in and check your active sessions "
-        "in Settings -> Security.\n"
+        "in Settings -> Account.\n"
     )
     body_html = (
         f"<p>Your Sheaf data export has finished building and is ready "
@@ -442,7 +442,7 @@ async def _send_completion_email(*, user_email: str, job_id: uuid.UUID) -> None:
         f"<p>The file is available for {settings.export_job_ttl_hours} "
         "hours, after which it's automatically deleted from our "
         "storage.</p><p>If you didn't request this export, sign in and "
-        "check your active sessions in Settings &rarr; Security.</p>"
+        "check your active sessions in Settings &rarr; Account.</p>"
     )
     try:
         await send_email(

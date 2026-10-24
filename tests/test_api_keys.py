@@ -385,3 +385,24 @@ def test_api_key_cannot_attest_adult(auth_client: httpx.Client):
     assert resp.status_code == 403
     # Nothing was recorded: the account is still un-attested.
     assert auth_client.get("/v1/auth/me").json()["adult_attested_at"] is None
+
+
+def test_api_key_cannot_manage_sessions_or_trusted_devices(auth_client: httpx.Client):
+    """The auth router has no scope gate, so these routes refuse keys
+    outright: a leaked read-only key must not be able to list sessions
+    with their IPs, revoke them, or strip the trusted devices that gate
+    TOTP."""
+    plaintext = _create_key(auth_client, scopes=["members:read", "members:write"])["key"]
+    with _key_client(plaintext) as c:
+        for method, path in (
+            ("GET", "/v1/auth/sessions"),
+            ("POST", "/v1/auth/sessions/revoke-others"),
+            ("GET", "/v1/auth/trusted-devices"),
+            ("POST", "/v1/auth/trusted-devices/revoke-all"),
+        ):
+            resp = c.request(method, path)
+            assert resp.status_code == 403, (method, path, resp.text)
+            assert "API key" in resp.json()["detail"]
+    # The session that minted the key still can.
+    assert auth_client.get("/v1/auth/sessions").status_code == 200
+    assert auth_client.get("/v1/auth/trusted-devices").status_code == 200
