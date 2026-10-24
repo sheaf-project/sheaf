@@ -3323,7 +3323,9 @@ def test_hidden_system_name_is_null_on_the_public_surface():
 
     after = _anon().get(f"/v1/public/systems/{system_id}").json()
     assert after["name"] is None
-    assert after["tag"] == "TNO"
+    # The tag goes with the name: it is usually an abbreviation of it.
+    assert after["tag"] is None
+    assert after["description"] == before["description"]
     assert set(after) == set(before)
     # The owner still sees their own name everywhere signed in.
     assert owner.get("/v1/systems/me").json()["name"] == "The Named Ones"
