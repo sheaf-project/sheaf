@@ -3297,3 +3297,88 @@ def test_public_media_404s_after_account_suspended():
 
     assert _anon().get(media_path).status_code == 404
     owner.close()
+
+
+# ---------------------------------------------------------------------------
+# show_name_publicly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.public_profiles
+def test_hidden_system_name_is_null_on_the_public_surface():
+    """With the switch off the system card carries `name: null` on both the
+    public profile and a share link; nothing else about the card changes."""
+    owner = _register()
+    m = _member(owner, "Shown")
+    system_id, _ = _published_system(owner, members=[m])
+    owner.patch("/v1/systems/me", json={"name": "The Named Ones", "tag": "TNO"})
+
+    before = _anon().get(f"/v1/public/systems/{system_id}").json()
+    assert before["name"] == "The Named Ones"
+
+    r = owner.patch("/v1/systems/me", json={"show_name_publicly": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["show_name_publicly"] is False
+    # Hiding never needs credentials, whatever Safety says.
+
+    after = _anon().get(f"/v1/public/systems/{system_id}").json()
+    assert after["name"] is None
+    assert after["tag"] == "TNO"
+    assert set(after) == set(before)
+    # The owner still sees their own name everywhere signed in.
+    assert owner.get("/v1/systems/me").json()["name"] == "The Named Ones"
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_showing_the_name_again_is_a_visibility_raise():
+    """Turning the name back on while the profile is live asks for re-auth
+    when the profile_visibility category is armed, and then lands at once
+    rather than behind the grace window: it reveals one string on a page
+    that is already up."""
+    owner = _register()
+    m = _member(owner, "Shown")
+    system_id, _ = _published_system(owner, members=[m])
+    owner.patch("/v1/systems/me", json={"name": "Reappearing"})
+    assert owner.patch("/v1/systems/me", json={"show_name_publicly": False}).status_code == 200
+    _arm_visibility_safety(owner)
+
+    # 400 for no credential at all (403 is a wrong one), the step-up gate's
+    # usual split; the point is that the raise did not land.
+    bare = owner.patch("/v1/systems/me", json={"show_name_publicly": True})
+    assert bare.status_code == 400, bare.text
+    assert "Password required" in bare.json()["detail"]
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["name"] is None
+
+    ok = owner.patch(
+        "/v1/systems/me",
+        json={"show_name_publicly": True, "password": "testpassword123"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["show_name_publicly"] is True
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["name"] == "Reappearing"
+
+    # Hiding again: instant, no credentials, grace or not.
+    assert owner.patch("/v1/systems/me", json={"show_name_publicly": False}).status_code == 200
+    assert _anon().get(f"/v1/public/systems/{system_id}").json()["name"] is None
+    owner.close()
+
+
+@pytest.mark.public_profiles
+def test_name_raise_and_privacy_lowering_cannot_share_a_body():
+    """The house rule for every exposure PATCH: one body may not both raise
+    and lower, or the raise's step-up gets to fail the lowering."""
+    owner = _register()
+    m = _member(owner, "Shown")
+    _published_system(owner, members=[m])
+    assert owner.patch("/v1/systems/me", json={"show_name_publicly": False}).status_code == 200
+    _arm_visibility_safety(owner)
+
+    r = owner.patch(
+        "/v1/systems/me",
+        json={"show_name_publicly": True, "privacy": "private", "password": "testpassword123"},
+    )
+    assert r.status_code == 400, r.text
+    # Sent on its own, the lowering goes through with nothing asked.
+    assert owner.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
+    owner.close()

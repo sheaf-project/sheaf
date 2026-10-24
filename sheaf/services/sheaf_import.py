@@ -1106,6 +1106,11 @@ async def run_import(
                 system.show_member_created_date = bool(
                     sys_data["show_member_created_date"]
                 )
+            # `is not None` rather than key presence: the PluralPort bridge
+            # hands this over as null when the file predates the setting, and
+            # a null must not read as "hide" for a switch that defaults on.
+            if sys_data.get("show_name_publicly") is not None:
+                system.show_name_publicly = bool(sys_data["show_name_publicly"])
             df = _date_format(sys_data.get("date_format"))
             if df is not None:
                 system.date_format = df

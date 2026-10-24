@@ -1021,7 +1021,10 @@ def _build_system_view(
     """
     return PublicSystemView(
         id=str(system.id) if expose_system_id else None,
-        name=system.name,
+        # Null, not a placeholder, when the owner has chosen not to name the
+        # system on its public surface; the page and the link preview each
+        # decide what to show in its place.
+        name=system.name if system.show_name_publicly else None,
         # Rendered as markdown on the public page, same as a member bio - and
         # the resolve pass is also what signs an internal image ref here, which
         # the raw column value never was. `system.user_id` IS the owning

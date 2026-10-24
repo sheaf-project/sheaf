@@ -727,6 +727,7 @@ def _system_dict(system: System) -> dict:
         "replace_fronts_default": system.replace_fronts_default,
         "coalesce_contiguous_fronts": system.coalesce_contiguous_fronts,
         "show_member_created_date": system.show_member_created_date,
+        "show_name_publicly": system.show_name_publicly,
         "date_format": system.date_format.value,
         # NULL (auto) round-trips as null; a set zone as its IANA name.
         "timezone": system.timezone,

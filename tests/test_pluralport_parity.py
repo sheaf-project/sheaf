@@ -43,6 +43,7 @@ DISPOSITION: dict[str, dict[str, object]] = {
         "note": EXT, "date_format": EXT, "timezone": EXT,
         "replace_fronts_default": EXT,
         "coalesce_contiguous_fronts": EXT, "show_member_created_date": EXT,
+        "show_name_publicly": EXT,
         "delete_confirmation": EXT,
         "auto_pin_first_revision": EXT,
         "safety_grace_period_days": EXT, "safety_applies_to_members": EXT,

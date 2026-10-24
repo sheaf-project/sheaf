@@ -115,8 +115,8 @@ function SystemSettingsForm({
   onSubmit,
   loading,
 }: {
-  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; banner_url: string | null; color: string | null; privacy: PrivacyLevel; pending_privacy?: PrivacyLevel | null; privacy_activates_at?: string | null; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean };
-  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; banner_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null; show_member_created_date: boolean }) => void;
+  initial: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; banner_url: string | null; color: string | null; privacy: PrivacyLevel; pending_privacy?: PrivacyLevel | null; privacy_activates_at?: string | null; date_format?: DateFormat; timezone?: string | null; show_member_created_date?: boolean; show_name_publicly?: boolean };
+  onSubmit: (data: { name: string; description: string | null; note: string | null; tag: string | null; avatar_url: string | null; banner_url: string | null; color: string | null; privacy: PrivacyLevel; date_format: DateFormat; timezone: string | null; show_member_created_date: boolean; show_name_publicly: boolean }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial.name);
@@ -131,6 +131,9 @@ function SystemSettingsForm({
   const [timezone, setTimezone] = useState<string | null>(initial.timezone ?? null);
   const [showMemberCreatedDate, setShowMemberCreatedDate] = useState<boolean>(
     initial.show_member_created_date ?? false,
+  );
+  const [showNamePublicly, setShowNamePublicly] = useState<boolean>(
+    initial.show_name_publicly ?? true,
   );
   const { formatDate } = useDateFormatters();
 
@@ -148,6 +151,7 @@ function SystemSettingsForm({
       date_format: dateFormat,
       timezone,
       show_member_created_date: showMemberCreatedDate,
+      show_name_publicly: showNamePublicly,
     });
   }
 
@@ -304,6 +308,28 @@ function SystemSettingsForm({
               <p className="text-xs text-muted-foreground mt-0.5">
                 Show when each member was added, on their profile. Saved with
                 this form.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <Checkbox
+              id="show-name-publicly"
+              checked={showNamePublicly}
+              onCheckedChange={(v) => setShowNamePublicly(v === true)}
+            />
+            <div>
+              <Label
+                htmlFor="show-name-publicly"
+                className="text-sm font-medium cursor-pointer"
+              >
+                Show the system name on public pages
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Your public profile, share links and link previews name the
+                system. Untick to show only the members, without naming the
+                system itself. Turning it back on while the profile is live
+                asks for re-auth if System Safety covers profile visibility.
+                Saved with this form.
               </p>
             </div>
           </div>

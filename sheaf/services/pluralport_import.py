@@ -272,6 +272,7 @@ def to_native(envelope: dict, assets: _AssetMap | None = None) -> dict:
             "replace_fronts_default": ext.get("replace_fronts_default"),
             "coalesce_contiguous_fronts": ext.get("coalesce_contiguous_fronts"),
             "show_member_created_date": ext.get("show_member_created_date"),
+            "show_name_publicly": ext.get("show_name_publicly"),
             "delete_confirmation": ext.get("delete_confirmation"),
             "safety": ext.get("safety"),
             "retention": ext.get("retention"),

@@ -59,6 +59,10 @@ class SystemUpdate(BaseModel):
     replace_fronts_default: bool | None = None
     coalesce_contiguous_fronts: bool | None = None
     show_member_created_date: bool | None = None
+    # Whether the system's name is shown on the public profile, share links
+    # and link previews. Turning it on is an exposure raise and may need the
+    # step-up credentials below; turning it off is instant.
+    show_name_publicly: bool | None = None
 
     # Step-up credentials, only consulted when raising system privacy to
     # `public` is a deferred exposure (the profile_visibility safety category is
@@ -95,6 +99,7 @@ class SystemUpdate(BaseModel):
         "replace_fronts_default",
         "coalesce_contiguous_fronts",
         "show_member_created_date",
+        "show_name_publicly",
     )
     @classmethod
     def _reject_explicit_null(cls, v):
@@ -136,6 +141,7 @@ class SystemRead(BaseModel):
     replace_fronts_default: bool
     coalesce_contiguous_fronts: bool
     show_member_created_date: bool
+    show_name_publicly: bool
     created_at: datetime
     updated_at: datetime
     # The account that owns this system's uploads. Excluded from the response;
