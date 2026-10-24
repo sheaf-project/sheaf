@@ -327,7 +327,7 @@ function SystemSettingsForm({
               <p className="text-xs text-muted-foreground mt-0.5">
                 Your public profile, share links and link previews name the
                 system. Untick to show only the members, without naming the
-                system itself. Turning it back on while the profile is live
+                system itself (the tag is hidden with it). Turning it back on while the profile is live
                 asks for re-auth if System Safety covers profile visibility.
                 Saved with this form.
               </p>

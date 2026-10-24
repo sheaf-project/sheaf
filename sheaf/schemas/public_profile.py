@@ -82,9 +82,9 @@ class PublicSystemView(BaseModel):
     # link and a public profile - be correlated back to one system by anything
     # reading the JSON. See `share_projection.project_system`.
     id: str | None = None
-    # Null when the owner has turned `show_name_publicly` off: the page then
-    # shows the members without naming the system, and the link preview falls
-    # back to the generic card.
+    # Null when the owner has turned `show_name_publicly` off (`tag` goes with
+    # it): the page then shows the members without naming the system, and the
+    # link preview falls back to the generic card.
     name: str | None = None
     description: str | None = None
     avatar_url: str | None = None

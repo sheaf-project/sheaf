@@ -1023,7 +1023,8 @@ def _build_system_view(
         id=str(system.id) if expose_system_id else None,
         # Null, not a placeholder, when the owner has chosen not to name the
         # system on its public surface; the page and the link preview each
-        # decide what to show in its place.
+        # decide what to show in its place. The tag goes with it: it is
+        # usually an abbreviation of the name and would give it away.
         name=system.name if system.show_name_publicly else None,
         # Rendered as markdown on the public page, same as a member bio - and
         # the resolve pass is also what signs an internal image ref here, which
@@ -1035,7 +1036,7 @@ def _build_system_view(
         avatar_url=resolve_avatar_url_public(system.avatar_url, system.user_id),
         banner_url=resolve_avatar_url_public(system.banner_url, system.user_id),
         color=system.color,
-        tag=system.tag,
+        tag=system.tag if system.show_name_publicly else None,
         member_count=member_count,
         member_permalinks=member_permalinks,
     )
