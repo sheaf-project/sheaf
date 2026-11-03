@@ -201,7 +201,7 @@ export function FrontsPage() {
           {m?.emoji && <span>{m.emoji}</span>}
           {m?.display_name ?? m?.name ?? "Unknown"}
           {since && (
-            <span className="text-muted-foreground">
+            <span className="opacity-70">
               · {capped ? "> " : ""}{timeAgo(since)}
             </span>
           )}

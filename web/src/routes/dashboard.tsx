@@ -63,7 +63,7 @@ export function DashboardPage() {
                               <ColorDot color={m?.color ?? null} />
                               {m?.emoji && <span>{m.emoji}</span>}
                               {m?.display_name ?? m?.name ?? "Unknown"}
-                              <span className="text-muted-foreground">
+                              <span className="opacity-70">
                                 · {capped ? "> " : ""}{timeAgo(since)}
                               </span>
                             </Badge>
