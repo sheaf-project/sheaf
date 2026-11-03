@@ -795,6 +795,13 @@ class Settings(BaseSettings):
     # eligible for re-claim after this lease. Deliveries finish in seconds;
     # the lease only has to be comfortably above worst-case delivery time.
     notifications_claim_lease_minutes: int = 15
+    # A row whose lease keeps expiring with no outcome (its processing
+    # raises every time, or workers keep dying on it) is dead-lettered
+    # once it has been re-claimed this many times, instead of being
+    # retried at every lease expiry forever. A clean delivery failure
+    # releases its claim and does not count; this is the fallback for the
+    # case the retry schedule never sees.
+    notifications_dead_letter_after_reclaims: int = 5
     # Exactly one replica runs the background loops, elected via a
     # Postgres advisory lock. Disable to restore run-everywhere behaviour
     # (single-instance deploys never notice either way).

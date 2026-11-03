@@ -43,6 +43,7 @@ from sheaf.observability.metrics import (
     notifications_dispatch_lag_seconds,
     notifications_dispatched_total,
     notifications_dispatcher_errors_total,
+    notifications_outbox_dead_lettered_total,
 )
 from sheaf.services.activity_log import log_activity
 from sheaf.services.members import member_name_plaintext
@@ -281,12 +282,54 @@ async def _claim_batch(
         .with_for_update(skip_locked=True)
     )
     result = await db.execute(stmt)
-    rows = list(result.scalars().all())
-    for row in rows:
+    claimed: list[NotificationOutboxRow] = []
+    for row in result.scalars().all():
+        # An expired lease is the one case where a row comes back here
+        # without having recorded an outcome: delivery failures release
+        # their claim and set deliver_after, so they never match the lease
+        # branch above. Counting these is what lets a row that raises on
+        # every attempt be given up on, instead of being re-claimed at
+        # every lease expiry forever with its error only in the logs.
+        if row.claimed_at is not None:
+            row.reclaim_count += 1
+            if row.reclaim_count >= settings.notifications_dead_letter_after_reclaims:
+                _dead_letter(row, now)
+                continue
         row.claimed_at = now
         row.claimed_by = worker_id
+        claimed.append(row)
     await db.commit()
-    return rows
+    return claimed
+
+
+def _dead_letter(row: NotificationOutboxRow, now: datetime) -> None:
+    """Give up on a row that keeps being re-claimed without progress.
+
+    Terminal in the same way `_drop` is (delivered_at set, the reason in
+    last_error), but recorded here rather than through `_drop` because
+    there is no channel loaded at claim time to label the dispatched
+    metric with; this gets its own counter. The error log is the
+    operator's pointer back to the tracebacks `_report_row_failures`
+    wrote on each of the attempts.
+    """
+    row.delivered_at = now
+    row.last_error = (
+        f"dead-lettered: lease expired {row.reclaim_count} times with no "
+        "outcome recorded"
+    )
+    row.claimed_at = None
+    row.claimed_by = None
+    notifications_outbox_dead_lettered_total.inc()
+    logger.error(
+        "notification outbox row %s dead-lettered after %s re-claims with no "
+        "outcome: channel=%s event_type=%s enqueued_at=%s; see earlier "
+        "'raised during processing' entries for this row",
+        row.id,
+        row.reclaim_count,
+        row.channel_id,
+        row.event_type,
+        row.enqueued_at.isoformat(),
+    )
 
 
 async def _process_row(

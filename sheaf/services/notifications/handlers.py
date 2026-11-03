@@ -386,7 +386,16 @@ async def _deliver_ntfy(
 
     if 200 <= resp.status_code < 300:
         return SUCCESS
+    if resp.status_code in (404, 410):
+        # Publishing to a topic creates it, so ntfy itself never answers a
+        # publish with 404; one means the configured server URL does not
+        # route to an ntfy publish endpoint at all (wrong path, a proxy in
+        # front, something that is not ntfy). That is not going to change
+        # between retries, same as a webhook that has gone away.
+        return permanent(f"ntfy gone ({resp.status_code})")
     if 400 <= resp.status_code < 500:
+        # Auth, rate limit, topic name: owner-fixable, so backoff and let
+        # the day-long failure rule give up if nobody does.
         return transient(f"ntfy 4xx ({resp.status_code})")
     return transient(f"ntfy 5xx ({resp.status_code})")
 
