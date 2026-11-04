@@ -166,6 +166,59 @@ export function getMyAdminActivity(page = 1, limit = 50) {
   );
 }
 
+/** What an admin action means to the account it was taken against, in the
+ *  past tense and in plain words, for the banner and the activity card.
+ *  Keyed by the server's audit action names; anything unknown falls back
+ *  to the raw name so a new action is never hidden, only unpolished. */
+const ADMIN_ACTION_LABELS: Record<string, string> = {
+  user_safety_reset: "reset your System Safety settings to the defaults",
+  user_pending_bypass: "finalised your queued deletions ahead of their grace period",
+  user_exposures_cancelled: "cancelled your staged visibility changes",
+  user_update: "changed your account's tier or flags",
+  user_member_limit_set: "changed your member limit",
+  user_approve: "approved your registration",
+  user_session_revoke: "signed out one of your sessions",
+  user_api_keys_rotate_all: "revoked all of your API keys",
+  user_suspend: "suspended your account",
+  user_unsuspend: "lifted the suspension on your account",
+  user_ban: "banned your account",
+  user_unban: "lifted the ban on your account",
+  user_password_reset: "started a password reset for your account",
+  user_email_change: "changed your account's email address",
+  user_totp_disable: "turned off two-factor authentication on your account",
+  user_email_verify: "marked your email address as verified",
+  user_deletion_cancel: "cancelled the deletion of your account",
+  user_dossier_export: "exported your account's metadata",
+  import_log_view: "viewed one of your import logs",
+  security_history_view: "viewed your account's security history",
+  system_share_grants_revoke_all: "revoked every share link on your system",
+  system_publishing_block: "blocked your system from publishing",
+  system_publishing_unblock: "allowed your system to publish again",
+};
+
+/** Actions that undo a protection the owner set, or change how they sign
+ *  in. These get the critical banner colour; everything else is a warning. */
+const CRITICAL_ADMIN_ACTIONS = new Set([
+  "user_safety_reset",
+  "user_pending_bypass",
+  "user_exposures_cancelled",
+  "user_session_revoke",
+  "user_api_keys_rotate_all",
+  "user_password_reset",
+  "user_email_change",
+  "user_totp_disable",
+  "system_share_grants_revoke_all",
+  "system_publishing_block",
+]);
+
+export function describeAdminAction(action: string): string {
+  return ADMIN_ACTION_LABELS[action] ?? `performed "${action.replace(/_/g, " ")}" on your account`;
+}
+
+export function isCriticalAdminAction(action: string): boolean {
+  return CRITICAL_ADMIN_ACTIONS.has(action);
+}
+
 // --- Emergency-support admin actions ---
 
 export interface ResetSafetyResult {
