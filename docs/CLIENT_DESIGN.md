@@ -642,6 +642,8 @@ GET /v1/announcements/public?platform=<name>  # no auth; only the ones flagged v
 
 Dismissal is client-side. The web app keeps session dismissals in memory and permanent ones in its client settings under `dismissed_announcements` (a list of ids); a native client can do the same in its own settings namespace.
 
+The same shape covers admin actions on the account. `GET /v1/auth/admin-activity` is the self-only feed of everything an administrator has done to the caller's account (newest first, no admin gate); the web app shows a banner for any entry newer than `admin_activity_seen_at` in its client settings and writes the newest entry's `created_at` there on dismiss, so a dismissal can never hide a later action. A native client that wants the same banner reads the same feed and keeps its own `admin_activity_seen_at`.
+
 ### Analytics
 
 | Method | Path | Description |

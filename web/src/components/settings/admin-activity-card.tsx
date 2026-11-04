@@ -1,5 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { getMyAdminActivity, type UserAdminActivityEvent } from "@/lib/admin";
+import {
+  describeAdminAction,
+  getMyAdminActivity,
+  type UserAdminActivityEvent,
+} from "@/lib/admin";
 import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -55,7 +59,8 @@ export function AdminActivityCard() {
                 className="space-y-1 rounded-md border p-3 text-sm"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span>An administrator {describeAdminAction(e.action)}</span>
                     <Badge variant="outline" className="text-[10px]">
                       {e.action}
                     </Badge>

@@ -7,32 +7,12 @@ import {
   getLoggedOutAnnouncements,
   type Announcement,
 } from "@/lib/announcements";
-import { apiFetch } from "@/lib/api-client";
 import { patchWebSettings } from "@/lib/client-settings";
+import { useClientSettings } from "@/hooks/use-client-settings";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { severityConfig } from "@/components/banner-severity";
-
-function useClientSettings(clientId: string) {
-  return useQuery({
-    queryKey: ["client-settings", clientId],
-    queryFn: async () => {
-      try {
-        const res = await apiFetch<{ settings: Record<string, unknown> }>(
-          `/v1/settings/client/${encodeURIComponent(clientId)}`,
-          // No stored blob for this client 404s by design (e.g. a fresh
-          // account with nothing dismissed yet); expected, so don't toast.
-          { skipErrorToast: true },
-        );
-        return res.settings;
-      } catch {
-        return {};
-      }
-    },
-    staleTime: 5 * 60 * 1000,
-  });
-}
 
 export function AnnouncementBanners() {
   const qc = useQueryClient();
