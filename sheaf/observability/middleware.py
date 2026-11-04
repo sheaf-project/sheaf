@@ -107,5 +107,6 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 _status_class(status),
                 request.headers.get("x-sheaf-client"),
                 request.headers.get("authorization"),
+                request.headers.get("user-agent"),
             )
             in_progress.dec()

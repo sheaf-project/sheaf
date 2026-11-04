@@ -16,7 +16,10 @@ from sheaf.database import get_db
 from sheaf.middleware.concurrency import acquire_account_slot
 from sheaf.middleware.rate_limit import enforce_read_budget
 from sheaf.models.user import AccountStatus, User
-from sheaf.observability.client_family import client_family_from
+from sheaf.observability.client_family import (
+    client_family_from,
+    effective_client_header,
+)
 from sheaf.observability.metrics import requests_by_client_total
 from sheaf.observability.usage import age_bucket, record_active_account
 from sheaf.request import client_ip
@@ -272,15 +275,17 @@ async def get_current_user(
     # family (never the header) goes anywhere near a label or a key.
     _is_api_key = getattr(request.state, "auth_method", None) == "api_key"
     _usage_kind = "api" if _is_api_key else "client"
+    _client_header = request.headers.get("x-sheaf-client")
+    _user_agent = request.headers.get("user-agent")
     _family = client_family_from(
-        request.headers.get("x-sheaf-client"), is_api_key=_is_api_key
+        _client_header, is_api_key=_is_api_key, user_agent=_user_agent
     )
     record_active_account(
         user.id,
         _usage_kind,
         _family,
         age_bucket(user.created_at),
-        request.headers.get("x-sheaf-client"),
+        effective_client_header(_client_header, _user_agent),
     )
     requests_by_client_total.labels(client_family=_family).inc()
 

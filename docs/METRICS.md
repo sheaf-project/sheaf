@@ -663,23 +663,30 @@ the user-data export. If Redis is down the gauges hold their last value rather
 than zeroing (a blip is not "activity dropped to zero"); `sheaf_redis_up` covers
 visibility.
 
-**Client families.** `client_family` ∈ {web, android, ios, watch, api, other}
-splits the `client` auth kind by platform. It is derived once per request at
-the auth choke point from the credential and the `X-Sheaf-Client` header: an
-API key is `api` whatever its header says, an official app prefix
-(`Sheaf Web/`, `Sheaf Android/`, `Sheaf iOS/`, `Sheaf watchOS/`, `Sheaf Wear/`)
-maps to its family, and anything else is `other`. The raw header never reaches
-a label or a key, so a third-party client cannot mint series by changing it.
-There is deliberately no User-Agent fallback for `web`: "a browser talked to
-the API" is not "the Sheaf web app". The watchOS app currently sends the phone's
-header and lands as `ios` until its watch target identifies itself.
+**Client families.** `client_family` ∈ {web, android, ios, watch, api,
+homeassistant, other} splits the `client` auth kind by platform and the `api`
+kind by known integration. It is derived once per request at the auth choke
+point from the credential, the `X-Sheaf-Client` header and the User-Agent: an
+API key is `api` whatever its header says, unless its User-Agent names a known
+integration (`HomeAssistant/` is `homeassistant`); an official app prefix
+(`Sheaf Web/`, `Sheaf Android/`, `Sheaf Android Wear/`, `Sheaf iOS/`,
+`Sheaf watchOS/`, `Sheaf Wear/`) on the header, or on the User-Agent when no
+header is sent, maps to its family; anything else is `other`. The raw values
+never reach a label or a key, so a third-party client cannot mint series by
+changing them. There is deliberately no browser-string fallback for `web`: "a
+browser talked to the API" is not "the Sheaf web app". The Wear OS app
+identifies itself on its User-Agent and lands as `watch`; the watchOS app
+currently sends the phone's header and lands as `ios` until its watch target
+identifies itself.
 
 The family sketches are **additive**: an interactive request is PFADDed into
 the `client` auth-kind sketch exactly as before AND into
 `sheaf:hll:acct:fam:<family>:<day>`, so the DAU/MAU series above never depend
 on the family sketches and did not move when they were introduced. `api` has
-no family sketch (the api auth-kind sketch is the api family), and families are
-kept for the account scope only. Persisted alongside the auth-kind sketches in
+no family sketch (the api auth-kind sketch is the api family); a named
+automation family such as `homeassistant` has one, as a subset of `api`, so
+`active_accounts_*_by_client{client_family="homeassistant"}` is never more
+than `{auth_kind="api"}`. Families are kept for the account scope only. Persisted alongside the auth-kind sketches in
 `usage_daily_sketches` under a `client_family` column ('' for the auth-kind
 rows) with the same restore-after-Redis-replace path.
 

@@ -18,6 +18,8 @@ from sheaf.observability.client_family import (
     ClientFamily,
     client_family_from,
     client_family_from_name,
+    client_version_from,
+    effective_client_header,
 )
 from sheaf.observability.metrics import ClientFamilyLabel
 
@@ -34,6 +36,9 @@ FIREFOX_UA = (
         ("Sheaf iOS/2.0.1", "ios"),
         ("Sheaf watchOS/1.0", "watch"),
         ("Sheaf Wear/0.1", "watch"),
+        # What the Wear OS app actually sends. Not a prefix collision with
+        # the phone: "android wear/" and "android/" diverge after "android".
+        ("Sheaf Android Wear/1.5.0", "watch"),
         # Case and surrounding whitespace are not identity.
         ("  sheaf web/1.5.0  ", "web"),
         ("SHEAF ANDROID/9", "android"),
@@ -58,6 +63,51 @@ def test_the_credential_decides_api_whatever_the_header_says():
     still a script, and a header cannot promote a key to a person."""
     assert client_family_from("Sheaf Web/1.5.0", is_api_key=True) == "api"
     assert client_family_from(None, is_api_key=True) == "api"
+    # Nor can an official prefix on the User-Agent: the UA fallback is for
+    # interactive credentials only.
+    assert (
+        client_family_from(None, is_api_key=True, user_agent="Sheaf Android Wear/1.5.0")
+        == "api"
+    )
+
+
+@pytest.mark.parametrize(
+    ("user_agent", "expected"),
+    [
+        ("HomeAssistant/2026.10.3 aiohttp/3.13.0 Python/3.13", "homeassistant"),
+        ("homeassistant/2026.1", "homeassistant"),
+        ("python-requests/2.32", "api"),
+        ("Sheaf Android/1.2.0", "api"),
+        ("", "api"),
+        (None, "api"),
+    ],
+)
+def test_known_integrations_are_their_own_family_under_the_api_credential(
+    user_agent: str | None, expected: str
+):
+    family = client_family_from(None, is_api_key=True, user_agent=user_agent)
+    assert family == expected
+    assert family in CLIENT_FAMILIES
+    # Without the API credential the same User-Agent is just a client that
+    # did not name itself.
+    assert client_family_from(None, is_api_key=False, user_agent=user_agent) in (
+        "other", "android",
+    )
+
+
+def test_an_official_prefix_on_the_user_agent_is_honoured_without_a_header():
+    """The Wear OS app stamps its User-Agent and sends no X-Sheaf-Client. The
+    header, when present, still wins; a browser string never matches."""
+    wear = "Sheaf Android Wear/1.5.0"
+    assert client_family_from(None, is_api_key=False, user_agent=wear) == "watch"
+    assert client_family_from("", is_api_key=False, user_agent=wear) == "watch"
+    assert client_family_from("My Custom App/0.5", is_api_key=False, user_agent=wear) == "other"
+    assert client_family_from(None, is_api_key=False, user_agent=FIREFOX_UA) == "other"
+    assert client_family_from(None, is_api_key=False, user_agent="okhttp/4.12") == "other"
+    assert effective_client_header(None, wear) == wear
+    assert effective_client_header("Sheaf iOS/2.0", wear) == "Sheaf iOS/2.0"
+    assert effective_client_header(None, FIREFOX_UA) is None
+    assert client_version_from(effective_client_header(None, wear)) == "1.5"
 
 
 def test_no_user_agent_fallback_for_web():
@@ -107,3 +157,9 @@ class TestSessionClientName:
     def test_no_header_is_the_browser_parse_as_before(self):
         assert _parse_client_name(FIREFOX_UA, None) == "Firefox"
         assert _parse_client_name("", None) == "Unknown"
+
+    def test_an_app_that_only_stamps_its_user_agent_is_named_by_it(self):
+        """The Wear OS app sends no header; "Unknown" would have been its
+        name in the sessions list and `other` its family in the gauge."""
+        assert _parse_client_name("Sheaf Android Wear/1.5.0", None) == "Sheaf Android Wear/1.5.0"
+        assert client_family_from_name("Sheaf Android Wear/1.5.0") == "watch"
