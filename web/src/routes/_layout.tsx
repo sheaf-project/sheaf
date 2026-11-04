@@ -4,6 +4,7 @@ import { Menu } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AccountPending } from "@/components/account-pending";
+import { AdminActionBanner } from "@/components/admin-action-banner";
 import { AnnouncementBanners } from "@/components/announcement-banners";
 import { DeletionBanner } from "@/components/deletion-banner";
 import { EmailDeliverabilityBanner } from "@/components/email-deliverability-banner";
@@ -94,6 +95,7 @@ export function AppLayout() {
         <EmailDeliverabilityBanner />
         <SystemSafetyBanner />
         <RetentionTrimNoticeBanner />
+        <AdminActionBanner />
         <main className="relative flex-1 overflow-auto p-4 md:p-6">
           <Outlet />
         </main>

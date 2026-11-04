@@ -6,6 +6,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **You are told when an administrator acts on your account.** A banner appears at the top of the web app after any admin action against your account, such as a System Safety reset, a queued deletion being finalised early, staged visibility changes being cancelled, a session or API keys being revoked, or a tier change, saying what was done, when, and the reason the admin gave, with a link to the full record on the Account settings page. Actions that remove a protection you set or change how you sign in get the red banner; the rest are amber. Dismissing it is remembered across your browsers, and only covers actions up to that moment, so a later one brings it back. The Account page's admin activity list now describes each action in words as well as by its name.
+
 ## [1.7.2] - 2026-10-24
 
 ### Added
