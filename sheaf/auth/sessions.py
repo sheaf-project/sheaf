@@ -9,6 +9,7 @@ import redis.asyncio as redis
 from redis.exceptions import RedisError
 
 from sheaf.config import settings
+from sheaf.observability.client_family import effective_client_header
 
 _redis: redis.Redis | None = None
 _redis_bytes: redis.Redis | None = None
@@ -123,6 +124,12 @@ def _parse_client_name(user_agent: str, client_header: str | None = None) -> str
                 return f"{name} ({browser})"
         return name
 
+    # An official app that identifies itself only on the User-Agent (the
+    # Wear OS app stamps `Sheaf Android Wear/<ver>`) is named by that rather
+    # than by the browser parse, which would call it "Unknown".
+    claimed = effective_client_header(None, user_agent)
+    if claimed:
+        return claimed.strip()
     return _browser_from_user_agent(user_agent)
 
 

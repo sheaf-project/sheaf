@@ -18,6 +18,18 @@ sessions UI uses would make this easy, but "a browser talked to the API" is
 not "the Sheaf web app": a third-party web client, or a curl with a browser
 UA, would be counted as ours. The header is the claim; the honest fallback is
 `other`. If `other` is ever large, that is a finding, not a bucket to hide.
+
+The one User-Agent fallback there is honours the same claim carried in the
+other header: an official app that stamps `Sheaf Android Wear/1.5.0` on its
+User-Agent and sends no `X-Sheaf-Client` is making exactly the claim the
+header would, and lands in its family rather than `other`. A browser string
+never matches an official prefix, so the rule above still holds for `web`.
+
+Known automation gets its own family under the API credential. Home
+Assistant's shared HTTP session identifies itself as `HomeAssistant/<ver>`,
+and "how many Home Assistant integrations" is a different question from "how
+many scripts"; the family is still decided from a fixed table, so the label
+set stays bounded.
 """
 
 from __future__ import annotations
@@ -25,7 +37,9 @@ from __future__ import annotations
 import re
 from typing import Literal, get_args
 
-ClientFamily = Literal["web", "android", "ios", "watch", "api", "other"]
+ClientFamily = Literal[
+    "web", "android", "ios", "watch", "api", "homeassistant", "other"
+]
 CLIENT_FAMILIES: tuple[str, ...] = get_args(ClientFamily)
 
 FAMILY_WEB = "web"
@@ -33,6 +47,7 @@ FAMILY_ANDROID = "android"
 FAMILY_IOS = "ios"
 FAMILY_WATCH = "watch"
 FAMILY_API = "api"
+FAMILY_HOMEASSISTANT = "homeassistant"
 FAMILY_OTHER = "other"
 
 # The families a session or JWT can resolve to, i.e. everything that is not
@@ -41,40 +56,85 @@ INTERACTIVE_FAMILIES: tuple[str, ...] = (
     FAMILY_WEB, FAMILY_ANDROID, FAMILY_IOS, FAMILY_WATCH, FAMILY_OTHER,
 )
 
+# The named automation families: an API-key request whose User-Agent is a
+# known integration. Each is a subset of the `api` auth kind, kept as its own
+# sketch so it can be counted; plain `api` remains "an API key, whatever it
+# was", and is the auth-kind sketch itself.
+AUTOMATION_FAMILIES: tuple[str, ...] = (FAMILY_HOMEASSISTANT,)
+
 # Header prefix -> family. Matched case-insensitively against the start of the
 # header. Order matters only where one prefix is a prefix of another, which
-# none of these are; keep it that way or move to longest-match.
+# none of these are (`sheaf android/` and `sheaf android wear/` diverge at the
+# character after "android"); keep it that way or move to longest-match.
 #
-# The watch prefixes are what the apps are expected to send once their watch
-# targets identify themselves (the iOS watch shares the phone's client today
-# and so lands as `ios` until then - see the design doc). They are here now so
-# the day the watch build ships, nothing server-side needs to change.
+# The watch prefixes cover what the watch targets send: the Wear OS app stamps
+# `Sheaf Android Wear/<ver>` on its User-Agent, the iOS watch shares the
+# phone's client today and so lands as `ios` until it identifies itself.
 _PREFIXES: tuple[tuple[str, str], ...] = (
     ("sheaf web/", FAMILY_WEB),
     ("sheaf android/", FAMILY_ANDROID),
+    ("sheaf android wear/", FAMILY_WATCH),
     ("sheaf ios/", FAMILY_IOS),
     ("sheaf watchos/", FAMILY_WATCH),
     ("sheaf wear/", FAMILY_WATCH),
 )
 
+# User-Agent prefix -> family, consulted only for API-key requests.
+_AUTOMATION_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("homeassistant/", FAMILY_HOMEASSISTANT),
+)
+
+
+def _official_prefix_match(value: str | None) -> str | None:
+    if not value:
+        return None
+    lowered = value.strip().lower()
+    for prefix, family in _PREFIXES:
+        if lowered.startswith(prefix):
+            return family
+    return None
+
+
+def effective_client_header(
+    client_header: str | None, user_agent: str | None
+) -> str | None:
+    """The client's claim about itself: `X-Sheaf-Client` when sent, else the
+    User-Agent when it carries an official app prefix, else nothing.
+
+    This is what the family and version parsers and the stored session name
+    should all read, so a watch app that only stamps its User-Agent is seen
+    the same way everywhere.
+    """
+    if client_header and client_header.strip():
+        return client_header
+    if _official_prefix_match(user_agent):
+        return user_agent
+    return None
+
 
 def client_family_from(
-    client_header: str | None, *, is_api_key: bool
+    client_header: str | None,
+    *,
+    is_api_key: bool,
+    user_agent: str | None = None,
 ) -> str:
-    """Fold a request's `X-Sheaf-Client` header and credential kind into a family.
+    """Fold a request's `X-Sheaf-Client` header, User-Agent and credential kind
+    into a family.
 
     Pure and total: never raises, never returns anything outside
     `CLIENT_FAMILIES`, so callers can use the result as a label unguarded.
     """
     if is_api_key:
+        if user_agent:
+            lowered = user_agent.strip().lower()
+            for prefix, family in _AUTOMATION_PREFIXES:
+                if lowered.startswith(prefix):
+                    return family
         return FAMILY_API
-    if not client_header:
-        return FAMILY_OTHER
-    lowered = client_header.strip().lower()
-    for prefix, family in _PREFIXES:
-        if lowered.startswith(prefix):
-            return family
-    return FAMILY_OTHER
+    family = _official_prefix_match(
+        effective_client_header(client_header, user_agent)
+    )
+    return family or FAMILY_OTHER
 
 
 def client_family_from_name(client_name: str | None) -> str:

@@ -51,6 +51,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.observability.client_family import (
+    AUTOMATION_FAMILIES,
     CLIENT_FAMILIES,
     FAMILY_API,
     INTERACTIVE_FAMILIES,
@@ -99,18 +100,24 @@ SketchRef = tuple[str, str]
 
 
 def _ref_for_family(family: str) -> SketchRef:
-    """The stored sketch that holds a family."""
+    """The stored sketch that holds a family. `api` is the api auth-kind
+    sketch itself; a named automation family (`homeassistant`) is its own
+    sketch under the api kind, a subset of that total."""
     if family == FAMILY_API:
         return (KIND_API, FAMILY_NONE)
+    if family in AUTOMATION_FAMILIES:
+        return (KIND_API, family)
     return (KIND_CLIENT, family)
 
 
 def _refs_for_scope(scope: str) -> list[SketchRef]:
     """Every stored sketch identity a scope can have: both auth-kind sketches,
-    plus one per interactive family for the account scope."""
+    plus one per interactive family and one per named automation family for
+    the account scope."""
     refs: list[SketchRef] = [(k, FAMILY_NONE) for k in WRITE_KINDS]
     if scope == SCOPE_ACCOUNT:
         refs.extend((KIND_CLIENT, f) for f in INTERACTIVE_FAMILIES)
+        refs.extend((KIND_API, f) for f in AUTOMATION_FAMILIES)
     return refs
 
 
@@ -346,8 +353,11 @@ async def _record_active(
             pipe.expire(sys_key, HLL_KEY_TTL_SECONDS)
         # The family sketch, alongside (not instead of) the auth-kind one. The
         # membership check is the guard against a caller passing something
-        # unbounded: only a known interactive family ever becomes a key.
-        if auth_kind == KIND_CLIENT and client_family in INTERACTIVE_FAMILIES:
+        # unbounded: only a known interactive family, or a named automation
+        # family under the api kind, ever becomes a key.
+        if (auth_kind == KIND_CLIENT and client_family in INTERACTIVE_FAMILIES) or (
+            auth_kind == KIND_API and client_family in AUTOMATION_FAMILIES
+        ):
             fam_key = family_day_key(SCOPE_ACCOUNT, client_family, today)
             pipe.pfadd(fam_key, _active_token(SCOPE_ACCOUNT, str(user_id)))
             pipe.expire(fam_key, HLL_KEY_TTL_SECONDS)

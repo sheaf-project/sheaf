@@ -748,7 +748,9 @@ active_systems_monthly = _G(
 # cover every authenticated request. Kept as a separate set of series rather
 # than a second label on the DAU/MAU gauges so nothing already charted changes
 # shape.
-ClientFamilyLabel = Literal["web", "android", "ios", "watch", "api", "other"]
+ClientFamilyLabel = Literal[
+    "web", "android", "ios", "watch", "api", "homeassistant", "other"
+]
 
 active_accounts_daily_by_client = _G(
     "sheaf_active_accounts_daily_by_client",

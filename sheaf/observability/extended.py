@@ -280,10 +280,11 @@ def record_request(
     status_class: str,
     client_header: str | None,
     authorization: str | None,
+    user_agent: str | None = None,
 ) -> None:
     """The route-by-family counter, from the HTTP middleware.
 
-    The family is derived from the header the same way the auth path does
+    The family is derived from the headers the same way the auth path does
     it, with "is this an API key" read off the Authorization prefix the way
     `get_current_user` reads it, so the two never disagree. Runs for every
     request, authenticated or not, which is what "which client hits which
@@ -292,7 +293,9 @@ def record_request(
     if not ENABLED:
         return
     is_api_key = bool(authorization) and authorization.startswith("Bearer sk_")
-    family = client_family_from(client_header, is_api_key=is_api_key)
+    family = client_family_from(
+        client_header, is_api_key=is_api_key, user_agent=user_agent
+    )
     http_requests_by_client_total.labels(
         method=method,
         route=route,

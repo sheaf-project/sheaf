@@ -295,11 +295,16 @@ def test_family_key_scheme_is_id_free_and_namespaced():
     assert key == "sheaf:hll:acct:fam:web:2026-09-01"
     assert usage._ref_for_family("api") == (usage.KIND_API, usage.FAMILY_NONE)
     assert usage._ref_for_family("web") == (usage.KIND_CLIENT, "web")
+    # A named automation family is its own sketch under the api kind, a
+    # subset of the api total rather than a split of it.
+    assert usage._ref_for_family("homeassistant") == (usage.KIND_API, "homeassistant")
     # The account scope flushes both auth-kind sketches plus one per
-    # interactive family; the system scope only the auth-kind ones.
+    # interactive family and one per named automation family; the system
+    # scope only the auth-kind ones.
     acct_refs = usage._refs_for_scope(usage.SCOPE_ACCOUNT)
     sys_refs = usage._refs_for_scope(usage.SCOPE_SYSTEM)
     assert (usage.KIND_CLIENT, "web") in acct_refs
+    assert (usage.KIND_API, "homeassistant") in acct_refs
     assert (usage.KIND_CLIENT, "web") not in sys_refs
     assert set(sys_refs) == {(k, usage.FAMILY_NONE) for k in usage.WRITE_KINDS}
 

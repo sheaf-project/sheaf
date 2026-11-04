@@ -264,9 +264,9 @@ X-Sheaf-Client: Sheaf Android/1.2.0
 X-Sheaf-Client: My Custom App/0.5
 ```
 
-If not set, the server falls back to parsing the User-Agent (Firefox, Chrome, Safari, Edge, or "Unknown").
+If not set, the server falls back to the User-Agent: an official app prefix there (the Wear OS app sends `Sheaf Android Wear/<version>` as its User-Agent) is used as the client name verbatim, and anything else is parsed for a browser name (Firefox, Chrome, Safari, Edge, or "Unknown").
 
-The server also folds the header into a bounded *client family* for aggregate usage metrics (never the raw value, so it is safe to put anything here): `Sheaf Web/`, `Sheaf Android/`, `Sheaf iOS/`, `Sheaf watchOS/` and `Sheaf Wear/` prefixes map to `web`, `android`, `ios`, `watch`, `watch`; any other value, or no header, is `other`; and a request authenticated by API key is `api` regardless of the header. The official web app sends `Sheaf Web/<version>` on requests to its own instance only. If you are building a companion for a platform that already has an official app, use that platform's prefix so usage is attributed to the platform rather than to `other`; if you are building something else, any name you like is fine and lands in `other` by design.
+The server also folds the header into a bounded *client family* for aggregate usage metrics (never the raw value, so it is safe to put anything here): `Sheaf Web/`, `Sheaf Android/`, `Sheaf Android Wear/`, `Sheaf iOS/`, `Sheaf watchOS/` and `Sheaf Wear/` prefixes map to `web`, `android`, `watch`, `ios`, `watch`, `watch`, on the header or, when no header is sent, on the User-Agent; any other value is `other`; and a request authenticated by API key is `api` regardless of the header, except that a User-Agent starting `HomeAssistant/` (what a Home Assistant integration using the shared HTTP session sends) is counted as `homeassistant`. The official web app sends `Sheaf Web/<version>` on requests to its own instance only. If you are building a companion for a platform that already has an official app, use that platform's prefix so usage is attributed to the platform rather than to `other`; if you are building something else, any name you like is fine and lands in `other` by design.
 
 ## Client Settings Storage
 
