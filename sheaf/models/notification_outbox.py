@@ -44,6 +44,14 @@ class NotificationOutboxRow(UUIDMixin, Base):
     next_retry_after: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # How many times this row was claimed back after a lease expired with
+    # no outcome recorded: the worker died, or processing raised. A delivery
+    # attempt that fails cleanly releases its claim and never counts here,
+    # so this only ever grows on rows that are making no progress; the
+    # dispatcher dead-letters a row once it passes the configured cap.
+    reclaim_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         Index(

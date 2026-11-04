@@ -381,6 +381,13 @@ notifications_dispatcher_errors_total = _C(
     "Every one of these is also logged with its traceback; a non-zero rate "
     "means rows are being re-claimed rather than delivered or dropped.",
 )
+notifications_outbox_dead_lettered_total = _C(
+    "sheaf_notifications_outbox_dead_lettered_total",
+    "Outbox rows given up on because their lease kept expiring with no "
+    "outcome recorded (processing raised, or workers died on them) more "
+    "times than NOTIFICATIONS_DEAD_LETTER_AFTER_RECLAIMS allows. Each one "
+    "is logged with the row and channel ids.",
+)
 notifications_dispatch_duration_seconds = _H(
     "sheaf_notifications_dispatch_duration_seconds",
     "Per-channel dispatch handler runtime.",
