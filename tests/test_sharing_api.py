@@ -2184,6 +2184,24 @@ def test_system_privacy_flip_to_public_is_logged_immediate():
     c.close()
 
 
+def test_showing_the_system_name_is_logged_under_its_own_source():
+    """The name switch is the other raise on PATCH /v1/systems/me. It is never
+    staged, so it is always `immediate`, and it carries its own source so the
+    two axes can be told apart in the trail. Hiding records nothing."""
+    c, email = _logged_client()
+    assert c.patch("/v1/systems/me", json={"show_name_publicly": False}).status_code == 200
+    assert _events_of(email, "system_show_name") == []
+
+    r = c.patch("/v1/systems/me", json={"show_name_publicly": True})
+    assert r.status_code == 200, r.text
+    events = _events_of(email, "system_show_name")
+    assert len(events) == 1, events
+    assert events[0]["outcome"] == "immediate"
+    # Not double-counted under the privacy source.
+    assert _events_of(email, "system_privacy") == []
+    c.close()
+
+
 def test_lowering_system_privacy_records_nothing():
     """Going back to private un-exposes, and un-exposing is never audited here."""
     c, email = _logged_client()
@@ -2421,6 +2439,8 @@ def test_raise_to_public_is_refused_while_the_account_is_pending_deletion():
     c, email = _logged_client()
     m = _member(c, "PendingCeiling", privacy="private")
     g = _group(c, f"G-{uuid.uuid4().hex[:6]}")
+    # Hide the name so showing it again is a raise.
+    assert c.patch("/v1/systems/me", json={"show_name_publicly": False}).status_code == 200
 
     # Schedule the account for deletion.
     req = c.post("/v1/auth/delete-account", json={"password": "testpassword123"})
@@ -2428,6 +2448,7 @@ def test_raise_to_public_is_refused_while_the_account_is_pending_deletion():
 
     for path, body in (
         ("/v1/systems/me", {"privacy": "public"}),
+        ("/v1/systems/me", {"show_name_publicly": True}),
         (f"/v1/members/{m}", {"privacy": "public"}),
         (f"/v1/groups/{g}", {"privacy": "public"}),
     ):
@@ -2689,6 +2710,16 @@ def test_raising_a_ceiling_to_public_is_refused_with_the_surface_off(
     r = auth_client.patch("/v1/systems/me", json={"privacy": "public"})
     assert r.status_code == 403, r.text
     assert "turned off" in r.json()["detail"]
+
+    # The name switch: hiding is open, showing again is a raise and refused
+    # for the same reason, so it cannot be left set to show for the day the
+    # surface comes back.
+    hidden = auth_client.patch("/v1/systems/me", json={"show_name_publicly": False})
+    assert hidden.status_code == 200, hidden.text
+    r = auth_client.patch("/v1/systems/me", json={"show_name_publicly": True})
+    assert r.status_code == 403, r.text
+    assert "turned off" in r.json()["detail"]
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is False
 
     # A per-entity ceiling (member privacy).
     m = _member(auth_client, "OffRaise", privacy="private")

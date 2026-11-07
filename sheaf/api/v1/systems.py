@@ -26,7 +26,11 @@ from sheaf.services.sharing import (
     visibility_grace_days,
     visibility_step_up_required,
 )
-from sheaf.services.system_safety import verify_destructive_auth
+from sheaf.services.system_safety import (
+    apply_safety_split,
+    split_safety_changes,
+    verify_destructive_auth,
+)
 
 router = APIRouter(prefix="/systems", tags=["systems"])
 
@@ -90,17 +94,27 @@ async def update_own_system(
     # stays instant and ungated; anything staged is cancelled by it. Handled
     # here, out of the generic setattr loop below.
     requested_privacy = update_data.pop("privacy", None)
-
-    # Raising the master switch to public is refused for the same reasons
-    # `create_grant` is: not while the account is pending deletion, and not while
-    # the instance's public surface is switched off (a raise now would wake up on
-    # an operator's later config flip, unwitnessed). Publishing availability, not
-    # step-up, so it is checked whatever the safety category is set to. Lowering
-    # stays open - going dark is never gated.
-    if (
+    privacy_raise = (
         requested_privacy == PrivacyLevel.PUBLIC
         and system.privacy != PrivacyLevel.PUBLIC
-    ):
+    )
+    # The second exposure axis: whether the system's name is shown on its
+    # public surface. Turning it on is a raise, turning it off is a lowering
+    # and stays instant and ungated.
+    requested_show_name = update_data.get("show_name_publicly")
+    name_raise = requested_show_name is True and not system.show_name_publicly
+    name_lower = requested_show_name is False and system.show_name_publicly
+
+    # Either raise is refused for the same reasons `create_grant` is: not while
+    # the account is pending deletion, and not while the instance's public
+    # surface is switched off (a raise now would wake up on an operator's later
+    # config flip, unwitnessed). Publishing availability, not step-up, so it is
+    # checked whatever the safety category is set to. Lowering stays open -
+    # going dark is never gated. The name switch is held to this too: it is a
+    # smaller reveal than the master switch, but a name set to show while the
+    # surface is off is the same dormant raise waiting on somebody else's
+    # config change, and the same rule covers both.
+    if privacy_raise or name_raise:
         refuse_raise_when_publishing_unavailable(user)
 
     # Operator takedown latch. The master switch is the broadest publish there
@@ -108,39 +122,29 @@ async def update_own_system(
     # is: a blocked system may take things down but may not put anything new up.
     # Lowering (to friends/private) is the un-exposing direction and stays open,
     # so a blocked owner can still go fully dark. Same distinct message as the
-    # grant path.
-    if (
-        requested_privacy == PrivacyLevel.PUBLIC
-        and system.privacy != PrivacyLevel.PUBLIC
-        and system.publishing_blocked
-    ):
+    # grant path. The name switch meets the latch for the same reason: a
+    # blocked system's surface is suppressed, so showing the name reveals
+    # nothing today and would the moment the latch is lifted.
+    if (privacy_raise or name_raise) and system.publishing_blocked:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 "Publishing has been disabled on your system by an operator, so "
-                "your system cannot be set to public. You can still keep it "
-                "private or friends. Contact the instance operator."
+                "your system cannot be set to public or to show more. You can "
+                "still keep it private or friends, and hide things. Contact the "
+                "instance operator."
             ),
         )
 
     exposes = False
-    if (
-        requested_privacy == PrivacyLevel.PUBLIC
-        and system.privacy != PrivacyLevel.PUBLIC
-        and visibility_step_up_required(system)
-    ):
+    if privacy_raise and visibility_step_up_required(system):
         exposes = await system_privacy_raise_exposes(db, system)
 
-    # The second exposure axis: whether the system's name is shown on its
-    # public surface. Turning it on is a raise, turning it off is a lowering
-    # and stays instant and ungated. The raise reveals something only when the
-    # surface is live right now (system public, a grant that serves), so that
-    # is when it demands step-up. It is applied immediately once re-authed
-    # rather than staged: it reveals one string on a page that is already up,
-    # and the grace window exists for exposures that put new people up.
-    requested_show_name = update_data.get("show_name_publicly")
-    name_raise = requested_show_name is True and not system.show_name_publicly
-    name_lower = requested_show_name is False and system.show_name_publicly
+    # The name raise reveals something only when the surface is live right now
+    # (system public, a grant that serves), so that is when it demands step-up.
+    # It is applied immediately once re-authed rather than staged: it reveals
+    # one string on a page that is already up, and the grace window exists for
+    # exposures that put new people up.
     name_exposes = False
     if (
         name_raise
@@ -187,10 +191,7 @@ async def update_own_system(
             system.privacy_activates_at = None
             raise_outcome = "immediate"
     elif requested_privacy is not None:
-        if (
-            requested_privacy == PrivacyLevel.PUBLIC
-            and system.privacy != PrivacyLevel.PUBLIC
-        ):
+        if privacy_raise:
             raise_outcome = "immediate"
         system.privacy = requested_privacy
         system.pending_privacy = None
@@ -227,6 +228,19 @@ async def update_own_system(
             user_agent=request.headers.get("user-agent"),
             detail={"source": "system_privacy", "system_id": str(system.id)},
         )
+    # The name switch is the other raise on this endpoint and leaves the same
+    # trail, under its own source so the two axes can be told apart. It is
+    # never staged, so the outcome is always `immediate` - whether or not
+    # step-up was asked for, exactly as the ungated privacy raise still logs.
+    if name_raise:
+        await record_security_event(
+            event_type=SecurityEventType.EXPOSURE_RAISED,
+            outcome="immediate",
+            user_id=user.id,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail={"source": "system_show_name", "system_id": str(system.id)},
+        )
     return _system_to_read(system)
 
 
@@ -234,13 +248,26 @@ async def update_own_system(
     "/me/delete-confirmation",
     response_model=SystemRead,
     dependencies=[Depends(require_scope("system:write"))],
+    deprecated=True,
 )
 async def update_delete_confirmation(
     body: DeleteConfirmationUpdate,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update delete confirmation level. Requires password (+ TOTP if enabled)."""
+    """Update delete confirmation level. Requires password (+ TOTP if enabled).
+
+    Deprecated in favour of `PATCH /v1/system/safety` (`auth_tier`), which
+    reports whether the change applied or was deferred. This endpoint keeps
+    working for clients that still call it, and it obeys the same rule: raising
+    the tier applies at once, lowering it waits out the System Safety grace
+    window as a cancellable pending change, exactly as the settings PATCH does.
+    It used to write the column directly, which made it the one instant route
+    to a weaker tier - and a weaker tier is a weaker step-up on every gate that
+    asks for one, so that was a way past all of them at once. The response is
+    the system as it stands, so a deferred lowering still reads the OLD tier;
+    the pending change is on `GET /v1/system/safety`.
+    """
     # Brute-forceable credentials are verified here, so the attempt feeds
     # the unified lockout the same way login does.
     ensure_not_locked(user)
@@ -277,7 +304,12 @@ async def update_delete_confirmation(
         )
 
     system = await _get_user_system(user, db)
-    system.delete_confirmation = body.level
+    split = split_safety_changes(system, {"delete_confirmation": body.level})
+    pending_change = apply_safety_split(
+        system, split, requested_by_user_id=user.id
+    )
+    if pending_change is not None:
+        db.add(pending_change)
     await db.commit()
     await db.refresh(system)
     return _system_to_read(system)

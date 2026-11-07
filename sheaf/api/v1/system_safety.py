@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -44,6 +44,7 @@ from sheaf.schemas.system_safety import (
 )
 from sheaf.services.sharing import pending_exposures
 from sheaf.services.system_safety import (
+    apply_safety_split,
     split_safety_changes,
     verify_destructive_auth,
 )
@@ -235,30 +236,15 @@ async def update_system_safety(
     if split.deferred:
         await verify_destructive_auth(user, system, body.password, body.totp_code, db)
 
-    # Apply tightening immediately.
-    for field, value in split.applied.items():
-        setattr(system, field, value)
-
-    pending_change: SafetyChangeRequest | None = None
-    if split.deferred:
-        now = datetime.now(UTC)
-        # Grace period for loosening is whatever is currently in force.
-        # If grace is 0 (safety fully off), loosening applies immediately too.
-        if system.safety_grace_period_days <= 0:
-            for field, value in split.deferred.items():
-                setattr(system, field, value)
-            split.applied.update(split.deferred)
-            split.deferred.clear()
-        else:
-            pending_change = SafetyChangeRequest(
-                system_id=system.id,
-                requested_at=now,
-                requested_by_user_id=user.id,
-                finalize_after=now + timedelta(days=system.safety_grace_period_days),
-                changes=split.deferred,
-                status=SafetyChangeStatus.PENDING,
-            )
-            db.add(pending_change)
+    # Tightening lands now; a loosening waits out whatever grace window is
+    # currently in force (or lands now when that window is 0). The same helper
+    # the auth-tier endpoint and the native import use, so the three cannot
+    # disagree about which direction waits.
+    pending_change = apply_safety_split(
+        system, split, requested_by_user_id=user.id
+    )
+    if pending_change is not None:
+        db.add(pending_change)
 
     await db.commit()
     await db.refresh(system)
