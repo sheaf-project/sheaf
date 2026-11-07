@@ -508,6 +508,78 @@ def test_cancel_pending_safety_change(client: httpx.Client):
     assert current["pending_changes"] == []
 
 
+def test_tier_endpoint_lowering_is_deferred_behind_grace(client: httpx.Client):
+    """PUT /v1/systems/me/delete-confirmation used to write the tier straight
+    onto the row, so a session with the password could drop it to `none` in one
+    call and every step-up after that checked nothing. It now goes through the
+    same split the settings PATCH does: the lowering waits as a cancellable
+    pending change and the live tier stays put."""
+    _, password = _register(client)
+    assert client.patch(
+        "/v1/system/safety",
+        json={"grace_period_days": 7, "auth_tier": "password"},
+    ).status_code == 200
+
+    resp = client.put(
+        "/v1/systems/me/delete-confirmation",
+        json={"level": "none", "password": password},
+    )
+    assert resp.status_code == 200, resp.text
+    # The response is the system as it stands: the old tier.
+    assert resp.json()["delete_confirmation"] == "password"
+
+    safety = client.get("/v1/system/safety").json()
+    assert safety["settings"]["auth_tier"] == "password"
+    pending = safety["pending_changes"]
+    assert len(pending) == 1, pending
+    assert pending[0]["changes"] == {"delete_confirmation": "none"}
+
+    # And it is still a gate: a delete without the password is refused.
+    member = client.post("/v1/members", json={"name": "Still guarded"}).json()
+    assert client.delete(f"/v1/members/{member['id']}").status_code == 400
+
+    # Cancellable from the same inbox as any other loosening.
+    assert client.delete(
+        f"/v1/system/safety/pending-changes/{pending[0]['id']}"
+    ).status_code == 204
+    assert client.get("/v1/system/safety").json()["pending_changes"] == []
+    assert client.get("/v1/systems/me").json()["delete_confirmation"] == "password"
+
+
+def test_tier_endpoint_raising_applies_at_once(client: httpx.Client):
+    """Tightening adds protection, so there is nothing to wait for."""
+    _, password = _register(client)
+    assert client.patch(
+        "/v1/system/safety", json={"grace_period_days": 7}
+    ).status_code == 200
+
+    resp = client.put(
+        "/v1/systems/me/delete-confirmation",
+        json={"level": "password", "password": password},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["delete_confirmation"] == "password"
+    assert client.get("/v1/system/safety").json()["pending_changes"] == []
+
+
+def test_tier_endpoint_lowering_lands_at_once_with_no_grace(client: httpx.Client):
+    """Grace at 0 means there is no window to wait out, so a lowering applies
+    immediately, exactly as the settings PATCH does with the same change."""
+    _, password = _register(client)
+    assert client.put(
+        "/v1/systems/me/delete-confirmation",
+        json={"level": "password", "password": password},
+    ).status_code == 200
+
+    resp = client.put(
+        "/v1/systems/me/delete-confirmation",
+        json={"level": "none", "password": password},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["delete_confirmation"] == "none"
+    assert client.get("/v1/system/safety").json()["pending_changes"] == []
+
+
 def test_finalize_safety_change_applies_loosening(
     client: httpx.Client, admin_client: httpx.Client
 ):

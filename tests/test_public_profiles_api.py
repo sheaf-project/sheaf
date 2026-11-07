@@ -3384,3 +3384,27 @@ def test_name_raise_and_privacy_lowering_cannot_share_a_body():
     # Sent on its own, the lowering goes through with nothing asked.
     assert owner.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
     owner.close()
+
+
+@pytest.mark.public_profiles
+def test_showing_the_name_is_refused_under_the_takedown_latch():
+    """A blocked system may hide things but not set anything to show more,
+    the name included: the latch suppresses the surface, so the reveal would
+    land the moment an operator lifted it. Lowering stays open."""
+    owner = _register()
+    m = _member(owner, "Shown")
+    system_id, _ = _published_system(owner, members=[m])
+    assert owner.patch("/v1/systems/me", json={"show_name_publicly": False}).status_code == 200
+    _block_publishing(system_id)
+
+    r = owner.patch(
+        "/v1/systems/me",
+        json={"show_name_publicly": True, "password": "testpassword123"},
+    )
+    assert r.status_code == 403, r.text
+    assert "disabled on your system by an operator" in r.json()["detail"]
+    assert owner.get("/v1/systems/me").json()["show_name_publicly"] is False
+
+    # Going dark is still open under the latch.
+    assert owner.patch("/v1/systems/me", json={"privacy": "private"}).status_code == 200
+    owner.close()

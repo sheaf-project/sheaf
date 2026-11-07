@@ -30,7 +30,7 @@ append-everything behaviour.
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,10 +85,6 @@ from sheaf.models.relationship import (
     RelationshipType,
 )
 from sheaf.models.reminder import Reminder, reminder_scope_members
-from sheaf.models.safety_change_request import (
-    SafetyChangeRequest,
-    SafetyChangeStatus,
-)
 from sheaf.models.share import (
     LinkPreviewMode,
     ShareItemStatus,
@@ -161,7 +157,7 @@ from sheaf.services.sharing import (
     relationship_exposed_member_ids,
     system_privacy_raise_exposes,
 )
-from sheaf.services.system_safety import split_safety_changes
+from sheaf.services.system_safety import apply_safety_split, split_safety_changes
 from sheaf.timezones import is_valid_timezone
 
 logger = logging.getLogger("sheaf.import.sheaf")
@@ -283,6 +279,27 @@ def system_privacy_hold_warning(current: object, *, blocked: bool) -> str:
         "behind it. Set it to public under Settings, system profile if that is "
         "what you want, where the change goes through re-authentication and "
         "the grace window - a restore can do neither of those for you."
+    )
+
+
+def system_name_hold_warning(*, blocked: bool) -> str:
+    """The report line for a show-the-name flip an import declined to apply.
+
+    Same two shapes as `system_privacy_hold_warning`, for the same two reasons.
+    Carries no names at all, so it is safe in the job's plaintext event log.
+    """
+    if blocked:
+        return (
+            "The file showed your system's name on its public profile, but "
+            "it was left hidden: an operator on this instance has disabled "
+            "publishing on your system, so nothing on it can be set to show "
+            "more until they lift that. Contact the instance operator."
+        )
+    return (
+        "The file showed your system's name on its public profile, but it was "
+        "left hidden: your public profile or a share link is live right now, "
+        "and showing the name on it goes through re-authentication under "
+        "Settings, system profile - a restore cannot do that for you."
     )
 
 
@@ -1110,7 +1127,31 @@ async def run_import(
             # hands this over as null when the file predates the setting, and
             # a null must not read as "hide" for a switch that defaults on.
             if sys_data.get("show_name_publicly") is not None:
-                system.show_name_publicly = bool(sys_data["show_name_publicly"])
+                # Showing the name is the second exposure axis PATCH
+                # /v1/systems/me gates, and it gets the same two holds the
+                # privacy raise above does: the operator takedown latch, and
+                # a raise that would reveal something right now - the system
+                # public (as this file leaves it, the privacy block having just
+                # run) with a live-or-pending grant behind it, where the owner
+                # path demands step-up an import cannot offer. Hiding is a
+                # lowering and applies at once. With nothing behind it the
+                # name is restored as any other display setting is.
+                show_name = bool(sys_data["show_name_publicly"])
+                name_raise = show_name and not system.show_name_publicly
+                name_blocked = name_raise and bool(system.publishing_blocked)
+                name_held = name_raise and (
+                    name_blocked
+                    or (
+                        system.privacy == PrivacyLevel.PUBLIC
+                        and await system_privacy_raise_exposes(db, system)
+                    )
+                )
+                if name_held:
+                    warnings.append(
+                        system_name_hold_warning(blocked=name_blocked)
+                    )
+                else:
+                    system.show_name_publicly = show_name
             df = _date_format(sys_data.get("date_format"))
             if df is not None:
                 system.date_format = df
@@ -1169,49 +1210,31 @@ async def run_import(
 
             if safety_updates:
                 split = split_safety_changes(system, safety_updates)
-                for fld, value in split.applied.items():
-                    setattr(system, fld, value)
-                if split.deferred:
-                    if system.safety_grace_period_days <= 0:
-                        # Mirrors the API exactly: with the window off there is
-                        # nothing to wait out, so a loosening lands at once
-                        # rather than queueing a request that would finalize on
-                        # the sweep's next pass anyway.
-                        for fld, value in split.deferred.items():
-                            setattr(system, fld, value)
-                    else:
-                        # One request for the whole file, not one per setting:
-                        # the owner cancels a restore's loosening as a single
-                        # decision, the same way the settings screen queues one
-                        # request per PATCH. Attributed to the system's owner -
-                        # an import only ever runs against the importing user's
-                        # own system.
-                        from sheaf.api.v1.system_safety import (
-                            _INTERNAL_TO_EXTERNAL,
-                        )
+                # The same helper the settings PATCH and the auth-tier endpoint
+                # use: tightening lands now, a loosening waits out the grace
+                # window (or lands now when the window is 0, as the API does).
+                # One request for the whole file, not one per setting: the
+                # owner cancels a restore's loosening as a single decision, the
+                # same way the settings screen queues one request per PATCH.
+                # Attributed to the system's owner - an import only ever runs
+                # against the importing user's own system.
+                pending_change = apply_safety_split(
+                    system, split, requested_by_user_id=system.user_id
+                )
+                if pending_change is not None:
+                    from sheaf.api.v1.system_safety import (
+                        _INTERNAL_TO_EXTERNAL,
+                    )
 
-                        now = datetime.now(UTC)
-                        db.add(
-                            SafetyChangeRequest(
-                                system_id=system.id,
-                                requested_at=now,
-                                requested_by_user_id=system.user_id,
-                                finalize_after=now
-                                + timedelta(
-                                    days=system.safety_grace_period_days
-                                ),
-                                changes=split.deferred,
-                                status=SafetyChangeStatus.PENDING,
+                    db.add(pending_change)
+                    warnings.append(
+                        safety_deferred_warning(
+                            sorted(
+                                _INTERNAL_TO_EXTERNAL.get(f, f)
+                                for f in split.deferred
                             )
                         )
-                        warnings.append(
-                            safety_deferred_warning(
-                                sorted(
-                                    _INTERNAL_TO_EXTERNAL.get(f, f)
-                                    for f in split.deferred
-                                )
-                            )
-                        )
+                    )
 
             # PluralPort import residual: a native export carries it as a
             # plain dict (decrypted in export.py). Re-pack (compress +

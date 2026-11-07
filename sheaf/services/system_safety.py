@@ -315,6 +315,49 @@ def split_safety_changes(system: System, updates: dict[str, Any]) -> SafetyChang
     return SafetyChangeSplit(applied=applied, deferred=deferred)
 
 
+def apply_safety_split(
+    system: System,
+    split: SafetyChangeSplit,
+    *,
+    requested_by_user_id: uuid.UUID | None,
+) -> SafetyChangeRequest | None:
+    """Land a `split_safety_changes` result on the system, the one way.
+
+    Tightenings are written onto the System object now. Loosenings are written
+    now only when the grace window is 0 (there is nothing to wait out, and a
+    queued request would finalize on the sweep's next pass anyway); otherwise
+    they are parked in a `SafetyChangeRequest` for the finalize sweep, which is
+    returned UN-ADDED so the caller can `db.add` it alongside its own rows.
+    The split is updated in place to say where each field actually ended up,
+    so `applied`/`deferred` can be reported back verbatim.
+
+    Every write path to a safety column goes through here: the settings PATCH,
+    the standalone auth-tier endpoint and the native import. The tier endpoint
+    used to `setattr` the column directly and was the one instant route to a
+    weaker tier, a second door past the deferred-loosening rule; keeping the
+    rule in one function is what stops a third door being cut the same way.
+    """
+    for field, value in split.applied.items():
+        setattr(system, field, value)
+    if not split.deferred:
+        return None
+    if system.safety_grace_period_days <= 0:
+        for field, value in split.deferred.items():
+            setattr(system, field, value)
+        split.applied.update(split.deferred)
+        split.deferred.clear()
+        return None
+    now = datetime.now(UTC)
+    return SafetyChangeRequest(
+        system_id=system.id,
+        requested_at=now,
+        requested_by_user_id=requested_by_user_id,
+        finalize_after=now + timedelta(days=system.safety_grace_period_days),
+        changes=dict(split.deferred),
+        status=SafetyChangeStatus.PENDING,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fronting snapshot
 # ---------------------------------------------------------------------------

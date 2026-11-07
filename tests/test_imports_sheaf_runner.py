@@ -1588,6 +1588,69 @@ def test_sheaf_runner_raises_system_privacy_when_nothing_is_behind_it(
     assert not [w for w in _warnings(final) if "marked public in the file" in w]
 
 
+def test_sheaf_runner_holds_showing_the_name_while_the_profile_is_live(
+    auth_client: httpx.Client,
+):
+    """The name switch is the second exposure axis on PATCH /v1/systems/me,
+    and turning it on with the profile live demands step-up there. An import
+    cannot offer one, so the name stays hidden and the report says so - the
+    same hold the master switch gets, on its own axis."""
+    _go_public(auth_client)
+    _publish_a_view(auth_client)
+    system_id = _system_id(auth_client)
+    assert auth_client.patch(
+        "/v1/systems/me", json={"show_name_publicly": False}
+    ).status_code == 200
+
+    final = _run(auth_client, _export_with({"show_name_publicly": True}))
+
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is False
+    held = [w for w in _warnings(final) if "left hidden" in w]
+    assert held, final["events"]
+    assert "re-authentication" in held[0]
+    with httpx.Client(base_url=BASE_URL) as anon:
+        assert anon.get(f"/v1/public/systems/{system_id}").json()["name"] is None
+
+
+def test_sheaf_runner_holds_showing_the_name_while_publishing_is_blocked(
+    auth_client: httpx.Client,
+):
+    """The operator takedown latch: PATCH /v1/systems/me refuses the name
+    raise under it, so the import holds too."""
+    assert auth_client.patch(
+        "/v1/systems/me", json={"show_name_publicly": False}
+    ).status_code == 200
+    _block_publishing(_system_id(auth_client))
+
+    final = _run(auth_client, _export_with({"show_name_publicly": True}))
+
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is False
+    held = [w for w in _warnings(final) if "left hidden" in w]
+    assert held, final["events"]
+    assert "disabled publishing" in held[0]
+
+
+def test_sheaf_runner_restores_the_name_switch_when_nothing_is_behind_it(
+    auth_client: httpx.Client,
+):
+    """No grant, no latch: showing the name reveals nothing, so it restores
+    like any other display setting. Hiding it is a lowering and applies even
+    with the profile live."""
+    assert auth_client.patch(
+        "/v1/systems/me", json={"show_name_publicly": False}
+    ).status_code == 200
+
+    final = _run(auth_client, _export_with({"show_name_publicly": True}))
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is True
+    assert not [w for w in _warnings(final) if "left hidden" in w]
+
+    _go_public(auth_client)
+    _publish_a_view(auth_client)
+    final = _run(auth_client, _export_with({"show_name_publicly": False}))
+    assert auth_client.get("/v1/systems/me").json()["show_name_publicly"] is False
+    assert not [w for w in _warnings(final) if "left hidden" in w]
+
+
 def test_sheaf_runner_queues_a_safety_loosening_and_still_holds_the_member(
     auth_client: httpx.Client,
 ):
