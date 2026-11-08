@@ -102,6 +102,7 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
         members_updated=result.members_updated,
         members_privacy_skipped=result.members_privacy_skipped,
         avatars_imported=result.avatars_imported,
+        banners_imported=result.banners_imported,
         groups_imported=result.groups_imported,
         custom_fields_imported=result.custom_fields_imported,
         custom_field_values_imported=result.custom_field_values_imported,
@@ -126,6 +127,7 @@ async def handle_prism_file(job: ImportJob, db: AsyncSession) -> None:
         message=(
             f"imported {result.members_imported} members, "
             f"{result.avatars_imported} avatars, "
+            f"{result.banners_imported} banners, "
             f"{result.groups_imported} groups, "
             f"{result.custom_fields_imported} custom fields, "
             f"{result.custom_field_values_imported} custom field values, "

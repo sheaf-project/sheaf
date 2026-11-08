@@ -404,7 +404,7 @@ async def run_import(
     data = parsed.data
 
     if system_profile:
-        _apply_system_profile(data, system, report)
+        await _apply_system_profile(data, system, report, db, user, result.warnings)
 
     selected = set(member_ids) if member_ids is not None else None
 
@@ -560,30 +560,57 @@ async def run_import(
 
     if member_avatars:
         external_avatars_skipped = 0
+        external_banners_skipped = 0
         for ps_id, handle in ps_id_to_handle.items():
             src = handle.source
+            subject = f"Headmate {ps_id!r}"
             inline_b64 = _clean_str(src.get("profilePhotoData"))
+            stored_key = None
             if inline_b64:
-                stored_key = await _persist_avatar_from_b64(
-                    inline_b64, ps_id, db, user, result.warnings
+                stored_key = await _persist_image_from_b64(
+                    inline_b64, subject, db, user, result.warnings
                 )
                 if stored_key:
                     handle.member.avatar_url = stored_key[:500]
                     result.avatars_imported += 1
-                    continue
-            cached_url = _clean_str(src.get("pkAvatarCachedUrl"))
-            if cached_url:
-                # Fallback external reference (Prism's cached PluralKit
-                # avatar URL); kept only when the scheme is plain http(s)
-                # and the instance allows external images.
-                safe_url = sanitize_external_avatar_url(cached_url)
-                if safe_url:
-                    handle.member.avatar_url = safe_url
+            if not stored_key:
+                cached_url = _clean_str(src.get("pkAvatarCachedUrl"))
+                if cached_url:
+                    # Fallback external reference (Prism's cached PluralKit
+                    # avatar URL); kept only when the scheme is plain http(s)
+                    # and the instance allows external images.
+                    safe_url = sanitize_external_avatar_url(cached_url)
+                    if safe_url:
+                        handle.member.avatar_url = safe_url
+                    else:
+                        external_avatars_skipped += 1
+
+            # The header image is Prism's member banner. Same option, same
+            # pipeline and same caps as the avatar; which image it is follows
+            # Prism's own source rules (see `_prism_member_header`).
+            banner_b64, banner_url = _prism_member_header(src)
+            if banner_b64:
+                banner_key = await _persist_image_from_b64(
+                    banner_b64, subject, db, user, result.warnings, what="banner"
+                )
+                if banner_key:
+                    handle.member.banner_url = banner_key[:500]
+                    result.banners_imported += 1
+            elif banner_url:
+                safe_banner = sanitize_external_avatar_url(banner_url)
+                if safe_banner:
+                    handle.member.banner_url = safe_banner
                 else:
-                    external_avatars_skipped += 1
+                    external_banners_skipped += 1
         if external_avatars_skipped:
             result.warnings.append(
                 f"Skipped {external_avatars_skipped} external avatar "
+                "link(s): external images are not allowed on this server, "
+                "or the link was not a plain http(s) URL."
+            )
+        if external_banners_skipped:
+            result.warnings.append(
+                f"Skipped {external_banners_skipped} external banner "
                 "link(s): external images are not allowed on this server, "
                 "or the link was not a plain http(s) URL."
             )
@@ -732,13 +759,20 @@ async def run_import(
 # --- Section helpers -------------------------------------------------------
 
 
-def _apply_system_profile(
-    data: dict, system: System, report: ClampReport
+async def _apply_system_profile(
+    data: dict,
+    system: System,
+    report: ClampReport,
+    db: AsyncSession,
+    user: User,
+    warnings: list[str],
 ) -> None:
     """Pull the systemSettings[0] block onto the importing system.
 
-    Only fills empty Sheaf fields; never overwrites a name the user
-    already set on their Sheaf system.
+    Only fills empty Sheaf fields; never overwrites a name, tag or avatar
+    the user already set on their Sheaf system. The avatar arrives as inline
+    base64 (`systemAvatarData`) and goes through the same image pipeline as
+    a headmate's photo. Prism has no system banner.
     """
     settings_arr = _list(data.get("systemSettings"))
     if not settings_arr or not isinstance(settings_arr[0], dict):
@@ -747,6 +781,16 @@ def _apply_system_profile(
     name = _clean_str(block.get("systemName"))
     if name and not system.name:
         system.name = clamp_str(name, il.SYS_NAME, report=report)
+    tag = _clean_str(block.get("systemTag"))
+    if tag and not system.tag:
+        system.tag = clamp_str(tag, il.SYS_TAG, report=report)
+    avatar_b64 = _clean_str(block.get("systemAvatarData"))
+    if avatar_b64 and not system.avatar_url:
+        stored_key = await _persist_image_from_b64(
+            avatar_b64, "System", db, user, warnings
+        )
+        if stored_key:
+            system.avatar_url = stored_key[:500]
     # Same reason as the member notes above (strip + length cap).
     description = strip_internal_image_refs_md_to_none(
         clamp_str(
@@ -1859,22 +1903,27 @@ async def _import_media_attachments(
 # --- Avatar persistence ----------------------------------------------------
 
 
-async def _persist_avatar_from_b64(
+async def _persist_image_from_b64(
     payload_b64: str,
-    ps_id: str,
+    subject: str,
     db: AsyncSession,
     user: User,
     warnings: list[str],
+    *,
+    what: str = "avatar",
 ) -> str | None:
-    """Decode `profilePhotoData`, normalize, store as an UploadedFile.
+    """Decode an inline base64 image, normalize, store as an UploadedFile.
 
-    Returns the storage key on success; None when image uploads are
-    disabled, the bytes don't decode, or the quota is full.
+    `subject` names the record in warnings ("Headmate '<id>'", "System");
+    `what` is the slot ("avatar", "banner"). Returns the storage key on
+    success; None when image uploads are disabled, the bytes don't decode,
+    or the quota is full. The disabled and quota warnings are emitted once
+    per import, not once per image.
     """
     if not user_can_upload_images(user):
-        if not any(w.startswith("Skipped avatar imports") for w in warnings):
+        if not any(w.startswith("Skipped image imports") for w in warnings):
             warnings.append(
-                "Skipped avatar imports: image uploads are not enabled for "
+                "Skipped image imports: image uploads are not enabled for "
                 "this account."
             )
         return None
@@ -1882,28 +1931,68 @@ async def _persist_avatar_from_b64(
         payload = payload_b64.replace("\n", "").replace("\r", "")
         raw = base64.b64decode(payload, validate=True)
     except (ValueError, TypeError):
-        warnings.append(
-            f"Headmate {ps_id!r} avatar was not valid base64; skipped."
-        )
+        warnings.append(f"{subject} {what} was not valid base64; skipped.")
         return None
     try:
         stored = await store_imported_image(raw, db=db, user=user, purpose="avatar")
     except ImportImageError as exc:
         if exc.reason == "bad_format":
-            warnings.append(
-                f"Headmate {ps_id!r} avatar is not a supported image format."
-            )
+            warnings.append(f"{subject} {what} is not a supported image format.")
         elif exc.reason == "normalize_rejected":
             warnings.append(
-                f"Headmate {ps_id!r} avatar was rejected by the image normaliser."
+                f"{subject} {what} was rejected by the image normaliser."
             )
-        else:  # quota_full
+        elif not any(w.startswith("Image imports stopped") for w in warnings):
+            # quota_full
             warnings.append(
-                "Avatar imports stopped: storage quota reached. Remaining "
-                "members will be imported without avatars."
+                "Image imports stopped: storage quota reached. Remaining "
+                "avatars and banners were skipped."
             )
         return None
     return stored.key
+
+
+# Prism's `profileHeaderSource` enum, by index: 0 = pluralKit, 1 = prism.
+_HEADER_SOURCE_PLURALKIT = 0
+
+
+def _prism_member_header(src: dict) -> tuple[str | None, str | None]:
+    """(inline base64, external URL) for a headmate's header image, or Nones.
+
+    Mirrors Prism's own `resolveMemberProfileHeader`: a hidden header
+    (`profileHeaderVisible: false`) resolves to nothing, since Prism shows
+    nothing and the owner chose that. Otherwise the source is the one the
+    headmate asked for, falling back to Prism's own image unless the
+    PluralKit one is both asked for and eligible (the headmate is linked to
+    PluralKit, or carries a PluralKit banner URL or bytes). With no stored
+    source, Prism defaults to PluralKit only when eligible AND a `pkBannerUrl`
+    is set. The PluralKit source resolves to its cached bytes when present,
+    else to the cached CDN URL, else to the original URL; the Prism source
+    has only its bytes.
+    """
+    if src.get("profileHeaderVisible") is False:
+        return None, None
+    prism_bytes = _clean_str(src.get("profileHeaderImageData"))
+    pk_bytes = _clean_str(src.get("pkBannerImageData"))
+    pk_url = _clean_str(src.get("pkBannerUrl"))
+    pk_cached_url = _clean_str(src.get("pkBannerCachedUrl"))
+    pk_eligible = bool(
+        _clean_str(src.get("pluralkitUuid"))
+        or _clean_str(src.get("pluralkitId"))
+        or pk_url
+        or pk_cached_url
+        or pk_bytes
+    )
+    requested = src.get("profileHeaderSource")
+    if requested is None:
+        wants_pk = pk_eligible and bool(pk_url)
+    else:
+        wants_pk = requested == _HEADER_SOURCE_PLURALKIT
+    if wants_pk and pk_eligible:
+        if pk_bytes:
+            return pk_bytes, None
+        return None, pk_cached_url or pk_url
+    return prism_bytes, None
 
 
 # --- Tiny helpers ----------------------------------------------------------

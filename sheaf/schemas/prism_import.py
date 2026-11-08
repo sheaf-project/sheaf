@@ -97,6 +97,9 @@ class PrismImportResult(BaseModel):
     # re-auth an import job cannot ask for.
     members_privacy_skipped: int = 0
     avatars_imported: int = 0
+    # Headmate header images stored as member banners (the system avatar
+    # counts under neither; it is one row's field, not a per-record count).
+    banners_imported: int = 0
     groups_imported: int = 0
     custom_fields_imported: int = 0
     custom_field_values_imported: int = 0

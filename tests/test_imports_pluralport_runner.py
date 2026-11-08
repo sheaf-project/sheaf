@@ -202,6 +202,35 @@ def test_bundle_round_trip_restores_avatar(auth_client: httpx.Client):
     assert avatar_key in files, iris["avatar_url"]
 
 
+_SYS_AVATAR_KEY = "avatars/00000000-0000-0000-0000-00000000bbbb/op_sys_avatar.png"
+_SYS_BANNER_KEY = "avatars/00000000-0000-0000-0000-00000000bbbb/op_sys_banner.png"
+
+
+def test_bundle_round_trip_restores_system_avatar_and_banner(auth_client: httpx.Client):
+    """The system's own images ride the same asset path as a member's:
+    `systems[0].avatar_asset_id` / `banner_asset_id` resolve to bundle blobs and
+    come back under fresh keys owned by the importing user."""
+    native = _native()
+    native["system"]["avatar_url"] = f"/v1/files/{_SYS_AVATAR_KEY}"
+    native["system"]["banner_url"] = f"/v1/files/{_SYS_BANNER_KEY}"
+    payload = _bundle_bytes(
+        native, {_SYS_AVATAR_KEY: _TINY_PNG, _SYS_BANNER_KEY: _TINY_PNG}
+    )
+    job = _post(auth_client, payload, filename="export.pluralport.zip")
+    drive_import_runner()
+    final = wait_for_terminal(auth_client, job["id"])
+    assert final["status"] == "complete", final
+    assert final["counts"].get("images_imported", 0) == 2, final["counts"]
+
+    files = {f["key"] for f in _files_list(auth_client)}
+    assert _SYS_AVATAR_KEY not in files and _SYS_BANNER_KEY not in files
+    system = auth_client.get("/v1/systems/me").json()
+    for field in ("avatar_url", "banner_url"):
+        key = (system[field] or "").removeprefix("/v1/files/")
+        assert key and key in files, (field, system[field])
+    assert system["avatar_url"] != system["banner_url"]
+
+
 def _inline_asset_envelope(*, carrier: str) -> bytes:
     """A bare-JSON PluralPort envelope from a foreign producer whose avatar
     bytes ride inline on the asset (not in a bundle). ``carrier`` selects
