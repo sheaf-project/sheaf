@@ -9,6 +9,10 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 ### Added
 
 - **You are told when an administrator acts on your account.** A banner appears at the top of the web app after any admin action against your account, such as a System Safety reset, a queued deletion being finalised early, staged visibility changes being cancelled, a session or API keys being revoked, or a tier change, saying what was done, when, and the reason the admin gave, with a link to the full record on the Account settings page. Actions that remove a protection you set or change how you sign in get the red banner; the rest are amber. Dismissing it is remembered across your browsers, and only covers actions up to that moment, so a later one brings it back. The Account page's admin activity list now describes each action in words as well as by its name.
+### Security
+
+- **Bumped Pillow to 13.0.0.** The release fixes some fifty image-parsing vulnerabilities present in all earlier versions, including two rated critical (a JPEG decoder buffer overflow and stale native image storage reused after a mode change), heap overflows and out-of-bounds reads in the TIFF, WMF/EMF and bundled OpenJPEG decoders, and a run of decompression-bomb check bypasses. Sheaf decodes user-uploaded and imported images (avatars, banners, bio images, import bundles), so these were real attack surface. None of the 13.0 behaviour changes touch anything Sheaf does with images; no configuration change.
+
 ### Fixed
 
 - **An ntfy channel whose server answers 404 is switched off straight away.** Publishing to an ntfy topic creates it, so a 404 means the configured server URL does not reach an ntfy publish endpoint at all, and retrying for a day before giving up was a day of noise for nothing. It is now treated the way a vanished webhook is: the channel is disabled and its owner told. Other 4xx answers (auth, rate limit, bad topic name) still back off and retry, since the owner can fix those.
