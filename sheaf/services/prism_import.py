@@ -404,7 +404,14 @@ async def run_import(
     data = parsed.data
 
     if system_profile:
-        await _apply_system_profile(data, system, report, db, user, result.warnings)
+        system_avatar_b64 = _apply_system_profile(data, system, report)
+        if system_avatar_b64:
+            # Same pipeline, quota and caps as a headmate's photo.
+            stored_key = await _persist_image_from_b64(
+                system_avatar_b64, "System", db, user, result.warnings
+            )
+            if stored_key:
+                system.avatar_url = stored_key[:500]
 
     selected = set(member_ids) if member_ids is not None else None
 
@@ -759,24 +766,20 @@ async def run_import(
 # --- Section helpers -------------------------------------------------------
 
 
-async def _apply_system_profile(
-    data: dict,
-    system: System,
-    report: ClampReport,
-    db: AsyncSession,
-    user: User,
-    warnings: list[str],
-) -> None:
+def _apply_system_profile(
+    data: dict, system: System, report: ClampReport
+) -> str | None:
     """Pull the systemSettings[0] block onto the importing system.
 
-    Only fills empty Sheaf fields; never overwrites a name, tag or avatar
-    the user already set on their Sheaf system. The avatar arrives as inline
-    base64 (`systemAvatarData`) and goes through the same image pipeline as
-    a headmate's photo. Prism has no system banner.
+    Only fills empty Sheaf fields; never overwrites a name or tag the user
+    already set on their Sheaf system. Pure: the one thing it cannot do
+    itself is store an image, so when the block carries `systemAvatarData`
+    and the system has no avatar yet, the base64 is returned for the caller
+    to run through the image pipeline. Prism has no system banner.
     """
     settings_arr = _list(data.get("systemSettings"))
     if not settings_arr or not isinstance(settings_arr[0], dict):
-        return
+        return None
     block = settings_arr[0]
     name = _clean_str(block.get("systemName"))
     if name and not system.name:
@@ -784,13 +787,6 @@ async def _apply_system_profile(
     tag = _clean_str(block.get("systemTag"))
     if tag and not system.tag:
         system.tag = clamp_str(tag, il.SYS_TAG, report=report)
-    avatar_b64 = _clean_str(block.get("systemAvatarData"))
-    if avatar_b64 and not system.avatar_url:
-        stored_key = await _persist_image_from_b64(
-            avatar_b64, "System", db, user, warnings
-        )
-        if stored_key:
-            system.avatar_url = stored_key[:500]
     # Same reason as the member notes above (strip + length cap).
     description = strip_internal_image_refs_md_to_none(
         clamp_str(
@@ -806,6 +802,10 @@ async def _apply_system_profile(
     )
     if color and not system.color:
         system.color = color
+    avatar_b64 = _clean_str(block.get("systemAvatarData"))
+    if avatar_b64 and not system.avatar_url:
+        return avatar_b64
+    return None
 
 
 async def _import_groups(
