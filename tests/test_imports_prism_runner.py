@@ -554,6 +554,99 @@ def test_runner_avatar_imported_via_inline_base64(auth_client: httpx.Client):
     assert final["counts"]["avatars_imported"] == 1
 
 
+def _b64_png(size: int = 4) -> str:
+    return base64.b64encode(_make_png_bytes(size)).decode()
+
+
+def _members_by_name(client: httpx.Client) -> dict[str, dict]:
+    return {m["name"]: m for m in client.get("/v1/members").json()}
+
+
+def _file_keys(client: httpx.Client) -> set[str]:
+    resp = client.get("/v1/files/list")
+    assert resp.status_code == 200, resp.text
+    return {f["key"] for f in resp.json()}
+
+
+def _run_payload(client: httpx.Client, payload: dict, media) -> dict:
+    envelope = synthesize_envelope(payload, _PASSPHRASE, media_blobs=media)
+    job = _post_file(client, envelope)
+    drive_import_runner()
+    final = wait_for_terminal(client, job["id"])
+    assert final["status"] == "complete", final
+    return final
+
+
+def test_runner_header_image_becomes_the_member_banner(auth_client: httpx.Client):
+    """Prism's per-member header image is its banner. It used to be dropped
+    as presentation; it is image data and lands on `banner_url` through the
+    same pipeline as the avatar."""
+    payload, media = _make_export(with_avatar=True)
+    payload["headmates"][0]["profileHeaderImageData"] = _b64_png(6)
+
+    final = _run_payload(auth_client, payload, media)
+
+    assert final["counts"]["avatars_imported"] == 1
+    assert final["counts"]["banners_imported"] == 1
+    member = _members_by_name(auth_client)["Member-A"]
+    files = _file_keys(auth_client)
+    avatar_key = (member["avatar_url"] or "").removeprefix("/v1/files/")
+    banner_key = (member["banner_url"] or "").removeprefix("/v1/files/")
+    assert avatar_key in files and banner_key in files, member
+    assert avatar_key != banner_key
+
+
+def test_runner_header_source_follows_prisms_rules(auth_client: httpx.Client):
+    """Which image is the banner follows Prism's own resolver: the PluralKit
+    banner when asked for AND the headmate is linked to PluralKit, Prism's
+    own image otherwise, and nothing when the header is hidden."""
+    payload, media = _make_export(headmate_count=3)
+    a, b, c = payload["headmates"]
+    # A: asked for PluralKit, linked, with cached PluralKit banner bytes.
+    a["profileHeaderSource"] = 0
+    a["pluralkitId"] = "abcde"
+    a["pkBannerImageData"] = _b64_png(5)
+    # B: asked for PluralKit but not linked, so Prism falls back to its own.
+    b["profileHeaderSource"] = 0
+    b["profileHeaderImageData"] = _b64_png(6)
+    # C: hidden. Prism shows nothing, so nothing is imported.
+    c["profileHeaderVisible"] = False
+    c["profileHeaderImageData"] = _b64_png(7)
+
+    final = _run_payload(auth_client, payload, media)
+
+    assert final["counts"]["banners_imported"] == 2, final["counts"]
+    members = _members_by_name(auth_client)
+    files = _file_keys(auth_client)
+    for name in ("Member-A", "Member-B"):
+        key = (members[name]["banner_url"] or "").removeprefix("/v1/files/")
+        assert key in files, (name, members[name]["banner_url"])
+    assert members["Member-C"]["banner_url"] is None
+
+
+def test_runner_system_avatar_and_tag_fill_empty_fields(auth_client: httpx.Client):
+    """The system block's avatar (inline base64) and tag come across like the
+    name does: only onto empty fields, never over what the user set."""
+    payload, media = _make_export()
+    payload["systemSettings"][0]["systemTag"] = "PRM"
+    payload["systemSettings"][0]["systemAvatarData"] = _b64_png(8)
+
+    _run_payload(auth_client, payload, media)
+
+    system = auth_client.get("/v1/systems/me").json()
+    assert system["tag"] == "PRM"
+    avatar_key = (system["avatar_url"] or "").removeprefix("/v1/files/")
+    assert avatar_key and avatar_key in _file_keys(auth_client), system["avatar_url"]
+
+    # A second file with a different tag and avatar leaves both alone.
+    payload["systemSettings"][0]["systemTag"] = "OTHR"
+    payload["systemSettings"][0]["systemAvatarData"] = _b64_png(9)
+    _run_payload(auth_client, payload, media)
+    again = auth_client.get("/v1/systems/me").json()
+    assert again["tag"] == "PRM"
+    assert again["avatar_url"] == system["avatar_url"]
+
+
 def test_runner_decrypts_media_attachment(auth_client: httpx.Client):
     payload, media = _make_export(with_media=True)
     envelope = synthesize_envelope(payload, _PASSPHRASE, media_blobs=media)
