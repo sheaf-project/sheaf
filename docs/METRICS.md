@@ -121,7 +121,7 @@ the success path does not need to fan out into 200/201/204 per route.
 
 | Metric | Type | Labels |
 |---|---|---|
-| `sheaf_auth_logins_total` | counter | `outcome` ∈ {success, user_not_found, password_incorrect, locked, totp_required, totp_invalid, recovery_code_used, trusted_device_bypass, captcha_failed, email_unverified, email_revalidation_required} |
+| `sheaf_auth_logins_total` | counter | `outcome` ∈ {success, user_not_found, password_incorrect, locked, totp_required, totp_invalid, recovery_code_used, trusted_device_bypass, captcha_failed, email_unverified, email_revalidation_required, account_suspended, account_banned, shield_opted_out, passkey, passkey_unknown_credential, passkey_invalid, passkey_rp_mismatch} |
 | `sheaf_auth_password_reset_total` | counter | `stage` ∈ {requested, completed, expired, abandoned} |
 | `sheaf_auth_email_verification_total` | counter | `outcome` ∈ {sent, completed, expired, resend_blocked} |
 | `sheaf_auth_recovery_codes_used_total` | counter | - |
@@ -132,10 +132,28 @@ the success path does not need to fan out into 200/201/204 per route.
 | `sheaf_auth_sessions_active` | gauge | - |
 | `sheaf_auth_sessions_by_client` | gauge | `client_family` |
 | `sheaf_auth_totp_enabled` | gauge | - |
+| `sheaf_auth_passkey_users` | gauge | - |
+| `sheaf_auth_passkey_credentials` | gauge | `usable` ∈ {true, false} |
+
+Passkey sign-ins land on `logins_total` rather than a family of their own,
+sharing the account-standing outcomes (`locked`, `account_suspended`,
+`account_banned`, `captcha_failed`) with password sign-in, because those
+gates apply once a credential checks out regardless of what the credential
+was. Only the four `passkey*` outcomes are passkey-specific.
+
+The two gauges answer different questions: `passkey_users` is adoption (one
+person with a phone and a laptop is one adopter), while
+`passkey_credentials` counts enrolled keys. A credential is bound forever to
+the relying-party ID it was enrolled under, so `usable="false"` is the count
+that went dark after a domain move - still listed to its owner, unable to
+sign anyone in.
 
 Useful alerts: a sustained `password_incorrect` rate per hour (credential
 stuffing), `lockout_events_total` rate (active attack), `lockouts_active`
-high-water mark (failure-mode tracking).
+high-water mark (failure-mode tracking), and any `passkey_rp_mismatch` at
+all, which means an authenticator presented an assertion for a different
+relying-party ID and so points at the association documents or a moved host
+rather than at the user.
 
 ### Anti-abuse
 

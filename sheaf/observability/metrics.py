@@ -304,6 +304,22 @@ auth_totp_enabled = _G(
     "sheaf_auth_totp_enabled",
     "Users with TOTP currently enabled.",
 )
+auth_passkey_users = _G(
+    "sheaf_auth_passkey_users",
+    "Users holding at least one passkey usable on this instance.",
+)
+auth_passkey_credentials = _G(
+    "sheaf_auth_passkey_credentials",
+    # `usable` carries the same meaning as the field of that name in the
+    # passkeys API: a credential is bound forever to the relying-party ID it
+    # was enrolled under, so after a domain move the rows that no longer
+    # match are still listed to their owner but cannot sign anyone in.
+    # Splitting on it is what makes such a move read as "credentials went
+    # dark" rather than as a sudden collapse in adoption.
+    "Enrolled passkey credentials, by whether the credential's rp_id still "
+    "matches this instance's relying-party ID.",
+    ["usable"],
+)
 
 # ---------------------------------------------------------------------------
 # Anti-abuse / rate limit

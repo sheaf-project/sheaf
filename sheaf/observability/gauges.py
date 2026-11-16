@@ -17,7 +17,7 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sheaf.observability.client_family import (
@@ -27,6 +27,8 @@ from sheaf.observability.client_family import (
 from sheaf.observability.metrics import (
     FRONT_COUNT_BUCKETS,
     auth_lockouts_active,
+    auth_passkey_credentials,
+    auth_passkey_users,
     auth_sessions_active,
     auth_sessions_by_client,
     auth_totp_enabled,
@@ -154,7 +156,9 @@ async def refresh_fast_gauges() -> None:
 
 
 async def _refresh_db_counts(db: AsyncSession) -> None:
+    from sheaf.auth.passkeys import current_relying_party
     from sheaf.models.member import Member
+    from sheaf.models.passkey_credential import PasskeyCredential
     from sheaf.models.system import System
     from sheaf.models.trusted_device import TrustedDevice
     from sheaf.models.user import AccountStatus, User
@@ -185,6 +189,42 @@ async def _refresh_db_counts(db: AsyncSession) -> None:
         select(func.count(TrustedDevice.id)).where(TrustedDevice.expires_at > now)
     )
     auth_trusted_devices_active.set(int(trusted or 0))
+
+    # Passkey adoption. The headline number is users rather than credentials
+    # because one person enrolling a phone and a laptop is one adopter, not
+    # two, and `usable` is what makes it an adoption number at all: a
+    # credential only signs its owner in while its rp_id matches the
+    # instance's current relying-party ID.
+    rp = current_relying_party().rp
+    if rp is None:
+        # No resolvable relying party, because the feature is off or the base
+        # URL will not yield a host. Nothing can sign in, so every credential
+        # counts as unusable and adoption is zero. Set rather than skip: a
+        # skipped gauge freezes at its last healthy value and reads as though
+        # passkeys were still working.
+        total_creds = await db.scalar(select(func.count(PasskeyCredential.id))) or 0
+        usable_creds = 0
+        usable_users = 0
+    else:
+        # One statement, so all three numbers come from one snapshot. As
+        # separate queries an enrolment or delete landing between them would
+        # shift one count and not the other, and the derived `usable="false"`
+        # bucket could dip below zero for a cycle.
+        matches = PasskeyCredential.rp_id == rp.rp_id
+        total_creds, usable_creds, usable_users = (
+            await db.execute(
+                select(
+                    func.count(PasskeyCredential.id),
+                    func.count(PasskeyCredential.id).filter(matches),
+                    func.count(distinct(PasskeyCredential.user_id)).filter(matches),
+                )
+            )
+        ).one()
+    auth_passkey_credentials.labels(usable="true").set(int(usable_creds))
+    auth_passkey_credentials.labels(usable="false").set(
+        int(total_creds - usable_creds)
+    )
+    auth_passkey_users.set(int(usable_users))
 
     sys_count = await db.scalar(select(func.count(System.id)))
     systems_total.set(int(sys_count or 0))
