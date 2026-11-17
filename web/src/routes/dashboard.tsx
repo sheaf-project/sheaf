@@ -102,7 +102,7 @@ export function DashboardPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <p className="text-2xl font-semibold">
-                  {members?.filter((m) => !m.is_custom_front).length ?? 0}
+                  {members?.filter((m) => !m.is_custom_front && m.archived_at == null).length ?? 0}
                 </p>
                 <p className="text-sm text-muted-foreground">Members</p>
               </div>
