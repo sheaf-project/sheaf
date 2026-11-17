@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 import uuid
 from contextlib import ExitStack
 
@@ -417,7 +418,10 @@ def test_integration_stream_does_not_block_same_key_requests(auth_client: httpx.
         "GET", "/v1/fronts/stream", headers=headers, timeout=15.0
     ) as resp:
         assert resp.status_code == 200
-        assert _read_sse_event(resp.iter_lines())["event"] == "snapshot"
+        # Keep the iterator: dropping it would close the connection, and the
+        # stream has to be genuinely open for this to test anything.
+        lines = resp.iter_lines()
+        assert _read_sse_event(lines)["event"] == "snapshot"
 
         # While the stream is held open, a request with the SAME key must not
         # block on the api_keys row lock. Bounded tightly so the old lock-hold
@@ -481,6 +485,11 @@ def test_integration_stream_connection_cap(auth_client: httpx.Client):
     headers = {"Authorization": f"Bearer {key}"}
 
     with httpx.Client(base_url=BASE_URL) as stream_client, ExitStack() as stack:
+        # The line iterators are kept, not discarded: a dropped `iter_lines()`
+        # generator is closed when it is collected, and closing it closes the
+        # connection. This test once passed only because the server leaked the
+        # slots of the connections it had silently lost that way.
+        live = []
         for _ in range(cap):
             resp = stack.enter_context(
                 stream_client.stream(
@@ -490,7 +499,9 @@ def test_integration_stream_connection_cap(auth_client: httpx.Client):
             assert resp.status_code == 200
             # Read the snapshot so the connection is fully established (its slot
             # has been acquired) before opening the next.
-            _read_sse_event(resp.iter_lines())
+            lines = resp.iter_lines()
+            _read_sse_event(lines)
+            live.append(lines)
 
         with httpx.Client(base_url=BASE_URL) as c:
             over = c.get("/v1/fronts/stream", headers=headers, timeout=10.0)
@@ -530,6 +541,47 @@ def test_integration_stream_reclaims_dead_slots(auth_client: httpx.Client):
         ) as resp:
             assert resp.status_code == 200
             assert _read_sse_event(resp.iter_lines())["event"] == "snapshot"
+    finally:
+        r.delete(slots_key)
+        r.close()
+
+
+def test_integration_stream_releases_its_slot_when_the_client_leaves(
+    auth_client: httpx.Client,
+):
+    """Regression: a client disconnect used to leave the teardown half-run.
+
+    Starlette cancels the generator through an anyio cancel scope, which
+    re-cancels every await in the `finally` too, so the slot release raised
+    CancelledError and aborted the rest of it: the slot sat in the account's
+    set until its score lapsed, the active gauge never came down and no close
+    was recorded. Now the teardown is shielded, so the slot is gone within a
+    moment of the client leaving, well inside the heartbeat-scaled TTL it
+    would otherwise have waited out.
+    """
+    import redis as _redis
+
+    user_id = auth_client.get("/v1/auth/me").json()["id"]
+    key = _create_key(auth_client, ["fronts:read"])
+    headers = {"Authorization": f"Bearer {key}"}
+    slots_key = connection_slots_key(str(user_id))
+    r = _redis.from_url(
+        os.environ.get("SHEAF_TEST_REDIS_URL", "redis://localhost:6380/0")
+    )
+    try:
+        with httpx.Client(base_url=BASE_URL) as stream_client, stream_client.stream(
+            "GET", "/v1/fronts/stream", headers=headers, timeout=15.0
+        ) as resp:
+            assert resp.status_code == 200
+            # Keep the iterator: dropping it would close the connection early.
+            lines = resp.iter_lines()
+            assert _read_sse_event(lines)["event"] == "snapshot"
+            assert r.zcard(slots_key) == 1
+        # Client gone. Give the server a moment to notice and tear down.
+        deadline = time.monotonic() + 10
+        while r.zcard(slots_key) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert r.zcard(slots_key) == 0, r.zrange(slots_key, 0, -1, withscores=True)
     finally:
         r.delete(slots_key)
         r.close()

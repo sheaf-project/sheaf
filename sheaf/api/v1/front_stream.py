@@ -18,6 +18,7 @@ import logging
 import time
 import uuid
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
@@ -60,6 +61,11 @@ router = APIRouter(prefix="/fronts", tags=["fronts"])
 # (backpressure) and let it reconnect and re-snapshot rather than buffer
 # unboundedly. Snapshots are idempotent, so no meaningful event is lost.
 _QUEUE_MAXSIZE = 100
+
+# Upper bound on the shielded teardown (reader stop, pubsub close, slot
+# release). Each is a single Redis round trip in the normal case; the bound only
+# matters when Redis is wedged, and then the slot's score lapses on its own.
+_TEARDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def _ensure_fronts_read_scope(request: Request) -> None:
@@ -302,32 +308,46 @@ async def _stream(
         reason = "error"
         logger.warning("front-stream connection error", exc_info=True)
     finally:
-        # Suppress errors (and the CancelledError raised into the awaited
-        # reader during teardown) so one failing cleanup step can't skip the
-        # rest of the finally - the slot release and gauge must always run.
-        if reader is not None:
-            reader.cancel()
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await reader
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await pubsub.aclose()
-        # Releasing the slot must never raise out of teardown; if it fails the
-        # slot's score still lapses and gets pruned later, but surface it rather
-        # than swallowing it silently.
-        try:
-            await release_stream_slot(r, account_key, slot_member)
-        except Exception:
-            logger.warning(
-                "front-stream failed to release connection slot "
-                "(slot ages out on its own): account=%s",
-                account_key,
-                exc_info=True,
-            )
-        realtime_connections_active.dec()
-        realtime_connection_duration_seconds.observe(
-            time.monotonic() - started
-        )
-        realtime_connections_closed_total.labels(reason=reason).inc()
+        # Teardown runs SHIELDED. On a client disconnect Starlette cancels this
+        # generator through an anyio cancel scope, and anyio cancellation is
+        # level-triggered: every await inside the cancelled scope is cancelled
+        # again, including the awaits in this finally. Unshielded, the pubsub
+        # close was cut short and `release_stream_slot` raised CancelledError
+        # (not an Exception, so not caught below), which aborted the finally
+        # before the gauge, the duration and the close counter - every
+        # disconnect left `active` inflated, recorded no close, and held its cap
+        # slot until the slot's score lapsed. The shield lets the awaits finish;
+        # the deadline inside it bounds them so a hung Redis cannot hold the
+        # teardown open forever.
+        with anyio.CancelScope(shield=True):
+            try:
+                with anyio.move_on_after(_TEARDOWN_TIMEOUT_SECONDS):
+                    if reader is not None:
+                        reader.cancel()
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
+                            await reader
+                    with contextlib.suppress(Exception):
+                        await pubsub.aclose()
+                    # Releasing the slot must never raise out of teardown; if
+                    # it fails the slot's score still lapses and gets pruned
+                    # later, but surface it rather than swallowing it silently.
+                    try:
+                        await release_stream_slot(r, account_key, slot_member)
+                    except Exception:
+                        logger.warning(
+                            "front-stream failed to release connection slot "
+                            "(slot ages out on its own): account=%s",
+                            account_key,
+                            exc_info=True,
+                        )
+            finally:
+                # No awaits from here on: this bookkeeping runs whatever
+                # happened above, timeout included.
+                realtime_connections_active.dec()
+                realtime_connection_duration_seconds.observe(
+                    time.monotonic() - started
+                )
+                realtime_connections_closed_total.labels(reason=reason).inc()
 
 
 @router.get("/stream")
