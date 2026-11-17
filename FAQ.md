@@ -124,7 +124,7 @@ If you speak a language other than English and are willing to discuss your backg
 
 ### Does Sheaf use AI/LLM-assisted development?
 
-Yes. We use LLMs primarily as a productivity aid, never as a replacement for our own effort. We never treat LLM output as authoritative; anything generated is reviewed, understood, tested, and reworked as needed before it reaches a build. The same standards apply to documentation. We do not like to use the term "human" as many such FAQ entries do, as we find such terminology exclusionary towards other idenities, but the effect is the same - the person or system who submits or publishes the code is in all cases fully accountable for it, and the project maintainers are for all overarching decisions as a whole.
+Yes. We use LLMs primarily as a productivity aid, never as a replacement for our own effort. We never treat LLM output as authoritative; anything generated is reviewed, understood, tested, and reworked as needed before it reaches a build. The same standards apply to documentation. We do not like to use the term "human" as many such FAQ entries do, as we find such terminology exclusionary towards other identities, but the effect is the same - the person or system who submits or publishes the code is in all cases fully accountable for it, and the project maintainers are for all overarching decisions as a whole.
 
 In practice that means we never commit or merge code we couldn't explain or debug ourselves. All changes regardless of origin go through the same test suite and internal review process, including comprehensive unit and regression testing and security analysis.
 
