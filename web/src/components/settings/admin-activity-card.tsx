@@ -19,7 +19,11 @@ function formatDiff(
   ]);
   const parts: string[] = [];
   for (const k of keys) {
-    parts.push(`${k}: ${JSON.stringify(before?.[k])} -> ${JSON.stringify(after?.[k])}`);
+    const x = before && k in before ? JSON.stringify(before[k]) : null;
+    const y = after && k in after ? JSON.stringify(after[k]) : null;
+    if (x === null) parts.push(`${k}: ${y}`);
+    else if (y === null) parts.push(`${k}: was ${x}`);
+    else parts.push(`${k}: ${x} -> ${y}`);
   }
   return parts.join(", ");
 }
@@ -78,7 +82,7 @@ export function AdminActivityCard() {
                   </p>
                 )}
                 {(e.before_json || e.after_json) && (
-                  <p className="font-mono text-xs text-muted-foreground">
+                  <p className="font-mono text-xs text-muted-foreground wrap-anywhere">
                     {formatDiff(e.before_json, e.after_json)}
                   </p>
                 )}
