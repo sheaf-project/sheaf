@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   describeAdminAction,
@@ -8,24 +9,67 @@ import { useDateFormatters } from "@/hooks/use-date-formatters";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-function formatDiff(
+const ACRONYMS: Record<string, string> = {
+  api: "API",
+  id: "ID",
+  ip: "IP",
+  totp: "TOTP",
+};
+
+const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+const ENUM_VALUE = /^[a-z]+(_[a-z]+)*$/;
+
+function humanize(s: string): string {
+  const out = s
+    .split("_")
+    .map((w) => ACRONYMS[w] ?? w)
+    .join(" ");
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+type DateTimeFormatter = (d: string) => string;
+
+function formatValue(v: unknown, fmt: DateTimeFormatter): string {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (typeof v === "number") return v.toLocaleString();
+  if (typeof v === "string") {
+    if (ISO_DATETIME.test(v)) return fmt(v);
+    if (ENUM_VALUE.test(v)) return humanize(v);
+    return v;
+  }
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "None";
+    return v
+      .map((x) =>
+        x && typeof x === "object" && typeof x.name === "string"
+          ? x.name
+          : formatValue(x, fmt),
+      )
+      .join(", ");
+  }
+  return Object.entries(v as Record<string, unknown>)
+    .map(([k, x]) => `${humanize(k)}: ${formatValue(x, fmt)}`)
+    .join(", ");
+}
+
+function diffRows(
   before: Record<string, unknown> | null,
   after: Record<string, unknown> | null,
-): string {
-  if (!before && !after) return "";
+  fmt: DateTimeFormatter,
+): { label: string; value: string }[] {
   const keys = new Set([
     ...Object.keys(before ?? {}),
     ...Object.keys(after ?? {}),
   ]);
-  const parts: string[] = [];
-  for (const k of keys) {
-    const x = before && k in before ? JSON.stringify(before[k]) : null;
-    const y = after && k in after ? JSON.stringify(after[k]) : null;
-    if (x === null) parts.push(`${k}: ${y}`);
-    else if (y === null) parts.push(`${k}: was ${x}`);
-    else parts.push(`${k}: ${x} -> ${y}`);
-  }
-  return parts.join(", ");
+  return [...keys].map((k) => {
+    const x = before && k in before ? formatValue(before[k], fmt) : null;
+    const y = after && k in after ? formatValue(after[k], fmt) : null;
+    let value = `${x} → ${y}`;
+    if (x === null || x === y) value = y ?? "";
+    else if (y === null) value = `was ${x}`;
+    return { label: humanize(k), value };
+  });
 }
 
 export function AdminActivityCard() {
@@ -82,9 +126,14 @@ export function AdminActivityCard() {
                   </p>
                 )}
                 {(e.before_json || e.after_json) && (
-                  <p className="font-mono text-xs text-muted-foreground wrap-anywhere">
-                    {formatDiff(e.before_json, e.after_json)}
-                  </p>
+                  <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
+                    {diffRows(e.before_json, e.after_json, formatDateTime).map((r) => (
+                      <Fragment key={r.label}>
+                        <dt className="text-muted-foreground">{r.label}</dt>
+                        <dd className="wrap-anywhere">{r.value}</dd>
+                      </Fragment>
+                    ))}
+                  </dl>
                 )}
               </div>
             ))}
