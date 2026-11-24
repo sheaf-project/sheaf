@@ -11,6 +11,13 @@ import { ChangePassword } from "@/components/change-password";
 import { ChangeEmail } from "@/components/change-email";
 import { toast } from "sonner";
 
+const TIER_LABELS: Record<string, string> = {
+  self_hosted: "Self-hosted",
+  saas: "SaaS",
+  free: "Free",
+  plus: "Plus",
+};
+
 export function AccountInfoCard() {
   const { user, refreshUser } = useAuth();
   const newsletterToggle = useMutation({
@@ -28,18 +35,16 @@ export function AccountInfoCard() {
         <CardTitle className="text-base">Account</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
-        <div className="space-y-2">
-          <div>
-            <span className="text-muted-foreground">Email:</span> {user?.email}
-          </div>
-          <div>
-            <span className="text-muted-foreground">Tier:</span>{" "}
-            <Badge variant="outline">{user?.tier}</Badge>
-          </div>
+        <div>
+          <span className="text-muted-foreground">Tier:</span>{" "}
+          <Badge variant="outline">
+            {user ? (TIER_LABELS[user.tier] ?? user.tier) : null}
+          </Badge>
         </div>
         <Separator />
         <div className="space-y-2">
           <p className="text-sm font-medium">Email</p>
+          <p>{user?.email}</p>
           <ChangeEmail />
         </div>
         <Separator />

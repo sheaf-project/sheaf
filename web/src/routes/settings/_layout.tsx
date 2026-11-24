@@ -52,7 +52,7 @@ export function SettingsLayout() {
           </ul>
         </nav>
         <div className="flex-1 min-w-0">
-          <div className="grid gap-6 max-w-2xl">
+          <div className="grid grid-cols-1 gap-6 max-w-2xl">
             <Outlet />
           </div>
         </div>

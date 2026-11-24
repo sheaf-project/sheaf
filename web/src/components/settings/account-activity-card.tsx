@@ -91,7 +91,7 @@ export function AccountActivityCard() {
                   </span>
                 </div>
                 {e.detail && Object.keys(e.detail).length > 0 && (
-                  <p className="font-mono text-xs text-muted-foreground">
+                  <p className="font-mono text-xs text-muted-foreground wrap-anywhere">
                     {formatDetail(e.detail)}
                   </p>
                 )}
