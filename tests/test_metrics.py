@@ -188,6 +188,102 @@ def test_login_funnel_password_incorrect_distinct_from_user_not_found():
     assert bad_pw_after >= bad_pw_before + 1
 
 
+def test_passkey_outcomes_prewarmed():
+    """All four passkey login outcomes exist from the first scrape.
+
+    They share `logins_total` with password sign-in, so without the pre-warm
+    a passkey outcome that has never happened would be an absent series
+    rather than a zero - and `passkey_rp_mismatch` in particular is alerted
+    on precisely because it should stay at zero, which only works if the
+    series is there to compare against.
+    """
+    body = _scrape()
+    for outcome in (
+        "passkey",
+        "passkey_unknown_credential",
+        "passkey_invalid",
+        "passkey_rp_mismatch",
+    ):
+        val = _series_value(body, "sheaf_auth_logins_total", {"outcome": outcome})
+        assert val is not None, f"missing login outcome series: {outcome}"
+
+
+def test_passkey_adoption_gauges_populate(admin_client: httpx.Client):
+    """The passkey gauges are DB-sourced, so they materialise once the gauge
+    pass runs.
+
+    Both `usable` buckets must be present even when nothing is enrolled.
+    `test_passkey_gauges_split_on_the_apis_usable_rule` below checks which
+    bucket a credential lands in.
+    """
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"
+
+    body = _scrape()
+
+    users = _series_value(body, "sheaf_auth_passkey_users")
+    assert users is not None, "missing sheaf_auth_passkey_users"
+    assert users >= 0
+
+    buckets = {}
+    for usable in ("true", "false"):
+        val = _series_value(
+            body, "sheaf_auth_passkey_credentials", {"usable": usable}
+        )
+        assert val is not None, f"missing passkey credentials usable={usable}"
+        assert val >= 0, f"negative credential count for usable={usable}"
+        buckets[usable] = val
+
+    # A user cannot hold more usable passkeys than there are usable
+    # credentials, and adoption is counted per user, so this ordering holds
+    # however many devices anyone enrols.
+    assert users <= buckets["true"]
+
+
+def _passkey_gauges(admin_client: httpx.Client) -> tuple[float, float, float]:
+    """(users, usable credentials, unusable credentials) after a gauge pass."""
+    resp = admin_client.post("/v1/admin/jobs/refresh_metrics_gauges/run")
+    assert resp.status_code == 200, resp.text
+    body = _scrape()
+    users = _series_value(body, "sheaf_auth_passkey_users")
+    usable = _series_value(body, "sheaf_auth_passkey_credentials", {"usable": "true"})
+    unusable = _series_value(body, "sheaf_auth_passkey_credentials", {"usable": "false"})
+    assert None not in (users, usable, unusable), body
+    return users, usable, unusable
+
+
+def test_passkey_gauges_split_on_the_apis_usable_rule(admin_client: httpx.Client):
+    """One account enrols two passkeys, then one is moved to another
+    relying-party ID, the state a domain move leaves behind. The gauges must
+    agree with the passkeys API's own `usable` field: one credential in each
+    bucket, and the account still counted once as an adopter because it holds
+    a usable key. The metrics config runs this file on its own, so the deltas
+    are this test's alone."""
+    from tests.test_passkeys_enrolment import PASSWORD, _enrol
+    from tests.test_passkeys_signin import _patch_passkey
+
+    users_0, usable_0, unusable_0 = _passkey_gauges(admin_client)
+
+    with httpx.Client(base_url=BASE_URL) as c:
+        email = f"pk-metrics-{uuid.uuid4().hex[:8]}@sheaf.dev"
+        reg = c.post("/v1/auth/register", json={"email": email, "password": PASSWORD})
+        assert reg.status_code == 201, reg.text
+        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        first, _ = _enrol(c, None, nickname="phone")
+        second, _ = _enrol(c, None, nickname="laptop")
+        assert first.status_code == 201 and second.status_code == 201
+        _patch_passkey(second.json()["id"], rp_id="old.example.net")
+
+        listed = {p["id"]: p["usable"] for p in c.get("/v1/auth/passkeys").json()}
+        assert listed == {first.json()["id"]: True, second.json()["id"]: False}
+
+    users_1, usable_1, unusable_1 = _passkey_gauges(admin_client)
+    assert usable_1 - usable_0 == 1
+    assert unusable_1 - unusable_0 == 1
+    assert users_1 - users_0 == 1
+
+
 # ---------------------------------------------------------------------------
 # Pre-warmed counters
 # ---------------------------------------------------------------------------
