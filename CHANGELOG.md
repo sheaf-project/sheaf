@@ -6,6 +6,8 @@ All notable changes to Sheaf are documented here. The format is based on [Keep a
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-11-23
+
 ### Added
 
 - **Passkey adoption in the metrics.** Two new gauges: `sheaf_auth_passkey_users`, the number of users holding at least one passkey that can sign in on this instance, and `sheaf_auth_passkey_credentials`, enrolled passkeys split by `usable`. A passkey is tied to the domain it was enrolled under, so after a domain move the old ones show up under `usable="false"` rather than as a drop in adoption. With passkeys switched off both read as zero adopters. The documented `sheaf_auth_logins_total` outcome list is also brought back in line with the code; it was missing the account-standing refusals and the four passkey outcomes.
